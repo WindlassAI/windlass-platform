@@ -14,7 +14,8 @@ const severity = { machine_policy: 0, malformed: 1, provider: 2, private: 3 };
 /** Trusted broker memory. Keep the same 50 destination slots across turns, but report only this turn's counts. */
 export function refusalLedger() {
 	const slots = new Map();
-	let turn = 0, overflow = 0;
+	let turn = 0,
+		overflow = 0;
 	return {
 		read(number, retained) {
 			if (number > turn) {
@@ -28,17 +29,32 @@ export function refusalLedger() {
 					slots.clear();
 					for (const { host, port } of retained) slots.set(JSON.stringify([host, port]), null);
 				} else for (const key of slots.keys()) slots.set(key, null);
-				if (early) for (const [key, entry] of early) {
-					if (slots.has(key) || slots.size < 50) slots.set(key, entry);
-					else overflow += entry.count;
-				}
+				if (early)
+					for (const [key, entry] of early) {
+						if (slots.has(key) || slots.size < 50) slots.set(key, entry);
+						else overflow += entry.count;
+					}
 			}
 			return number === turn ? { hosts: [...slots.values()].filter(Boolean), overflow } : { hosts: [], overflow: 0 };
 		},
 		record(url, reason, at = Date.now()) {
-			const name = url?.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
-			const host = name && (net.isIP(name) || (name.length <= 253 && name.split(".").every(label => LABEL.test(label)))) ? name : null;
-			const port = host ? (url.port ? Number(url.port) : url.protocol === "http:" ? 80 : url.protocol === "https:" ? 443 : null) : null;
+			const name = url?.hostname
+				.replace(/^\[|\]$/g, "")
+				.toLowerCase()
+				.replace(/\.$/, "");
+			const host =
+				name && (net.isIP(name) || (name.length <= 253 && name.split(".").every(label => LABEL.test(label))))
+					? name
+					: null;
+			const port = host
+				? url.port
+					? Number(url.port)
+					: url.protocol === "http:"
+						? 80
+						: url.protocol === "https:"
+							? 443
+							: null
+				: null;
 			const key = JSON.stringify([host, port]);
 			const entry = slots.get(key);
 			if (entry) {
@@ -64,12 +80,36 @@ function subnets(cidrs) {
 	return list;
 }
 const lan = subnets(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]);
-const blocked = subnets(["0.0.0.0/8", "127.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16", "168.63.129.16/32",
-	"192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
-	"224.0.0.0/4", "240.0.0.0/4", "fd00:ec2::/32", "fd20:ce::254/128", "2001::/23", "2001:db8::/32", "2002::/16"]);
+const blocked = subnets([
+	"0.0.0.0/8",
+	"127.0.0.0/8",
+	"100.64.0.0/10",
+	"169.254.0.0/16",
+	"168.63.129.16/32",
+	"192.0.0.0/24",
+	"192.0.2.0/24",
+	"192.88.99.0/24",
+	"198.18.0.0/15",
+	"198.51.100.0/24",
+	"203.0.113.0/24",
+	"224.0.0.0/4",
+	"240.0.0.0/4",
+	"fd00:ec2::/32",
+	"fd20:ce::254/128",
+	"2001::/23",
+	"2001:db8::/32",
+	"2002::/16",
+]);
 const globalV6 = subnets(["2000::/3"]);
 // `privateOnly`: an --egress-allow name that is not on the owner's list of public hosts may reach only the private network.
-export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces(), denied = [], privateOnly = false) {
+export async function selectAddress(
+	host,
+	allow,
+	resolve = lookup,
+	interfaces = networkInterfaces(),
+	denied = [],
+	privateOnly = false,
+) {
 	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase().replace(/\.$/, "")))) refuse("provider");
 	const answers = net.isIP(host) ? [{ address: host }] : await resolve(host, { all: true });
 	const hostAndBridges = new net.BlockList();
@@ -84,9 +124,14 @@ export async function selectAddress(host, allow, resolve = lookup, interfaces = 
 	for (const { address } of answers) {
 		const family = net.isIPv4(address) ? "ipv4" : "ipv6";
 		const privateLan = lan.check(address, family);
-		if (!net.isIP(address) || blocked.check(address, family) || hostAndBridges.check(address, family)
-			|| (privateLan && !allow.includes(host)) || (family === "ipv6" && !privateLan && !globalV6.check(address, family))
-			|| (family === "ipv6" && address.toLowerCase().startsWith("::ffff:")))
+		if (
+			!net.isIP(address) ||
+			blocked.check(address, family) ||
+			hostAndBridges.check(address, family) ||
+			(privateLan && !allow.includes(host)) ||
+			(family === "ipv6" && !privateLan && !globalV6.check(address, family)) ||
+			(family === "ipv6" && address.toLowerCase().startsWith("::ffff:"))
+		)
 			refuse("private");
 		if (privateOnly && !privateLan) refuse("machine_policy");
 	}
@@ -101,7 +146,7 @@ const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 export function listedHost(host, domains) {
 	const name = host.toLowerCase().replace(/\.$/, "");
 	if (!name || name.length > 253 || net.isIP(name) || !name.split(".").every(label => LABEL.test(label))) return false;
-	return domains.some(entry => entry.startsWith("*.") ? name.endsWith(entry.slice(1)) : name === entry);
+	return domains.some(entry => (entry.startsWith("*.") ? name.endsWith(entry.slice(1)) : name === entry));
 }
 const MAX_RECORD = 16384;
 // The one server_name of the ClientHello in the first TLS record. Undefined while the record is still
@@ -127,7 +172,8 @@ export function clientHelloName(data) {
 		at += n;
 		return part;
 	};
-	const u8 = () => take(1)[0], u16 = () => take(2).readUInt16BE(0);
+	const u8 = () => take(1)[0],
+		u16 = () => take(2).readUInt16BE(0);
 	try {
 		take(2 + 32);
 		const session = u8();
@@ -143,9 +189,10 @@ export function clientHelloName(data) {
 		if (at !== hello.length) return null;
 		const seen = new Set();
 		let name = null;
-		for (let p = 0; p < extensions.length;) {
+		for (let p = 0; p < extensions.length; ) {
 			if (p + 4 > extensions.length) return null;
-			const type = extensions.readUInt16BE(p), len = extensions.readUInt16BE(p + 2);
+			const type = extensions.readUInt16BE(p),
+				len = extensions.readUInt16BE(p + 2);
 			p += 4;
 			if (p + len > extensions.length || seen.has(type)) return null;
 			seen.add(type);
@@ -173,26 +220,59 @@ function pipes(a, b) {
 }
 function headers(input) {
 	const result = { ...input };
-	for (const key of ["connection", "proxy-connection", "proxy-authenticate", "proxy-authorization", "keep-alive",
-		"transfer-encoding", "te", "trailer", "upgrade", ...(input.connection ?? "").toLowerCase().split(",").map(s => s.trim())])
+	for (const key of [
+		"connection",
+		"proxy-connection",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"keep-alive",
+		"transfer-encoding",
+		"te",
+		"trailer",
+		"upgrade",
+		...(input.connection ?? "")
+			.toLowerCase()
+			.split(",")
+			.map(s => s.trim()),
+	])
 		delete result[key];
 	return result;
 }
 // The address a request may go to. `tunnel`: a CONNECT (whose port is always explicit) rather than plain HTTP.
-export async function targetAddress(url, tunnel, allow, denied, domains = null, device = false, resolve = lookup, interfaces = networkInterfaces()) {
+export async function targetAddress(
+	url,
+	tunnel,
+	allow,
+	denied,
+	domains = null,
+	device = false,
+	resolve = lookup,
+	interfaces = networkInterfaces(),
+) {
 	const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
 	if (!host || url.username || url.password) refuse("malformed");
 	if (device && (host !== "auth.openai.com" || url.port !== "443")) refuse("provider");
 	if (net.isIP(host)) {
 		const family = net.isIPv4(host) ? "ipv4" : "ipv6";
-		if (blocked.check(host, family) || lan.check(host, family) && !allow.includes(host) || family === "ipv6" && !lan.check(host, family) && !globalV6.check(host, family)) refuse("private");
+		if (
+			blocked.check(host, family) ||
+			(lan.check(host, family) && !allow.includes(host)) ||
+			(family === "ipv6" && !lan.check(host, family) && !globalV6.check(host, family))
+		)
+			refuse("private");
 	}
 	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase()))) refuse("provider");
 	// A list also limits the ports: HTTPS tunnels to 443, plain HTTP to 80. A name only in --egress-allow
 	// passes it, but then only to a private address: the allow list never adds a public host.
 	let privateOnly = false;
 	if (domains) {
-		if (url.port !== (tunnel ? "443" : "") || net.isIP(host) || !host.split(".").every(label => LABEL.test(label)) || host.length > 253) refuse("malformed");
+		if (
+			url.port !== (tunnel ? "443" : "") ||
+			net.isIP(host) ||
+			!host.split(".").every(label => LABEL.test(label)) ||
+			host.length > 253
+		)
+			refuse("malformed");
 		if (!listedHost(host, domains)) {
 			if (!allow.includes(host.toLowerCase())) refuse("machine_policy");
 			privateOnly = true;
@@ -209,14 +289,26 @@ export function proxyServer(allow, denied, device = false, domains = null, recor
 			if (!url || device || url.protocol !== "http:") refuse("malformed");
 			const ip = await target(url, false);
 			if (res.destroyed) return;
-			const out = http.request({ hostname: ip, port: url.port || 80, method: req.method,
-				path: url.pathname + url.search, headers: { ...headers(req.headers), host: url.host }, agent: false }, upstream => {
-				res.writeHead(upstream.statusCode, headers(upstream.headers));
-				upstream.on("error", () => res.destroy());
-				upstream.pipe(res);
-			});
+			const out = http.request(
+				{
+					hostname: ip,
+					port: url.port || 80,
+					method: req.method,
+					path: url.pathname + url.search,
+					headers: { ...headers(req.headers), host: url.host },
+					agent: false,
+				},
+				upstream => {
+					res.writeHead(upstream.statusCode, headers(upstream.headers));
+					upstream.on("error", () => res.destroy());
+					upstream.pipe(res);
+				},
+			);
 			out.setTimeout(60_000, () => out.destroy());
-			out.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+			out.on("error", () => {
+				if (!res.headersSent) res.writeHead(502);
+				res.end();
+			});
 			res.on("close", () => out.destroy());
 			req.pipe(out);
 		} catch (error) {
@@ -247,7 +339,12 @@ export function proxyServer(allow, denied, device = false, domains = null, recor
 				// Only a TLS ClientHello naming the tunnel's own host is sent on.
 				const host = url.hostname.replace(/\.$/, "").toLowerCase();
 				let data = head;
-				const refuse = () => { record(url, "malformed"); clearTimeout(timer); client.destroy(); out.destroy(); };
+				const refuse = () => {
+					record(url, "malformed");
+					clearTimeout(timer);
+					client.destroy();
+					out.destroy();
+				};
 				const timer = setTimeout(refuse, 5_000);
 				const read = chunk => {
 					if (chunk) data = Buffer.concat([data, chunk]);
@@ -266,7 +363,11 @@ export function proxyServer(allow, denied, device = false, domains = null, recor
 			});
 		} catch (error) {
 			if (error.reason) record(url, error.reason);
-			client.end(error.message === "blocked" ? "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n" : "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+			client.end(
+				error.message === "blocked"
+					? "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"
+					: "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n",
+			);
 		}
 	});
 	// Node can reject a malformed request before either HTTP handler sees it. Never inspect its raw packet.
@@ -283,27 +384,41 @@ function broker(allow, denied, device = false, domains = null) {
 		// Separate Unix socket in the helpers' volume. The sandbox can only reach the HTTP forwarder.
 		const path = "/workspace/observe.sock";
 		rmSync(path, { force: true });
-		http.createServer(async (req, res) => {
-			const turn = Number(req.url.slice(1));
-			if (!Number.isSafeInteger(turn) || turn <= 0) { res.writeHead(400); return res.end(); }
-			try {
-				let input = "";
-				for await (const chunk of req) {
-					input += chunk;
-					if (input.length > 16384) throw Error();
+		http
+			.createServer(async (req, res) => {
+				const turn = Number(req.url.slice(1));
+				if (!Number.isSafeInteger(turn) || turn <= 0) {
+					res.writeHead(400);
+					return res.end();
 				}
-				const retained = JSON.parse(input);
-				if (!Array.isArray(retained) || retained.length > 50) throw Error();
-				res.end(JSON.stringify(ledger.read(turn, retained)));
-			} catch { res.writeHead(400); res.end(); }
-		}).listen(path);
+				try {
+					let input = "";
+					for await (const chunk of req) {
+						input += chunk;
+						if (input.length > 16384) throw Error();
+					}
+					const retained = JSON.parse(input);
+					if (!Array.isArray(retained) || retained.length > 50) throw Error();
+					res.end(JSON.stringify(ledger.read(turn, retained)));
+				} catch {
+					res.writeHead(400);
+					res.end();
+				}
+			})
+			.listen(path);
 	}
 	const server = proxyServer(allow, denied, device, domains, ledger.record);
 	rmSync(socket, { force: true });
 	server.listen(socket);
 }
 if (process.argv[1] === "wlp-egress-device") broker([], [], true);
-if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]), JSON.parse(process.argv[3] ?? "[]"), false, JSON.parse(process.argv[4] ?? "null"));
+if (process.argv[1] === "wlp-egress-broker")
+	broker(
+		JSON.parse(process.argv[2]),
+		JSON.parse(process.argv[3] ?? "[]"),
+		false,
+		JSON.parse(process.argv[4] ?? "null"),
+	);
 // Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
 // connecting the agent byte stream so even a second HTTP request has the same identity.
 export function forward(port, path, nonce, signedOutOnDisconnect = false) {
@@ -315,9 +430,12 @@ export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 		if (signedOutOnDisconnect) {
 			// The login volume and relay disappear at logout; the local endpoint survives. A relay that is
 			// replaced (update, re-pair, new login) also goes away for a moment: only a logout leaves the marker.
-			const signedOut = () => client.end(existsSync(marker)
-				? "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-				: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+			const signedOut = () =>
+				client.end(
+					existsSync(marker)
+						? "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+						: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+				);
 			client.on("error", () => upstream.destroy());
 			client.on("close", () => upstream.destroy());
 			upstream.once("error", signedOut);
@@ -328,11 +446,16 @@ export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 				// the CLI can still receive the authentication status. The relay closes each connection after
 				// one reply, so no reply on this connection means none to the request on it.
 				let started = false;
-				upstream.on("data", () => { started = true; });
-				upstream.pipe(client, {end:false});
+				upstream.on("data", () => {
+					started = true;
+				});
+				upstream.pipe(client, { end: false });
 				upstream.off("error", signedOut);
 				upstream.on("error", () => {});
-				upstream.on("close", () => { if (started) client.end(); else signedOut(); });
+				upstream.on("close", () => {
+					if (started) client.end();
+					else signedOut();
+				});
 			});
 		} else {
 			if (nonce) upstream.write(nonce);

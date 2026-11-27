@@ -11,13 +11,28 @@ import { START_TIMES_KEPT, StartClock, keepStartTimes, startTimesLog } from "../
 
 let now = 1_000;
 const tick = (ms: number) => (now += ms);
-const clock = (turn: number, place: StartTimes["place"], waited: number | null, out: StartTimes[]) => new StartClock(turn, "windlass", place, waited, (times) => out.push(times), () => now);
+const clock = (turn: number, place: StartTimes["place"], waited: number | null, out: StartTimes[]) =>
+	new StartClock(
+		turn,
+		"windlass",
+		place,
+		waited,
+		times => out.push(times),
+		() => now,
+	);
 
 // A new sandbox on a machine: every part, in order.
 {
 	const done: StartTimes[] = [];
 	now = 1_000;
-	const c = new StartClock(1, "claude", "machine", 4_000, (times) => done.push(times), () => now);
+	const c = new StartClock(
+		1,
+		"claude",
+		"machine",
+		4_000,
+		times => done.push(times),
+		() => now,
+	);
 	tick(2_500);
 	c.sandbox(2_500, true, { image: 900, pulled: true, create: 1_200 });
 	tick(3_000);
@@ -36,10 +51,39 @@ const clock = (turn: number, place: StartTimes["place"], waited: number | null, 
 	assert.equal(done.length, 1, "handed over once");
 	const [t] = done;
 	assert.equal(t.newSandbox, true);
-	assert.deepEqual({ waited: t.waited, image: t.image, pulled: t.pulled, sandbox: t.sandbox, runnerCreate: t.runnerCreate, setup: t.setup, prepare: t.prepare, relay: t.relay, agent: t.agent, session: t.session, firstOutput: t.firstOutput },
-		{ waited: 4_000, image: 900, pulled: true, sandbox: 2_500, runnerCreate: 1_200, setup: 3_000, prepare: 400, relay: 250, agent: 1_300, session: 1_700, firstOutput: 2_100 });
+	assert.deepEqual(
+		{
+			waited: t.waited,
+			image: t.image,
+			pulled: t.pulled,
+			sandbox: t.sandbox,
+			runnerCreate: t.runnerCreate,
+			setup: t.setup,
+			prepare: t.prepare,
+			relay: t.relay,
+			agent: t.agent,
+			session: t.session,
+			firstOutput: t.firstOutput,
+		},
+		{
+			waited: 4_000,
+			image: 900,
+			pulled: true,
+			sandbox: 2_500,
+			runnerCreate: 1_200,
+			setup: 3_000,
+			prepare: 400,
+			relay: 250,
+			agent: 1_300,
+			session: 1_700,
+			firstOutput: 2_100,
+		},
+	);
 	const line = startTimesLog("ses_1", t);
-	assert.match(line, /^\[wlp\] session\.start_times session=ses_1 turn=1 harness=claude place=machine new=true pulled=true waited_ms=4000 image_ms=900 sandbox_ms=2500 runnerCreate_ms=1200 setup_ms=3000 prepare_ms=400 relay_ms=250 agent_ms=1300 session_ms=1700 firstOutput_ms=2100 total_ms=\d+$/);
+	assert.match(
+		line,
+		/^\[wlp\] session\.start_times session=ses_1 turn=1 harness=claude place=machine new=true pulled=true waited_ms=4000 image_ms=900 sandbox_ms=2500 runnerCreate_ms=1200 setup_ms=3000 prepare_ms=400 relay_ms=250 agent_ms=1300 session_ms=1700 firstOutput_ms=2100 total_ms=\d+$/,
+	);
 	console.log("ok  a new sandbox's start has every part, once, and its log line names durations only");
 }
 
@@ -59,7 +103,8 @@ const clock = (turn: number, place: StartTimes["place"], waited: number | null, 
 	c.mark("output");
 	const [t] = done;
 	assert.equal(t.newSandbox, false);
-	for (const key of ["waited", "image", "pulled", "runnerCreate", "setup", "relay"] as const) assert.equal(t[key], undefined, key);
+	for (const key of ["waited", "image", "pulled", "runnerCreate", "setup", "relay"] as const)
+		assert.equal(t[key], undefined, key);
 	assert.equal(t.sandbox, 150);
 	assert.equal(t.firstOutput, 900);
 	console.log("ok  a connected sandbox's start leaves out what did not happen");
@@ -87,7 +132,11 @@ const clock = (turn: number, place: StartTimes["place"], waited: number | null, 
 // The session keeps the last few, oldest first.
 {
 	let kept: StartTimes[] | undefined;
-	for (let turn = 1; turn <= START_TIMES_KEPT + 2; turn++) kept = keepStartTimes(kept, { turn, at: turn, harness: "windlass", place: "hosted", newSandbox: turn === 1 });
-	assert.deepEqual(kept!.map((t) => t.turn), [3, 4, 5, 6, 7]);
+	for (let turn = 1; turn <= START_TIMES_KEPT + 2; turn++)
+		kept = keepStartTimes(kept, { turn, at: turn, harness: "windlass", place: "hosted", newSandbox: turn === 1 });
+	assert.deepEqual(
+		kept!.map(t => t.turn),
+		[3, 4, 5, 6, 7],
+	);
 	console.log("ok  the session keeps the last five starts");
 }

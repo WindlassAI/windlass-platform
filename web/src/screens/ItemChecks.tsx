@@ -20,7 +20,14 @@ import { InlineMarkdown } from "../components/Blocks";
 import { FOLD_WORDS, FoldToggle, LongText } from "../components/Fold";
 import { GithubFeedback, githubUrl, KIND_WORD, OPEN, STATE_WORD as BATCH_WORD } from "../components/GithubFeedback";
 import { CheckIcon, ChevronIcon, CrossIcon, ExternalIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
-import { blobLink, CHECK_TONE, CHECK_WORD, FAILING_CONCLUSIONS, locationText, ReviewText } from "../components/ReviewBlocks";
+import {
+	blobLink,
+	CHECK_TONE,
+	CHECK_WORD,
+	FAILING_CONCLUSIONS,
+	locationText,
+	ReviewText,
+} from "../components/ReviewBlocks";
 import type { ScreenshotLinks } from "../components/Screenshots";
 import { noneLine, RECOMMENDATION_WORD, SecondReview, shownReview } from "../components/SecondReview";
 import { plural } from "../lib/format";
@@ -42,8 +49,20 @@ export function ciState(conclusion: string): CiState {
 }
 
 const CI_ORDER: Record<CiState, number> = { failed: 0, running: 1, cancelled: 2, skipped: 3, passed: 4 };
-const CI_WORD: Record<CiState, string> = { failed: "failed", running: "running", cancelled: "cancelled", skipped: "skipped", passed: "passed" };
-const CI_TONE_OF: Record<CiState, string> = { failed: "tone-bad", running: "tone-dim", cancelled: "tone-warn", skipped: "tone-faint", passed: "tone-good" };
+const CI_WORD: Record<CiState, string> = {
+	failed: "failed",
+	running: "running",
+	cancelled: "cancelled",
+	skipped: "skipped",
+	passed: "passed",
+};
+const CI_TONE_OF: Record<CiState, string> = {
+	failed: "tone-bad",
+	running: "tone-dim",
+	cancelled: "tone-warn",
+	skipped: "tone-faint",
+	passed: "tone-good",
+};
 
 /** A check's word: GitHub's own where it says more than the state ("timed out", "did not start", "stale"). */
 function ciWord(run: VerdictRun): string {
@@ -57,15 +76,31 @@ function ciWord(run: VerdictRun): string {
 
 /** The checks, failed first, then running, cancelled, skipped, passed; each in GitHub's order within its state. */
 export function sortedRuns(runs: VerdictRun[]): VerdictRun[] {
-	return runs.map((run, index) => ({ run, index })).sort((a, b) => CI_ORDER[ciState(a.run.conclusion)] - CI_ORDER[ciState(b.run.conclusion)] || a.index - b.index).map(({ run }) => run);
+	return runs
+		.map((run, index) => ({ run, index }))
+		.sort((a, b) => CI_ORDER[ciState(a.run.conclusion)] - CI_ORDER[ciState(b.run.conclusion)] || a.index - b.index)
+		.map(({ run }) => run);
 }
 
-const blocking = (review: ItemReview | null) => (review?.state === "filed" ? review.blocks.filter((block): block is Extract<ReviewBlock, { kind: "finding" }> => block.kind === "finding" && block.severity === "blocking") : []);
-const questions = (review: ItemReview | null) => (review?.state === "filed" ? review.blocks.filter((block): block is Extract<ReviewBlock, { kind: "question" }> => block.kind === "question") : []);
+const blocking = (review: ItemReview | null) =>
+	review?.state === "filed"
+		? review.blocks.filter(
+				(block): block is Extract<ReviewBlock, { kind: "finding" }> =>
+					block.kind === "finding" && block.severity === "blocking",
+			)
+		: [];
+const questions = (review: ItemReview | null) =>
+	review?.state === "filed"
+		? review.blocks.filter((block): block is Extract<ReviewBlock, { kind: "question" }> => block.kind === "question")
+		: [];
 
 /** The feedback entries of batches still open (waiting, held, asking): what people on the pull request asked that is not taken yet. */
-export function openFeedback(view: Pick<ItemView, "feedback">): Array<{ entry: FeedbackEntry; state: keyof typeof BATCH_WORD; reason: string }> {
-	return (view.feedback?.batches ?? []).filter((batch) => OPEN.has(batch.state)).flatMap((batch) => batch.entries.map((entry) => ({ entry, state: batch.state, reason: batch.reason })));
+export function openFeedback(
+	view: Pick<ItemView, "feedback">,
+): Array<{ entry: FeedbackEntry; state: keyof typeof BATCH_WORD; reason: string }> {
+	return (view.feedback?.batches ?? [])
+		.filter(batch => OPEN.has(batch.state))
+		.flatMap(batch => batch.entries.map(entry => ({ entry, state: batch.state, reason: batch.reason })));
 }
 
 export interface ChecksSummary {
@@ -81,30 +116,52 @@ export interface ChecksSummary {
 export function checksSummary(view: ItemView): ChecksSummary {
 	const verdict = view.verdicts[view.verdicts.length - 1] ?? null;
 	const open: ChecksSummary["open"] = [];
-	const add = (count: number, one: string, many = `${one}s`) => count > 0 && open.push({ count, words: plural(count, one, many) });
+	const add = (count: number, one: string, many = `${one}s`) =>
+		count > 0 && open.push({ count, words: plural(count, one, many) });
 	// A part does not wait for CI and has no pull request: both are its feature's.
 	const part = !!view.parent;
 	if (verdict) {
-		const states = part ? [] : verdict.ci.runs.map((run) => ciState(run.conclusion));
-		const count = (state: CiState) => states.filter((one) => one === state).length;
+		const states = part ? [] : verdict.ci.runs.map(run => ciState(run.conclusion));
+		const count = (state: CiState) => states.filter(one => one === state).length;
 		add(count("failed"), "failed CI check");
 		add(count("running"), "CI check still running", "CI checks still running");
 		add(count("cancelled"), "cancelled CI check");
-		if (!part && verdict.ci.runs.length === 0 && (verdict.ci.state === "timed_out" || verdict.ci.state === "not_run" || verdict.ci.state === "failed")) open.push({ count: 1, words: verdict.ci.state === "not_run" ? "CI did not start" : verdict.ci.state === "failed" ? "CI failed" : "CI unfinished" });
-		if (!part && (verdict.ci.state === "unread" || verdict.ci.state === "not_permitted")) open.push({ count: 1, words: "CI not read" });
-		add(verdict.gate.required.filter((check) => check.status !== "passed").length, "check that did not pass", "checks that did not pass");
+		if (
+			!part &&
+			verdict.ci.runs.length === 0 &&
+			(verdict.ci.state === "timed_out" || verdict.ci.state === "not_run" || verdict.ci.state === "failed")
+		)
+			open.push({
+				count: 1,
+				words:
+					verdict.ci.state === "not_run"
+						? "CI did not start"
+						: verdict.ci.state === "failed"
+							? "CI failed"
+							: "CI unfinished",
+			});
+		if (!part && (verdict.ci.state === "unread" || verdict.ci.state === "not_permitted"))
+			open.push({ count: 1, words: "CI not read" });
+		add(
+			verdict.gate.required.filter(check => check.status !== "passed").length,
+			"check that did not pass",
+			"checks that did not pass",
+		);
 		add(verdict.flags.length, "thing to look at", "things to look at");
 		if (!part && verdict.mergeable === false) open.push({ count: 1, words: "a conflict with the base" });
 		if (verdict.moved) open.push({ count: 1, words: "a commit nothing verified" });
-		if (open.length === 0 && verdict.result === "incomplete") open.push({ count: 1, words: "the last turn did not finish" });
-		if (open.length === 0 && verdict.result === "unverified") open.push({ count: 1, words: "nothing verified this commit" });
+		if (open.length === 0 && verdict.result === "incomplete")
+			open.push({ count: 1, words: "the last turn did not finish" });
+		if (open.length === 0 && verdict.result === "unverified")
+			open.push({ count: 1, words: "nothing verified this commit" });
 	}
 	const reviewing = inSecondReview(view);
 	const { current } = shownReview(view);
 	if (reviewing) open.push({ count: 1, words: "the second review" });
 	const blockers = blocking(current).length;
 	add(blockers, "blocking finding");
-	if (!blockers && view.review?.recommendation === "changes_requested") open.push({ count: 1, words: "changes requested in code review" });
+	if (!blockers && view.review?.recommendation === "changes_requested")
+		open.push({ count: 1, words: "changes requested in code review" });
 	add(questions(current).length, "question from the reviewer", "questions from the reviewer");
 	add(openFeedback(view).length, "comment on GitHub", "comments on GitHub");
 	return { open, ready: open.length === 0 && view.state === "review" && verdict?.result === "pass", reviewing };
@@ -113,7 +170,7 @@ export function checksSummary(view: ItemView): ChecksSummary {
 /** "3 open: 1 failed CI check, 2 blocking findings". */
 export function openLine(open: ChecksSummary["open"]): string {
 	const total = open.reduce((sum, one) => sum + one.count, 0);
-	return `${total} open: ${open.map((one) => one.words).join(", ")}`;
+	return `${total} open: ${open.map(one => one.words).join(", ")}`;
 }
 
 // ---- its rows -----------------------------------------------------------------------------------
@@ -143,7 +200,9 @@ function CiRow({ run }: { run: VerdictRun }) {
 				<ExternalIcon size={10} />
 			</a>
 			<span className={CI_TONE_OF[state]}>{ciWord(run)}</span>
-			{run.app === "github-actions" ? null : <span className="tone-faint">{run.app === "status" ? "a commit status" : run.app}</span>}
+			{run.app === "github-actions" ? null : (
+				<span className="tone-faint">{run.app === "status" ? "a commit status" : run.app}</span>
+			)}
 		</li>
 	);
 }
@@ -153,11 +212,21 @@ function ciHead(runs: VerdictRun[]): string {
 	const counts = new Map<CiState, number>();
 	for (const run of runs) counts.set(ciState(run.conclusion), (counts.get(ciState(run.conclusion)) ?? 0) + 1);
 	if (counts.size === 1 && counts.has("passed")) return `${plural(runs.length, "check")} passed`;
-	return (Object.keys(CI_ORDER) as CiState[]).flatMap((state) => (counts.get(state) ? [`${counts.get(state)} ${CI_WORD[state]}`] : [])).join(", ");
+	return (Object.keys(CI_ORDER) as CiState[])
+		.flatMap(state => (counts.get(state) ? [`${counts.get(state)} ${CI_WORD[state]}`] : []))
+		.join(", ");
 }
 
 /** The server's sentence about CI is shown where its rows do not say it all: cancelled, not read, none, unfinished, moved. */
-const SAID_SHOWN: ReadonlySet<Verdict["ci"]["state"]> = new Set(["cancelled", "none", "skipped", "not_run", "timed_out", "not_permitted", "unread"]);
+const SAID_SHOWN: ReadonlySet<Verdict["ci"]["state"]> = new Set([
+	"cancelled",
+	"none",
+	"skipped",
+	"not_run",
+	"timed_out",
+	"not_permitted",
+	"unread",
+]);
 
 /** Passed checks fold under the others once there are more than this many of them. */
 const PASSED_SHOWN = 2;
@@ -167,8 +236,8 @@ function Ci({ verdict }: { verdict: Verdict }) {
 	const id = useId();
 	const { ci } = verdict;
 	const runs = sortedRuns(ci.runs);
-	const passed = runs.filter((run) => ciState(run.conclusion) === "passed");
-	const others = runs.filter((run) => ciState(run.conclusion) !== "passed");
+	const passed = runs.filter(run => ciState(run.conclusion) === "passed");
+	const others = runs.filter(run => ciState(run.conclusion) !== "passed");
 	const folds = passed.length > PASSED_SHOWN || (others.length === 0 && passed.length > 0);
 	const said = SAID_SHOWN.has(ci.state) || verdict.moved !== null;
 	const tone = ci.state === "failed" ? "tone-bad" : ci.state === "passed" ? undefined : "tone-warn";
@@ -180,21 +249,34 @@ function Ci({ verdict }: { verdict: Verdict }) {
 					<p className="checks-head">
 						{others.length === 0 ? <CheckIcon size={13} className="checks-glyph tone-good" /> : null}
 						<span className={others.length === 0 ? undefined : tone}>{ciHead(runs)}</span>
-						{folds ? <FoldToggle open={open} controls={id} label={others.length === 0 ? FOLD_WORDS.all : FOLD_WORDS.more(passed.length, "passed")} onToggle={() => setOpen((value) => !value)} /> : null}
+						{folds ? (
+							<FoldToggle
+								open={open}
+								controls={id}
+								label={others.length === 0 ? FOLD_WORDS.all : FOLD_WORDS.more(passed.length, "passed")}
+								onToggle={() => setOpen(value => !value)}
+							/>
+						) : null}
 					</p>
 				) : null}
 				{/* "not_permitted" quotes GitHub's own words: shown as text, never read as Markdown. */}
-				{said ? ci.state === "not_permitted" ? <p className={`checks-said ${tone ?? ""}`}>{verdict.said.ci}</p> : <InlineMarkdown className={`checks-said ${tone ?? ""}`} text={verdict.said.ci} /> : null}
+				{said ? (
+					ci.state === "not_permitted" ? (
+						<p className={`checks-said ${tone ?? ""}`}>{verdict.said.ci}</p>
+					) : (
+						<InlineMarkdown className={`checks-said ${tone ?? ""}`} text={verdict.said.ci} />
+					)
+				) : null}
 				{others.length > 0 ? (
 					<ul className="checks-rows">
-						{others.map((run) => (
+						{others.map(run => (
 							<CiRow key={`${run.app}/${run.name}`} run={run} />
 						))}
 					</ul>
 				) : null}
 				{passed.length > 0 ? (
 					<ul className="checks-rows" id={id} hidden={folds && !open}>
-						{passed.map((run) => (
+						{passed.map(run => (
 							<CiRow key={`${run.app}/${run.name}`} run={run} />
 						))}
 					</ul>
@@ -216,7 +298,9 @@ export function gateWords(gate: Verdict["gate"]): string {
 		case "unresolved":
 			return "None of yours ran; the repository's own checks did not pass.";
 		case "not_needed":
-			return gate.unneeded?.on === "run" ? "No check needed to run again: they had passed on this state of the work." : "No check verified this state of the work.";
+			return gate.unneeded?.on === "run"
+				? "No check needed to run again: they had passed on this state of the work."
+				: "No check verified this state of the work.";
 		case "none_set":
 			return "None saved for this repository. CI decides.";
 		case "off":
@@ -241,12 +325,20 @@ function Gate({ gate }: { gate: Verdict["gate"] }) {
 					<p className="checks-head tone-dim">{gateWords(gate)}</p>
 				) : (
 					<ul className="checks-rows">
-						{gate.required.map((check) => (
+						{gate.required.map(check => (
 							<li key={check.name} className="checks-row">
-								{check.status === "passed" ? <CheckIcon size={13} className="checks-glyph tone-good" /> : check.status === "failed" || check.status === "timed_out" ? <CrossIcon size={13} className="checks-glyph tone-bad" /> : <WarnIcon size={13} className="checks-glyph tone-warn" />}
+								{check.status === "passed" ? (
+									<CheckIcon size={13} className="checks-glyph tone-good" />
+								) : check.status === "failed" || check.status === "timed_out" ? (
+									<CrossIcon size={13} className="checks-glyph tone-bad" />
+								) : (
+									<WarnIcon size={13} className="checks-glyph tone-warn" />
+								)}
 								<span className="item-check-name">{check.name}</span>
 								<span className={`tone-${CHECK_TONE[check.status]}`}>{CHECK_WORD[check.status]}</span>
-								{check.sentBack > 0 ? <span className="tone-faint">after the agent was sent back {times(check.sentBack)}</span> : null}
+								{check.sentBack > 0 ? (
+									<span className="tone-faint">after the agent was sent back {times(check.sentBack)}</span>
+								) : null}
 							</li>
 						))}
 					</ul>
@@ -257,13 +349,27 @@ function Gate({ gate }: { gate: Verdict["gate"] }) {
 }
 
 /** One open finding: its title in a row, its text and places when unfolded. */
-function Finding({ view, review, finding }: { view: ItemView; review: ItemReview; finding: Extract<ReviewBlock, { kind: "finding" }> }) {
+function Finding({
+	view,
+	review,
+	finding,
+}: {
+	view: ItemView;
+	review: ItemReview;
+	finding: Extract<ReviewBlock, { kind: "finding" }>;
+}) {
 	const [open, setOpen] = useState(false);
 	const id = useId();
 	const first = finding.at[0];
 	return (
 		<li className="checks-row checks-finding">
-			<button type="button" className="link machine-toggle checks-finding-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
+			<button
+				type="button"
+				className="link machine-toggle checks-finding-toggle"
+				aria-expanded={open}
+				aria-controls={id}
+				onClick={() => setOpen(value => !value)}
+			>
 				<ChevronIcon size={11} className="machine-chevron" />
 				<span className="checks-finding-title">{finding.title}</span>
 			</button>
@@ -297,9 +403,17 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 	if (state === null && view.reviews.length === 0) return null;
 	const findings = blocking(current);
 	const asks = questions(current);
-	const rest = current?.state === "filed" ? current.blocks.filter((block) => block.kind === "finding" && block.severity !== "blocking").length : 0;
+	const rest =
+		current?.state === "filed"
+			? current.blocks.filter(block => block.kind === "finding" && block.severity !== "blocking").length
+			: 0;
 	const session = view.reviewerSessionId;
-	const word = current?.state === "filed" ? (current.recommendation ? RECOMMENDATION_WORD[current.recommendation] : "no recommendation") : null;
+	const word =
+		current?.state === "filed"
+			? current.recommendation
+				? RECOMMENDATION_WORD[current.recommendation]
+				: "no recommendation"
+			: null;
 	const requested = view.reviews.filter(review => review.requestedPull).length;
 	const shown = current?.state === "filed" || before.length > 0 || requested > 0;
 	return (
@@ -309,7 +423,13 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 				<p className="checks-head">
 					{word ? (
 						<>
-							{current?.recommendation === "approve" ? <CheckIcon size={13} className="checks-glyph tone-good" /> : current?.recommendation === "changes_requested" ? <CrossIcon size={13} className="checks-glyph tone-bad" /> : <WarnIcon size={13} className="checks-glyph tone-warn" />}
+							{current?.recommendation === "approve" ? (
+								<CheckIcon size={13} className="checks-glyph tone-good" />
+							) : current?.recommendation === "changes_requested" ? (
+								<CrossIcon size={13} className="checks-glyph tone-bad" />
+							) : (
+								<WarnIcon size={13} className="checks-glyph tone-warn" />
+							)}
 							<span>
 								The second reviewer <span className="review-word">{word}</span>
 								{findings.length > 0 ? <span className="tone-bad">, {findings.length} blocking</span> : null}
@@ -331,7 +451,7 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 				</p>
 				{findings.length > 0 || asks.length > 0 ? (
 					<ul className="checks-rows">
-						{findings.map((finding) => (
+						{findings.map(finding => (
 							<Finding key={finding.id} view={view} review={current!} finding={finding} />
 						))}
 						{asks.map((ask, index) => (
@@ -347,7 +467,20 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 				{shown ? (
 					<>
 						<p className="checks-more">
-							<FoldToggle open={open} controls={id} label={requested ? `Show reviews (${plural(requested, "requested PR review")})` : current?.state === "filed" ? (rest > 0 ? `Show the full review (${plural(rest, "more finding")})` : "Show the full review") : FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")} onToggle={() => setOpen((value) => !value)} />
+							<FoldToggle
+								open={open}
+								controls={id}
+								label={
+									requested
+										? `Show reviews (${plural(requested, "requested PR review")})`
+										: current?.state === "filed"
+											? rest > 0
+												? `Show the full review (${plural(rest, "more finding")})`
+												: "Show the full review"
+											: FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")
+								}
+								onToggle={() => setOpen(value => !value)}
+							/>
 						</p>
 						<div id={id} hidden={!open} className="checks-fold">
 							{open ? <SecondReview view={view} links={links} when={when} bare /> : null}
@@ -363,11 +496,11 @@ function Feedback({ view, when }: { view: ItemView; when(at: number): ReactNode 
 	const [open, setOpen] = useState(false);
 	const id = useId();
 	const feedback = view.feedback;
-	const batches = (feedback?.batches ?? []).filter((batch) => batch.entries.length > 0);
+	const batches = (feedback?.batches ?? []).filter(batch => batch.entries.length > 0);
 	if (!feedback || (batches.length === 0 && !feedback.notTaken)) return null;
 	const entries = openFeedback(view);
-	const states = [...new Set(entries.map((one) => one.state))];
-	const settled = batches.filter((batch) => !OPEN.has(batch.state)).length;
+	const states = [...new Set(entries.map(one => one.state))];
+	const settled = batches.filter(batch => !OPEN.has(batch.state)).length;
 	return (
 		<div>
 			<dt>GitHub</dt>
@@ -376,10 +509,13 @@ function Feedback({ view, when }: { view: ItemView; when(at: number): ReactNode 
 					{entries.length > 0 ? (
 						<>
 							<span>{plural(entries.length, "open comment")}</span>
-							<span className="tone-dim">{states.map((state) => BATCH_WORD[state].toLowerCase()).join(", ")}</span>
+							<span className="tone-dim">{states.map(state => BATCH_WORD[state].toLowerCase()).join(", ")}</span>
 						</>
 					) : (
-						<span className="tone-dim">Nothing open{settled > 0 ? `: ${plural(settled, "batch", "batches")} settled` : ""}{feedback.notTaken > 0 ? `; ${feedback.notTaken} from people without write access, counted only` : ""}</span>
+						<span className="tone-dim">
+							Nothing open{settled > 0 ? `: ${plural(settled, "batch", "batches")} settled` : ""}
+							{feedback.notTaken > 0 ? `; ${feedback.notTaken} from people without write access, counted only` : ""}
+						</span>
 					)}
 				</p>
 				{entries.length > 0 ? (
@@ -390,9 +526,20 @@ function Feedback({ view, when }: { view: ItemView; when(at: number): ReactNode 
 								<li key={entry.id} className="checks-row checks-comment">
 									<span className="gh-who">@{entry.author}</span>
 									<span className="tone-dim">{KIND_WORD[entry.kind]}</span>
-									{entry.path ? <code className="checks-where">{entry.path}{entry.line ? `:${entry.line}` : ""}</code> : null}
+									{entry.path ? (
+										<code className="checks-where">
+											{entry.path}
+											{entry.line ? `:${entry.line}` : ""}
+										</code>
+									) : null}
 									{url ? (
-										<a className="item-link checks-open" href={url} target="_blank" rel="noreferrer noopener" aria-label={`Open @${entry.author}'s ${KIND_WORD[entry.kind].toLowerCase()} on GitHub`}>
+										<a
+											className="item-link checks-open"
+											href={url}
+											target="_blank"
+											rel="noreferrer noopener"
+											aria-label={`Open @${entry.author}'s ${KIND_WORD[entry.kind].toLowerCase()} on GitHub`}
+										>
 											On GitHub
 											<ExternalIcon size={10} />
 										</a>
@@ -406,7 +553,12 @@ function Feedback({ view, when }: { view: ItemView; when(at: number): ReactNode 
 					</ul>
 				) : null}
 				<p className="checks-more">
-					<FoldToggle open={open} controls={id} label={batches.length === 1 ? "Show the batch" : `Show all ${batches.length} batches`} onToggle={() => setOpen((value) => !value)} />
+					<FoldToggle
+						open={open}
+						controls={id}
+						label={batches.length === 1 ? "Show the batch" : `Show all ${batches.length} batches`}
+						onToggle={() => setOpen(value => !value)}
+					/>
 				</p>
 				<div id={id} hidden={!open} className="checks-fold">
 					{open ? <GithubFeedback view={view} when={when} /> : null}
@@ -463,10 +615,24 @@ function EarlierVerdict({ verdict, when }: { verdict: Verdict; when(at: number):
 
 /** Whether the item has anything for the panel: a verdict, a second review, or feedback. */
 export function hasChecks(view: ItemView): boolean {
-	return view.verdicts.length > 0 || view.review !== null || view.reviews.length > 0 || (view.feedback?.batches.length ?? 0) > 0 || (view.feedback?.notTaken ?? 0) > 0;
+	return (
+		view.verdicts.length > 0 ||
+		view.review !== null ||
+		view.reviews.length > 0 ||
+		(view.feedback?.batches.length ?? 0) > 0 ||
+		(view.feedback?.notTaken ?? 0) > 0
+	);
 }
 
-export function ItemChecks({ view, links, when }: { view: ItemView; links: ScreenshotLinks; when(at: number): ReactNode }) {
+export function ItemChecks({
+	view,
+	links,
+	when,
+}: {
+	view: ItemView;
+	links: ScreenshotLinks;
+	when(at: number): ReactNode;
+}) {
 	const [earlierOpen, setEarlierOpen] = useState(false);
 	const earlier = useId();
 	if (!hasChecks(view)) return null;
@@ -474,7 +640,11 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 	const before = view.verdicts.slice(0, -1).reverse();
 	const summary = checksSummary(view);
 	const check = view.verifiedCheck;
-	const checkLabel = check?.conclusion ? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[check.conclusion] : "In progress";
+	const checkLabel = check?.conclusion
+		? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[
+				check.conclusion
+			]
+		: "In progress";
 	return (
 		<section className="usage-section checks-panel" aria-labelledby="item-checks">
 			<h2 className="usage-title" id="item-checks">
@@ -488,10 +658,31 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 			</h2>
 			<p className={`checks-summary${summary.ready ? " checks-ready" : ""}`}>
 				<span className="checks-summary-main">
-					{summary.ready ? <CheckIcon size={15} className="checks-summary-mark tone-good" /> : summary.open.length > 0 ? <span className={`checks-summary-mark checks-dot${verdict?.result === "fail" || summary.open.some((one) => one.words.endsWith("blocking finding") || one.words.endsWith("blocking findings")) ? " checks-dot-bad" : ""}`} aria-hidden="true" /> : null}
-					<span>{summary.ready ? "Ready to merge" : summary.open.length > 0 ? openLine(summary.open) : verdict ? "Nothing open" : view.parent ? "Checked when it joins the feature. CI and the review run on the whole feature." : "No verdict yet: one is made when the work is handed over."}</span>
+					{summary.ready ? (
+						<CheckIcon size={15} className="checks-summary-mark tone-good" />
+					) : summary.open.length > 0 ? (
+						<span
+							className={`checks-summary-mark checks-dot${verdict?.result === "fail" || summary.open.some(one => one.words.endsWith("blocking finding") || one.words.endsWith("blocking findings")) ? " checks-dot-bad" : ""}`}
+							aria-hidden="true"
+						/>
+					) : null}
+					<span>
+						{summary.ready
+							? "Ready to merge"
+							: summary.open.length > 0
+								? openLine(summary.open)
+								: verdict
+									? "Nothing open"
+									: view.parent
+										? "Checked when it joins the feature. CI and the review run on the whole feature."
+										: "No verdict yet: one is made when the work is handed over."}
+					</span>
 				</span>
-				{summary.ready || view.parent ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict && view.review?.recommendation !== "changes_requested" ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}
+				{summary.ready || view.parent ? null : summary.reviewing ? (
+					<ReviewWord item={view} />
+				) : verdict && view.review?.recommendation !== "changes_requested" ? (
+					<VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />
+				) : null}
 			</p>
 			<dl className="usage-facts item-facts checks-groups">
 				{verdict && view.parent ? (
@@ -499,11 +690,16 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 						<dt>CI</dt>
 						<dd>
 							<p className="checks-head tone-dim">
-								Runs on the whole feature, once its parts are in: <a className="link" {...linkProps({ name: "item", id: view.parent.itemId })}>{view.parent.title}</a>
+								Runs on the whole feature, once its parts are in:{" "}
+								<a className="link" {...linkProps({ name: "item", id: view.parent.itemId })}>
+									{view.parent.title}
+								</a>
 							</p>
 						</dd>
 					</div>
-				) : verdict ? <Ci verdict={verdict} /> : null}
+				) : verdict ? (
+					<Ci verdict={verdict} />
+				) : null}
 				{verdict ? <Gate gate={verdict.gate} /> : null}
 				<Review view={view} links={links} when={when} />
 				<Feedback view={view} when={when} />
@@ -512,22 +708,38 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 					<div>
 						<dt>Merging</dt>
 						<dd>
-							<p className={`checks-head ${verdict.mergeable === false ? "tone-warn" : "tone-dim"}`}>{verdict.mergeable === false ? "GitHub says the pull request conflicts with its base." : "GitHub had not said whether it can be merged."}</p>
+							<p className={`checks-head ${verdict.mergeable === false ? "tone-warn" : "tone-dim"}`}>
+								{verdict.mergeable === false
+									? "GitHub says the pull request conflicts with its base."
+									: "GitHub had not said whether it can be merged."}
+							</p>
 						</dd>
 					</div>
 				) : null}
 			</dl>
 			<p className="usage-note">
 				{view.report === null && view.state === "review" ? " The agent that made the change filed no report." : null}
-				{check ? <> {check.state === "not_posted" ? check.said : `On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</> : null}
+				{check ? (
+					<>
+						{" "}
+						{check.state === "not_posted"
+							? check.said
+							: `On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}
+					</>
+				) : null}
 			</p>
 			{before.length > 0 ? (
 				<>
 					<p className="agents-fold items-fold">
-						<FoldToggle open={earlierOpen} controls={earlier} label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier verdict" : "earlier verdicts")} onToggle={() => setEarlierOpen((value) => !value)} />
+						<FoldToggle
+							open={earlierOpen}
+							controls={earlier}
+							label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier verdict" : "earlier verdicts")}
+							onToggle={() => setEarlierOpen(value => !value)}
+						/>
 					</p>
 					<div id={earlier} hidden={!earlierOpen}>
-						{before.map((one) => (
+						{before.map(one => (
 							<EarlierVerdict key={one.id} verdict={one} when={when} />
 						))}
 					</div>

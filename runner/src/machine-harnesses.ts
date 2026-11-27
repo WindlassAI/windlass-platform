@@ -43,36 +43,57 @@ export interface MachineHarnessRecord {
 	signedOut: string;
 }
 
-const relayCredentials = (m: MachineDocker, nonce: string, login: ProviderLogin | undefined) => prepareRelay(m, login, nonce);
+const relayCredentials = (m: MachineDocker, nonce: string, login: ProviderLogin | undefined) =>
+	prepareRelay(m, login, nonce);
 
 export const MACHINE_HARNESSES: Record<MachineHarness, MachineHarnessRecord> = {
 	claude: {
 		notEnabled: "Claude Code is not turned on on this machine: start the runner with --harness claude.",
-		innerProfile: false, profileRefusal: "Claude Code requires the docker-hardened profile.",
-		missingImage: "The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude.",
-		unprefixedNames: true, deniedHosts: () => [], keysOnRelayPort: false,
-		machineLogin: () => undefined, needsLogin: false,
-		keyEnv: keys => keys.anthropic ? { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } : undefined,
+		innerProfile: false,
+		profileRefusal: "Claude Code requires the docker-hardened profile.",
+		missingImage:
+			"The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude.",
+		unprefixedNames: true,
+		deniedHosts: () => [],
+		keysOnRelayPort: false,
+		machineLogin: () => undefined,
+		needsLogin: false,
+		keyEnv: keys =>
+			keys.anthropic ? { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } : undefined,
 		credentials: relayCredentials,
-		changeLogin: changeClaudeLogin, takesProvider: false, signedOut: "signed out.",
+		changeLogin: changeClaudeLogin,
+		takesProvider: false,
+		signedOut: "signed out.",
 	},
 	codex: {
 		notEnabled: "Start the runner with --harness codex.",
-		innerProfile: true, profileRefusal: innerModesReason,
-		unprefixedNames: false, deniedHosts: () => ["api.openai.com", "auth.openai.com", "chatgpt.com"], keysOnRelayPort: true,
-		machineLogin: codexLogin, needsLogin: true,
-		keyEnv: keys => keys.openai ? { WLP_SESSION_BEARER: keys.openai } : undefined,
+		innerProfile: true,
+		profileRefusal: innerModesReason,
+		unprefixedNames: false,
+		deniedHosts: () => ["api.openai.com", "auth.openai.com", "chatgpt.com"],
+		keysOnRelayPort: true,
+		machineLogin: codexLogin,
+		needsLogin: true,
+		keyEnv: keys => (keys.openai ? { WLP_SESSION_BEARER: keys.openai } : undefined),
 		credentials: relayCredentials,
-		changeLogin: changeCodexLogin, takesProvider: false, signedOut: "signed out on this machine; OpenAI-side revocation not available.",
+		changeLogin: changeCodexLogin,
+		takesProvider: false,
+		signedOut: "signed out on this machine; OpenAI-side revocation not available.",
 	},
 	opencode: {
 		notEnabled: "Start the runner with --harness opencode.",
-		innerProfile: false, profileRefusal: "OpenCode requires the docker-hardened profile.",
-		unprefixedNames: false, deniedHosts: () => providerHosts, keysOnRelayPort: false,
-		machineLogin: currentProvider, needsLogin: true,
+		innerProfile: false,
+		profileRefusal: "OpenCode requires the docker-hardened profile.",
+		unprefixedNames: false,
+		deniedHosts: () => providerHosts,
+		keysOnRelayPort: false,
+		machineLogin: currentProvider,
+		needsLogin: true,
 		keyEnv: () => undefined,
 		credentials: openCodeCredentials,
-		changeLogin: changeProviderLogin, takesProvider: true, signedOut: "signed out.",
+		changeLogin: changeProviderLogin,
+		takesProvider: true,
+		signedOut: "signed out.",
 	},
 };
 

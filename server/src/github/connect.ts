@@ -96,7 +96,10 @@ export const actorConnectStore: ConnectStore = {
 };
 
 function redirect(location: string): Response {
-	return new Response(null, { status: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+	return new Response(null, {
+		status: 302,
+		headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" },
+	});
 }
 
 /** Back to the web app, with what happened in the fragment: it is not sent to any server, and not kept in a log. */
@@ -117,11 +120,19 @@ export interface ConnectDeps {
  * `GET /github/callback`. Always answers with a redirect: to the web app, or to GitHub's installation
  * page. Without a GitHub App the route does not exist.
  */
-export async function githubCallbackResponse(request: Request, deps: ConnectDeps = { app: githubApp(), store: actorConnectStore, origins: config.origins }): Promise<Response> {
+export async function githubCallbackResponse(
+	request: Request,
+	deps: ConnectDeps = { app: githubApp(), store: actorConnectStore, origins: config.origins },
+): Promise<Response> {
 	const { app, store, origins } = deps;
 	const log = deps.log ?? ((line: string) => console.log(line));
-	if (!app) return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
-	if (request.method !== "GET" && request.method !== "HEAD") return new Response("Use GET.\n", { status: 405, headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" } });
+	if (!app)
+		return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+	if (request.method !== "GET" && request.method !== "HEAD")
+		return new Response("Use GET.\n", {
+			status: 405,
+			headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
+		});
 
 	const params = new URL(request.url).searchParams;
 	// A state that cannot be read names no address to go back to: the web app's own is the one there is.
@@ -129,10 +140,21 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 	const state = verifyState(params.get("state"));
 	if (!state && params.get("error") === "redirect_uri_mismatch") {
 		const messages = origins.map(origin => "Add " + origin + "/signin to the GitHub App's callback URLs");
-		return new Response(messages.join("\n"), { status: 400, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+		return new Response(messages.join("\n"), {
+			status: 400,
+			headers: {
+				"content-type": "text/plain; charset=utf-8",
+				"cache-control": "no-store",
+				"referrer-policy": "no-referrer",
+			},
+		});
 	}
 	if (!state || !origins.includes(state.origin)) {
-		if (home === "") return new Response("This link to connect GitHub is not valid any more. Go back to Windlass and connect again.\n", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
+		if (home === "")
+			return new Response(
+				"This link to connect GitHub is not valid any more. Go back to Windlass and connect again.\n",
+				{ status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+			);
 		return failed(home, "state");
 	}
 	const { uid, origin } = state;
@@ -141,10 +163,12 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		const claimed = await store.claim(uid, state.nonce);
 		if (!claimed.ok) return failed(origin, "used");
 
-		if (params.get("error") !== null) return failed(origin, params.get("error") === "access_denied" ? "denied" : "failed");
+		if (params.get("error") !== null)
+			return failed(origin, params.get("error") === "access_denied" ? "denied" : "failed");
 		const code = params.get("code");
 		// A request to install that an organization's owner has yet to approve comes back without a code.
-		if (code === null || code === "") return failed(origin, params.get("setup_action") === "request" ? "pending" : "code");
+		if (code === null || code === "")
+			return failed(origin, params.get("setup_action") === "request" ? "pending" : "code");
 
 		let userToken: string;
 		try {
@@ -162,15 +186,23 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		const readAt = Date.now();
 		try {
 			const [user, installations] = await Promise.all([app.viewer(userToken), app.userInstallations(userToken)]);
-			confirmed = { user, installations: installations.filter((installation) => !installation.suspended).slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })) };
+			confirmed = {
+				user,
+				installations: installations
+					.filter(installation => !installation.suspended)
+					.slice(0, MAX_GITHUB_ACCOUNTS)
+					.map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })),
+			};
 		} finally {
 			// Asked and answered: the platform acts as the installation from here on, never as the user.
 			await app.forgetUserToken(userToken);
 		}
 
 		const named = params.get("installation_id");
-		if (named !== null && !confirmed.installations.some((installation) => String(installation.id) === named)) {
-			log(`[wlp] github.connect.not_theirs uid=${uid} github=${confirmed.user.login} installation=${named.slice(0, 20).replace(/[^0-9]/g, "?")}`);
+		if (named !== null && !confirmed.installations.some(installation => String(installation.id) === named)) {
+			log(
+				`[wlp] github.connect.not_theirs uid=${uid} github=${confirmed.user.login} installation=${named.slice(0, 20).replace(/[^0-9]/g, "?")}`,
+			);
 			return failed(origin, "not_yours");
 		}
 		if (confirmed.installations.length === 0) {
@@ -178,7 +210,9 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 			if (params.get("setup_action") !== null || named !== null) return failed(origin, "pending");
 			return redirect(app.installUrl(await store.next(uid, origin)));
 		}
-		log(`[wlp] github.connect.confirmed uid=${uid} github=${confirmed.user.login} installations=${confirmed.installations.map((installation) => installation.id).join(",")}`);
+		log(
+			`[wlp] github.connect.confirmed uid=${uid} github=${confirmed.user.login} installations=${confirmed.installations.map(installation => installation.id).join(",")}`,
+		);
 		return back(origin, `github=${issueTicket(uid, confirmed, Date.now(), readAt)}`);
 	} catch (error) {
 		const unreachable = error instanceof GithubError && error.unreachable;

@@ -25,7 +25,19 @@ function Glyph({ tone, failed }: { tone: Tone; failed: boolean }) {
 	if (tone === "working") return <Mark size={16} turning className="status-glyph status-running" />;
 	if (failed) return <CrossIcon size={14} className="tone-bad" />;
 	return (
-		<svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" className="feed-done">
+		<svg
+			width={15}
+			height={15}
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={1.5}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+			focusable="false"
+			className="feed-done"
+		>
 			<circle cx="8" cy="8" r="6.2" />
 			<path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
 		</svg>
@@ -58,7 +70,9 @@ function agentRow(session: SessionSummary, tone: Tone): Row {
 			? "Asks before it goes on"
 			: tone === "working"
 				? `${session.status === "starting" ? "Starting" : "Working"} · turn ${Math.max(1, session.turns)}`
-				: [place, session.repository?.branch ?? null, session.turns === 0 ? "no turns" : plural(session.turns, "turn")].filter((part) => part !== null).join(" · ");
+				: [place, session.repository?.branch ?? null, session.turns === 0 ? "no turns" : plural(session.turns, "turn")]
+						.filter(part => part !== null)
+						.join(" · ");
 	const pull = session.pullRequest ?? null;
 	return {
 		key: `a:${session.id}`,
@@ -69,7 +83,9 @@ function agentRow(session: SessionSummary, tone: Tone): Row {
 		agentWords: `${acpHarnessName(session) ?? "Windlass"} · ${sessionModelWords(session)}`,
 		line,
 		long: null,
-		repository: session.repository ? { owner: session.repository.owner, name: session.repository.name, id: session.repository.id } : null,
+		repository: session.repository
+			? { owner: session.repository.owner, name: session.repository.name, id: session.repository.id }
+			: null,
 		at: session.updatedAt,
 		failed: session.lastOutcome === "failed" || session.lastOutcome === "error",
 		action: tone === "needs" ? { words: "Answer", route: { name: "session", id: session.id }, needs: true } : null,
@@ -143,12 +159,19 @@ function FeedRow({ row, tone, now }: { row: Row; tone: Tone; now: number }) {
 			</time>
 			<span className="feed-act">
 				{row.action ? (
-					<a className={`feed-button${row.action.needs && row.action.words === "Answer" ? " feed-button-needs" : ""}`} {...linkProps(row.action.route)} aria-label={`${row.action.words}: ${row.title}`}>
+					<a
+						className={`feed-button${row.action.needs && row.action.words === "Answer" ? " feed-button-needs" : ""}`}
+						{...linkProps(row.action.route)}
+						aria-label={`${row.action.words}: ${row.title}`}
+					>
 						{row.action.words}
 						<ChevronRightIcon size={12} />
 					</a>
 				) : row.pull ? (
-					<span className={`feed-pull${row.pull.state === "merged" ? " feed-pull-merged" : row.pull.state === "open" || row.pull.state === "draft" ? " feed-pull-open" : ""}`} title={row.pull.title ?? `Pull request #${row.pull.number}${row.pull.state ? `, ${row.pull.state}` : ""}`}>
+					<span
+						className={`feed-pull${row.pull.state === "merged" ? " feed-pull-merged" : row.pull.state === "open" || row.pull.state === "draft" ? " feed-pull-open" : ""}`}
+						title={row.pull.title ?? `Pull request #${row.pull.number}${row.pull.state ? `, ${row.pull.state}` : ""}`}
+					>
 						{row.pull.state === "merged" ? <MergedIcon size={11} /> : <PullRequestIcon size={11} />}#{row.pull.number}
 					</span>
 				) : null}
@@ -158,7 +181,23 @@ function FeedRow({ row, tone, now }: { row: Row; tone: Tone; now: number }) {
 }
 
 /** One section of the feed, with its heading: nothing when it is empty, unless `always`. */
-export function FeedSection({ title, tone, entries, now, limit, tools, empty }: { title: string; tone: Tone; entries: readonly FeedEntry[]; now: number; /** How many show before "Show more". */ limit?: number; /** At the heading's end: the filter. */ tools?: ReactNode; /** Said when there is nothing; without it an empty section is left out. */ empty?: ReactNode }) {
+export function FeedSection({
+	title,
+	tone,
+	entries,
+	now,
+	limit,
+	tools,
+	empty,
+}: {
+	title: string;
+	tone: Tone;
+	entries: readonly FeedEntry[];
+	now: number /** How many show before "Show more". */;
+	limit?: number /** At the heading's end: the filter. */;
+	tools?: ReactNode /** Said when there is nothing; without it an empty section is left out. */;
+	empty?: ReactNode;
+}) {
 	const heading = useId();
 	const [all, setAll] = useState(false);
 	if (entries.length === 0 && empty === undefined) return null;
@@ -177,14 +216,19 @@ export function FeedSection({ title, tone, entries, now, limit, tools, empty }: 
 				<p className="feed-empty">{empty}</p>
 			) : (
 				<ul className="feed-rows" aria-label={title}>
-					{shown.map((entry) => (
+					{shown.map(entry => (
 						<FeedRow key={feedKey(entry)} row={rowOf(entry, tone)} tone={tone} now={now} />
 					))}
 				</ul>
 			)}
 			{hidden > 0 || (all && limit !== undefined && entries.length > limit) ? (
 				<p className="feed-more">
-					<button type="button" className="button button-quiet button-small" onClick={() => setAll(!all)} aria-expanded={all}>
+					<button
+						type="button"
+						className="button button-quiet button-small"
+						onClick={() => setAll(!all)}
+						aria-expanded={all}
+					>
 						{all ? "Show fewer" : `Show ${count(hidden)} more`}
 					</button>
 				</p>
@@ -192,4 +236,3 @@ export function FeedSection({ title, tone, entries, now, limit, tools, empty }: 
 		</section>
 	);
 }
-

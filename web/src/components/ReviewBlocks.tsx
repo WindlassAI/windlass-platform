@@ -9,7 +9,16 @@
  * claim, and says plainly when they disagree. Its `screenshot` blocks are gathered under the blocks as
  * one group (Screenshots.tsx), in the order filed.
  */
-import { REVIEW_LIMITS, type CheckStatus, type ItemAttachment, type ReviewBlock, type ReviewLocation, type ReviewRecord, type ReviewRef, type Verdict } from "@contract";
+import {
+	REVIEW_LIMITS,
+	type CheckStatus,
+	type ItemAttachment,
+	type ReviewBlock,
+	type ReviewLocation,
+	type ReviewRecord,
+	type ReviewRef,
+	type Verdict,
+} from "@contract";
 import { Fragment, useId, useState, type ReactNode } from "react";
 import { Output } from "./Blocks";
 import { FOLD_SHOWN, FOLD_WORDS, FoldList, FoldToggle, LongText, listFolds } from "./Fold";
@@ -20,15 +29,38 @@ export const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "
 /** CI's conclusions that mean the check did not run to a result. */
 const NOT_RUN_CONCLUSIONS = ["not_run", "skipped", "cancelled", "neutral", "stale"];
 
-export const CHECK_WORD: Record<CheckStatus, string> = { passed: "passed", failed: "failed", timed_out: "timed out", could_not_start: "could not start", interrupted: "was interrupted" };
-export const CHECK_TONE: Record<CheckStatus, string> = { passed: "good", failed: "bad", timed_out: "bad", could_not_start: "warn", interrupted: "warn" };
+export const CHECK_WORD: Record<CheckStatus, string> = {
+	passed: "passed",
+	failed: "failed",
+	timed_out: "timed out",
+	could_not_start: "could not start",
+	interrupted: "was interrupted",
+};
+export const CHECK_TONE: Record<CheckStatus, string> = {
+	passed: "good",
+	failed: "bad",
+	timed_out: "bad",
+	could_not_start: "warn",
+	interrupted: "warn",
+};
 
-export const conclusionTone = (conclusion: string) => (conclusion === "success" ? "tone-good" : conclusion === "not_run" ? "tone-warn" : FAILING_CONCLUSIONS.includes(conclusion) ? "tone-bad" : "tone-dim");
-export const conclusionWord = (conclusion: string) => (conclusion === "" ? "still running" : conclusion.replace(/_/g, " "));
+export const conclusionTone = (conclusion: string) =>
+	conclusion === "success"
+		? "tone-good"
+		: conclusion === "not_run"
+			? "tone-warn"
+			: FAILING_CONCLUSIONS.includes(conclusion)
+				? "tone-bad"
+				: "tone-dim";
+export const conclusionWord = (conclusion: string) =>
+	conclusion === "" ? "still running" : conclusion.replace(/_/g, " ");
 
 // ---- the text -----------------------------------------------------------------------------------
 
-type Part = { kind: "p"; text: string } | { kind: "ul"; items: string[] } | { kind: "pre"; lines: string[]; cut: number };
+type Part =
+	| { kind: "p"; text: string }
+	| { kind: "ul"; items: string[] }
+	| { kind: "pre"; lines: string[]; cut: number };
 
 /** The agent's text in parts: fences first (a fence runs to its closing ``` or to the end), then lists and paragraphs on blank lines. */
 export function partsOf(text: string): Part[] {
@@ -47,7 +79,8 @@ export function partsOf(text: string): Part[] {
 		if (/^\s*```/.test(line)) {
 			close();
 			const code: string[] = [];
-			for (index += 1; index < lines.length && !/^\s*```\s*$/.test(lines[index] ?? ""); index++) code.push(lines[index] ?? "");
+			for (index += 1; index < lines.length && !/^\s*```\s*$/.test(lines[index] ?? ""); index++)
+				code.push(lines[index] ?? "");
 			const shown = code.slice(0, REVIEW_LIMITS.fenceLines);
 			parts.push({ kind: "pre", lines: shown, cut: code.length - shown.length });
 			continue;
@@ -116,7 +149,7 @@ export function ReviewText({ text, plain = false }: { text: string; plain?: bool
 							))}
 						</ul>
 					) : (
-						<FoldList key={index} items={part.items} render={(item) => <Inline text={item} />} />
+						<FoldList key={index} items={part.items} render={item => <Inline text={item} />} />
 					);
 				}
 				return plain ? (
@@ -137,7 +170,11 @@ export function ReviewText({ text, plain = false }: { text: string; plain?: bool
 
 /** `path:line`, `path:start–end`, or the path alone; "(base)" for a place before the change. */
 export function locationText(at: ReviewLocation): string {
-	const lines = at.lines ? (at.lines.end > at.lines.start ? `:${at.lines.start}–${at.lines.end}` : `:${at.lines.start}`) : "";
+	const lines = at.lines
+		? at.lines.end > at.lines.start
+			? `:${at.lines.start}–${at.lines.end}`
+			: `:${at.lines.start}`
+		: "";
 	return `${at.path}${lines}${at.side === "base" ? " (base)" : ""}`;
 }
 
@@ -153,10 +190,21 @@ const SHA = /^[0-9a-f]{40}$/;
  */
 export function blobLink(repository: { owner: string; name: string }, sha: string, at: ReviewLocation): string | null {
 	const { path } = at;
-	if (!SHA.test(sha) || path === "" || path.length > REVIEW_LIMITS.pathChars || path.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(path)) return null;
+	if (
+		!SHA.test(sha) ||
+		path === "" ||
+		path.length > REVIEW_LIMITS.pathChars ||
+		path.startsWith("/") ||
+		/[\u0000-\u001f\u007f\\]/.test(path)
+	)
+		return null;
 	const segments = path.split("/");
-	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return null;
-	const lines = at.lines ? (at.lines.end > at.lines.start ? `#L${at.lines.start}-L${at.lines.end}` : `#L${at.lines.start}`) : "";
+	if (segments.some(segment => segment === "" || segment === "." || segment === "..")) return null;
+	const lines = at.lines
+		? at.lines.end > at.lines.start
+			? `#L${at.lines.start}-L${at.lines.end}`
+			: `#L${at.lines.start}`
+		: "";
 	return `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/blob/${sha}/${segments.map(encodeURIComponent).join("/")}${lines}`;
 }
 
@@ -188,7 +236,7 @@ type Outcome = "passed" | "failed" | "not_run" | "other";
  * that name.
  */
 export function recordOf(ref: string, records: ReviewRecord[], verdict: Verdict | null): ReviewRecord | null {
-	const kept = records.find((record) => record.ref === ref);
+	const kept = records.find(record => record.ref === ref);
 	if (kept) return kept;
 	if (!verdict) return null;
 	const [kind, ...rest] = ref.split("/");
@@ -203,7 +251,7 @@ export function recordOf(ref: string, records: ReviewRecord[], verdict: Verdict 
 		return run ? { ref, kind: "ci", ...run } : null;
 	}
 	if (kind === "flag") {
-		const flag = verdict.flags.find((one) => one.kind === name);
+		const flag = verdict.flags.find(one => one.kind === name);
 		return flag ? { ref, kind: "flag", flag } : null;
 	}
 	return null;
@@ -212,9 +260,21 @@ export function recordOf(ref: string, records: ReviewRecord[], verdict: Verdict 
 function outcomeOf(record: ReviewRecord): Outcome | null {
 	switch (record.kind) {
 		case "check":
-			return record.status === "passed" ? "passed" : record.status === "failed" || record.status === "timed_out" ? "failed" : record.status === "could_not_start" ? "not_run" : "other";
+			return record.status === "passed"
+				? "passed"
+				: record.status === "failed" || record.status === "timed_out"
+					? "failed"
+					: record.status === "could_not_start"
+						? "not_run"
+						: "other";
 		case "ci":
-			return record.conclusion === "success" ? "passed" : FAILING_CONCLUSIONS.includes(record.conclusion) ? "failed" : NOT_RUN_CONCLUSIONS.includes(record.conclusion) ? "not_run" : "other";
+			return record.conclusion === "success"
+				? "passed"
+				: FAILING_CONCLUSIONS.includes(record.conclusion)
+					? "failed"
+					: NOT_RUN_CONCLUSIONS.includes(record.conclusion)
+						? "not_run"
+						: "other";
 		case "command":
 			return record.exitCode === 0 ? "passed" : record.exitCode === null ? "not_run" : "failed";
 		case "flag":
@@ -238,7 +298,12 @@ export function disagrees(says: ReviewRef["says"], record: ReviewRecord): boolea
 	}
 }
 
-const SAYS: Record<NonNullable<ReviewRef["says"]>, string> = { passed: "it passed", failed: "it failed", ran: "it ran", not_run: "it did not run" };
+const SAYS: Record<NonNullable<ReviewRef["says"]>, string> = {
+	passed: "it passed",
+	failed: "it failed",
+	ran: "it ran",
+	not_run: "it did not run",
+};
 
 /** The record in words: "CI lint failure", "Your check unit tests passed", a flag in the verdict's sentence. */
 function RecordWords({ record, verdict }: { record: ReviewRecord; verdict: Verdict | null }) {
@@ -246,17 +311,19 @@ function RecordWords({ record, verdict }: { record: ReviewRecord; verdict: Verdi
 		case "check":
 			return (
 				<>
-					your check <span className="item-check-name">{record.name}</span> <span className={`tone-${CHECK_TONE[record.status]}`}>{CHECK_WORD[record.status]}</span>
+					your check <span className="item-check-name">{record.name}</span>{" "}
+					<span className={`tone-${CHECK_TONE[record.status]}`}>{CHECK_WORD[record.status]}</span>
 				</>
 			);
 		case "ci":
 			return (
 				<>
-					CI <span className="item-check-name">{record.name}</span> <span className={conclusionTone(record.conclusion)}>{conclusionWord(record.conclusion)}</span>
+					CI <span className="item-check-name">{record.name}</span>{" "}
+					<span className={conclusionTone(record.conclusion)}>{conclusionWord(record.conclusion)}</span>
 				</>
 			);
 		case "flag": {
-			const at = verdict?.flags.findIndex((flag) => flag.kind === record.flag.kind) ?? -1;
+			const at = verdict?.flags.findIndex(flag => flag.kind === record.flag.kind) ?? -1;
 			return (
 				<>
 					flagged, <Inline text={verdict?.said?.flags?.[at] ?? record.flag.kind.replace(/_/g, " ")} />
@@ -272,7 +339,10 @@ function RecordWords({ record, verdict }: { record: ReviewRecord; verdict: Verdi
 		case "command":
 			return (
 				<>
-					ran <code className="item-paths">{record.command}</code> <span className={record.exitCode === 0 ? "tone-good" : "tone-bad"}>{record.exitCode === null ? record.outcome : `exit ${record.exitCode}`}</span>
+					ran <code className="item-paths">{record.command}</code>{" "}
+					<span className={record.exitCode === 0 ? "tone-good" : "tone-bad"}>
+						{record.exitCode === null ? record.outcome : `exit ${record.exitCode}`}
+					</span>
 				</>
 			);
 	}
@@ -294,7 +364,17 @@ function Tail({ record }: { record: ReviewRecord }) {
 const findingLabel = (id: string) => id.replace(/^r(\d+)\.f(\d+)$/, "Round $1, finding $2");
 
 /** What a block names of the platform's records, each beside the author's claim; a claim the record does not bear out is said so plainly. */
-function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: ReviewRecord[]; verdict: Verdict | null; author: string }) {
+function Refs({
+	refs,
+	records,
+	verdict,
+	author,
+}: {
+	refs: ReviewRef[];
+	records: ReviewRecord[];
+	verdict: Verdict | null;
+	author: string;
+}) {
 	if (refs.length === 0) return null;
 	return (
 		<ul className="item-checks review-refs" aria-label="The platform's records it names">
@@ -332,8 +412,16 @@ function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: 
 
 // ---- the blocks ---------------------------------------------------------------------------------
 
-const SEVERITY: Record<Extract<ReviewBlock, { kind: "finding" }>["severity"], string> = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
-const EARLIER: Record<Extract<ReviewBlock, { kind: "earlier" }>["status"], string> = { fixed: "fixed", not_fixed: "not fixed", withdrawn: "withdrawn" };
+const SEVERITY: Record<Extract<ReviewBlock, { kind: "finding" }>["severity"], string> = {
+	blocking: "Blocking",
+	should_fix: "Should fix",
+	note: "Note",
+};
+const EARLIER: Record<Extract<ReviewBlock, { kind: "earlier" }>["status"], string> = {
+	fixed: "fixed",
+	not_fixed: "not fixed",
+	withdrawn: "withdrawn",
+};
 
 function Excerpt({ block, linkTo }: { block: Extract<ReviewBlock, { kind: "excerpt" }>; linkTo?: LinkTo }) {
 	const lines = block.code.replace(/\r\n?/g, "\n").split("\n").slice(0, REVIEW_LIMITS.excerptLines);
@@ -361,7 +449,21 @@ function Excerpt({ block, linkTo }: { block: Extract<ReviewBlock, { kind: "excer
 }
 
 /** One block as a row of the page's facts: its kind on the left, the author's words on the right. `linkTo` makes its places links to GitHub. */
-export function Block({ block, records, verdict, author, linkTo, named }: { block: ReviewBlock; records: ReviewRecord[]; verdict: Verdict | null; author: string; linkTo?: LinkTo; named?: (finding: string) => string | null }) {
+export function Block({
+	block,
+	records,
+	verdict,
+	author,
+	linkTo,
+	named,
+}: {
+	block: ReviewBlock;
+	records: ReviewRecord[];
+	verdict: Verdict | null;
+	author: string;
+	linkTo?: LinkTo;
+	named?: (finding: string) => string | null;
+}) {
 	let label: ReactNode;
 	let body: ReactNode;
 	switch (block.kind) {
@@ -440,10 +542,24 @@ export function Block({ block, records, verdict, author, linkTo, named }: { bloc
  * An author's blocks as one list of the page's facts, in the order given. Past three findings, the rest
  * fold under "Show N more" in the findings' place; each finding's title always shows, its text clamped.
  */
-export function BlockRows({ blocks, records, verdict, author, linkTo, named }: { blocks: ReviewBlock[]; records: ReviewRecord[]; verdict: Verdict | null; author: string; linkTo?: LinkTo; named?: (finding: string) => string | null }) {
+export function BlockRows({
+	blocks,
+	records,
+	verdict,
+	author,
+	linkTo,
+	named,
+}: {
+	blocks: ReviewBlock[];
+	records: ReviewRecord[];
+	verdict: Verdict | null;
+	author: string;
+	linkTo?: LinkTo;
+	named?: (finding: string) => string | null;
+}) {
 	const [open, setOpen] = useState(false);
 	const id = useId();
-	const findings: ReviewBlock[] = blocks.filter((block) => block.kind === "finding");
+	const findings: ReviewBlock[] = blocks.filter(block => block.kind === "finding");
 	const folds = listFolds(findings.length);
 	const last = findings[FOLD_SHOWN - 1];
 	const hidden = new Set<ReviewBlock>(folds && !open ? findings.slice(FOLD_SHOWN) : []);
@@ -457,7 +573,12 @@ export function BlockRows({ blocks, records, verdict, author, linkTo, named }: {
 							<div className="review-block review-block-fold">
 								<dt />
 								<dd>
-									<FoldToggle open={open} controls={id} label={FOLD_WORDS.more(findings.length - FOLD_SHOWN)} onToggle={() => setOpen((value) => !value)} />
+									<FoldToggle
+										open={open}
+										controls={id}
+										label={FOLD_WORDS.more(findings.length - FOLD_SHOWN)}
+										onToggle={() => setOpen(value => !value)}
+									/>
 								</dd>
 							</div>
 						) : null}
@@ -482,16 +603,30 @@ export interface BlockScreenshots {
  * `author` names who wrote them as a sentence starts ("The agent"). The `screenshot` blocks follow as one
  * group, each resolved from `screenshots`; one the records do not have is left out.
  */
-export function ReviewBlocks({ blocks, records, verdict, author, screenshots }: { blocks: ReviewBlock[]; records: ReviewRecord[]; verdict: Verdict | null; author: string; screenshots?: BlockScreenshots }) {
-	const shots = blocks.flatMap((block) => {
-		const shot = block.kind === "screenshot" ? screenshots?.shots.find((one) => one.id === block.attachment) : undefined;
+export function ReviewBlocks({
+	blocks,
+	records,
+	verdict,
+	author,
+	screenshots,
+}: {
+	blocks: ReviewBlock[];
+	records: ReviewRecord[];
+	verdict: Verdict | null;
+	author: string;
+	screenshots?: BlockScreenshots;
+}) {
+	const shots = blocks.flatMap(block => {
+		const shot = block.kind === "screenshot" ? screenshots?.shots.find(one => one.id === block.attachment) : undefined;
 		return shot ? [shot] : [];
 	});
 	const first = shots[0];
 	return (
 		<>
 			<BlockRows blocks={blocks} records={records} verdict={verdict} author={author} />
-			{first && screenshots ? <Screenshots by={first.by} head={first.head} shots={shots} links={screenshots.links} days={screenshots.days} /> : null}
+			{first && screenshots ? (
+				<Screenshots by={first.by} head={first.head} shots={shots} links={screenshots.links} days={screenshots.days} />
+			) : null}
 		</>
 	);
 }

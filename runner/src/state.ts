@@ -1,7 +1,19 @@
 import { fingerprint, type Pin, type Trust } from "../../server/src/runner/frame-auth.js";
 import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomUUID, type KeyObject } from "node:crypto";
-import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	ftruncateSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/protocol.js";
 import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
@@ -18,16 +30,37 @@ export class Refusal extends RunnerError {}
 
 export function origin(address: string): string {
 	let u: URL;
-	try { u = new URL(address); } catch { throw new RunnerError("Give a platform HTTPS origin."); }
-	if (u.username || u.password || u.search || u.hash || u.pathname !== "/" ||
-		!(u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname))))
+	try {
+		u = new URL(address);
+	} catch {
+		throw new RunnerError("Give a platform HTTPS origin.");
+	}
+	if (
+		u.username ||
+		u.password ||
+		u.search ||
+		u.hash ||
+		u.pathname !== "/" ||
+		!(u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)))
+	)
 		throw new RunnerError("Use an HTTPS origin, or HTTP on loopback.");
 	return u.origin;
 }
 
-const identity = object({ uid: is<string>(v => typeof v === "string" && NAME.test(v)), machineId: is<string>(v => typeof v === "string" && MACHINE_ID.test(v)) });
+const identity = object({
+	uid: is<string>(v => typeof v === "string" && NAME.test(v)),
+	machineId: is<string>(v => typeof v === "string" && MACHINE_ID.test(v)),
+});
 export type Identity = { uid: string; machineId: string };
-const record = object({ current: identity, previous: list(identity), platform: text(2048), key: nullable(text(512)), endpoint: optional(text(2048)), platformRoot: optional(text(80)), maxSerial: optional(count) });
+const record = object({
+	current: identity,
+	previous: list(identity),
+	platform: text(2048),
+	key: nullable(text(512)),
+	endpoint: optional(text(2048)),
+	platformRoot: optional(text(80)),
+	maxSerial: optional(count),
+});
 
 export function read(file: string): unknown {
 	const path = join(directory, file);
@@ -44,37 +77,61 @@ export function read(file: string): unknown {
 		throw new RunnerError(`Cannot read ${file}. Repair or restore that file in the runner state volume.`);
 	}
 }
-export function forget(file: string) { rmSync(join(directory, file), { force: true }); }
+export function forget(file: string) {
+	rmSync(join(directory, file), { force: true });
+}
 export function save(file: string, value: unknown): void {
 	const path = join(directory, file);
 	const temp = path + "." + randomUUID();
 	try {
 		writeFileSync(temp, JSON.stringify(value) + "\n", { mode: 0o600, flag: "wx" });
 		renameSync(temp, path);
-	} finally { rmSync(temp, { force: true }); }
+	} finally {
+		rmSync(temp, { force: true });
+	}
 }
 export function loadPair() {
 	const stored = read("pair.json");
 	if (stored === undefined) return;
 	const invalid = () => new RunnerError("Invalid pair.json. Repair or restore that file in the runner state volume.");
 	if (!record(stored)) throw invalid();
-	try { origin(stored.platform); } catch { throw invalid(); }
+	try {
+		origin(stored.platform);
+	} catch {
+		throw invalid();
+	}
 	let key: KeyObject | null = null;
 	if (stored.key !== null) {
-		try { key = createPrivateKey(stored.key); } catch { throw invalid(); }
+		try {
+			key = createPrivateKey(stored.key);
+		} catch {
+			throw invalid();
+		}
 		if (key.asymmetricKeyType !== "ed25519") throw invalid();
 	}
 	let pin: Pin | undefined;
 	if (stored.platformRoot !== undefined || stored.endpoint !== undefined || stored.maxSerial !== undefined) {
 		if (!stored.platformRoot || !stored.endpoint || stored.maxSerial === undefined) throw invalid();
-		try { fingerprint(stored.platformRoot); if (origin(stored.endpoint) !== stored.endpoint) throw invalid(); } catch { throw invalid(); }
+		try {
+			fingerprint(stored.platformRoot);
+			if (origin(stored.endpoint) !== stored.endpoint) throw invalid();
+		} catch {
+			throw invalid();
+		}
 		pin = { endpoint: stored.endpoint, platformRoot: stored.platformRoot, maxSerial: stored.maxSerial };
 	}
 	return { current: stored.current, previous: stored.previous, platform: stored.platform, key, pin };
 }
 export function forgetKey() {
 	const paired = loadPair();
-	if (paired) save("pair.json", { current: paired.current, previous: paired.previous, platform: paired.platform, ...paired.pin, key: null });
+	if (paired)
+		save("pair.json", {
+			current: paired.current,
+			previous: paired.previous,
+			platform: paired.platform,
+			...paired.pin,
+			key: null,
+		});
 }
 // A separate file keeps pair.json readable by the previous runner on rollback. Its
 // name scopes consent to this pairing, including when an owner pairs again in place.
@@ -86,13 +143,17 @@ export function pairingProfiles(id: string, requested?: MachineProfile[]): Machi
 	}
 	const stored = read(policyFile(id));
 	if (stored === undefined) return [...MACHINE_PROFILES]; // Only pre-policy pairings lack the file.
-	if (!validAllowedProfiles(stored)) throw new RunnerError("Invalid profile policy in the runner state volume. Start the runner with --allow-profile docker-hardened to reset it.");
+	if (!validAllowedProfiles(stored))
+		throw new RunnerError(
+			"Invalid profile policy in the runner state volume. Start the runner with --allow-profile docker-hardened to reset it.",
+		);
 	return stored;
 }
 const egressFile = (id: string) => `egress-${id}.json`;
 const validEgress = object({ mode: egressMode, allow: list(text(253), 64), domains: optional(list(text(255), 64)) });
 /** Printed when egress flags without --egress-domains replace a saved list: the flags are saved whole. */
-export const DOMAINS_REMOVED = "The --egress-domains list was removed: commands can reach any public host again. Give --egress-domains with the other --egress flags to keep a list.";
+export const DOMAINS_REMOVED =
+	"The --egress-domains list was removed: commands can reach any public host again. Give --egress-domains with the other --egress flags to keep a list.";
 export function pairingEgress(id: string, requested?: Egress): Egress {
 	if (requested) {
 		const prior = read(egressFile(id));
@@ -106,18 +167,33 @@ export function pairingEgress(id: string, requested?: Egress): Egress {
 	return egressFlags(stored.mode, stored.allow.length ? stored.allow.join(",") : undefined, stored.domains?.join(","))!;
 }
 export function egressNote(id: string) {
-	if (read(egressFile(id)) === undefined) return "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in.";
+	if (read(egressFile(id)) === undefined)
+		return "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in.";
 	const { mode, allow, domains } = pairingEgress(id);
-	const only = domains && listedHosts(domains).map(host => platformHostNote(host) ? `${host} (${platformHostNote(host)})` : host);
+	const only =
+		domains &&
+		listedHosts(domains).map(host => (platformHostNote(host) ? `${host} (${platformHostNote(host)})` : host));
 	return `Network egress is ${mode}.${only ? " Only these public hosts: " + only.join(", ") + "." : ""}${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
 }
-export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"], pin?: Pin) {
+export function storePair(
+	current: Identity,
+	key: KeyObject,
+	platform: string,
+	profiles: MachineProfile[] = ["docker-hardened"],
+	pin?: Pin,
+) {
 	const prior = loadPair();
 	const previous = prior ? [...prior.previous, prior.current].filter(m => m.machineId !== current.machineId) : [];
 	// Commit the policy before publishing the new key, including for standalone pairing.
 	save(policyFile(current.machineId), profiles);
 	save(egressFile(current.machineId), restricted);
-	save("pair.json", { current, previous, platform, ...pin, key: key.export({ type: "pkcs8", format: "pem" }).toString() });
+	save("pair.json", {
+		current,
+		previous,
+		platform,
+		...pin,
+		key: key.export({ type: "pkcs8", format: "pem" }).toString(),
+	});
 	return { current, previous, key, platform, pin };
 }
 
@@ -125,16 +201,25 @@ export function storePair(current: Identity, key: KeyObject, platform: string, p
 export function pairingTrust(pair: NonNullable<ReturnType<typeof loadPair>>): Trust {
 	const pin = pair.pin;
 	if (!pin || !pair.key) throw new RunnerError("Pair again to pin the platform identity.");
-	return { pin, commit(maxSerial, endpoint) {
-		if (maxSerial < pin.maxSerial) throw new RunnerError("Platform certificate serial decreased.");
-		if (maxSerial === pin.maxSerial && endpoint === pin.endpoint) return;
-		const current = read("pair.json");
-		if (!record(current) || !current.key || current.current.machineId !== pair.current.machineId || current.platformRoot !== pin.platformRoot)
-			throw new RunnerError("The pairing changed during the handshake.");
-		if (current.maxSerial !== undefined && current.maxSerial > maxSerial) throw new RunnerError("Platform certificate serial decreased.");
-		save("pair.json", { ...current, maxSerial, endpoint });
-		Object.assign(pin, { maxSerial, endpoint });
-	} };
+	return {
+		pin,
+		commit(maxSerial, endpoint) {
+			if (maxSerial < pin.maxSerial) throw new RunnerError("Platform certificate serial decreased.");
+			if (maxSerial === pin.maxSerial && endpoint === pin.endpoint) return;
+			const current = read("pair.json");
+			if (
+				!record(current) ||
+				!current.key ||
+				current.current.machineId !== pair.current.machineId ||
+				current.platformRoot !== pin.platformRoot
+			)
+				throw new RunnerError("The pairing changed during the handshake.");
+			if (current.maxSerial !== undefined && current.maxSerial > maxSerial)
+				throw new RunnerError("Platform certificate serial decreased.");
+			save("pair.json", { ...current, maxSerial, endpoint });
+			Object.assign(pin, { maxSerial, endpoint });
+		},
+	};
 }
 
 // flock also works across Docker PID namespaces (two services can both be PID 1).

@@ -40,22 +40,42 @@ async function start(machine: MockMachineState, failDefaults = false): Promise<v
 	await account.finishChatgpt(plan.redirectPrefix + "?code=plan&state=" + new URL(plan.url).searchParams.get("state"));
 	saveAuth("mock", auth);
 	const user = client.user.bind(client);
-	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
+	(client as { user: (auth: AuthResult) => UserApi }).user = who => {
 		const api = user(who);
-		return { ...api, repository: async id => {
-			if (failDefaults) { failDefaults = false; throw new Error("offline"); }
-			return api.repository(id);
-		}, createItem: (input: CreateItemInput) => (sent.push(input), api.createItem(input)) };
+		return {
+			...api,
+			repository: async id => {
+				if (failDefaults) {
+					failDefaults = false;
+					throw new Error("offline");
+				}
+				return api.repository(id);
+			},
+			createItem: (input: CreateItemInput) => (sent.push(input), api.createItem(input)),
+		};
 	};
-	act(() => root.render(createElement(AppProvider, { client, children: createElement(NewItemDialog, { repositoryId: 7101, name: "acme/harbor", base: "main", onClose: () => undefined }) })));
+	act(() =>
+		root.render(
+			createElement(AppProvider, {
+				client,
+				children: createElement(NewItemDialog, {
+					repositoryId: 7101,
+					name: "acme/harbor",
+					base: "main",
+					onClose: () => undefined,
+				}),
+			}),
+		),
+	);
 	await wait();
 }
 
 const text = () => host.textContent ?? "";
 const runLine = () => host.querySelector(".run-line")?.textContent ?? "";
 /** The form says what will run; its choices for this item open from "Change for this item". */
-const change = () => act(() => [...host.querySelectorAll("button")].find((one) => one.textContent === "Change for this item")!.click());
-const legend = () => [...host.querySelectorAll("legend")].find((one) => one.textContent === "Where it runs") ?? null;
+const change = () =>
+	act(() => [...host.querySelectorAll("button")].find(one => one.textContent === "Change for this item")!.click());
+const legend = () => [...host.querySelectorAll("legend")].find(one => one.textContent === "Where it runs") ?? null;
 const radio = (value: string) => host.querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement | null;
 
 function typeTitle(value: string): void {
@@ -134,7 +154,9 @@ describe("filing a work item", () => {
 		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("nas");
 		expect(runLine()).toContain("nas · Windlass");
 		expect(runLine()).toContain("— chosen for this item");
-		expect(text()).toContain("It starts as soon as “nas” is online and has a free slot; until then it waits, and says for what.");
+		expect(text()).toContain(
+			"It starts as soon as “nas” is online and has a free slot; until then it waits, and says for what.",
+		);
 		typeTitle("Cache the station list");
 		await file();
 		expect(sent[0]?.place).toEqual({ kind: "machine", machineId: "m_nas" });
@@ -142,7 +164,10 @@ describe("filing a work item", () => {
 		expect(sent[0]?.profile).toBeUndefined();
 	});
 
-	it.each([["orchestrate", "Plan first"], ["single", "Quick"]])("files the chosen %s mode", async (mode, label) => {
+	it.each([
+		["orchestrate", "Plan first"],
+		["single", "Quick"],
+	])("files the chosen %s mode", async (mode, label) => {
 		await start("none");
 		expect(radio("orchestrate")?.checked).toBe(true);
 		expect(radio(mode)?.parentElement?.textContent).toBe(label);
@@ -154,18 +179,19 @@ describe("filing a work item", () => {
 
 	it("files the model and effort chosen for the item's agent, offering only the efforts its model takes", async () => {
 		// The model and the effort are the composer's pickers: a button that opens a menu of rows.
-		const control = (label: string) => [...host.querySelectorAll("label")].find((one) => one.textContent === label)?.control as HTMLButtonElement | null;
+		const control = (label: string) =>
+			[...host.querySelectorAll("label")].find(one => one.textContent === label)?.control as HTMLButtonElement | null;
 		const rows = () => [...document.querySelectorAll<HTMLElement>('.ui-pop [role="menuitemradio"]')];
 		const choose = (label: string, value: string) => {
 			act(() => control(label)!.click());
-			const row = rows().find((one) => one.dataset.value === value)!;
+			const row = rows().find(one => one.dataset.value === value)!;
 			act(() => row.click());
 		};
 		const efforts = () => {
 			const button = control("Effort");
 			if (!button) return [];
 			act(() => button.click());
-			const values = rows().map((one) => one.dataset.value);
+			const values = rows().map(one => one.dataset.value);
 			act(() => button.click());
 			return values;
 		};

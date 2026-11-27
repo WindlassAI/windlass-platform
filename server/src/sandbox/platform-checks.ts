@@ -33,7 +33,13 @@
  * session only for that (`RunTurnInput.onChecks`); the timeline gets a note per run.
  */
 
-import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type Verified, type WindlassEvent } from "../contract.js";
+import {
+	CHECK_OUTPUT_CHARS,
+	type CheckStatus,
+	type RepositoryCheck,
+	type Verified,
+	type WindlassEvent,
+} from "../contract.js";
 import { data, fence } from "../factory/reviewer-task.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { outputTail } from "../verified.js";
@@ -53,7 +59,10 @@ const SHOWN_TOTAL_CHARS = 18_000;
 const SNAPSHOT_MS = 60_000;
 
 /** A note for the session's timeline about one moment of the checks. */
-export interface ChecksNote { level: "info" | "warn"; text: string }
+export interface ChecksNote {
+	level: "info" | "warn";
+	text: string;
+}
 
 /** One check as the platform ran it. */
 export interface PlatformCheckResult {
@@ -82,13 +91,18 @@ export function globMatcher(pattern: string): RegExp {
 				if (pattern[at] === "*") {
 					at++;
 					const whole = (out === "" || out.endsWith("/")) && (at === pattern.length || pattern[at] === "/");
-					if (whole && pattern[at] === "/") { at++; out += "(?:.*/)?"; }
-					else out += ".*";
+					if (whole && pattern[at] === "/") {
+						at++;
+						out += "(?:.*/)?";
+					} else out += ".*";
 				} else out += "[^/]*";
 			} else if (ch === "?") out += "[^/]";
 			else if (ch === "[") {
 				const end = pattern.indexOf("]", at + 1);
-				if (end < 0) { out += "\\["; continue; }
+				if (end < 0) {
+					out += "\\[";
+					continue;
+				}
 				let body = pattern.slice(at, end);
 				at = end + 1;
 				const negated = body.startsWith("!") || body.startsWith("^");
@@ -98,7 +112,10 @@ export function globMatcher(pattern: string): RegExp {
 				const options: string[] = [];
 				for (;;) {
 					options.push(parse(",}"));
-					if (pattern[at] === ",") { at++; continue; }
+					if (pattern[at] === ",") {
+						at++;
+						continue;
+					}
 					if (pattern[at] === "}") at++;
 					break;
 				}
@@ -115,29 +132,73 @@ export function globMatcher(pattern: string): RegExp {
 export function checksFor(checks: readonly RepositoryCheck[], changed: readonly string[] | null): RepositoryCheck[] {
 	if (changed === null) return [...checks];
 	if (changed.length === 0) return [];
-	return checks.filter(check => !check.when?.length || check.when.some(pattern => {
-		const glob = globMatcher(pattern);
-		return changed.some(path => glob.test(path.startsWith("./") ? path.slice(2) : path));
-	}));
+	return checks.filter(
+		check =>
+			!check.when?.length ||
+			check.when.some(pattern => {
+				const glob = globMatcher(pattern);
+				return changed.some(path => glob.test(path.startsWith("./") ? path.slice(2) : path));
+			}),
+	);
 }
 
 /** A checks-only native turn needs fresh evidence for every saved command, including checks with a path filter. */
 function needsForcedChecks(verified: Verified, saved: readonly RepositoryCheck[]): boolean {
 	const run = verified.run;
-	return saved.length > 0 && (verified.changedAfter || run?.turn !== verified.turn ||
-		(verified.state !== "passed" && verified.state !== "unresolved") ||
-		saved.some(check => !run.checks.some(r => r.required && !r.carried && r.name === check.name && r.command === check.command)));
+	return (
+		saved.length > 0 &&
+		(verified.changedAfter ||
+			run?.turn !== verified.turn ||
+			(verified.state !== "passed" && verified.state !== "unresolved") ||
+			saved.some(
+				check =>
+					!run.checks.some(r => r.required && !r.carried && r.name === check.name && r.command === check.command),
+			))
+	);
 }
 
 /** Run only in the workspace and image toolchain. No network, inherited environment, token directory or agent home. */
 export function isolatedCommand(cwd: string, command: string): string {
 	// The image's pnpm wrapper can use the pinned package manager installed during repository setup.
 	const cache = "/home/agent/.cache/node/corepack/v1/pnpm";
-	const args = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
-		"--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
-		"--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-		"--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
-		"--bind", cwd, cwd, "--chdir", cwd];
+	const args = [
+		"/usr/bin/bwrap",
+		"--unshare-all",
+		"--die-with-parent",
+		"--new-session",
+		"--clearenv",
+		"--ro-bind",
+		"/usr",
+		"/usr",
+		"--symlink",
+		"usr/bin",
+		"/bin",
+		"--symlink",
+		"usr/lib",
+		"/lib",
+		"--ro-bind-try",
+		"/lib64",
+		"/lib64",
+		"--proc",
+		"/proc",
+		"--dev",
+		"/dev",
+		"--tmpfs",
+		"/tmp",
+		"--dir",
+		"/tmp/home",
+		"--setenv",
+		"HOME",
+		"/tmp/home",
+		"--setenv",
+		"PATH",
+		"/usr/local/bin:/usr/bin:/bin",
+		"--bind",
+		cwd,
+		cwd,
+		"--chdir",
+		cwd,
+	];
 	// Bind the opened directory after checking its resolved path, so a renamed link cannot substitute another directory.
 	return [
 		`set -- ${args.map(shellQuote).join(" ")}`,
@@ -168,7 +229,17 @@ const TREE = /^[0-9a-f]{40,64}$/;
 
 /** The words of a run's outcome for the timeline. */
 function runWords(results: readonly PlatformCheckResult[]): string {
-	return results.map(r => r.status === "passed" ? `${r.name} passed` : r.status === "timed_out" ? `${r.name} timed out` : r.startError ? `${r.name} could not start` : `${r.name} failed${r.exitCode === null ? "" : ` (exit ${r.exitCode})`}`).join(", ");
+	return results
+		.map(r =>
+			r.status === "passed"
+				? `${r.name} passed`
+				: r.status === "timed_out"
+					? `${r.name} timed out`
+					: r.startError
+						? `${r.name} could not start`
+						: `${r.name} failed${r.exitCode === null ? "" : ` (exit ${r.exitCode})`}`,
+		)
+		.join(", ");
 }
 
 /**
@@ -190,7 +261,14 @@ export class PlatformChecks {
 		private readonly checks: readonly RepositoryCheck[],
 		private readonly emit: (event: WindlassEvent, note?: ChecksNote) => void,
 		/** `unavailable`: why no check may run in this sandbox (above); each is then recorded as not started, with it. */
-		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; force?: boolean; isolated?: boolean; unavailable?: string },
+		private readonly options: {
+			agent: string;
+			redactor?: Redactor;
+			signal?: AbortSignal;
+			force?: boolean;
+			isolated?: boolean;
+			unavailable?: string;
+		},
 	) {}
 
 	private event(type: string, data: Record<string, unknown>): WindlassEvent {
@@ -200,7 +278,11 @@ export class PlatformChecks {
 
 	private async snapshot(point: string): Promise<string | null> {
 		try {
-			const got = await this.handle.run(SNAPSHOT_SCRIPT, { cwd: this.handle.cwd, timeoutMs: SNAPSHOT_MS, signal: this.options.signal });
+			const got = await this.handle.run(SNAPSHOT_SCRIPT, {
+				cwd: this.handle.cwd,
+				timeoutMs: SNAPSHOT_MS,
+				signal: this.options.signal,
+			});
 			const id = got.exitCode === 0 ? got.stdout.trim() : "";
 			if (!TREE.test(id)) return null;
 			this.emit(this.event("snapshot.taken", { id, point }));
@@ -214,7 +296,11 @@ export class PlatformChecks {
 		if (from === null || to === null) return null;
 		if (from === to) return [];
 		try {
-			const got = await this.handle.run(`git diff --name-only -z --no-renames --relative ${from} ${to}`, { cwd: this.handle.cwd, timeoutMs: SNAPSHOT_MS, signal: this.options.signal });
+			const got = await this.handle.run(`git diff --name-only -z --no-renames --relative ${from} ${to}`, {
+				cwd: this.handle.cwd,
+				timeoutMs: SNAPSHOT_MS,
+				signal: this.options.signal,
+			});
 			return got.exitCode === 0 ? got.stdout.split("\0").filter(Boolean) : null;
 		} catch {
 			return null;
@@ -236,23 +322,51 @@ export class PlatformChecks {
 	private async runOne(check: RepositoryCheck, building = false): Promise<PlatformCheckResult> {
 		const stream = new RedactingStream(this.options.redactor ?? NO_REDACTION);
 		let kept = "";
-		const keep = (chunk: string) => { kept = (kept + stream.push(chunk)).slice(-KEPT_CHARS); };
+		const keep = (chunk: string) => {
+			kept = (kept + stream.push(chunk)).slice(-KEPT_CHARS);
+		};
 		const startedAt = Date.now();
 		const base = { name: check.name, command: check.command, showOutput: check.showOutput === true };
 		try {
 			const command = this.options.isolated ? isolatedCommand(this.handle.cwd, check.command) : check.command;
 			const got = await this.handle.run(command, {
-				cwd: this.handle.cwd, timeoutMs: (check.timeoutSeconds ?? DEFAULT_CHECK_SECONDS) * 1000, signal: this.options.signal,
-				onStdout: keep, onStderr: keep,
+				cwd: this.handle.cwd,
+				timeoutMs: (check.timeoutSeconds ?? DEFAULT_CHECK_SECONDS) * 1000,
+				signal: this.options.signal,
+				onStdout: keep,
+				onStderr: keep,
 			});
 			kept = (kept + stream.flush()).slice(-KEPT_CHARS);
 			// A layer that hands over output only at the end.
 			if (!kept) kept = (this.options.redactor ?? NO_REDACTION).text(got.stdout + got.stderr).slice(-KEPT_CHARS);
-			const status: CheckStatus = got.aborted ? "interrupted" : got.timedOut ? "timed_out" : got.exitCode === 0 ? "passed" : "failed";
-			return { ...base, status, exitCode: got.exitCode, durationMs: Date.now() - startedAt, output: kept, startError: "" };
+			const status: CheckStatus = got.aborted
+				? "interrupted"
+				: got.timedOut
+					? "timed_out"
+					: got.exitCode === 0
+						? "passed"
+						: "failed";
+			return {
+				...base,
+				status,
+				exitCode: got.exitCode,
+				durationMs: Date.now() - startedAt,
+				output: kept,
+				startError: "",
+			};
 		} catch (error) {
 			const said = (this.options.redactor ?? NO_REDACTION).text(errorText(error));
-			return { ...base, status: this.options.signal?.aborted || (building && sandboxConnectionLost(error)) ? "interrupted" : "could_not_start", exitCode: null, durationMs: Date.now() - startedAt, output: kept, startError: said.slice(0, 400) || "The sandbox could not run the command." };
+			return {
+				...base,
+				status:
+					this.options.signal?.aborted || (building && sandboxConnectionLost(error))
+						? "interrupted"
+						: "could_not_start",
+				exitCode: null,
+				durationMs: Date.now() - startedAt,
+				output: kept,
+				startError: said.slice(0, 400) || "The sandbox could not run the command.",
+			};
 		}
 	}
 
@@ -283,47 +397,110 @@ export class PlatformChecks {
 		if (this.options.signal?.aborted) return null;
 		const changed = this.options.force ? null : await this.changed(this.start, now);
 		// The agent put every file back as it was at the turn's start after its checks had run: nothing needs checking.
-		if (changed?.length === 0) return this.end(this.ran ? { status: "not_needed", reason: "state_unchanged", since: { run: null } } : { status: "not_needed", reason: "turn_unchanged" });
+		if (changed?.length === 0)
+			return this.end(
+				this.ran
+					? { status: "not_needed", reason: "state_unchanged", since: { run: null } }
+					: { status: "not_needed", reason: "turn_unchanged" },
+			);
 		const selected = checksFor(this.checks, changed);
-		if (!selected.length) return this.end({ status: "not_needed", reason: "not_covered" }, { level: "info", text: "No saved check covers the files this turn changed, so the platform ran none." });
+		if (!selected.length)
+			return this.end(
+				{ status: "not_needed", reason: "not_covered" },
+				{ level: "info", text: "No saved check covers the files this turn changed, so the platform ran none." },
+			);
 		let unavailable = this.options.unavailable;
 		if (this.options.isolated) {
 			try {
-				const probe = await this.handle.run(isolatedCommand(this.handle.cwd, "true"), { cwd: this.handle.cwd, timeoutMs: SNAPSHOT_MS, signal: this.options.signal });
+				const probe = await this.handle.run(isolatedCommand(this.handle.cwd, "true"), {
+					cwd: this.handle.cwd,
+					timeoutMs: SNAPSHOT_MS,
+					signal: this.options.signal,
+				});
 				if (probe.exitCode !== 0) unavailable = "The workspace command sandbox could not start.";
-			} catch { unavailable = "The workspace command sandbox could not start."; }
+			} catch {
+				unavailable = "The workspace command sandbox could not start.";
+			}
 		}
 		const results: PlatformCheckResult[] = [];
 		for (const check of selected) {
 			if (this.options.signal?.aborted) break;
-			results.push(unavailable ? { name: check.name, command: check.command, status: "could_not_start", exitCode: null, durationMs: 0, output: "", startError: unavailable, showOutput: false } : await this.runOne(check));
+			results.push(
+				unavailable
+					? {
+							name: check.name,
+							command: check.command,
+							status: "could_not_start",
+							exitCode: null,
+							durationMs: 0,
+							output: "",
+							startError: unavailable,
+							showOutput: false,
+						}
+					: await this.runOne(check),
+			);
 		}
 		if (this.options.signal?.aborted || results.some(r => r.status === "interrupted")) return null;
 		this.ran = true;
 		const failed = results.filter(r => r.status !== "passed" && !r.startError);
 		// One the sandbox could not run (check-environment.ts) says nothing about the code either: the agent is not sent back for it.
-		const environment = failed.filter(r => environmentFailure({ status: r.status, exitCode: r.exitCode, output: r.output }) !== null);
+		const environment = failed.filter(
+			r => environmentFailure({ status: r.status, exitCode: r.exitCode, output: r.output }) !== null,
+		);
 		const failing = failed.filter(r => !environment.includes(r));
 		const notStarted = results.filter(r => r.startError);
 		const level = failing.length || notStarted.length ? "warn" : "info";
 		const said = `The platform ran the repository's checks${this.sendBacks ? " again" : ""}: ${runWords(results)}.`;
-		this.emit(this.event("checks.finished", {
-			evidence: {
-				checks: results.map(r => ({
-					name: r.name, command: r.command, status: r.status, exitCode: r.exitCode, durationMs: r.durationMs,
-					origin: "session", required: true,
-					...(r.status !== "passed" || r.showOutput ? { outputTail: { text: outputTail(r.output).slice(-CHECK_OUTPUT_CHARS) } } : {}),
-					...(r.startError ? { startError: r.startError } : {}),
-				})),
-			},
-		}));
+		this.emit(
+			this.event("checks.finished", {
+				evidence: {
+					checks: results.map(r => ({
+						name: r.name,
+						command: r.command,
+						status: r.status,
+						exitCode: r.exitCode,
+						durationMs: r.durationMs,
+						origin: "session",
+						required: true,
+						...(r.status !== "passed" || r.showOutput
+							? { outputTail: { text: outputTail(r.output).slice(-CHECK_OUTPUT_CHARS) } }
+							: {}),
+						...(r.startError ? { startError: r.startError } : {}),
+					})),
+				},
+			}),
+		);
 		if (!failed.length && !notStarted.length) return this.end({ status: "passed" }, { level, text: said });
-		if (!failing.length && environment.length) return this.end({ status: "unresolved", reason: "environment" }, { level, text: `${said} The sandbox could not run ${environment.map(r => r.name).join(", ")}, which says nothing about the code, so ${agent} was not sent back.` });
-		if (!failing.length) return this.end({ status: "unresolved", reason: "not_started" }, { level, text: `${said} A check that could not start says nothing about the code, so ${agent} was not sent back.` });
+		if (!failing.length && environment.length)
+			return this.end(
+				{ status: "unresolved", reason: "environment" },
+				{
+					level,
+					text: `${said} The sandbox could not run ${environment.map(r => r.name).join(", ")}, which says nothing about the code, so ${agent} was not sent back.`,
+				},
+			);
+		if (!failing.length)
+			return this.end(
+				{ status: "unresolved", reason: "not_started" },
+				{
+					level,
+					text: `${said} A check that could not start says nothing about the code, so ${agent} was not sent back.`,
+				},
+			);
 		if (!sendBack) return this.end({ status: "unresolved", reason: "report_mode" }, { level, text: said });
-		if (this.sendBacks >= PLATFORM_CHECK_ROUNDS) return this.end({ status: "unresolved", reason: "max_rounds" }, { level, text: `${said} ${agent} was sent back ${PLATFORM_CHECK_ROUNDS} times already, so the turn ends with checks failing.` });
+		if (this.sendBacks >= PLATFORM_CHECK_ROUNDS)
+			return this.end(
+				{ status: "unresolved", reason: "max_rounds" },
+				{
+					level,
+					text: `${said} ${agent} was sent back ${PLATFORM_CHECK_ROUNDS} times already, so the turn ends with checks failing.`,
+				},
+			);
 		this.sendBacks++;
-		this.emit(this.event("synthetic.appended", { origin: "check_report" }), { level, text: `${said} The platform sent ${agent} back with the failing output (round ${this.sendBacks} of ${PLATFORM_CHECK_ROUNDS}).` });
+		this.emit(this.event("synthetic.appended", { origin: "check_report" }), {
+			level,
+			text: `${said} The platform sent ${agent} back with the failing output (round ${this.sendBacks} of ${PLATFORM_CHECK_ROUNDS}).`,
+		});
 		return sendBackPrompt(failing, results.length, this.sendBacks);
 	}
 
@@ -347,7 +524,12 @@ export class PlatformChecks {
 export function sendBackPrompt(failing: readonly PlatformCheckResult[], ran: number, round: number): string {
 	const share = Math.max(1_500, Math.min(SHOWN_CHARS, Math.floor(SHOWN_TOTAL_CHARS / failing.length)));
 	const blocks = failing.map(r => {
-		const how = r.status === "timed_out" ? "it ran out of time" : r.exitCode === null ? "it was stopped" : `exit code ${r.exitCode}`;
+		const how =
+			r.status === "timed_out"
+				? "it ran out of time"
+				: r.exitCode === null
+					? "it was stopped"
+					: `exit code ${r.exitCode}`;
 		const body = `$ ${data(r.command)}\n${data(tailOf(r.output.replace(/\r\n?/g, "\n").trimEnd(), share)) || "(it printed nothing)"}`;
 		return fence(`OUTPUT OF CHECK ${r.name}`, `${how}; the end of what it printed`, body);
 	});

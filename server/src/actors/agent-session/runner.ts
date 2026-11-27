@@ -17,11 +17,11 @@ export function runnerLink(c: Ctx, machineId: string): RunnerLink {
 		c.vars.runner = new RunnerLink(
 			{ uid, sessionId, machineId, machineName: c.vars.meta?.machineName },
 			machineActor(() => client, uid, machineId),
-			(reason) => {
+			reason => {
 				console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
 			},
 			// Closing a runner link also reports its status. Broadcasts are invalid during actor shutdown.
-			(reach) => {
+			reach => {
 				if (!c.vars.stopping) c.broadcast("machine", reach);
 			},
 			durableTurns(c) ? { from: c.vars.restored, onDirty: () => conversationDirty(c) } : undefined,

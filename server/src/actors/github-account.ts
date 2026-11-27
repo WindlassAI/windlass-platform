@@ -11,19 +11,31 @@ type Link = { uid: string; login: string; installations: GithubId[]; at: number 
 
 export const githubAccount = actor({
 	onBeforeConnect: internalConnection,
-	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
-	db: db({ onMigrate: async db => {
-		await db.execute("CREATE TABLE IF NOT EXISTS link (id INTEGER PRIMARY KEY CHECK (id = 1), uid TEXT NOT NULL, login TEXT NOT NULL, installations TEXT NOT NULL, at INTEGER NOT NULL)");
-		await db.execute("CREATE TABLE IF NOT EXISTS connected_users (uid TEXT PRIMARY KEY)");
-		await db.execute("INSERT OR IGNORE INTO connected_users SELECT uid FROM link");
-	} }),
+	onCreate: c => {
+		if (!githubIdKey(c.key)) c.destroy();
+	},
+	db: db({
+		onMigrate: async db => {
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS link (id INTEGER PRIMARY KEY CHECK (id = 1), uid TEXT NOT NULL, login TEXT NOT NULL, installations TEXT NOT NULL, at INTEGER NOT NULL)",
+			);
+			await db.execute("CREATE TABLE IF NOT EXISTS connected_users (uid TEXT PRIMARY KEY)");
+			await db.execute("INSERT OR IGNORE INTO connected_users SELECT uid FROM link");
+		},
+	}),
 	actions: {
 		internalLink: async (c, link: Link) => {
 			requireServiceFor(c, "call");
 			const old = await c.db.transaction(async tx => {
 				await tx.execute("INSERT OR IGNORE INTO connected_users VALUES (?)", link.uid);
 				const [old] = await tx.execute<{ uid: string }>("SELECT uid FROM link");
-				await tx.execute("INSERT OR REPLACE INTO link VALUES (1, ?, ?, ?, ?)", link.uid, link.login, JSON.stringify(link.installations), link.at);
+				await tx.execute(
+					"INSERT OR REPLACE INTO link VALUES (1, ?, ?, ?, ?)",
+					link.uid,
+					link.login,
+					JSON.stringify(link.installations),
+					link.at,
+				);
 				return old?.uid;
 			});
 			if (old && old !== link.uid) console.log(`github.account.relinked github=${c.key[0]} from=${old} to=${link.uid}`);
@@ -56,19 +68,39 @@ export const githubAccount = actor({
 });
 
 /** Returns the ids linked: an installation removed since `readAt` (or at all, without it) is left out. */
-export async function setGithubInstallations(c: { client(): ActorClient }, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> {
-	return await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids, readAt);
+export async function setGithubInstallations(
+	c: { client(): ActorClient },
+	uid: string,
+	ids: GithubId[],
+	readAt?: number,
+): Promise<GithubId[]> {
+	return await c
+		.client()
+		.githubHooks.getOrCreate(["app"], { params: serviceParams() })
+		.internalSetInstallations(uid, ids, readAt);
 }
 
 /** Revoke removed installations before committing the user's change and admit new ones only after.
  * An interrupted grant is repaired from the saved connection on wake. Returns the installations the
  * directory refused because they were removed, which the caller drops from the connection. */
-export async function updateGithubAccount(c: { client(): ActorClient }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>, refresh = false, readAt?: number): Promise<GithubId[]> {
+export async function updateGithubAccount(
+	c: { client(): ActorClient },
+	uid: string,
+	previous: StoredConnection | null,
+	next: StoredConnection | null,
+	save?: () => Promise<void>,
+	refresh = false,
+	readAt?: number,
+): Promise<GithubId[]> {
 	let ids = next?.webhookLinked ? next.installations.map(i => i.id) : [];
 	if (previous?.webhookLinked) {
 		const retained = previous.installations.filter(i => ids.includes(i.id));
 		if (retained.length !== previous.installations.length || !next?.webhookLinked)
-			await setGithubInstallations(c, uid, retained.map(i => i.id));
+			await setGithubInstallations(
+				c,
+				uid,
+				retained.map(i => i.id),
+			);
 	}
 	await save?.();
 	let dropped: GithubId[] = [];
@@ -79,13 +111,22 @@ export async function updateGithubAccount(c: { client(): ActorClient }, uid: str
 	}
 	const account = (id: GithubId) => c.client().githubAccount.getOrCreate([String(id)], { params: serviceParams() });
 	if (previous?.webhookLinked && (!next?.webhookLinked || previous.user.id !== next.user.id)) {
-		try { await account(previous.user.id).internalUnlink(uid); }
-		catch { console.warn(`github.account.unlink_failed github=${previous.user.id} uid=${uid}`); }
+		try {
+			await account(previous.user.id).internalUnlink(uid);
+		} catch {
+			console.warn(`github.account.unlink_failed github=${previous.user.id} uid=${uid}`);
+		}
 	}
 	if (next?.webhookLinked) {
 		try {
 			if (refresh) await account(next.user.id).internalRefresh(uid, ids);
-			else await account(next.user.id).internalLink({ uid, login: next.user.login, installations: ids, at: next.connectedAt } satisfies Link);
+			else
+				await account(next.user.id).internalLink({
+					uid,
+					login: next.user.login,
+					installations: ids,
+					at: next.connectedAt,
+				} satisfies Link);
 		} catch (error) {
 			if (refresh) throw error;
 			console.warn(`github.account.link_failed github=${next.user.id} uid=${uid}`);

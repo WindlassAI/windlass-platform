@@ -71,29 +71,31 @@ export interface PlanInfo {
 }
 
 /** The Plan section of Settings and the upgrade page. `exempt` identifies an account using deployment limits where billing is enabled. */
-export type BillingView = { enabled: false; exempt?: true } | {
-	enabled: true;
-	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
-	plan: PlanId;
-	/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
-	status: "none" | "active" | "past_due" | "paused" | "ended";
-	period: BillingPeriod | null;
-	/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
-	periodEnd: number | null;
-	cancelAtPeriodEnd: boolean;
-	/** After a failed payment: when the account falls back to Free unless a payment succeeds. Nothing is deleted then. */
-	graceUntil: number | null;
-	/** The most overage may cost in a month, in US cents; `maxCapCents` is the highest it may be set to. */
-	capCents: number;
-	maxCapCents: number;
-	/** Overage minutes counted this month, and what the provider has been told of them. */
-	overageMinutes: number;
-	reportedMinutes: number;
-	/** Whether a customer portal can be opened: there is a customer at the provider. */
-	portal: boolean;
-	plans: PlanInfo[];
-	month: HostedMonth | null;
-};
+export type BillingView =
+	| { enabled: false; exempt?: true }
+	| {
+			enabled: true;
+			/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
+			plan: PlanId;
+			/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
+			status: "none" | "active" | "past_due" | "paused" | "ended";
+			period: BillingPeriod | null;
+			/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
+			periodEnd: number | null;
+			cancelAtPeriodEnd: boolean;
+			/** After a failed payment: when the account falls back to Free unless a payment succeeds. Nothing is deleted then. */
+			graceUntil: number | null;
+			/** The most overage may cost in a month, in US cents; `maxCapCents` is the highest it may be set to. */
+			capCents: number;
+			maxCapCents: number;
+			/** Overage minutes counted this month, and what the provider has been told of them. */
+			overageMinutes: number;
+			reportedMinutes: number;
+			/** Whether a customer portal can be opened: there is a customer at the provider. */
+			portal: boolean;
+			plans: PlanInfo[];
+			month: HostedMonth | null;
+	  };
 
 /** One agent's sandbox time today. */
 export interface UsageSession {

@@ -7,37 +7,62 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
 import { format } from "node:util";
-import { accountFor, limitedAccounts, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
+import {
+	accountFor,
+	limitedAccounts,
+	PROVIDER_TABLE,
+	providerAccounts,
+	recordProviderUsage,
+} from "../server/src/actors/provider-accounts.js";
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
-import { availableCatalog, hostedCatalog, listedHarness, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
+import {
+	availableCatalog,
+	hostedCatalog,
+	listedHarness,
+	selectedKey,
+	withSettingsKeys,
+} from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, validModelKey, type MachineSummary, type ModelProvider } from "../server/src/contract.js";
-import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
+import {
+	MODEL_PROVIDER_TABLES,
+	openModelKeyTransit,
+	modelProviderActions as actions,
+} from "../server/src/model-providers.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 
 const hex = () => randomBytes(32).toString("hex");
 const makeKeys = () => ({
-	openai: "sk-proj-" + hex(), anthropic: "sk-ant-api03-" + hex(),
-	google: "AIza" + hex().slice(0, 35), openrouter: "sk-or-v1-" + hex(),
+	openai: "sk-proj-" + hex(),
+	anthropic: "sk-ant-api03-" + hex(),
+	google: "AIza" + hex().slice(0, 35),
+	openrouter: "sk-or-v1-" + hex(),
 });
 
 function account(uid: string) {
 	const sql = new DatabaseSync(":memory:");
 	for (const table of MODEL_PROVIDER_TABLES) sql.exec(table);
-	const db: DefaultsDb = { async execute<Row>(query: string, ...args: unknown[]) {
-		return sql.prepare(query).all(...args as SQLInputValue[]) as Row[];
-	} };
+	const db: DefaultsDb = {
+		async execute<Row>(query: string, ...args: unknown[]) {
+			return sql.prepare(query).all(...(args as SQLInputValue[])) as Row[];
+		},
+	};
 	const profile = { uid, email: null, demo: false };
 	const context = { db, key: [uid], vars: { tokenGen: 0 }, conn: { params: { token: issueUserToken(profile, 0) } } };
-	return { sql, context, internal: { ...context, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } } } };
+	return {
+		sql,
+		context,
+		internal: { ...context, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } } },
+	};
 }
 
 test("model provider actions keep keys sealed and check with the provider", async t => {
 	let now = Date.now();
 	t.mock.method(Date, "now", () => now);
-	const keys = makeKeys(), bad = makeKeys();
+	const keys = makeKeys(),
+		bad = makeKeys();
 	const secrets = [...Object.values(keys), ...Object.values(bad)];
 	function hasSecret(value: unknown) {
 		const text = format("%o", value);
@@ -45,26 +70,48 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	}
 	const clean = (value: unknown) => assert.ok(!hasSecret(value), "credential in answer, storage or error");
 	let loggedSecret = false;
-	for (const method of ["debug", "info", "log", "warn", "error"] as const) t.mock.method(console, method, (...args: unknown[]) => { loggedSecret ||= hasSecret(args); });
+	for (const method of ["debug", "info", "log", "warn", "error"] as const)
+		t.mock.method(console, method, (...args: unknown[]) => {
+			loggedSecret ||= hasSecret(args);
+		});
 	const oldRoot = { id: "old", secret: Buffer.from(hex()) };
 	process.env.WLP_SIGNIN_KEYS = `current:${hex()},old:${oldRoot.secret}`;
 	const old = createSealer([oldRoot]);
-	const a = account("model-check-a"), b = account("model-check-b");
-	t.after(() => { a.sql.close(); b.sql.close(); });
+	const a = account("model-check-a"),
+		b = account("model-check-b");
+	t.after(() => {
+		a.sql.close();
+		b.sql.close();
+	});
 	const c = a.context;
-	const paths = { openai: "/v1/models", anthropic: "/v1/models", google: "/v1beta/models", openrouter: "/api/v1/models" };
+	const paths = {
+		openai: "/v1/models",
+		anthropic: "/v1/models",
+		google: "/v1beta/models",
+		openrouter: "/api/v1/models",
+	};
 	let mode: "normal" | "redirect" | "hold" | "timeout" = "normal";
-	let requests = 0, followed = false;
+	let requests = 0,
+		followed = false;
 	const gate = new EventEmitter();
 	const server = createServer(async (req, res) => {
 		requests++;
-		if (req.url === "/redirected") { followed = true; res.end(); return; }
+		if (req.url === "/redirected") {
+			followed = true;
+			res.end();
+			return;
+		}
 		const provider = MODEL_PROVIDERS.find(p => req.url?.startsWith("/" + p + "/"));
 		assert.ok(provider);
 		const path = req.url!.slice(provider.length + 1);
 		const metadata = provider === "openrouter" && path === "/api/v1/key";
 		assert.ok(req.method === "GET" && (metadata || path === paths[provider]), "wrong method or path");
-		const key = provider === "google" ? req.headers["x-goog-api-key"] : provider === "anthropic" ? req.headers["x-api-key"] : req.headers.authorization?.replace(/^Bearer /, "");
+		const key =
+			provider === "google"
+				? req.headers["x-goog-api-key"]
+				: provider === "anthropic"
+					? req.headers["x-api-key"]
+					: req.headers.authorization?.replace(/^Bearer /, "");
 		if (provider === "openai" || provider === "openrouter") assert.ok(req.headers.authorization?.startsWith("Bearer "));
 		if (provider === "openrouter" && !metadata) assert.ok(key === keys.openrouter);
 		if (provider === "anthropic") assert.equal(req.headers["anthropic-version"], "2023-06-01");
@@ -72,21 +119,47 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 			res.writeHead(401, "Rejected " + key).end(JSON.stringify({ error: key }));
 			return;
 		}
-		if (mode === "redirect") { res.writeHead(307, { location: "/redirected" }).end(); return; }
+		if (mode === "redirect") {
+			res.writeHead(307, { location: "/redirected" }).end();
+			return;
+		}
 		if (mode === "timeout") return;
-		if (mode === "hold") { gate.emit("started"); await once(gate, "release"); }
+		if (mode === "hold") {
+			gate.emit("started");
+			await once(gate, "release");
+		}
 		const ids = ["demo-model", String(key), String(key).slice(-12), ...Array.from({ length: 45 }, (_, i) => "m" + i)];
-		res.end(JSON.stringify(metadata ? { data: { label: key } } : provider === "google"
-			? { models: [
-				{ name: "models/gemini-embedding", supportedGenerationMethods: ["embedContent"] },
-				{ name: "models/gemini-flash-image", supportedGenerationMethods: ["generateContent"] },
-				...ids.map(id => ({ name: "models/" + id, supportedGenerationMethods: ["generateContent"] })),
-				{ name: "models/gemini-flash", supportedGenerationMethods: ["generateContent"] },
-			] } : { data: ids.map(id => ({ id, description: key, supported_parameters: id === "demo-model" ? [] : ["tools"] })) }));
+		res.end(
+			JSON.stringify(
+				metadata
+					? { data: { label: key } }
+					: provider === "google"
+						? {
+								models: [
+									{ name: "models/gemini-embedding", supportedGenerationMethods: ["embedContent"] },
+									{ name: "models/gemini-flash-image", supportedGenerationMethods: ["generateContent"] },
+									...ids.map(id => ({ name: "models/" + id, supportedGenerationMethods: ["generateContent"] })),
+									{ name: "models/gemini-flash", supportedGenerationMethods: ["generateContent"] },
+								],
+							}
+						: {
+								data: ids.map(id => ({
+									id,
+									description: key,
+									supported_parameters: id === "demo-model" ? [] : ["tools"],
+								})),
+							},
+			),
+		);
 	});
 	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-	t.after(() => { server.closeAllConnections(); server.close(); });
-	for (const provider of MODEL_PROVIDERS) process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] = `http://127.0.0.1:${(server.address() as AddressInfo).port}/${provider}`;
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
+	for (const provider of MODEL_PROVIDERS)
+		process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] =
+			`http://127.0.0.1:${(server.address() as AddressInfo).port}/${provider}`;
 
 	const save = (provider: ModelProvider, key: string) => actions.saveModelProvider(c, { provider, key });
 	const nonce = hex();
@@ -96,12 +169,18 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		await assert.rejects(actions.internalModelKey({ ...c, conn: { params: { token } } }, "openai", nonce), /internal/);
 	}
 	for (const call of [
-		() => actions.modelProviders(a.internal), () => actions.checkModelProvider(a.internal, "google"),
-		() => actions.removeModelProvider(a.internal, "google"), () => actions.saveModelProvider(a.internal, { provider: "google", key: keys.google }),
-	]) await assert.rejects(call, /for users/);
+		() => actions.modelProviders(a.internal),
+		() => actions.checkModelProvider(a.internal, "google"),
+		() => actions.removeModelProvider(a.internal, "google"),
+		() => actions.saveModelProvider(a.internal, { provider: "google", key: keys.google }),
+	])
+		await assert.rejects(call, /for users/);
 	for (const provider of MODEL_PROVIDERS) {
 		const wrong = provider === "openai" ? keys.anthropic : keys.openai;
-		await assert.rejects(save(provider, wrong), err => { clean(err); return err instanceof Error && err.message.includes("format"); });
+		await assert.rejects(save(provider, wrong), err => {
+			clean(err);
+			return err instanceof Error && err.message.includes("format");
+		});
 		// Anthropic issues more than the apiNN- shape; the check call decides, not the prefix.
 		if (provider === "anthropic") assert.ok(validModelKey(provider, "sk-ant-xyz-a-" + "b".repeat(40)));
 		const saved = await save(provider, keys[provider]);
@@ -132,7 +211,10 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 
 	const before = requests;
 	for (const call of [() => save("google", keys.google), () => actions.checkModelProvider(c, "openai")]) {
-		await assert.rejects(call, err => { clean(err); return err instanceof Error && err.message.includes("next minute"); });
+		await assert.rejects(call, err => {
+			clean(err);
+			return err instanceof Error && err.message.includes("next minute");
+		});
 	}
 	assert.equal(requests, before);
 	assert.ok((await actions.saveModelProvider(b.context, { provider: "openai", key: keys.openai })).ok);
@@ -148,9 +230,13 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	clean(sealed);
 	now += 59_999;
 	const payload = openModelKeyTransit(c.key[0], "openai", nonce, sealed);
-	const [row] = await c.db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = 'openai'");
+	const [row] = await c.db.execute<{ sealed: string; generation: string }>(
+		"SELECT sealed, generation FROM model_provider WHERE provider = 'openai'",
+	);
 	assert.equal(await actions.internalModelKeyGeneration(a.internal, "openai"), row.generation);
-	assert.ok(serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation);
+	assert.ok(
+		serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation,
+	);
 	assert.ok(serverSealer().open("model-key", owner, row.sealed) === keys.openai);
 	for (const subject of [JSON.stringify([b.context.key[0], "openai"]), JSON.stringify([c.key[0], "google"])]) {
 		assert.throws(() => serverSealer().open("model-key", subject, row.sealed));
@@ -179,7 +265,9 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	const timedOut = await actions.checkModelProvider(c, "openai");
 	clean(timedOut);
 	assert.ok(!timedOut.ok && timedOut.message);
-	const fetch = t.mock.method(globalThis, "fetch", () => { throw new Error("unexpected provider request"); });
+	const fetch = t.mock.method(globalThis, "fetch", () => {
+		throw new Error("unexpected provider request");
+	});
 	for (const url of ["http://example.test", "http://localhost.example.test", "ftp://127.0.0.1"]) {
 		process.env.WLP_OPENAI_BASE_URL = url;
 		assert.equal((await actions.checkModelProvider(c, "openai")).ok, false);
@@ -193,7 +281,9 @@ test("Settings key usage and refusals follow the provider and key generation acr
 	t.after(() => sql.close());
 	sql.exec(PROVIDER_TABLE);
 	sql.exec(TOKEN_USAGE_TABLE);
-	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('openai','first','','1234',1)");
+	sql.exec(
+		"INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('openai','first','','1234',1)",
+	);
 	type Db = Parameters<typeof recordProviderUsage>[0];
 	const db = { ...context.db, transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
 	const at = Date.now();
@@ -213,7 +303,16 @@ test("Settings key usage and refusals follow the provider and key generation acr
 	assert.equal(await recordProviderUsage(db, location, "first", refused), false);
 	assert.equal(accountFor(await providerAccounts(db, at), other), undefined);
 	await recordTurnTokens(db, "session", { ...receipt, seq: 2, tokens: 9, key: { ...key, generation: "second" } });
-	assert.deepEqual(sql.prepare("SELECT generation, SUM(tokens) FROM model_key_usage GROUP BY generation").all().map(row => Object.values(row)), [["first", 12], ["second", 9]]);
+	assert.deepEqual(
+		sql
+			.prepare("SELECT generation, SUM(tokens) FROM model_key_usage GROUP BY generation")
+			.all()
+			.map(row => Object.values(row)),
+		[
+			["first", 12],
+			["second", 9],
+		],
+	);
 	assert.equal(await tokensOn(db, at), 0);
 });
 
@@ -222,13 +321,36 @@ test("a Settings change retries a waiting subtask even while its former account 
 	const { sql, context } = account("owner");
 	sql.exec(PROVIDER_TABLE);
 	const location = { harness: "opencode" as const, place: "desk", provider: "google" as const };
-	sql.exec("INSERT INTO model_provider(provider,sealed,generation,last4,added_at) VALUES ('google','sealed','old','1234',1)");
+	sql.exec(
+		"INSERT INTO model_provider(provider,sealed,generation,last4,added_at) VALUES ('google','sealed','old','1234',1)",
+	);
 	const key = "settings/google/old";
 	const until = Date.now() + 60_000;
-	sql.prepare("INSERT INTO provider_usage VALUES (?,?,?,?)").run("settings", "google", "old", JSON.stringify({backoff:0,lastRefusal:Date.now(),lastSuccess:-1, account:{ ...location, key, state:"limited", limitedUntil:until, windows:[] }}));
+	sql.prepare("INSERT INTO provider_usage VALUES (?,?,?,?)").run(
+		"settings",
+		"google",
+		"old",
+		JSON.stringify({
+			backoff: 0,
+			lastRefusal: Date.now(),
+			lastSuccess: -1,
+			account: { ...location, key, state: "limited", limitedUntil: until, windows: [] },
+		}),
+	);
 	const retries: number[] = [];
-	const item = {id:"feature", revision:4, step:{kind:"subtasks"}, wait:{reason:"provider", accountKey:key}};
-	const ctx = { ...context, vars:{sessions:new Map()}, client:() => ({workItem:{get:() => ({ internalProviderChanged:async (revision:number) => retries.push(revision) })}}) };
+	const item = {
+		id: "feature",
+		revision: 4,
+		step: { kind: "subtasks" },
+		wait: { reason: "provider", accountKey: key },
+	};
+	const ctx = {
+		...context,
+		vars: { sessions: new Map() },
+		client: () => ({
+			workItem: { get: () => ({ internalProviderChanged: async (revision: number) => retries.push(revision) }) },
+		}),
+	};
 	await notifyProviderWaits(ctx as never, [item] as never, "settings");
 	assert.deepEqual(retries, [4]);
 	sql.close();
@@ -236,35 +358,84 @@ test("a Settings change retries a waiting subtask even while its former account 
 
 test("machine readiness and the OpenCode model menu use the owner's available providers", async () => {
 	const { parseRunnerFrame, reportFor } = await import("../server/src/runner/control.js");
-	const h = {id:"opencode" as const, signIn:"token" as const, adapter:"fixture", image:"fixture", keyRelay:true as const, machineProviders:["free"]};
-	const report = {kind:"report" as const, commandSandbox:{ok:true as const}, docker:{ok:true as const}, freeDiskBytes:null, sandboxes:[], harnesses:[h]};
+	const h = {
+		id: "opencode" as const,
+		signIn: "token" as const,
+		adapter: "fixture",
+		image: "fixture",
+		keyRelay: true as const,
+		machineProviders: ["free"],
+	};
+	const report = {
+		kind: "report" as const,
+		commandSandbox: { ok: true as const },
+		docker: { ok: true as const },
+		freeDiskBytes: null,
+		sandboxes: [],
+		harnesses: [h],
+	};
 	assert.deepEqual(parseRunnerFrame(JSON.stringify(reportFor(report, ["harness-key-relay"]))), report);
 	const legacy = reportFor(report, ["model-relay"]);
 	assert.ok(!("keyRelay" in legacy.harnesses[0]!) && !("machineProviders" in legacy.harnesses[0]!));
 	assert.deepEqual(parseRunnerFrame(JSON.stringify(legacy)), legacy);
-	const entry = { id: "opencode" as const, signIn: "none" as const, keyRelay: true as const, machineProviders: ["chatgpt"] };
+	const entry = {
+		id: "opencode" as const,
+		signIn: "none" as const,
+		keyRelay: true as const,
+		machineProviders: ["chatgpt"],
+	};
 	const saved = ["google" as const];
 	const effective = withSettingsKeys(entry, saved);
 	assert.equal(withSettingsKeys({ ...entry, keyRelay: undefined }, saved).signIn, "none");
-	assert.equal(withSettingsKeys({ ...entry, keyRelay: undefined, signIn: "token", method: undefined }, saved).method, undefined);
+	assert.equal(
+		withSettingsKeys({ ...entry, keyRelay: undefined, signIn: "token", method: undefined }, saved).method,
+		undefined,
+	);
 	assert.equal(effective.signIn, "token");
 	assert.equal(withSettingsKeys(entry, saved, "anthropic/claude").signIn, "none");
 	assert.equal(selectedKey("opencode", "google/gemini", saved), "google");
 	const models = ["anthropic/claude", "google/gemini", "openai/gpt"].map(id => ({ id, name: id, efforts: [] }));
 	const catalog = availableCatalog({ models, defaultModel: models[0]!.id, modes: [], checkedAt: 1 }, effective);
-	assert.deepEqual(catalog?.models.map(m => m.id), ["default", "google/gemini", "openai/gpt"]);
+	assert.deepEqual(
+		catalog?.models.map(m => m.id),
+		["default", "google/gemini", "openai/gpt"],
+	);
 	const unchecked = listedHarness({ ...entry, signIn: "unknown" }, saved, "key");
-	assert.deepEqual(availableCatalog({ models, defaultModel: "default", modes: [], checkedAt: 1 }, unchecked)?.models.map(m => m.id), ["default", "google/gemini"]);
+	assert.deepEqual(
+		availableCatalog({ models, defaultModel: "default", modes: [], checkedAt: 1 }, unchecked)?.models.map(m => m.id),
+		["default", "google/gemini"],
+	);
 	assert.equal(catalog?.defaultModel, "default");
-	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
-	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
-	assert.equal(withSettingsKeys({id: "codex", signIn: "none"}, ["google"]).signIn, "none");
+	assert.equal(
+		withSettingsKeys({ keyRelay: true, id: "claude", signIn: "token", method: undefined }, []).method,
+		"subscription",
+	);
+	assert.equal(
+		withSettingsKeys({ keyRelay: true, id: "claude", signIn: "token", method: undefined }, ["anthropic"]).method,
+		"api-key",
+	);
+	assert.equal(withSettingsKeys({ id: "codex", signIn: "none" }, ["google"]).signIn, "none");
 	// The Machines page: the machine's sign-in first, the owner's key on request, a signed-out machine on its key.
 	const claude = { keyRelay: true as const, id: "claude" as const, signIn: "token" as const };
-	assert.deepEqual(listedHarness(claude, ["anthropic"]), { ...claude, method: "subscription", machineSignIns: ["anthropic"] });
-	assert.deepEqual(listedHarness(claude, ["anthropic"], "key"), { ...claude, method: "api-key", platformKeys: ["anthropic"], machineSignIns: ["anthropic"], source: "key" });
+	assert.deepEqual(listedHarness(claude, ["anthropic"]), {
+		...claude,
+		method: "subscription",
+		machineSignIns: ["anthropic"],
+	});
+	assert.deepEqual(listedHarness(claude, ["anthropic"], "key"), {
+		...claude,
+		method: "api-key",
+		platformKeys: ["anthropic"],
+		machineSignIns: ["anthropic"],
+		source: "key",
+	});
 	assert.deepEqual(listedHarness({ ...claude, signIn: "none" }, ["anthropic"]), { ...claude, signIn: "none" });
-	const opencode = { keyRelay: true as const, id: "opencode" as const, signIn: "token" as const, machineProviders: ["chatgpt", "free"] };
+	const opencode = {
+		keyRelay: true as const,
+		id: "opencode" as const,
+		signIn: "token" as const,
+		machineProviders: ["chatgpt", "free"],
+	};
 	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).platformKeys, undefined);
 	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).machineSignIns, ["openai"]);
 	// An old runner relays no key, whatever the choice.
@@ -277,42 +448,104 @@ test("machine credential source lifecycle", async t => {
 	const { config } = await import("../server/src/config.js");
 	const before = config.machines;
 	config.machines = { runnerImage: null, publicUrl: "http://localhost" };
-	t.after(() => { config.machines = before; });
+	t.after(() => {
+		config.machines = before;
+	});
 	const { sql, context, internal } = account("owner");
 	t.after(() => sql.close());
 	await machineTables(context.db as never);
-	const report = { docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 8e9,
-		harnesses: [{ id: "claude", signIn: "token", keyRelay: true, adapter: "fixture", image: "fixture" }] };
-	sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)").run(JSON.stringify({ report, status: "online" }));
-	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at,check_ok) VALUES ('anthropic','first','fixture','1234',1,1)");
+	const report = {
+		docker: { ok: true },
+		commandSandbox: { ok: true },
+		sandboxes: [],
+		freeDiskBytes: 8e9,
+		harnesses: [{ id: "claude", signIn: "token", keyRelay: true, adapter: "fixture", image: "fixture" }],
+	};
+	sql
+		.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)")
+		.run(JSON.stringify({ report, status: "online" }));
+	sql.exec(
+		"INSERT INTO model_provider(provider,generation,sealed,last4,added_at,check_ok) VALUES ('anthropic','first','fixture','1234',1,1)",
+	);
 	const until = Date.now() + 60_000;
-	const usage = { backoff: 0, lastRefusal: Date.now(), lastSuccess: -1, account: {
-		key: "settings/anthropic/first", harness: "claude", provider: "anthropic", state: "limited", limitedUntil: until, windows: [] } };
+	const usage = {
+		backoff: 0,
+		lastRefusal: Date.now(),
+		lastSuccess: -1,
+		account: {
+			key: "settings/anthropic/first",
+			harness: "claude",
+			provider: "anthropic",
+			state: "limited",
+			limitedUntil: until,
+			windows: [],
+		},
+	};
 	sql.prepare("INSERT INTO provider_usage VALUES ('settings','anthropic','first',?)").run(JSON.stringify(usage));
 	const retried: number[] = [];
-	const item = { id: "feature", revision: 7, state: "waiting", step: { kind: "subtasks" }, wait: { reason: "provider", accountKey: usage.account.key } };
-	const ctx = { ...context, vars: { ...context.vars, sessions: new Map(), machines: new Map(), items: {
-		slots: new Map(), requests: new Map(), items: new Map([[item.id, item]]) } }, broadcast() {},
-		client: () => ({ workItem: { get: () => ({ internalProviderChanged: async (revision: number) => retried.push(revision) }) } }) };
+	const item = {
+		id: "feature",
+		revision: 7,
+		state: "waiting",
+		step: { kind: "subtasks" },
+		wait: { reason: "provider", accountKey: usage.account.key },
+	};
+	const ctx = {
+		...context,
+		vars: {
+			...context.vars,
+			sessions: new Map(),
+			machines: new Map(),
+			items: {
+				slots: new Map(),
+				requests: new Map(),
+				items: new Map([[item.id, item]]),
+			},
+		},
+		broadcast() {},
+		client: () => ({
+			workItem: { get: () => ({ internalProviderChanged: async (revision: number) => retried.push(revision) }) },
+		}),
+	};
 	const actions = user.config.actions!;
 	const choice = { machineId: "desk", harness: "claude", source: "key" as const };
 	const set = (input = choice) => actions.setCredentialSource(ctx as never, input);
 	const { plannerMachines } = await import("../server/src/machines/details.js");
 	const { choosePlacement } = await import("../server/src/factory/placement.js");
-	const place = async (machine: MachineSummary) => choosePlacement(
-		{ key: "part", title: "Part", brief: "", acceptance: [], dependsOn: [], owns: [], budget: { tokens: 100 }, agent: { harness: "claude" } },
-		{ preferred: { kind: "machine", machineId: machine.machineId }, alternatives: [] },
-		{ machines: plannerMachines([machine]), hostedProfiles: [], limited: limitedAccounts(await providerAccounts(context.db as never, Date.now())) },
-	);
+	const place = async (machine: MachineSummary) =>
+		choosePlacement(
+			{
+				key: "part",
+				title: "Part",
+				brief: "",
+				acceptance: [],
+				dependsOn: [],
+				owns: [],
+				budget: { tokens: 100 },
+				agent: { harness: "claude" },
+			},
+			{ preferred: { kind: "machine", machineId: machine.machineId }, alternatives: [] },
+			{
+				machines: plannerMachines([machine]),
+				hostedProfiles: [],
+				limited: limitedAccounts(await providerAccounts(context.db as never, Date.now())),
+			},
+		);
 	await t.test("only the owner can set a known agent and source on a paired machine", async () => {
 		await assert.rejects(actions.setCredentialSource(internal as never, choice), /for users/);
-		for (const input of [{ ...choice, harness: "constructor" }, { ...choice, harness: "windlass" }, { ...choice, source: "anthropic" }]) {
+		for (const input of [
+			{ ...choice, harness: "constructor" },
+			{ ...choice, harness: "windlass" },
+			{ ...choice, source: "anthropic" },
+		]) {
 			await assert.rejects(set(input as typeof choice), { code: "bad_input" });
 		}
 		await assert.rejects(set({ ...choice, harness: "codex" }), { code: "bad_input" });
 		await assert.rejects(set({ ...choice, machineId: "foreign" }), { code: "machine_not_found" });
 		await assert.rejects(actions.internalCredentialSource(ctx as never, "desk", "claude"), /internal/);
-		await assert.rejects(actions.internalCredentialSource(internal as never, "foreign", "claude"), { code: "machine_not_found" });
+		await assert.rejects(actions.internalCredentialSource(internal as never, "foreign", "claude"), {
+			code: "machine_not_found",
+		});
 	});
 	await t.test("the machine lists limits only for usable Settings keys", async () => {
 		const [machine] = await listMachines(ctx as never);

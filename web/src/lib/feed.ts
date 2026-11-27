@@ -9,7 +9,9 @@ import type { ItemSummary, SessionSummary } from "@contract";
 import { ownAgents } from "./repositories";
 import { itemStatus, matchesItem, matchesSession, sessionStatus, NO_FILTERS, type Filters } from "./workspace";
 
-export type FeedEntry = { kind: "agent"; session: SessionSummary; at: number } | { kind: "item"; item: ItemSummary; at: number };
+export type FeedEntry =
+	| { kind: "agent"; session: SessionSummary; at: number }
+	| { kind: "item"; item: ItemSummary; at: number };
 
 export interface Feed {
 	needs: FeedEntry[];
@@ -40,7 +42,11 @@ export function feedOf({ sessions, items, filters = NO_FILTERS, scope = "all" }:
 		for (const item of items ?? []) {
 			if (item.parent || !matchesItem(item, filters)) continue;
 			const status = itemStatus(item);
-			const entry: FeedEntry = { kind: "item", item, at: status === "needs" ? (item.question?.askedAt ?? item.updatedAt) : item.updatedAt };
+			const entry: FeedEntry = {
+				kind: "item",
+				item,
+				at: status === "needs" ? (item.question?.askedAt ?? item.updatedAt) : item.updatedAt,
+			};
 			// Queued, or waiting on CI or a free turn: still under way.
 			const going = status === "running" || (status === null && (item.state === "queued" || item.state === "waiting"));
 			(status === "needs" ? feed.needs : going ? feed.working : feed.recent).push(entry);
@@ -52,4 +58,5 @@ export function feedOf({ sessions, items, filters = NO_FILTERS, scope = "all" }:
 	return feed;
 }
 
-export const feedKey = (entry: FeedEntry): string => (entry.kind === "agent" ? `a:${entry.session.id}` : `i:${entry.item.id}`);
+export const feedKey = (entry: FeedEntry): string =>
+	entry.kind === "agent" ? `a:${entry.session.id}` : `i:${entry.item.id}`;

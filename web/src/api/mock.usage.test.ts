@@ -24,21 +24,32 @@ const numbers = (patch: Partial<UsageNumbers>): UsageNumbers => ({
 
 describe("the mock's words about a user's limits", () => {
 	it("are the server's", () => {
-		for (const sample of [numbers({}), numbers({ usedSeconds: 6300, heldSeconds: 900 }), numbers({ usedSeconds: 7188, leftSeconds: 12 }), numbers({ usedSeconds: 6880, heldSeconds: 300, leftSeconds: 20 })]) {
+		for (const sample of [
+			numbers({}),
+			numbers({ usedSeconds: 6300, heldSeconds: 900 }),
+			numbers({ usedSeconds: 7188, leftSeconds: 12 }),
+			numbers({ usedSeconds: 6880, heldSeconds: 300, leftSeconds: 20 }),
+		]) {
 			expect(mockAllowanceRefusal(sample)).toBe(allowanceRefusal(sample));
 		}
 		expect(mockSandboxRefusal(numbers({}))).toBe(sandboxRefusal(numbers({})));
-		expect(mockSandboxRefusal(numbers({ sandboxes: { kept: 1, limit: 1 } }))).toBe(sandboxRefusal(numbers({ sandboxes: { kept: 1, limit: 1 } })));
+		expect(mockSandboxRefusal(numbers({ sandboxes: { kept: 1, limit: 1 } }))).toBe(
+			sandboxRefusal(numbers({ sandboxes: { kept: 1, limit: 1 } })),
+		);
 		expect(MOCK_FREED_NOTE).toBe(freedNote("copied"));
 	});
 
 	it("spell a length of time as the server does", () => {
-		for (const seconds of [0, 1, 45, 60, 245, 599, 600, 725, 3599, 3600, 6600, 7200, 86_400]) expect(sandboxTime(seconds)).toBe(spellSeconds(seconds));
+		for (const seconds of [0, 1, 45, 60, 245, 599, 600, 725, 3599, 3600, 6600, 7200, 86_400])
+			expect(sandboxTime(seconds)).toBe(spellSeconds(seconds));
 	});
 });
 
 describe("the mock's usage", () => {
-	const auth = { token: "mock:user:u_usage:ada@example.com", profile: { uid: "u_usage", email: "ada@example.com", demo: false } };
+	const auth = {
+		token: "mock:user:u_usage:ada@example.com",
+		profile: { uid: "u_usage", email: "ada@example.com", demo: false },
+	};
 
 	it("adds up: what the agents ran is the day's total, and the day is the last of the history", async () => {
 		const client = createMockClient({ pace: 0 });
@@ -47,21 +58,25 @@ describe("the mock's usage", () => {
 		expect(view.today.reduce((sum, row) => sum + row.heldSeconds, 0)).toBe(view.heldSeconds);
 		expect(view.leftSeconds).toBe((view.allowanceSeconds ?? 0) - view.usedSeconds - view.heldSeconds);
 		expect(view.days.at(-1)).toEqual({ day: view.day, seconds: view.usedSeconds });
-		expect(view.days.some((entry) => entry.seconds === view.allowanceSeconds)).toBe(true);
+		expect(view.days.some(entry => entry.seconds === view.allowanceSeconds)).toBe(true);
 		expect(view.kept.length).toBe(view.sandboxes.kept);
 		client.dispose();
 	});
 
 	it("refuses a prompt on a day that is used up, and an agent without a sandbox when no place is left", async () => {
 		const used = createMockClient({ pace: 0, usage: "used" });
-		await expect(used.session(auth, "suite").prompt({ text: "go on" })).rejects.toMatchObject({ reason: "allowance_used" });
+		await expect(used.session(auth, "suite").prompt({ text: "go on" })).rejects.toMatchObject({
+			reason: "allowance_used",
+		});
 		used.dispose();
 		const full = createMockClient({ pace: 0, usage: "full" });
-		await expect(full.session(auth, "scratch").prompt({ text: "start" })).rejects.toMatchObject({ reason: "too_many_sandboxes" });
+		await expect(full.session(auth, "scratch").prompt({ text: "start" })).rejects.toMatchObject({
+			reason: "too_many_sandboxes",
+		});
 		const before = await full.user(auth).usage();
 		const after = await full.user(auth).freeSandbox("suite");
 		expect(after.sandboxes.kept).toBe(before.sandboxes.kept - 1);
-		expect(after.kept.some((sandbox) => sandbox.sessionId === "suite")).toBe(false);
+		expect(after.kept.some(sandbox => sandbox.sessionId === "suite")).toBe(false);
 		full.dispose();
 	});
 });

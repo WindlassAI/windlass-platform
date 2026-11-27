@@ -34,7 +34,7 @@ let index: Entry[] | null = null;
 function entries(): Entry[] {
 	if (index) return index;
 	index = docsWithSources().flatMap(({ page, source }) =>
-		docsSections(source).map((section) => ({
+		docsSections(source).map(section => ({
 			page,
 			id: section.id,
 			heading: section.heading,
@@ -59,8 +59,8 @@ export function terms(query: string): string[] {
 	return query
 		.toLowerCase()
 		.split(/[^a-z0-9_.@/-]+/)
-		.map((term) => term.replace(/^[-.]+|[-.]+$/g, ""))
-		.filter((term) => term.length > 0)
+		.map(term => term.replace(/^[-.]+|[-.]+$/g, ""))
+		.filter(term => term.length > 0)
 		.map(stem);
 }
 
@@ -76,7 +76,7 @@ function count(haystack: string, needle: string): number {
 
 function snippet(text: string, words: string[]): string {
 	const lower = text.toLowerCase();
-	const at = Math.min(...words.map((word) => lower.indexOf(word)).filter((position) => position !== -1));
+	const at = Math.min(...words.map(word => lower.indexOf(word)).filter(position => position !== -1));
 	if (!Number.isFinite(at)) return text.slice(0, 150) + (text.length > 150 ? "…" : "");
 	const start = Math.max(0, at - 50);
 	const end = Math.min(text.length, start + 160);
@@ -104,7 +104,7 @@ export function searchDocs(query: string, limit = 8): DocsHit[] {
 		if (!all) continue;
 		if (phrase.includes(" ") && (entry.lowerHeading.includes(phrase) || entry.lowerText.includes(phrase))) score += 10;
 		// The top of a page only wins for its title; its sections say more.
-		if (entry.id === "" && !words.some((word) => entry.lowerTitle.includes(word))) score -= 1;
+		if (entry.id === "" && !words.some(word => entry.lowerTitle.includes(word))) score -= 1;
 		hits.push({
 			page: entry.page,
 			sectionId: entry.id,

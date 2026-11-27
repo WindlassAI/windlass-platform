@@ -17,7 +17,21 @@
  */
 
 import type { E2bNetworkConfig } from "./network.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnectOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bMetric, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
+import {
+	E2bBusyError,
+	type E2bClient,
+	type E2bCommand,
+	type E2bCommandOptions,
+	type E2bConnectOptions,
+	type E2bConnection,
+	type E2bCreateInput,
+	E2bLimitError,
+	type E2bMetric,
+	type E2bSandboxInfo,
+	E2bSnapshotModeError,
+	type E2bSnapshotInfo,
+	type E2bState,
+} from "./client.js";
 
 /** What runs a fake sandbox's commands. */
 export interface FakeMachine {
@@ -38,7 +52,10 @@ export interface FakeMachine {
 }
 
 /** A command that has ended already, with this result. */
-export function finishedCommand(result: { exitCode?: number; stdout?: string; stderr?: string; error?: string }, options: E2bCommandOptions): E2bCommand {
+export function finishedCommand(
+	result: { exitCode?: number; stdout?: string; stderr?: string; error?: string },
+	options: E2bCommandOptions,
+): E2bCommand {
 	if (result.stdout) options.onStdout?.(result.stdout);
 	if (result.stderr) options.onStderr?.(result.stderr);
 	return {
@@ -56,17 +73,22 @@ export class ScriptedMachine implements FakeMachine {
 	readonly commands: Array<{ command: string; options: E2bCommandOptions; stdin: string }> = [];
 	readonly files = new Map<string, string>();
 
-	constructor(private readonly answer: (command: string, stdin: () => string) => { exitCode?: number; stdout?: string; stderr?: string; error?: string } | undefined = () => undefined) {}
+	constructor(
+		private readonly answer: (
+			command: string,
+			stdin: () => string,
+		) => { exitCode?: number; stdout?: string; stderr?: string; error?: string } | undefined = () => undefined,
+	) {}
 
 	async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
 		const entry = { command, options, stdin: "" };
 		this.commands.push(entry);
 		let closed: () => void = () => {};
-		const stdinClosed = new Promise<void>((resolve) => (closed = resolve));
+		const stdinClosed = new Promise<void>(resolve => (closed = resolve));
 		if (!options.stdin) closed();
 		return {
 			pid: this.commands.length,
-			sendStdin: async (data) => {
+			sendStdin: async data => {
 				entry.stdin += data;
 			},
 			closeStdin: async () => closed(),
@@ -143,7 +165,10 @@ export class FakeE2b implements E2bClient {
 	/** False: the account takes no filesystem-only snapshot (`E2bSnapshotModeError`). */
 	filesystemSnapshots = true;
 	/** The build each template's default tag points at; a template not here is unknown. */
-	readonly builds = new Map<string, string>([["windlass-platform-sandbox", "build-1"], ["windlass-platform-sandbox-shots", "shots-1"]]);
+	readonly builds = new Map<string, string>([
+		["windlass-platform-sandbox", "build-1"],
+		["windlass-platform-sandbox-shots", "shots-1"],
+	]);
 	/** What `metrics` answers for a sandbox, by id: its samples. None: no samples. */
 	readonly samples = new Map<string, E2bMetric[]>();
 	private next = 1;
@@ -176,7 +201,13 @@ export class FakeE2b implements E2bClient {
 	/** A sandbox as if someone else had made it: for the tests of what is ours and what is not. */
 	async plant(metadata: Record<string, string>, state: E2bState = "running"): Promise<string> {
 		const before = this.calls.length;
-		const connection = await this.create({ template: "someone-elses", timeoutMs: 3_600_000, metadata, envs: {}, onTimeout: "kill" });
+		const connection = await this.create({
+			template: "someone-elses",
+			timeoutMs: 3_600_000,
+			metadata,
+			envs: {},
+			onTimeout: "kill",
+		});
 		if (state === "paused") await this.pause(connection.sandboxId);
 		// Not a call of the provider's.
 		this.calls.length = before;
@@ -189,11 +220,13 @@ export class FakeE2b implements E2bClient {
 		this.calls.push(`create ${input.template}`);
 		await this.settle();
 		const limit = this.options.accountMaxRunning ?? 10;
-		if ([...this.sandboxes.values()].filter((sandbox) => sandbox.state === "running").length >= limit) throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
+		if ([...this.sandboxes.values()].filter(sandbox => sandbox.state === "running").length >= limit)
+			throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
 		const id = `fake${String(this.next++).padStart(4, "0")}${Math.random().toString(36).slice(2, 10)}`;
 		const now = this.now();
 		const snapshot = this.snapshots.get(input.template);
-		if (snapshot === undefined && input.template.includes(":")) throw new Error(`fake E2B: no template or snapshot ${input.template}`);
+		if (snapshot === undefined && input.template.includes(":"))
+			throw new Error(`fake E2B: no template or snapshot ${input.template}`);
 		const machine: FakeMachine = (await this.options.machine?.(id, snapshot?.from)) ?? new ScriptedMachine();
 		const scripted: unknown = machine;
 		if (snapshot !== undefined && snapshot.from instanceof Map && scripted instanceof ScriptedMachine) {
@@ -218,7 +251,11 @@ export class FakeE2b implements E2bClient {
 		return this.connection(id);
 	}
 
-	async connect(sandboxId: string, timeoutMs: number, options: E2bConnectOptions = {}): Promise<E2bConnection | undefined> {
+	async connect(
+		sandboxId: string,
+		timeoutMs: number,
+		options: E2bConnectOptions = {},
+	): Promise<E2bConnection | undefined> {
 		this.calls.push(`connect ${sandboxId} ${timeoutMs}${options.reboot ? " reboot" : ""}`);
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
@@ -226,7 +263,8 @@ export class FakeE2b implements E2bClient {
 		const now = this.now();
 		if (sandbox.state === "paused") {
 			const limit = this.options.accountMaxRunning ?? 10;
-			if ([...this.sandboxes.values()].filter((other) => other.state === "running").length >= limit) throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
+			if ([...this.sandboxes.values()].filter(other => other.state === "running").length >= limit)
+				throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
 			sandbox.state = "running";
 			sandbox.runningSince = now;
 			// A resume starts the sandbox's running time again.
@@ -252,7 +290,13 @@ export class FakeE2b implements E2bClient {
 		this.calls.push(`list ${JSON.stringify(query.metadata)} ${(query.state ?? ["running", "paused"]).join(",")}`);
 		await this.settle();
 		const states = query.state ?? ["running", "paused"];
-		return [...this.sandboxes.values()].filter((sandbox) => states.includes(sandbox.state) && Object.entries(query.metadata).every(([key, value]) => sandbox.metadata[key] === value)).map((sandbox) => this.infoOf(sandbox));
+		return [...this.sandboxes.values()]
+			.filter(
+				sandbox =>
+					states.includes(sandbox.state) &&
+					Object.entries(query.metadata).every(([key, value]) => sandbox.metadata[key] === value),
+			)
+			.map(sandbox => this.infoOf(sandbox));
 	}
 
 	async setTimeout(sandboxId: string, timeoutMs: number): Promise<void> {
@@ -260,7 +304,8 @@ export class FakeE2b implements E2bClient {
 		if (this.failSetTimeout !== null) throw this.failSetTimeout;
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
-		if (sandbox === undefined || sandbox.state !== "running") throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
+		if (sandbox === undefined || sandbox.state !== "running")
+			throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
 		sandbox.endAt = this.now() + timeoutMs;
 	}
 
@@ -282,7 +327,8 @@ export class FakeE2b implements E2bClient {
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
 		// E2B's endpoint is for a running sandbox.
-		if (sandbox === undefined || sandbox.state !== "running") throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
+		if (sandbox === undefined || sandbox.state !== "running")
+			throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
 		sandbox.network = network ? structuredClone(network) : null;
 		await sandbox.machine.network?.(sandbox.network);
 	}
@@ -301,9 +347,14 @@ export class FakeE2b implements E2bClient {
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
 		if (sandbox === undefined) throw new Error(`fake E2B: sandbox ${sandboxId} not found`);
-		if (!this.filesystemSnapshots) throw new E2bSnapshotModeError("fake E2B: filesystem-only snapshots are not enabled for this team");
+		if (!this.filesystemSnapshots)
+			throw new E2bSnapshotModeError("fake E2B: filesystem-only snapshots are not enabled for this team");
 		const snapshotId = `fake-team/${name}:default`;
-		this.snapshots.set(snapshotId, { names: [snapshotId], template: sandbox.template, from: sandbox.machine.snapshot?.() });
+		this.snapshots.set(snapshotId, {
+			names: [snapshotId],
+			template: sandbox.template,
+			from: sandbox.machine.snapshot?.(),
+		});
 		return { snapshotId, names: [snapshotId] };
 	}
 
@@ -319,7 +370,7 @@ export class FakeE2b implements E2bClient {
 
 	async metrics(sandboxId: string, sinceMs: number): Promise<E2bMetric[]> {
 		this.calls.push(`metrics ${sandboxId}`);
-		return (this.samples.get(sandboxId) ?? []).filter((one) => one.at >= sinceMs);
+		return (this.samples.get(sandboxId) ?? []).filter(one => one.at >= sinceMs);
 	}
 
 	async templateBuild(template: string): Promise<string | null> {
@@ -332,7 +383,8 @@ export class FakeE2b implements E2bClient {
 	/** Before every call: sandboxes whose timeout has run out on the clock are paused or killed, as E2B does by itself. */
 	private async settle(): Promise<void> {
 		const now = this.now();
-		for (const sandbox of [...this.sandboxes.values()]) if (sandbox.state === "running" && sandbox.endAt <= now) await this.timeOut(sandbox);
+		for (const sandbox of [...this.sandboxes.values()])
+			if (sandbox.state === "running" && sandbox.endAt <= now) await this.timeOut(sandbox);
 	}
 
 	private async timeOut(sandbox: FakeSandbox): Promise<void> {
@@ -371,7 +423,8 @@ export class FakeE2b implements E2bClient {
 	private connection(sandboxId: string): E2bConnection {
 		const running = (): FakeSandbox => {
 			const sandbox = this.sandboxes.get(sandboxId);
-			if (sandbox === undefined || sandbox.state !== "running") throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
+			if (sandbox === undefined || sandbox.state !== "running")
+				throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
 			return sandbox;
 		};
 		return {
@@ -381,7 +434,7 @@ export class FakeE2b implements E2bClient {
 				const sandbox = running();
 				return sandbox.machine.start(command, { ...options, envs: { ...sandbox.envs, ...options.envs } });
 			},
-			readFile: async (path) => running().machine.readFile(path),
+			readFile: async path => running().machine.readFile(path),
 			writeFile: async (path, content) => running().machine.writeFile(path, content),
 		};
 	}

@@ -70,7 +70,8 @@ export interface SignInHolderOptions {
 }
 
 /** The sentence for a stored sign-in this server cannot open. The reason is logged for whoever runs the server. */
-export const SIGN_IN_UNREADABLE = "Your saved ChatGPT sign-in can no longer be read by this server. Sign in with ChatGPT again, then send the prompt once more.";
+export const SIGN_IN_UNREADABLE =
+	"Your saved ChatGPT sign-in can no longer be read by this server. Sign in with ChatGPT again, then send the prompt once more.";
 
 const NOTHING: StoredSignIn = { sealed: null, generation: 0, shortNoted: false };
 
@@ -98,12 +99,12 @@ export class SignInHolder {
 
 	constructor(private readonly options: SignInHolderOptions) {
 		this.uid = options.uid;
-		this.log = options.log ?? ((line) => console.log(line));
+		this.log = options.log ?? (line => console.log(line));
 	}
 
 	/** Who is signed in and when the saved access token expires; null when nobody is. Never a token. */
 	async status(): Promise<ChatgptAccount | null> {
-		const row = this.unsaved ?? await this.options.store.load();
+		const row = this.unsaved ?? (await this.options.store.load());
 		const sealed = row?.sealed;
 		if (!sealed) return null;
 		let material: SignInMaterial;
@@ -121,7 +122,9 @@ export class SignInHolder {
 					const latest = await this.options.store.load();
 					if (latest?.sealed === sealed) await this.options.store.save({ ...latest, sealed: this.seal(material) });
 				} catch {
-					this.log(`[wlp] sign-in.reseal_failed uid=${this.uid}: could not re-seal the saved sign-in; the next read will retry`);
+					this.log(
+						`[wlp] sign-in.reseal_failed uid=${this.uid}: could not re-seal the saved sign-in; the next read will retry`,
+					);
 				}
 			});
 		}
@@ -164,7 +167,10 @@ export class SignInHolder {
 		this.running?.abort();
 		await this.exclusive(async () => {
 			const row = (await this.options.store.load()) ?? NOTHING;
-			await this.options.store.save({ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false }, pendingId);
+			await this.options.store.save(
+				{ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false },
+				pendingId,
+			);
 			this.unsaved = null;
 			this.kept = null;
 		});
@@ -180,7 +186,8 @@ export class SignInHolder {
 			try {
 				this.unsaved = null;
 				const row = (await this.options.store.load()) ?? NOTHING;
-				if (row.sealed !== null) await this.options.store.save({ sealed: null, generation: row.generation + 1, shortNoted: false });
+				if (row.sealed !== null)
+					await this.options.store.save({ sealed: null, generation: row.generation + 1, shortNoted: false });
 			} finally {
 				this.kept = null;
 			}
@@ -231,7 +238,8 @@ export class SignInHolder {
 		}
 		// Before the token is returned: a refreshed sign-in is in the store, or nobody gets its token.
 		if (changed) await this.save(row);
-		if (refreshed) this.log(`[wlp] sign-in.refreshed uid=${this.uid}: Windlass refreshed the sign-in, and the new one is saved`);
+		if (refreshed)
+			this.log(`[wlp] sign-in.refreshed uid=${this.uid}: Windlass refreshed the sign-in, and the new one is saved`);
 		if (!answer.ok) throw answer.error;
 		if (shortSaid) {
 			const seconds = Math.round(Math.max(0, answer.token.expiresAt - Date.now()) / 1000);
@@ -250,7 +258,9 @@ export class SignInHolder {
 		} catch (error) {
 			this.unsaved = { ...row };
 			const reason = errorText(error);
-			this.log(`[wlp] sign-in.save_failed uid=${this.uid}: the sign-in was refreshed and could not be saved (${reason}); no token of it is handed out until it is, and the save is tried again at the next request`);
+			this.log(
+				`[wlp] sign-in.save_failed uid=${this.uid}: the sign-in was refreshed and could not be saved (${reason}); no token of it is handed out until it is, and the save is tried again at the next request`,
+			);
 			throw new Error(`the refreshed sign-in could not be saved: ${reason}`);
 		}
 	}
@@ -288,7 +298,9 @@ export class SignInHolder {
 			if (!(error instanceof SealError)) throw error;
 			if (!this.unreadableSaid) {
 				this.unreadableSaid = true;
-				this.log(`[wlp] sign-in.unreadable uid=${this.uid}: the stored sign-in does not open: ${error.message}. The user is told to sign in with ChatGPT again`);
+				this.log(
+					`[wlp] sign-in.unreadable uid=${this.uid}: the stored sign-in does not open: ${error.message}. The user is told to sign in with ChatGPT again`,
+				);
 			}
 			throw new SandboxUserError(SIGN_IN_UNREADABLE);
 		}

@@ -20,7 +20,15 @@
  * its age, until when it holds, and the way to forget it. What a server is and whether it runs is a
  * session's to know, so that list has neither.
  */
-import type { GithubId, PendingQuestion, RepositoryApproval, RepositoryView, SessionServer, SessionServers, SessionSummary } from "@contract";
+import type {
+	GithubId,
+	PendingQuestion,
+	RepositoryApproval,
+	RepositoryView,
+	SessionServer,
+	SessionServers,
+	SessionSummary,
+} from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, day, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -32,16 +40,42 @@ import { RefreshIcon, WarnIcon } from "./Icons";
 type Tone = "on" | "ask" | "bad" | "off";
 
 /** How a server's state reads: a word, what to add to it, and its tone. `busy` is whether a turn of the session is in progress. */
-export function serverState(server: Pick<SessionServer, "state" | "remote" | "tools" | "approval">, busy: boolean): { word: string; fact: string | null; tone: Tone } {
-	const tools = server.tools === null ? null : server.tools === 1 ? "1 tool" : server.tools === 0 ? "no tools" : `${server.tools} tools`;
+export function serverState(
+	server: Pick<SessionServer, "state" | "remote" | "tools" | "approval">,
+	busy: boolean,
+): { word: string; fact: string | null; tone: Tone } {
+	const tools =
+		server.tools === null
+			? null
+			: server.tools === 1
+				? "1 tool"
+				: server.tools === 0
+					? "no tools"
+					: `${server.tools} tools`;
 	switch (server.state) {
 		case "running":
 			// Nothing runs between turns: Windlass starts it again with the next one.
-			return { word: busy ? (server.remote ? "connected" : "running") : server.remote ? "connects with each turn" : "starts with each turn", fact: tools, tone: "on" };
+			return {
+				word: busy
+					? server.remote
+						? "connected"
+						: "running"
+					: server.remote
+						? "connects with each turn"
+						: "starts with each turn",
+				fact: tools,
+				tone: "on",
+			};
 		case "starting":
 			return { word: server.remote ? "connecting" : "starting", fact: null, tone: "on" };
 		case "waiting":
-			return server.approval ? { word: "approved", fact: server.remote ? "connects with the next turn" : "starts with the next turn", tone: "on" } : { word: "waits for your approval", fact: null, tone: "ask" };
+			return server.approval
+				? {
+						word: "approved",
+						fact: server.remote ? "connects with the next turn" : "starts with the next turn",
+						tone: "on",
+					}
+				: { word: "waits for your approval", fact: null, tone: "ask" };
 		case "failed":
 			return { word: server.remote ? "could not connect" : "could not start", fact: null, tone: "bad" };
 		default:
@@ -51,7 +85,9 @@ export function serverState(server: Pick<SessionServer, "state" | "remote" | "to
 
 /** What the section says of the project its approvals are remembered for. */
 function remembered(project: SessionServers["project"]): string {
-	return project.kind === "session" ? "Approvals are remembered for this session only: it has no repository." : `Approvals are remembered for ${project.label}.`;
+	return project.kind === "session"
+		? "Approvals are remembered for this session only: it has no repository."
+		: `Approvals are remembered for ${project.label}.`;
 }
 
 function Until({ at }: { at: number }) {
@@ -62,7 +98,17 @@ function Until({ at }: { at: number }) {
 	);
 }
 
-function ApproveDialog({ sessionId, server, onClose, onDone }: { sessionId: string; server: SessionServer; onClose(): void; onDone(state: SessionServers): void }) {
+function ApproveDialog({
+	sessionId,
+	server,
+	onClose,
+	onDone,
+}: {
+	sessionId: string;
+	server: SessionServer;
+	onClose(): void;
+	onDone(state: SessionServers): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const details = useId();
@@ -94,14 +140,24 @@ function ApproveDialog({ sessionId, server, onClose, onDone }: { sessionId: stri
 					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
 						Not now
 					</button>
-					<button type="button" className="button button-primary" onClick={approve} disabled={busy} aria-describedby={details}>
+					<button
+						type="button"
+						className="button button-primary"
+						onClick={approve}
+						disabled={busy}
+						aria-describedby={details}
+					>
 						{busy ? "Approving…" : "Approve for this project"}
 					</button>
 				</>
 			}
 		>
 			<div className="server-ask">
-				<pre className="server-ask-subject" tabIndex={0} aria-label={server.remote ? "The address it is reached at" : "The command that starts it"}>
+				<pre
+					className="server-ask-subject"
+					tabIndex={0}
+					aria-label={server.remote ? "The address it is reached at" : "The command that starts it"}
+				>
 					{server.subject}
 				</pre>
 				{server.file ? (
@@ -110,7 +166,7 @@ function ApproveDialog({ sessionId, server, onClose, onDone }: { sessionId: stri
 					</p>
 				) : null}
 				<div className="server-ask-details" id={details}>
-					{asks.details.map((detail) => (
+					{asks.details.map(detail => (
 						<p key={detail}>{detail}</p>
 					))}
 				</div>
@@ -175,13 +231,20 @@ function Server({
 				</p>
 			)}
 			{server.reason ? <p className="server-reason">{server.reason}</p> : null}
-			{server.earlier || forgot === "earlier" ? <p className="server-reason">Its definition changed since you approved it.</p> : null}
+			{server.earlier || forgot === "earlier" ? (
+				<p className="server-reason">Its definition changed since you approved it.</p>
+			) : null}
 			{server.asks ? (
 				<p className="server-foot">
 					{asked ? (
 						<span className="server-held">asked in the conversation</span>
 					) : (
-						<button type="button" className="button button-outline button-small" onClick={onApprove} aria-label={`Approve the MCP server ${server.name}`}>
+						<button
+							type="button"
+							className="button button-outline button-small"
+							onClick={onApprove}
+							aria-label={`Approve the MCP server ${server.name}`}
+						>
 							Approve…
 						</button>
 					)}
@@ -195,7 +258,13 @@ function Server({
 								{server.approval ? "approved until " : "earlier approval until "}
 								<Until at={held.expiresAt} />
 							</span>
-							<button type="button" className="link server-forget" onClick={onForget} disabled={acting} aria-label={`Forget the approval of the MCP server ${server.name}`}>
+							<button
+								type="button"
+								className="link server-forget"
+								onClick={onForget}
+								disabled={acting}
+								aria-label={`Forget the approval of the MCP server ${server.name}`}
+							>
 								{acting ? "Forgetting…" : "Forget"}
 							</button>
 						</>
@@ -213,7 +282,17 @@ function Server({
 	);
 }
 
-export function ServersSection({ sessionId, summary, question, onServers }: { sessionId: string; summary: SessionSummary; question: PendingQuestion | null; onServers?(state: SessionServers | null): void }) {
+export function ServersSection({
+	sessionId,
+	summary,
+	question,
+	onServers,
+}: {
+	sessionId: string;
+	summary: SessionSummary;
+	question: PendingQuestion | null;
+	onServers?(state: SessionServers | null): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<SessionServers | null>(null);
@@ -236,7 +315,7 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 			.session(auth, sessionId)
 			.servers()
 			.then(
-				(next) => {
+				next => {
 					if (!current) return;
 					setState(next);
 					setError(null);
@@ -268,10 +347,10 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 		if (forgetting !== null) return;
 		setForgetting(name);
 		setFailure(null);
-		const before = state?.servers.find((server) => server.name === name);
+		const before = state?.servers.find(server => server.name === name);
 		try {
 			setState(await client.session(auth, sessionId).forgetServer(name));
-			setForgot((known) => ({ ...known, [name]: before?.approval ? "approval" : "earlier" }));
+			setForgot(known => ({ ...known, [name]: before?.approval ? "approval" : "earlier" }));
 		} catch (failed) {
 			setFailure({ name, message: explain(failed) });
 		} finally {
@@ -281,10 +360,11 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 
 	const servers = state?.servers ?? [];
 	// The project's, which wait for an approval, and the user's own, which Windlass starts without one.
-	const projects = servers.filter((server) => server.origin !== "user");
-	const own = servers.filter((server) => server.origin === "user");
-	const inDialog = approving === null ? null : (projects.find((server) => server.name === approving && server.asks) ?? null);
-	const anyHeld = projects.some((server) => server.approval || server.earlier);
+	const projects = servers.filter(server => server.origin !== "user");
+	const own = servers.filter(server => server.origin === "user");
+	const inDialog =
+		approving === null ? null : (projects.find(server => server.name === approving && server.asks) ?? null);
+	const anyHeld = projects.some(server => server.approval || server.earlier);
 	const busy = summary.status !== "idle";
 	const row = (server: SessionServer) => (
 		<Server
@@ -304,7 +384,14 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 		<section className="panel-section" aria-labelledby="panel-servers">
 			<h2 className="panel-title" id="panel-servers">
 				MCP servers
-				<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Read this agent's MCP servers again" title="Reload">
+				<button
+					type="button"
+					className="icon-button icon-button-small"
+					onClick={load}
+					disabled={loading}
+					aria-label="Read this agent's MCP servers again"
+					title="Reload"
+				>
 					<RefreshIcon size={13} className={loading ? "spin" : undefined} />
 				</button>
 			</h2>
@@ -320,7 +407,9 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 					</p>
 				)
 			) : servers.length === 0 ? (
-				<p className="panel-empty">Neither the project's configuration nor your settings name an MCP server any more.</p>
+				<p className="panel-empty">
+					Neither the project's configuration nor your settings name an MCP server any more.
+				</p>
 			) : (
 				<>
 					{projects.length > 0 ? (
@@ -329,7 +418,9 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 							<ul className="servers" aria-label="The MCP servers this session's project names">
 								{projects.map(row)}
 							</ul>
-							{anyHeld || Object.keys(forgot).length > 0 ? <p className="panel-empty server-note">{state.forgetting}</p> : null}
+							{anyHeld || Object.keys(forgot).length > 0 ? (
+								<p className="panel-empty server-note">{state.forgetting}</p>
+							) : null}
 						</>
 					) : null}
 					{own.length > 0 ? (
@@ -344,7 +435,9 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 							<ul className="servers" aria-label="Your own MCP servers, from your settings">
 								{own.map(row)}
 							</ul>
-							{state.accountSecrets && own.some((server) => server.state === "failed") ? <p className="panel-empty server-note">{state.accountSecrets}</p> : null}
+							{state.accountSecrets && own.some(server => server.state === "failed") ? (
+								<p className="panel-empty server-note">{state.accountSecrets}</p>
+							) : null}
 						</>
 					) : null}
 				</>
@@ -354,7 +447,7 @@ export function ServersSection({ sessionId, summary, question, onServers }: { se
 					sessionId={sessionId}
 					server={inDialog}
 					onClose={() => setApproving(null)}
-					onDone={(next) => {
+					onDone={next => {
 						setState(next);
 						setApproving(null);
 					}}
@@ -374,7 +467,21 @@ function approvedAgo(at: number, now: number): string {
  * The approvals of MCP servers the user's actor remembers for one repository, on that repository's
  * page. `onChanged` is handed the page as it is after an approval was forgotten.
  */
-export function RepositoryApprovals({ repositoryId, name, approvals, forgetting, now, onChanged }: { repositoryId: GithubId; name: string; approvals: RepositoryApproval[]; forgetting: string; now: number; onChanged(view: RepositoryView): void }) {
+export function RepositoryApprovals({
+	repositoryId,
+	name,
+	approvals,
+	forgetting,
+	now,
+	onChanged,
+}: {
+	repositoryId: GithubId;
+	name: string;
+	approvals: RepositoryApproval[];
+	forgetting: string;
+	now: number;
+	onChanged(view: RepositoryView): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [acting, setActing] = useState<string | null>(null);
@@ -399,16 +506,22 @@ export function RepositoryApprovals({ repositoryId, name, approvals, forgetting,
 	return (
 		<>
 			{approvals.length === 0 ? (
-				<p className="usage-empty">No approval of an MCP server is remembered for {name}. An agent asks before it starts a server the repository names.</p>
+				<p className="usage-empty">
+					No approval of an MCP server is remembered for {name}. An agent asks before it starts a server the repository
+					names.
+				</p>
 			) : (
 				<ul className="servers repo-approvals" aria-label={`The approvals of MCP servers remembered for ${name}`}>
-					{approvals.map((approval) => (
+					{approvals.map(approval => (
 						<li key={approval.name} className="server">
 							<p className="server-head">
 								<span className="server-name">{approval.name}</span>
 								<span className="server-state">
 									approved{" "}
-									<time dateTime={new Date(approval.approvedAt).toISOString()} title={absoluteTime(approval.approvedAt)}>
+									<time
+										dateTime={new Date(approval.approvedAt).toISOString()}
+										title={absoluteTime(approval.approvedAt)}
+									>
 										{approvedAgo(approval.approvedAt, now)}
 									</time>
 								</span>
@@ -418,7 +531,13 @@ export function RepositoryApprovals({ repositoryId, name, approvals, forgetting,
 									holds until <Until at={approval.expiresAt} />
 									{approval.definitions > 1 ? ` · ${plural(approval.definitions, "definition")} of it approved` : ""}
 								</span>
-								<button type="button" className="link server-forget" onClick={() => void forget(approval.name)} disabled={acting !== null} aria-label={`Forget the approval of the MCP server ${approval.name}`}>
+								<button
+									type="button"
+									className="link server-forget"
+									onClick={() => void forget(approval.name)}
+									disabled={acting !== null}
+									aria-label={`Forget the approval of the MCP server ${approval.name}`}
+								>
 									{acting === approval.name ? "Forgetting…" : "Forget"}
 								</button>
 							</p>

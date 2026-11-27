@@ -14,7 +14,20 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, type HarnessId, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemMode, type ItemState, type ItemSummary } from "@contract";
+import {
+	type GithubId,
+	type HarnessId,
+	ITEM_PAGE_DEFAULT,
+	MAX_ACCEPTANCE_CRITERIA,
+	MAX_ITEM_BODY_CHARS,
+	MAX_NOTE_CHARS,
+	MAX_TITLE_CHARS,
+	type CreateItemInput,
+	type ItemCursor,
+	type ItemMode,
+	type ItemState,
+	type ItemSummary,
+} from "@contract";
 import { checkRunPlace } from "../../../server/src/factory/default-place";
 import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -69,15 +82,21 @@ export interface EndedPages {
  * feed does not carry (it carries only the newest ended ones) shows as it was read. One that ended
  * since and is filed among those shown joins them (anywhere, once `cursor` is null: the last page is in).
  */
-export function mergeEnded(read: readonly ItemSummary[], live: readonly ItemSummary[] | null, cursor: ItemCursor | null): ItemSummary[] {
-	const current = new Map((live ?? []).map((item) => [item.id, item]));
+export function mergeEnded(
+	read: readonly ItemSummary[],
+	live: readonly ItemSummary[] | null,
+	cursor: ItemCursor | null,
+): ItemSummary[] {
+	const current = new Map((live ?? []).map(item => [item.id, item]));
 	const rows = new Map<string, ItemSummary>();
 	for (const item of read) {
 		const now = current.get(item.id) ?? item;
 		if (ENDED_STATES.has(now.state)) rows.set(item.id, now);
 	}
 	// Ended since, and filed among the rows shown (or anywhere, once the last page is read).
-	for (const item of live ?? []) if (ENDED_STATES.has(item.state) && !rows.has(item.id) && (cursor === null || onOrBefore(item, cursor))) rows.set(item.id, item);
+	for (const item of live ?? [])
+		if (ENDED_STATES.has(item.state) && !rows.has(item.id) && (cursor === null || onOrBefore(item, cursor)))
+			rows.set(item.id, item);
 	return [...rows.values()].sort(byFiling);
 }
 
@@ -86,7 +105,14 @@ export function useEndedPages(open: boolean, filters: FeedFilters, live: readonl
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const key = `${filters.repository ?? ""}|${filters.from ?? ""}`;
-	const [state, setState] = useState<{ key: string; read: ItemSummary[]; cursor: ItemCursor | null; started: boolean; loading: boolean; error: string | null }>({ key, read: [], cursor: null, started: false, loading: false, error: null });
+	const [state, setState] = useState<{
+		key: string;
+		read: ItemSummary[];
+		cursor: ItemCursor | null;
+		started: boolean;
+		loading: boolean;
+		error: string | null;
+	}>({ key, read: [], cursor: null, started: false, loading: false, error: null });
 	const asked = useRef(0);
 	const mine = state.key === key ? state : { key, read: [], cursor: null, started: false, loading: false, error: null };
 
@@ -96,10 +122,27 @@ export function useEndedPages(open: boolean, filters: FeedFilters, live: readonl
 			setState({ key, read: before, cursor: from, started: true, loading: true, error: null });
 			client
 				.user(auth)
-				.listItems({ ended: true, before: from, limit: ITEM_PAGE_DEFAULT, repository: filters.repository ?? null, source: filters.from ?? null })
+				.listItems({
+					ended: true,
+					before: from,
+					limit: ITEM_PAGE_DEFAULT,
+					repository: filters.repository ?? null,
+					source: filters.from ?? null,
+				})
 				.then(
-					(page) => ask === asked.current && setState({ key, read: [...before, ...page], cursor: nextCursor(page, ITEM_PAGE_DEFAULT), started: true, loading: false, error: null }),
-					(failure: unknown) => ask === asked.current && setState({ key, read: before, cursor: from, started: true, loading: false, error: explain(failure) }),
+					page =>
+						ask === asked.current &&
+						setState({
+							key,
+							read: [...before, ...page],
+							cursor: nextCursor(page, ITEM_PAGE_DEFAULT),
+							started: true,
+							loading: false,
+							error: null,
+						}),
+					(failure: unknown) =>
+						ask === asked.current &&
+						setState({ key, read: before, cursor: from, started: true, loading: false, error: explain(failure) }),
 				);
 		},
 		[client, auth, explain, key, filters.repository, filters.from],
@@ -164,8 +207,8 @@ export function EndedFoot({ pages }: { pages: EndedPages }) {
 /** "25 done, 2 failed, 3 cancelled": what a fold of ended items holds, from the feed's counts. */
 export function endedWords(counts: { done: number; failed: number; cancelled: number }): string {
 	return (["done", "failed", "cancelled"] as const)
-		.filter((state) => counts[state] > 0)
-		.map((state) => `${counts[state]} ${state}`)
+		.filter(state => counts[state] > 0)
+		.map(state => `${counts[state]} ${state}`)
 		.join(", ");
 }
 
@@ -173,7 +216,21 @@ export function endedWords(counts: { done: number; failed: number; cancelled: nu
 
 const SHOWN: ItemState[] = ["draft", "queued", "working", "waiting", "review"];
 
-function Group({ name, items, now, count: said, filed = false, children }: { name: string; items: ItemSummary[]; now: number; count?: string; filed?: boolean; children?: ReactNode }) {
+function Group({
+	name,
+	items,
+	now,
+	count: said,
+	filed = false,
+	children,
+}: {
+	name: string;
+	items: ItemSummary[];
+	now: number;
+	count?: string;
+	filed?: boolean;
+	children?: ReactNode;
+}) {
 	const heading = useId();
 	return (
 		<div className="items-group">
@@ -182,7 +239,7 @@ function Group({ name, items, now, count: said, filed = false, children }: { nam
 				<span className="items-group-count">{said ?? count(items.length)}</span>
 			</h3>
 			<ul className="agents" aria-labelledby={heading}>
-				{items.map((item) => (
+				{items.map(item => (
 					<ItemRow key={item.id} item={item} now={now} filed={filed} />
 				))}
 			</ul>
@@ -196,7 +253,21 @@ function Group({ name, items, now, count: said, filed = false, children }: { nam
  * work can be filed on it now. The open items come from the live feed; the ended ones are folded, said
  * by the feed's counts, and read from the server a page at a time once unfolded, newest filed first.
  */
-export function RepositoryItems({ repositoryId, name, base, launchable, now, filter }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number; filter?: (item: ItemSummary) => boolean }) {
+export function RepositoryItems({
+	repositoryId,
+	name,
+	base,
+	launchable,
+	now,
+	filter,
+}: {
+	repositoryId: GithubId;
+	name: string;
+	base: string | null;
+	launchable: boolean;
+	now: number;
+	filter?: (item: ItemSummary) => boolean;
+}) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
@@ -207,10 +278,10 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 	const onIt = (item: ItemSummary) => !item.parent && String(item.repository.id) === String(repositoryId);
 	const shown = (item: ItemSummary) => filter?.(item) ?? true;
 	const live = items.list?.filter(onIt) ?? null;
-	const mine = items.feed?.open.filter((item) => onIt(item) && shown(item)) ?? null;
+	const mine = items.feed?.open.filter(item => onIt(item) && shown(item)) ?? null;
 	const counts = feedCounts(items.feed, { repository: repositoryId });
 	const pages = useEndedPages(open, { repository: repositoryId }, live);
-	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
+	const of = (state: ItemState) => mine?.filter(item => item.state === state) ?? [];
 	const total = mine === null ? null : mine.length + counts.ended;
 	if (!offered) return null;
 
@@ -219,11 +290,21 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 			<h2 className="usage-title" id="repo-items">
 				Work items
 				{total !== null && total > 0 ? <span className="usage-count">{total}</span> : null}
-				<button type="button" className="link secret-add" onClick={() => setFiling(true)} disabled={!launchable} title={launchable ? undefined : "No work can be filed on this repository now"}>
+				<button
+					type="button"
+					className="link secret-add"
+					onClick={() => setFiling(true)}
+					disabled={!launchable}
+					title={launchable ? undefined : "No work can be filed on this repository now"}
+				>
 					New work item…
 				</button>
 			</h2>
-			<p className="usage-lede">An agent works on each by itself. CI on its pull request decides whether the work passes; your checks for the repository, where you set them, run first and send the agent back when one fails. It is handed to you as a pull request with what the verdict rests on. Merging it is yours.</p>
+			<p className="usage-lede">
+				An agent works on each by itself. CI on its pull request decides whether the work passes; your checks for the
+				repository, where you set them, run first and send the agent back when one fails. It is handed to you as a pull
+				request with what the verdict rests on. Merging it is yours.
+			</p>
 			{mine === null ? (
 				items.error ? (
 					<div className="state state-error" role="alert">
@@ -242,7 +323,9 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 					</div>
 				)
 			) : total === 0 ? (
-				<p className="usage-empty">No work item on this repository yet.{launchable ? " File one with New work item." : ""}</p>
+				<p className="usage-empty">
+					No work item on this repository yet.{launchable ? " File one with New work item." : ""}
+				</p>
 			) : (
 				<>
 					{items.error ? (
@@ -251,11 +334,19 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 							<span>{items.error} What is shown may be behind.</span>
 						</p>
 					) : null}
-					{SHOWN.map((state) => (of(state).length > 0 ? <Group key={state} name={STATE_WORD[state]} items={of(state)} now={now} /> : null))}
+					{SHOWN.map(state =>
+						of(state).length > 0 ? <Group key={state} name={STATE_WORD[state]} items={of(state)} now={now} /> : null,
+					)}
 					{counts.ended > 0 ? (
 						<>
 							<p className="agents-fold items-fold">
-								<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={ended} onClick={() => setOpen((value) => !value)}>
+								<button
+									type="button"
+									className="link machine-toggle"
+									aria-expanded={open}
+									aria-controls={ended}
+									onClick={() => setOpen(value => !value)}
+								>
 									<ChevronIcon size={11} className="machine-chevron" />
 									{open ? "Hide the ended ones" : `Show ${plural(counts.ended, "ended item")}`}
 								</button>
@@ -263,7 +354,17 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 							</p>
 							<div id={ended} hidden={!open}>
 								{open ? (
-									<Group name="Ended" items={filter ? pages.items.filter(shown) : pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
+									<Group
+										name="Ended"
+										items={filter ? pages.items.filter(shown) : pages.items}
+										now={now}
+										filed
+										count={
+											pages.items.length < counts.ended
+												? `${count(pages.items.length)} of ${count(counts.ended)}`
+												: undefined
+										}
+									>
 										<EndedFoot pages={pages} />
 									</Group>
 								) : null}
@@ -272,13 +373,25 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now, fil
 					) : null}
 				</>
 			)}
-			{filing ? <NewItemDialog repositoryId={repositoryId} name={name} base={base} onClose={() => setFiling(false)} /> : null}
+			{filing ? (
+				<NewItemDialog repositoryId={repositoryId} name={name} base={base} onClose={() => setFiling(false)} />
+			) : null}
 		</section>
 	);
 }
 
 /** Filing a work item: what to do, and what a person will check. It runs on a hosted sandbox, or on one of the user's machines where they have one. */
-export function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: GithubId; name: string; base: string | null; onClose(): void }) {
+export function NewItemDialog({
+	repositoryId,
+	name,
+	base,
+	onClose,
+}: {
+	repositoryId: GithubId;
+	name: string;
+	base: string | null;
+	onClose(): void;
+}) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
 	const machinesInfo = platform.info?.items ? (platform.info.machines ?? null) : null;
@@ -298,27 +411,66 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const orchestrate = !!platform.info?.items?.orchestrate;
 	const partProblem = agentChoice && subtaskHarnessProblem(agentChoice);
 	const mode: ItemMode = orchestrate && !partProblem ? modeChoice : "single";
-	const layers = { account: account.settings?.defaults, repository: saved.defaults, machines: machines.list, sizes: platform.info?.hostedSizes };
-	const placeLayer = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
-	const agentRun = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice } }, mode === "orchestrate" ? "part" : "builder");
+	const layers = {
+		account: account.settings?.defaults,
+		repository: saved.defaults,
+		machines: machines.list,
+		sizes: platform.info?.hostedSizes,
+	};
+	const placeLayer =
+		placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
+	const agentRun = runOf(
+		{ ...layers, item: { ...placeLayer, harness: agentChoice } },
+		mode === "orchestrate" ? "part" : "builder",
+	);
 	const windlassAgent = agentRun.agent === "windlass";
-	const selectedLayers = { ...layers, item: { ...placeLayer, harness: agentChoice, ...(modelChoice && (windlassAgent ? { model: modelChoice } : { machineModel: modelChoice })), ...(effortChoice && (windlassAgent ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
+	const selectedLayers = {
+		...layers,
+		item: {
+			...placeLayer,
+			harness: agentChoice,
+			...(modelChoice && (windlassAgent ? { model: modelChoice } : { machineModel: modelChoice })),
+			...(effortChoice && (windlassAgent ? { effort: effortChoice } : { machineEffort: effortChoice })),
+		},
+	};
 	const run = runOf(selectedLayers, mode === "orchestrate" ? "part" : "builder");
 	const planning = mode === "orchestrate" ? runOf(selectedLayers, "planner") : null;
 	const catalogs = useCatalogs(mine);
 	const destination = checkRunPlace(run, mine, agentModelsOf(mine, catalogs, null));
 	const agent = run.agent;
-	const chosenMachine = typeof run.place === "object" ? (mine.find((machine) => machine.machineId === (run.place as { machine: string }).machine && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null) : null;
-	const hostedProfile = platform.info?.profiles.find((p) => p.available && p.platformKeys);
+	const chosenMachine =
+		typeof run.place === "object"
+			? (mine.find(
+					machine =>
+						machine.machineId === (run.place as { machine: string }).machine &&
+						machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null,
+				) ?? null)
+			: null;
+	const hostedProfile = platform.info?.profiles.find(p => p.available && p.platformKeys);
 	const agents = chosenMachine
-		? itemHarnesses(chosenMachine).map(({ id }) => ({ id, reason: itemProfilesHere(chosenMachine, id).length ? null : `Not available on ${machineLabel(chosenMachine)}` }))
-		: (["claude", "codex", "opencode"] as const).map((id) => ({ id, reason: hostedAgentProblem(id, keys, !!hostedProfile) }));
+		? itemHarnesses(chosenMachine).map(({ id }) => ({
+				id,
+				reason: itemProfilesHere(chosenMachine, id).length ? null : `Not available on ${machineLabel(chosenMachine)}`,
+			}))
+		: (["claude", "codex", "opencode"] as const).map(id => ({
+				id,
+				reason: hostedAgentProblem(id, keys, !!hostedProfile),
+			}));
 	const catalog = useCatalog(agent === "windlass" ? null : chosenMachine, agent === "windlass" ? "claude" : agent);
-	const modelList = agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options, keys).models;
+	const modelList =
+		agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options, keys).models;
 	const model = run.model ?? "";
-	const efforts = effortChoices(effortsOf(modelList, model || (modelList?.defaultModel ?? ""))).filter((level) => level !== "" && level !== "default");
+	const efforts = effortChoices(effortsOf(modelList, model || (modelList?.defaultModel ?? ""))).filter(
+		level => level !== "" && level !== "default",
+	);
 	const changed = placeChoice !== undefined || agentChoice !== null || modelChoice !== "" || effortChoice !== "";
-	const useDefault = () => { setPlace(undefined); setAgent(null); setModel(""); setEffort(""); setChanging(false); };
+	const useDefault = () => {
+		setPlace(undefined);
+		setAgent(null);
+		setModel("");
+		setEffort("");
+		setChanging(false);
+	};
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -326,21 +478,51 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), model: useId(), effort: useId(), effortNote: useId() };
+	const ids = {
+		form: useId(),
+		title: useId(),
+		body: useId(),
+		criteria: useId(),
+		criteriaNote: useId(),
+		model: useId(),
+		effort: useId(),
+		effortNote: useId(),
+	};
 	const acceptance = criteria
 		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line !== "");
+		.map(line => line.trim())
+		.filter(line => line !== "");
 	const tooMany = acceptance.length > MAX_ACCEPTANCE_CRITERIA;
-	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
+	const tooLong = acceptance.some(line => line.length > MAX_NOTE_CHARS);
 	const defaultsLoading = saved.reading || (account.reading && !account.settings);
 	const machinesLoading = machinesInfo && !machines.list && !machines.error;
-	const ready = !defaultsProblem && !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
+	const ready =
+		!defaultsProblem &&
+		!defaultsLoading &&
+		!machinesLoading &&
+		title.trim() !== "" &&
+		!tooMany &&
+		!tooLong &&
+		body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: orchestrate ? mode : "single", ...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: placeChoice } }), ...(agentChoice && { harness: agentChoice }), ...(modelChoice ? { model: modelChoice } : {}), ...(effortChoice ? { effort: effortChoice } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = {
+			repository: { id: repositoryId },
+			title,
+			body: body.trim(),
+			acceptance,
+			start,
+			mode: orchestrate ? mode : "single",
+			...(placeChoice !== undefined && {
+				place:
+					placeChoice === null ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: placeChoice },
+			}),
+			...(agentChoice && { harness: agentChoice }),
+			...(modelChoice ? { model: modelChoice } : {}),
+			...(effortChoice ? { effort: effortChoice } : {}),
+		};
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -354,7 +536,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 		} catch (failure) {
 			setError(explain(failure));
 			setBusy(false);
-			if (MACHINE_REFUSALS.some((reason) => hasReason(failure, reason))) machines.reload();
+			if (MACHINE_REFUSALS.some(reason => hasReason(failure, reason))) machines.reload();
 		}
 	};
 
@@ -382,10 +564,13 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			<form id={ids.form} className="item-form" onSubmit={file}>
 				{platform.info?.items?.orchestrate ? (
 					<div>
-						<span className="label">
-							How it runs
-						</span>
-						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || mode !== modeChoice} />
+						<span className="label">How it runs</span>
+						<ItemModePicker
+							costId={ids.form + "-cost"}
+							value={mode}
+							onChange={setMode}
+							disabled={busy || mode !== modeChoice}
+						/>
 						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
@@ -394,20 +579,43 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 					<label className="label" htmlFor={ids.title}>
 						Title
 					</label>
-					<input id={ids.title} className="input" value={title} maxLength={MAX_TITLE_CHARS} onChange={(event) => setTitle(event.target.value)} readOnly={busy} data-autofocus />
+					<input
+						id={ids.title}
+						className="input"
+						value={title}
+						maxLength={MAX_TITLE_CHARS}
+						onChange={event => setTitle(event.target.value)}
+						readOnly={busy}
+						data-autofocus
+					/>
 				</div>
 				<div>
 					<label className="label" htmlFor={ids.body}>
 						What to do
 					</label>
-					<textarea id={ids.body} className="input textarea item-body" value={body} maxLength={MAX_ITEM_BODY_CHARS} onChange={(event) => setBody(event.target.value)} readOnly={busy} />
+					<textarea
+						id={ids.body}
+						className="input textarea item-body"
+						value={body}
+						maxLength={MAX_ITEM_BODY_CHARS}
+						onChange={event => setBody(event.target.value)}
+						readOnly={busy}
+					/>
 					<p className="field-note">The agent is given this and the title as your own words.</p>
 				</div>
 				<div>
 					<label className="label" htmlFor={ids.criteria}>
 						Acceptance criteria<span className="label-optional">optional</span>
 					</label>
-					<textarea id={ids.criteria} className={`input textarea item-criteria${tooMany || tooLong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy} aria-describedby={ids.criteriaNote} aria-invalid={tooMany || tooLong || undefined} />
+					<textarea
+						id={ids.criteria}
+						className={`input textarea item-criteria${tooMany || tooLong ? " input-invalid" : ""}`}
+						value={criteria}
+						onChange={event => setCriteria(event.target.value)}
+						readOnly={busy}
+						aria-describedby={ids.criteriaNote}
+						aria-invalid={tooMany || tooLong || undefined}
+					/>
 					<p className={`field-note${tooMany || tooLong ? " tone-bad" : ""}`} id={ids.criteriaNote}>
 						{tooMany
 							? `At most ${MAX_ACCEPTANCE_CRITERIA}; there are ${acceptance.length}.`
@@ -418,20 +626,48 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 				</div>
 				<div className="item-run">
 					<span className="label">Runs with</span>
-					{defaultsProblem ? <DefaultsProblem problem={defaultsProblem} retry={retry} /> : (
+					{defaultsProblem ? (
+						<DefaultsProblem problem={defaultsProblem} retry={retry} />
+					) : (
 						<>
-							<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
-								{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
+							<RunLine
+								run={run}
+								machines={machines.list}
+								list={modelList}
+								lead={mode === "orchestrate" ? "Parts run on" : "Runs on"}
+								onChange={changing ? undefined : () => setChanging(true)}
+								changeLabel="Change for this item"
+							>
+								{changed ? (
+									<button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>
+										Use the default
+									</button>
+								) : null}
 							</RunLine>
-							{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
-							{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+							{planning ? (
+								<p className="field-note">
+									Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.
+								</p>
+							) : null}
+							{destination.wait ? (
+								<p className="field-note tone-warn">
+									{destination.wait} The item waits and asks before it runs anywhere else.
+								</p>
+							) : null}
 						</>
 					)}
 				</div>
 				{changing ? (
 					<div className="item-run-change">
 						{mine.length > 0 ? (
-							<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
+							<PlaceChoice
+								machines={mine}
+								chosen={chosenMachine}
+								minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""}
+								now={now}
+								purpose="item"
+								onChoose={setPlace}
+							>
 								{chosenMachine ? <p className="field-note place-note">{hardenedItemNote(chosenMachine)}</p> : null}
 							</PlaceChoice>
 						) : null}
@@ -439,34 +675,76 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 							<span className="label">Agent</span>
 							<div className="segmented" role="radiogroup" aria-label="Agent">
 								{[{ id: "windlass" as const, reason: null }, ...agents].map(({ id, reason }) => (
-									<label key={id} title={reason ?? undefined} className={`segment${id === agent ? " segment-chosen" : ""}`}>
-										<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy || !!reason} onChange={() => { setAgent(id); setModel(""); setEffort(""); }} />
+									<label
+										key={id}
+										title={reason ?? undefined}
+										className={`segment${id === agent ? " segment-chosen" : ""}`}
+									>
+										<input
+											className="segment-radio"
+											type="radio"
+											name={ids.form + "-agent"}
+											value={id}
+											checked={id === agent}
+											disabled={busy || !!reason}
+											onChange={() => {
+												setAgent(id);
+												setModel("");
+												setEffort("");
+											}}
+										/>
 										{HARNESS_NAMES[id]}
 									</label>
 								))}
 							</div>
-							{partProblem && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">{partProblem}</p> : null}
+							{partProblem && orchestrate && modeChoice === "orchestrate" ? (
+								<p className="field-note">{partProblem}</p>
+							) : null}
 						</div>
 						{modelList && modelList.models.length > 0 ? (
 							<div className="item-agent-fields">
 								<div>
-									<label className="label" htmlFor={ids.model}>Model</label>
-									<ModelSelect id={ids.model} harness={agent} list={modelList} value={model} inherit={{ label: agentDefaultLabel(agent, modelList) }}
-										entry={chosenMachine?.harnesses?.find((one) => one.id === agent) ?? null} machine={chosenMachine ? machineLabel(chosenMachine) : null}
-										onChange={(next) => { setModel(next); setEffort(""); }} disabled={busy} />
+									<label className="label" htmlFor={ids.model}>
+										Model
+									</label>
+									<ModelSelect
+										id={ids.model}
+										harness={agent}
+										list={modelList}
+										value={model}
+										inherit={{ label: agentDefaultLabel(agent, modelList) }}
+										entry={chosenMachine?.harnesses?.find(one => one.id === agent) ?? null}
+										machine={chosenMachine ? machineLabel(chosenMachine) : null}
+										onChange={next => {
+											setModel(next);
+											setEffort("");
+										}}
+										disabled={busy}
+									/>
 								</div>
 								{efforts.length > 0 ? (
 									<div>
-										<label className="label" htmlFor={ids.effort}>Effort</label>
-										<EffortSelect id={ids.effort} efforts={efforts} value={run.effort ?? ""} model={modelDisplay(agent, modelList, model || modelList.defaultModel)} onChange={setEffort} disabled={busy} />
+										<label className="label" htmlFor={ids.effort}>
+											Effort
+										</label>
+										<EffortSelect
+											id={ids.effort}
+											efforts={efforts}
+											value={run.effort ?? ""}
+											model={modelDisplay(agent, modelList, model || modelList.defaultModel)}
+											onChange={setEffort}
+											disabled={busy}
+										/>
 									</div>
 								) : null}
 							</div>
 						) : null}
-						<p className="field-note">These choices are for this item only. Your defaults are on Machines and in Settings → Models.</p>
+						<p className="field-note">
+							These choices are for this item only. Your defaults are on Machines and in Settings → Models.
+						</p>
 					</div>
 				) : null}
-				<Check checked={start} disabled={busy} onChange={(on) => setStart(on)}>
+				<Check checked={start} disabled={busy} onChange={on => setStart(on)}>
 					<span className="check-name">Start now</span>
 					<span className="check-means">
 						{start

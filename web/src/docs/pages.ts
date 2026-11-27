@@ -27,7 +27,8 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "",
 		title: "Windlass documentation",
-		description: "How to run coding agents on Windlass: in a hosted sandbox or on your own machine, on your GitHub repositories, with every turn in view.",
+		description:
+			"How to run coding agents on Windlass: in a hosted sandbox or on your own machine, on your GitHub repositories, with every turn in view.",
 		section: "Start here",
 		file: "index.md",
 	},
@@ -48,28 +49,32 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "sessions",
 		title: "Work with a session",
-		description: "Follow the timeline, steer the agent, answer its questions, stop it, read the changes and open a pull request.",
+		description:
+			"Follow the timeline, steer the agent, answer its questions, stop it, read the changes and open a pull request.",
 		section: "Agents",
 		file: "sessions.md",
 	},
 	{
 		slug: "machines",
 		title: "Use your own machine",
-		description: "Pair a machine of yours with one Docker command, choose its network mode, and run agents there instead of in a hosted sandbox.",
+		description:
+			"Pair a machine of yours with one Docker command, choose its network mode, and run agents there instead of in a hosted sandbox.",
 		section: "Your machines",
 		file: "machines.md",
 	},
 	{
 		slug: "cheap-vm",
 		title: "Run agents on a cheap cloud VM",
-		description: "Choose a small VM, pair its runner and use your own model plans without spending hosted sandbox time.",
+		description:
+			"Choose a small VM, pair its runner and use your own model plans without spending hosted sandbox time.",
 		section: "Your machines",
 		file: "cheap-vm.md",
 	},
 	{
 		slug: "runner",
 		title: "Runner reference",
-		description: "Every runner command and option: harnesses, network modes, names, turn limits, CPU caps, allowed profiles, status, logs and pruning.",
+		description:
+			"Every runner command and option: harnesses, network modes, names, turn limits, CPU caps, allowed profiles, status, logs and pruning.",
 		section: "Your machines",
 		file: "runner.md",
 	},
@@ -83,14 +88,16 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "factory",
 		title: "Factory",
-		description: "File work items from the page, GitHub or the API, or orchestrate a feature into subtasks, and let the pipeline take each to a reviewed pull request.",
+		description:
+			"File work items from the page, GitHub or the API, or orchestrate a feature into subtasks, and let the pipeline take each to a reviewed pull request.",
 		section: "Platform",
 		file: "factory.md",
 	},
 	{
 		slug: "settings",
 		title: "Settings, usage and limits",
-		description: "Account and repository settings, MCP servers, secrets, API tokens, and the limits on sandbox time and sandboxes.",
+		description:
+			"Account and repository settings, MCP servers, secrets, API tokens, and the limits on sandbox time and sandboxes.",
 		section: "Platform",
 		file: "settings.md",
 	},
@@ -104,14 +111,16 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "faq",
 		title: "FAQ",
-		description: "Short answers to common questions about Windlass: access, agents, models, sandboxes, your own machine, self-hosting and licenses.",
+		description:
+			"Short answers to common questions about Windlass: access, agents, models, sandboxes, your own machine, self-hosting and licenses.",
 		section: "Help",
 		file: "faq.md",
 	},
 	{
 		slug: "glossary",
 		title: "Glossary",
-		description: "The words Windlass uses, from agent and turn to runner, profile and work item, each in a sentence or two.",
+		description:
+			"The words Windlass uses, from agent and turn to runner, profile and work item, each in a sentence or two.",
 		section: "Help",
 		file: "glossary.md",
 	},
@@ -124,7 +133,7 @@ export function docsPath(slug: string): string {
 
 /** The page at a slug, or undefined. */
 export function docsPage(slug: string): DocsPage | undefined {
-	return DOCS_PAGES.find((page) => page.slug === slug);
+	return DOCS_PAGES.find(page => page.slug === slug);
 }
 
 /**
@@ -132,7 +141,12 @@ export function docsPage(slug: string): DocsPage | undefined {
  * these where that list is kept. `title` is the document title the page sets; `description` its meta description.
  */
 export function docsRoutes(): { path: string; title: string; description: string; file: string }[] {
-	return DOCS_PAGES.map((page) => ({ path: docsPath(page.slug), title: docsTitle(page), description: page.description, file: `web/src/docs/content/${page.file}` }));
+	return DOCS_PAGES.map(page => ({
+		path: docsPath(page.slug),
+		title: docsTitle(page),
+		description: page.description,
+		file: `web/src/docs/content/${page.file}`,
+	}));
 }
 
 /** The browser's title for a page. */

@@ -17,7 +17,14 @@
  * but an item's second reviewer, which only reads: on it the panel shows the pull request it reviews,
  * with no action and no setting.
  */
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
+import {
+	MAX_PUBLISH_BODY_CHARS,
+	MAX_PUBLISH_TITLE_CHARS,
+	type PublishState,
+	type PullRequestInfo,
+	type SandboxProfile,
+	type SessionSummary,
+} from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
@@ -26,15 +33,26 @@ import { useNow } from "../state/hooks";
 import { createPortal } from "react-dom";
 import { setPanelHidden, setPublishFeedback, usePanelHidden, usePublishRequests } from "../state/sessionChrome";
 import { Dialog } from "./Dialog";
-import { BranchIcon, CrossIcon, ExternalIcon, InfoIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
+import {
+	BranchIcon,
+	CrossIcon,
+	ExternalIcon,
+	InfoIcon,
+	MergedIcon,
+	PullRequestIcon,
+	RefreshIcon,
+	WarnIcon,
+} from "./Icons";
 import { Check } from "./ui/Check";
 import { Tooltip } from "./ui/Tooltip";
 
 /** What letting the agent publish without asking means, in one sentence, as the panel says it. */
-export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
+export const PUBLISH_UNASKED_MEANS =
+	"The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
 
 /** In the place of the way out, on an item's second reviewer: the server takes no push or pull request from it. */
-export const REVIEWER_PUBLISHES_NOTHING = "The second reviewer reads the commit the item pushed. It pushes nothing and opens no pull request.";
+export const REVIEWER_PUBLISHES_NOTHING =
+	"The second reviewer reads the commit the item pushed. It pushes nothing and opens no pull request.";
 
 /**
  * What the agent's own push does on GitHub, which no setting holds back: said under the setting in
@@ -47,9 +65,13 @@ export const AGENT_PUSH_MEANS = "It can push its own branch at any time, which r
  * sandboxes every command the agent runs. Elsewhere a command could ask in the agent's name, so the
  * server asks about every request and refuses the setting (`publishUnaskedProblem` there).
  */
-export function publishAlwaysAsked(profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">): string | null {
-	if (profile.approval === "full") return "In this sandbox the agent's commands run outside Windlass's sandbox, and one of them could ask in the agent's name.";
-	if (profile.commandNetwork || profile.commandsCanReadAccessToken) return "In this sandbox it is not established that Windlass's sandbox holds the agent's commands, and one of them could then ask in the agent's name.";
+export function publishAlwaysAsked(
+	profile: Pick<SandboxProfile, "approval" | "commandNetwork" | "commandsCanReadAccessToken">,
+): string | null {
+	if (profile.approval === "full")
+		return "In this sandbox the agent's commands run outside Windlass's sandbox, and one of them could ask in the agent's name.";
+	if (profile.commandNetwork || profile.commandsCanReadAccessToken)
+		return "In this sandbox it is not established that Windlass's sandbox holds the agent's commands, and one of them could then ask in the agent's name.";
 	return null;
 }
 
@@ -57,7 +79,8 @@ export function publishAlwaysAsked(profile: Pick<SandboxProfile, "approval" | "c
  * Why an agent that reaches the platform's tools over MCP (Claude Code, OpenCode, Codex) is asked about
  * every publish, whatever the profile: the server refuses the setting for it (`publishAsksEveryTime` there).
  */
-export const publishAskedOverMcp = (agent: string) => `${agent} reaches its publish tool from inside the sandbox, where any process could call it in the agent's name.`;
+export const publishAskedOverMcp = (agent: string) =>
+	`${agent} reaches its publish tool from inside the sandbox, where any process could call it in the agent's name.`;
 
 /** "ⓘ": the longer sentences behind a short label, on hover and on focus. */
 function More({ children }: { children: string }) {
@@ -74,7 +97,19 @@ function More({ children }: { children: string }) {
  * The setting itself: on or off, in one line, with what it means behind an ⓘ. Where it cannot be on, what
  * holds instead stands in its place, with why behind the ⓘ.
  */
-export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agent = null }: { checked: boolean; disabled: boolean; onChange(checked: boolean): void; profile: SandboxProfile | null; agent?: string | null }) {
+export function PublishUnaskedCheck({
+	checked,
+	disabled,
+	onChange,
+	profile,
+	agent = null,
+}: {
+	checked: boolean;
+	disabled: boolean;
+	onChange(checked: boolean): void;
+	profile: SandboxProfile | null;
+	agent?: string | null;
+}) {
 	const asked = agent !== null ? publishAskedOverMcp(agent) : profile === null ? null : publishAlwaysAsked(profile);
 	if (asked !== null) {
 		return (
@@ -86,7 +121,7 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agen
 		);
 	}
 	return (
-		<Check checked={checked} disabled={disabled} onChange={(on) => onChange(on)}>
+		<Check checked={checked} disabled={disabled} onChange={on => onChange(on)}>
 			<span className="check-name">
 				Let the agent open and update it <More>{`${PUBLISH_UNASKED_MEANS} ${AGENT_PUSH_MEANS}`}</More>
 			</span>
@@ -95,7 +130,15 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agen
 }
 
 /** The setting of a session that exists: changed at once, and the session's summary says what it is. */
-function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile }) {
+function AgentPublishing({
+	sessionId,
+	summary,
+	profile,
+}: {
+	sessionId: string;
+	summary: SessionSummary;
+	profile: SandboxProfile;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState(false);
@@ -116,7 +159,13 @@ function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; s
 	};
 	return (
 		<div className="gh-agent">
-			<PublishUnaskedCheck checked={summary.publishUnasked === true} disabled={busy} onChange={set} profile={profile} agent={acpHarnessName(summary)} />
+			<PublishUnaskedCheck
+				checked={summary.publishUnasked === true}
+				disabled={busy}
+				onChange={set}
+				profile={profile}
+				agent={acpHarnessName(summary)}
+			/>
 			{error ? (
 				<p className="panel-empty tone-bad" role="alert">
 					<WarnIcon size={13} /> {error}
@@ -126,37 +175,69 @@ function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; s
 	);
 }
 
-const STATE_WORD: Record<PullRequestInfo["state"], string> = { open: "open", draft: "draft", merged: "merged", closed: "closed" };
+const STATE_WORD: Record<PullRequestInfo["state"], string> = {
+	open: "open",
+	draft: "draft",
+	merged: "merged",
+	closed: "closed",
+};
 
 export function PullState({ state }: { state: PullRequestInfo["state"] }) {
 	return (
 		<span className={`gh-pull-state gh-pull-state-${state}`}>
-			{state === "merged" ? <MergedIcon size={13} /> : state === "closed" ? <CrossIcon size={13} /> : <PullRequestIcon size={13} />}
+			{state === "merged" ? (
+				<MergedIcon size={13} />
+			) : state === "closed" ? (
+				<CrossIcon size={13} />
+			) : (
+				<PullRequestIcon size={13} />
+			)}
 			{STATE_WORD[state]}
 		</span>
 	);
 }
 
 /** Whether a pull request still takes pushes: one that was merged or closed is done with. */
-const isOpen = (pull: PullRequestInfo | null): boolean => pull !== null && (pull.state === "open" || pull.state === "draft");
+const isOpen = (pull: PullRequestInfo | null): boolean =>
+	pull !== null && (pull.state === "open" || pull.state === "draft");
 
 /**
  * Whether "Open pull request" opens one from what is pushed: the branch is at GitHub, no pull request
  * was opened from it, and there is nothing to commit or push first. The server opens it then
  * (github/publish.ts `publishWork`), so the button is not held back for having nothing new.
  */
-export const opensFromPushed = (pull: PullRequestInfo | null, pushed: string | null, nothing: boolean): boolean => pull === null && pushed !== null && nothing;
+export const opensFromPushed = (pull: PullRequestInfo | null, pushed: string | null, nothing: boolean): boolean =>
+	pull === null && pushed !== null && nothing;
 
 /**
  * The line above the action: what pushing would do now, or why there is nothing to push. `pushed`
  * is the commit the branch is at on GitHub; the panel does not know whether the agent or the panel
  * pushed it, so the line names neither (the timeline says who).
  */
-export function situation({ pull, branch, pushed, nothing, unknown }: { pull: PullRequestInfo | null; branch: string; pushed: string | null; nothing: boolean; unknown: boolean }): string {
+export function situation({
+	pull,
+	branch,
+	pushed,
+	nothing,
+	unknown,
+}: {
+	pull: PullRequestInfo | null;
+	branch: string;
+	pushed: string | null;
+	nothing: boolean;
+	unknown: boolean;
+}): string {
 	// A paused sandbox is not started to be asked: saying that it has changes would be a guess.
-	if (pull && isOpen(pull) && unknown) return "Whether the workspace has more than the branch is not known while its sandbox is paused.";
-	if (pull && isOpen(pull)) return nothing ? "Everything in the workspace is on the branch." : "The workspace has changes that are not on the branch.";
-	if (pull) return nothing ? `#${pull.number} is ${STATE_WORD[pull.state]}, and nothing has changed since.` : `#${pull.number} is ${STATE_WORD[pull.state]}. New work goes into a new pull request.`;
+	if (pull && isOpen(pull) && unknown)
+		return "Whether the workspace has more than the branch is not known while its sandbox is paused.";
+	if (pull && isOpen(pull))
+		return nothing
+			? "Everything in the workspace is on the branch."
+			: "The workspace has changes that are not on the branch.";
+	if (pull)
+		return nothing
+			? `#${pull.number} is ${STATE_WORD[pull.state]}, and nothing has changed since.`
+			: `#${pull.number} is ${STATE_WORD[pull.state]}. New work goes into a new pull request.`;
 	if (pushed !== null) {
 		const at = `${branch} is pushed at ${pushed.slice(0, 7)}; no pull request is open.`;
 		return nothing || unknown ? at : `${at} The workspace has changes that are not on the branch.`;
@@ -164,7 +245,21 @@ export function situation({ pull, branch, pushed, nothing, unknown }: { pull: Pu
 	return nothing ? "Nothing to push yet: no file differs from the last commit." : `The work goes to ${branch}.`;
 }
 
-function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }: { sessionId: string; state: PublishState; files: number | null; fromPushed: boolean; onClose(): void; onDone(state: PublishState): void }) {
+function PublishDialog({
+	sessionId,
+	state,
+	files,
+	fromPushed,
+	onClose,
+	onDone,
+}: {
+	sessionId: string;
+	state: PublishState;
+	files: number | null;
+	fromPushed: boolean;
+	onClose(): void;
+	onDone(state: PublishState): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { form: useId(), title: useId(), body: useId(), note: useId() };
@@ -190,7 +285,12 @@ function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }:
 		}
 	};
 
-	const what = files === null || files === 0 ? "what is uncommitted" : files === 1 ? "the 1 changed file" : `the ${files} changed files`;
+	const what =
+		files === null || files === 0
+			? "what is uncommitted"
+			: files === 1
+				? "the 1 changed file"
+				: `the ${files} changed files`;
 	return (
 		<Dialog
 			title={opening ? "Open pull request" : "Push changes"}
@@ -214,8 +314,21 @@ function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }:
 					<button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>
 						Cancel
 					</button>
-					<button type="submit" form={ids.form} className="button button-primary" disabled={busy || title.trim() === ""}>
-						{busy ? (opening ? "Opening the pull request…" : "Pushing…") : fromPushed ? "Open pull request" : opening ? "Commit, push and open" : "Commit and push"}
+					<button
+						type="submit"
+						form={ids.form}
+						className="button button-primary"
+						disabled={busy || title.trim() === ""}
+					>
+						{busy
+							? opening
+								? "Opening the pull request…"
+								: "Pushing…"
+							: fromPushed
+								? "Open pull request"
+								: opening
+									? "Commit, push and open"
+									: "Commit and push"}
 					</button>
 				</>
 			}
@@ -225,13 +338,29 @@ function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }:
 					<label className="label" htmlFor={ids.title}>
 						{opening ? "Title" : "Commit message"}
 					</label>
-					<input id={ids.title} className="input" value={title} maxLength={MAX_PUBLISH_TITLE_CHARS} disabled={busy} onChange={(event) => setTitle(event.target.value)} aria-describedby={ids.note} />
+					<input
+						id={ids.title}
+						className="input"
+						value={title}
+						maxLength={MAX_PUBLISH_TITLE_CHARS}
+						disabled={busy}
+						onChange={event => setTitle(event.target.value)}
+						aria-describedby={ids.note}
+					/>
 				</div>
 				<div className="field">
 					<label className="label" htmlFor={ids.body}>
 						Description <span className="label-optional">optional</span>
 					</label>
-					<textarea id={ids.body} className="input textarea gh-publish-body" rows={6} value={body} maxLength={MAX_PUBLISH_BODY_CHARS} disabled={busy} onChange={(event) => setBody(event.target.value)} />
+					<textarea
+						id={ids.body}
+						className="input textarea gh-publish-body"
+						rows={6}
+						value={body}
+						maxLength={MAX_PUBLISH_BODY_CHARS}
+						disabled={busy}
+						onChange={event => setBody(event.target.value)}
+					/>
 				</div>
 				<p className="field-note" id={ids.note}>
 					{fromPushed
@@ -252,7 +381,21 @@ function PublishDialog({ sessionId, state, files, fromPushed, onClose, onDone }:
 	);
 }
 
-export function PullRequestSection({ sessionId, summary, profile, turnsEnded, files, onPublished }: { sessionId: string; summary: SessionSummary; profile: SandboxProfile; turnsEnded: number; files: number | null; onPublished(): void }) {
+export function PullRequestSection({
+	sessionId,
+	summary,
+	profile,
+	turnsEnded,
+	files,
+	onPublished,
+}: {
+	sessionId: string;
+	summary: SessionSummary;
+	profile: SandboxProfile;
+	turnsEnded: number;
+	files: number | null;
+	onPublished(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const now = useNow(60_000);
@@ -275,7 +418,7 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 			.session(auth, sessionId)
 			.publishState()
 			.then(
-				(next) => {
+				next => {
 					if (!current) return;
 					setState(next);
 					setError(null);
@@ -315,7 +458,10 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 		const reveal = () => {
 			const element = section.current;
 			if (!element) return;
-			element.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+			element.scrollIntoView({
+				block: "nearest",
+				behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+			});
 			element.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
 			setFlash(true);
 		};
@@ -341,10 +487,14 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 			? REVIEWER_PUBLISHES_NOTHING
 			: !idle
 				? "Available when this turn ends."
-				: (error ?? blocked ?? (state ? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown }) : "The pull request's state could not be read."));
+				: (error ??
+					blocked ??
+					(state
+						? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown })
+						: "The pull request's state could not be read."));
 		setPublishFeedback(sessionId, { kind: "refused", reason });
 	};
-	usePublishRequests(sessionId, (request) => {
+	usePublishRequests(sessionId, request => {
 		if (request === "show") return show();
 		// Still reading (a machine's git read goes through its runner, and takes seconds): said at the button, answered when read.
 		if (repository !== null && error === null && (state === null || loading)) {
@@ -370,10 +520,21 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	if (!repository) return null;
 
 	return (
-		<section className={`panel-section${flash ? " panel-section-flash" : ""}`} aria-labelledby="panel-pull" ref={section}>
+		<section
+			className={`panel-section${flash ? " panel-section-flash" : ""}`}
+			aria-labelledby="panel-pull"
+			ref={section}
+		>
 			<h2 className="panel-title" id="panel-pull" tabIndex={-1}>
 				Pull request
-				<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Read the pull request's state again" title="Reload">
+				<button
+					type="button"
+					className="icon-button icon-button-small"
+					onClick={load}
+					disabled={loading}
+					aria-label="Read the pull request's state again"
+					title="Reload"
+				>
 					<RefreshIcon size={13} className={loading ? "spin" : undefined} />
 				</button>
 			</h2>
@@ -404,8 +565,15 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 				</p>
 			) : reviewer ? null : (
 				<>
-					<p className="panel-empty gh-pull-note">{blocked ?? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown })}</p>
-					<button type="button" className="button button-outline button-small" onClick={() => setDialog(true)} disabled={blocked !== null || (nothing && !fromPushed)}>
+					<p className="panel-empty gh-pull-note">
+						{blocked ?? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown })}
+					</p>
+					<button
+						type="button"
+						className="button button-outline button-small"
+						onClick={() => setDialog(true)}
+						disabled={blocked !== null || (nothing && !fromPushed)}
+					>
 						{action}
 					</button>
 				</>
@@ -413,26 +581,30 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 			{reviewer ? (
 				<p className="panel-empty gh-item-note">{REVIEWER_PUBLISHES_NOTHING}</p>
 			) : summary.item ? (
-				<p className="panel-empty gh-item-note">The work item's steps push the work and open or update the pull request.</p>
+				<p className="panel-empty gh-item-note">
+					The work item's steps push the work and open or update the pull request.
+				</p>
 			) : (
 				<AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />
 			)}
 			{/* At the page's end, not in the panel: a hidden panel (display: none) would hide the dialog with it. */}
-			{dialog && state && !reviewer ? createPortal(
-				<PublishDialog
-					sessionId={sessionId}
-					state={state}
-					files={files}
-					fromPushed={fromPushed}
-					onClose={() => setDialog(false)}
-					onDone={(next) => {
-						setState(next);
-						setDialog(false);
-						onPublished();
-					}}
-				/>,
-				document.body,
-			) : null}
+			{dialog && state && !reviewer
+				? createPortal(
+						<PublishDialog
+							sessionId={sessionId}
+							state={state}
+							files={files}
+							fromPushed={fromPushed}
+							onClose={() => setDialog(false)}
+							onDone={next => {
+								setState(next);
+								setDialog(false);
+								onPublished();
+							}}
+						/>,
+						document.body,
+					)
+				: null}
 		</section>
 	);
 }

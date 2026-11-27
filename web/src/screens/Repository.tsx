@@ -22,7 +22,17 @@ import type { GithubId, GithubRepository, MachineSummary, RepositoryView, Sessio
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
-import { ArrowLeftIcon, BranchIcon, ExternalIcon, LockIcon, PullRequestIcon, RepoIcon, RingIcon, SlidersIcon, WarnIcon } from "../components/Icons";
+import {
+	ArrowLeftIcon,
+	BranchIcon,
+	ExternalIcon,
+	LockIcon,
+	PullRequestIcon,
+	RepoIcon,
+	RingIcon,
+	SlidersIcon,
+	WarnIcon,
+} from "../components/Icons";
 import { ItemTable, itemsByUrgency } from "../components/ItemTable";
 import { PullState } from "../components/PullRequest";
 import { StartComposer } from "../components/StartComposer";
@@ -89,15 +99,14 @@ export function useRepository(id: GithubId): RepositoryPage {
 
 	const reload = useCallback(() => {
 		const mine = ++reading.current;
-		readTwice(() => client.user(auth).repository(id))
-			.then(
-				(next) => {
-					if (mine !== reading.current) return;
-					setView(next);
-					setError(null);
-				},
-				(failure: unknown) => mine === reading.current && setError(explain(failure)),
-			);
+		readTwice(() => client.user(auth).repository(id)).then(
+			next => {
+				if (mine !== reading.current) return;
+				setView(next);
+				setError(null);
+			},
+			(failure: unknown) => mine === reading.current && setError(explain(failure)),
+		);
 	}, [client, auth, explain, id]);
 
 	const connected = github.enabled ? (github.status === null ? null : (github.status.connection?.connectedAt ?? 0)) : 0;
@@ -115,7 +124,11 @@ export function useRepository(id: GithubId): RepositoryPage {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `asked` is not read here; a change of it is when to ask again
 	useEffect(() => {
 		if (!github.enabled) {
-			setAccess({ state: "unusable", reason: "github_off", why: "This deployment has no GitHub App any more, so no agent can be launched on a repository of GitHub's here." });
+			setAccess({
+				state: "unusable",
+				reason: "github_off",
+				why: "This deployment has no GitHub App any more, so no agent can be launched on a repository of GitHub's here.",
+			});
 			return;
 		}
 		// Until the connection is known there is nothing to ask with; when it could not be read, nothing is known.
@@ -124,7 +137,11 @@ export function useRepository(id: GithubId): RepositoryPage {
 			return;
 		}
 		if (connected === 0) {
-			setAccess({ state: "unusable", reason: "github_not_connected", why: "GitHub is not connected, so no agent can be launched on it." });
+			setAccess({
+				state: "unusable",
+				reason: "github_not_connected",
+				why: "GitHub is not connected, so no agent can be launched on it.",
+			});
 			return;
 		}
 		let current = true;
@@ -133,11 +150,13 @@ export function useRepository(id: GithubId): RepositoryPage {
 			.user(auth)
 			.githubRepository(id)
 			.then(
-				(repository) => current && setAccess({ state: "usable", repository }),
+				repository => current && setAccess({ state: "usable", repository }),
 				(failure: unknown) => {
 					if (!current) return;
-					const reason = UNUSABLE.find((code) => hasReason(failure, code));
-					setAccess(reason ? { state: "unusable", reason, why: explain(failure) } : { state: "unknown", why: explain(failure) });
+					const reason = UNUSABLE.find(code => hasReason(failure, code));
+					setAccess(
+						reason ? { state: "unusable", reason, why: explain(failure) } : { state: "unknown", why: explain(failure) },
+					);
 				},
 			);
 		return () => {
@@ -146,13 +165,21 @@ export function useRepository(id: GithubId): RepositoryPage {
 	}, [client, auth, explain, id, github.enabled, connected, connectionError, asked]);
 
 	const mine = sessions === null ? null : sessionsOn(sessions, id);
-	const newest = mine?.reduce<SessionSummary | null>((found, session) => (found === null || session.createdAt > found.createdAt ? session : found), null)?.repository;
-	const name = access.state === "usable" ? repositoryName(access.repository) : newest ? repositoryName(newest) : (view?.name ?? null);
+	const newest = mine?.reduce<SessionSummary | null>(
+		(found, session) => (found === null || session.createdAt > found.createdAt ? session : found),
+		null,
+	)?.repository;
+	const name =
+		access.state === "usable"
+			? repositoryName(access.repository)
+			: newest
+				? repositoryName(newest)
+				: (view?.name ?? null);
 	const reloadGithub = github.reload;
 	const recheck = useCallback(() => {
 		// Without the connection there is nothing to ask GitHub with: that is read again first.
 		if (connectionError !== null) reloadGithub();
-		setAsked((count) => count + 1);
+		setAsked(count => count + 1);
 	}, [connectionError, reloadGithub]);
 	return { id, name, view, error, access, sessions: mine, connection, reload, replace: setView, recheck };
 }
@@ -160,13 +187,21 @@ export function useRepository(id: GithubId): RepositoryPage {
 /** What GitHub says of the repository, in the page's head: where it is, and what can be done there. */
 function AccessLine({ page, github }: { page: RepositoryPage; github: Github }) {
 	const { access } = page;
-	const address = page.sessions?.find((session) => session.repository)?.repository?.url ?? (page.name ? `${github.url}/${page.name}` : null);
+	const address =
+		page.sessions?.find(session => session.repository)?.repository?.url ??
+		(page.name ? `${github.url}/${page.name}` : null);
 	const repository = access.state === "usable" ? access.repository : null;
-	const isPrivate = repository?.private ?? page.sessions?.find((session) => session.repository)?.repository?.private ?? null;
+	const isPrivate =
+		repository?.private ?? page.sessions?.find(session => session.repository)?.repository?.private ?? null;
 	return (
 		<p className="home-account repo-facts">
 			{address ? (
-				<a className="repo-link" href={repository ? `${github.url}/${repository.owner}/${repository.name}` : address} target="_blank" rel="noreferrer">
+				<a
+					className="repo-link"
+					href={repository ? `${github.url}/${repository.owner}/${repository.name}` : address}
+					target="_blank"
+					rel="noreferrer"
+				>
 					On GitHub
 					<ExternalIcon size={11} />
 				</a>
@@ -179,7 +214,11 @@ function AccessLine({ page, github }: { page: RepositoryPage; github: Github }) 
 			)}
 			{access.state === "checking" ? <span className="tone-dim">checking it at GitHub…</span> : null}
 			{repository ? <span className="repo-fact">default branch {repository.defaultBranch}</span> : null}
-			{repository ? <span className={repository.canPush ? "repo-fact" : "repo-fact tone-warn"}>{repository.canPush ? "you can push to it" : "read only for you: no pull request can be opened"}</span> : null}
+			{repository ? (
+				<span className={repository.canPush ? "repo-fact" : "repo-fact tone-warn"}>
+					{repository.canPush ? "you can push to it" : "read only for you: no pull request can be opened"}
+				</span>
+			) : null}
 		</p>
 	);
 }
@@ -198,8 +237,17 @@ function AccessNotice({ page, github }: { page: RepositoryPage; github: Github }
 						{access.reason === "github_not_connected" ? (
 							<>
 								{" "}
-								<button type="button" className="link" onClick={() => github.connect({ where: "account" })} disabled={github.busy !== null && github.busy !== "popup"}>
-									{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Connect GitHub"}
+								<button
+									type="button"
+									className="link"
+									onClick={() => github.connect({ where: "account" })}
+									disabled={github.busy !== null && github.busy !== "popup"}
+								>
+									{github.busy === "leaving"
+										? "Opening GitHub…"
+										: github.busy === "popup"
+											? "In the GitHub window…"
+											: "Connect GitHub"}
 								</button>
 							</>
 						) : null}
@@ -263,13 +311,18 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 											)}
 										</span>
 										<span title={absoluteTime(pull.pushedAt)}>pushed {relativeTime(pull.pushedAt, now)}</span>
-										<span title="What its description said was verified when the platform last wrote it">{pull.verified}</span>
+										<span title="What its description said was verified when the platform last wrote it">
+											{pull.verified}
+										</span>
 									</p>
 								</div>
 							</li>
 						))}
 					</ul>
-					<p className="usage-note">As the platform last saw each at GitHub. An agent's panel asks GitHub again, and a pull request merged or closed since then leaves this list.</p>
+					<p className="usage-note">
+						As the platform last saw each at GitHub. An agent's panel asks GitHub again, and a pull request merged or
+						closed since then leaves this list.
+					</p>
 				</>
 			)}
 		</section>
@@ -277,10 +330,20 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 }
 
 /** The agents on the repository the filters leave, under the list's header: all of them, or on the overview its first few. */
-function AgentsSection({ page, filters, limit, overview }: { page: RepositoryPage; filters: Filters; limit: number; overview: boolean }) {
+function AgentsSection({
+	page,
+	filters,
+	limit,
+	overview,
+}: {
+	page: RepositoryPage;
+	filters: Filters;
+	limit: number;
+	overview: boolean;
+}) {
 	const now = useNow(15_000);
 	const all = page.sessions === null ? null : ownAgents(page.sessions);
-	const sessions = all === null ? null : all.filter((session) => matchesSession(session, filters));
+	const sessions = all === null ? null : all.filter(session => matchesSession(session, filters));
 	const name = page.name ?? `Repository ${page.id}`;
 	const launchable = page.access.state !== "unusable";
 	const filtering = filterCount(filters) > 0;
@@ -292,7 +355,7 @@ function AgentsSection({ page, filters, limit, overview }: { page: RepositoryPag
 					<p className="usage-empty tone-bad">The list of agents could not be loaded.</p>
 				) : (
 					<ul className="agents agents-loading repo-agents" aria-busy="true" aria-label="Reading your agents">
-						{[0, 1].map((row) => (
+						{[0, 1].map(row => (
 							<li key={row} className="agent-row agent-row-skeleton">
 								<span className="skeleton skeleton-dot" />
 								<div className="agent-main">
@@ -304,10 +367,21 @@ function AgentsSection({ page, filters, limit, overview }: { page: RepositoryPag
 					</ul>
 				)
 			) : sessions.length === 0 ? (
-				<p className="usage-empty">{filtering && (all?.length ?? 0) > 0 ? "None of its agents matches the filters." : `No agent of yours is on this repository.${launchable ? " Launch one with the field above." : ""}`}</p>
+				<p className="usage-empty">
+					{filtering && (all?.length ?? 0) > 0
+						? "None of its agents matches the filters."
+						: `No agent of yours is on this repository.${launchable ? " Launch one with the field above." : ""}`}
+				</p>
 			) : (
 				<div className="repo-agents">
-					<AgentList sessions={sessions} limit={limit} foldKey={`repository:${page.id}${overview ? ":overview" : ""}`} label={`Your agents on ${name}, the most recently used first`} grouped now={now} />
+					<AgentList
+						sessions={sessions}
+						limit={limit}
+						foldKey={`repository:${page.id}${overview ? ":overview" : ""}`}
+						label={`Your agents on ${name}, the most recently used first`}
+						grouped
+						now={now}
+					/>
 				</div>
 			)}
 		</section>
@@ -319,8 +393,11 @@ function ItemsOverview({ page, items, filters }: { page: RepositoryPage; items: 
 	const { platform } = useApp();
 	const now = useNow(15_000);
 	if (!platform.info?.items) return null;
-	const mine = items.list === null ? null : items.list.filter((item) => !item.parent && String(item.repository.id) === String(page.id));
-	const shown = mine === null ? null : itemsByUrgency(mine.filter((item) => matchesItem(item, filters)));
+	const mine =
+		items.list === null
+			? null
+			: items.list.filter(item => !item.parent && String(item.repository.id) === String(page.id));
+	const shown = mine === null ? null : itemsByUrgency(mine.filter(item => matchesItem(item, filters)));
 	const total = feedCounts(items.feed, { repository: page.id }).total;
 	const SHOWN = 8;
 	return (
@@ -336,9 +413,17 @@ function ItemsOverview({ page, items, filters }: { page: RepositoryPage; items: 
 					</div>
 				)
 			) : shown.length === 0 ? (
-				<p className="usage-empty">{filterCount(filters) > 0 && (mine?.length ?? 0) > 0 ? "None of its work items matches the filters." : "No work item on this repository yet."}</p>
+				<p className="usage-empty">
+					{filterCount(filters) > 0 && (mine?.length ?? 0) > 0
+						? "None of its work items matches the filters."
+						: "No work item on this repository yet."}
+				</p>
 			) : (
-				<ItemTable items={shown.slice(0, SHOWN)} now={now} label={`Work items on ${page.name ?? "this repository"}, what asks you first`} />
+				<ItemTable
+					items={shown.slice(0, SHOWN)}
+					now={now}
+					label={`Work items on ${page.name ?? "this repository"}, what asks you first`}
+				/>
 			)}
 			{total > Math.min(SHOWN, shown?.length ?? 0) ? (
 				<p className="agents-fold">
@@ -361,10 +446,14 @@ interface PaneFilters {
 /** A word for the default branch and the head's facts: how many agents and items, how many at work, how many ask. */
 function StatusLine({ page, items }: { page: RepositoryPage; items: ItemsState }) {
 	const agents = page.sessions === null ? null : ownAgents(page.sessions);
-	const mine = (items.list ?? []).filter((item) => !item.parent && String(item.repository.id) === String(page.id));
+	const mine = (items.list ?? []).filter(item => !item.parent && String(item.repository.id) === String(page.id));
 	const total = Math.max(feedCounts(items.feed, { repository: page.id }).total, mine.length);
-	const running = (agents ?? []).filter((session) => sessionStatus(session) === "running").length + mine.filter((item) => itemStatus(item) === "running").length;
-	const needs = (agents ?? []).filter((session) => session.status === "waiting").length + mine.filter((item) => item.question !== null).length;
+	const running =
+		(agents ?? []).filter(session => sessionStatus(session) === "running").length +
+		mine.filter(item => itemStatus(item) === "running").length;
+	const needs =
+		(agents ?? []).filter(session => session.status === "waiting").length +
+		mine.filter(item => item.question !== null).length;
 	const branch = page.access.state === "usable" ? page.access.repository.defaultBranch : null;
 	return (
 		<p className="ws-status">
@@ -404,7 +493,15 @@ export interface RepositoryPaneProps extends PaneFilters {
 }
 
 /** The chosen repository: its head, its composer and its views. */
-export function RepositoryPane({ page, view, launching = false, items, filters, onFilters, machines }: RepositoryPaneProps) {
+export function RepositoryPane({
+	page,
+	view,
+	launching = false,
+	items,
+	filters,
+	onFilters,
+	machines,
+}: RepositoryPaneProps) {
 	const github = useGithub();
 	const { platform } = useApp();
 	const { access } = page;
@@ -435,18 +532,46 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 						</p>
 					) : null}
 					<h1 className="ws-title">{short}</h1>
-					{page.name === null && page.view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
+					{page.name === null && page.view !== null ? (
+						<p className="home-account">
+							Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id}{" "}
+							is GitHub's number for it.
+						</p>
+					) : null}
 					<StatusLine page={page} items={items} />
-					{record && (record.note || page.view?.readiness.switchNote || offered(record, page.view!.defaults).length > 0) && <p className="usage-note">{record.note} {page.view?.readiness.switchNote} {offered(record, page.view!.defaults).length > 0 && <a className="link" {...(tab === "overview" && !aside ? { href: "#repo-setup" } : linkProps({ name: "repository", id: page.id }))}>Review earned settings in Repo setup</a>}</p>}
+					{record &&
+						(record.note || page.view?.readiness.switchNote || offered(record, page.view!.defaults).length > 0) && (
+							<p className="usage-note">
+								{record.note} {page.view?.readiness.switchNote}{" "}
+								{offered(record, page.view!.defaults).length > 0 && (
+									<a
+										className="link"
+										{...(tab === "overview" && !aside
+											? { href: "#repo-setup" }
+											: linkProps({ name: "repository", id: page.id }))}
+									>
+										Review earned settings in Repo setup
+									</a>
+								)}
+							</p>
+						)}
 					<AccessLine page={page} github={github} />
 				</div>
 				<div className="ws-head-actions">
-					<a className={`button button-outline button-small${view === "pulls" ? " ws-head-current" : ""}`} aria-current={view === "pulls" ? "page" : undefined} {...linkProps({ name: "repository", id: page.id, view: "pulls" })}>
+					<a
+						className={`button button-outline button-small${view === "pulls" ? " ws-head-current" : ""}`}
+						aria-current={view === "pulls" ? "page" : undefined}
+						{...linkProps({ name: "repository", id: page.id, view: "pulls" })}
+					>
 						<PullRequestIcon size={13} />
 						Pull requests
 						{pulls && pulls.length > 0 ? <span className="ws-head-count">{pulls.length}</span> : null}
 					</a>
-					<a className={`button button-outline button-small${view === "settings" ? " ws-head-current" : ""}`} aria-current={view === "settings" ? "page" : undefined} {...linkProps({ name: "repository", id: page.id, view: "settings" })}>
+					<a
+						className={`button button-outline button-small${view === "settings" ? " ws-head-current" : ""}`}
+						aria-current={view === "settings" ? "page" : undefined}
+						{...linkProps({ name: "repository", id: page.id, view: "settings" })}
+					>
 						<SlidersIcon size={13} />
 						Saved settings
 					</a>
@@ -486,8 +611,24 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 							selected={tab}
 							tabs={[
 								{ key: "overview", label: "Overview", route: { name: "repository", id: page.id } },
-								{ key: "agents", label: <TabCount word="Agents" count={page.sessions === null ? null : ownAgents(page.sessions).length} />, route: { name: "repository", id: page.id, view: "agents" } },
-								...(offersItems ? [{ key: "items", label: <TabCount word="Work items" count={feedCounts(items.feed, { repository: page.id }).total} />, route: { name: "repository", id: page.id, view: "items" } as const }] : []),
+								{
+									key: "agents",
+									label: (
+										<TabCount word="Agents" count={page.sessions === null ? null : ownAgents(page.sessions).length} />
+									),
+									route: { name: "repository", id: page.id, view: "agents" },
+								},
+								...(offersItems
+									? [
+											{
+												key: "items",
+												label: (
+													<TabCount word="Work items" count={feedCounts(items.feed, { repository: page.id }).total} />
+												),
+												route: { name: "repository", id: page.id, view: "items" } as const,
+											},
+										]
+									: []),
 							]}
 						/>
 						<FilterBar filters={filters} onChange={onFilters} machines={machines} />
@@ -503,7 +644,14 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 							<AgentsSection page={page} filters={filters} limit={LONE_GROUP_SHOWN} overview={false} />
 						) : (
 							<>
-								<RepositoryItems repositoryId={page.id} name={name} base={access.state === "usable" ? access.repository.defaultBranch : null} launchable={launchable} now={now} filter={(item) => matchesItem(item, filters)} />
+								<RepositoryItems
+									repositoryId={page.id}
+									name={name}
+									base={access.state === "usable" ? access.repository.defaultBranch : null}
+									launchable={launchable}
+									now={now}
+									filter={item => matchesItem(item, filters)}
+								/>
 							</>
 						)}
 					</TabPanel>

@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { UserError } from "rivetkit";
 import { modelKeyCaller } from "./actors/internal.js";
 import { requireServiceFor, requireUser } from "./auth.js";
-import { MODEL_CHECKS_PER_MINUTE, isModelProvider, validModelKey, type ModelProvider, type ModelProviderCheck, type ModelProviderStatus } from "./contract.js";
+import {
+	MODEL_CHECKS_PER_MINUTE,
+	isModelProvider,
+	validModelKey,
+	type ModelProvider,
+	type ModelProviderCheck,
+	type ModelProviderStatus,
+} from "./contract.js";
 import { MINUTE_MS } from "./http-limits.js";
 import type { DefaultsDb } from "./repository-defaults.js";
 import { serverSealer } from "./signin/seal.js";
@@ -18,27 +25,51 @@ export const MODEL_PROVIDER_TABLES = [
 ];
 
 type Context = Parameters<typeof requireUser>[0] & { db: DefaultsDb };
-type StatusRow = { provider: ModelProvider; last4: string; added_at: number; checked_at: number | null; check_ok: number; models: string | null; windlass_models: string | null };
+type StatusRow = {
+	provider: ModelProvider;
+	last4: string;
+	added_at: number;
+	checked_at: number | null;
+	check_ok: number;
+	models: string | null;
+	windlass_models: string | null;
+};
 const STATUS_COLUMNS = "provider, last4, added_at, checked_at, check_ok, models, windlass_models";
 
 type ModelEntry = { id?: unknown; name?: string; supported_parameters?: unknown; supportedGenerationMethods?: unknown };
 type ModelListBody = { data?: ModelEntry[]; models?: ModelEntry[] };
 
 function offersWindlass(provider: ModelProvider, entry: ModelEntry, id: string) {
-	if (provider === "openrouter") return Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes("tools");
-	return /^models\/gemini-[^/]+$/.test(entry.name ?? "") && !/-(tts|image|live|audio)(-|$)/.test(id)
-		&& Array.isArray(entry.supportedGenerationMethods) && entry.supportedGenerationMethods.includes("generateContent");
+	if (provider === "openrouter")
+		return Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes("tools");
+	return (
+		/^models\/gemini-[^/]+$/.test(entry.name ?? "") &&
+		!/-(tts|image|live|audio)(-|$)/.test(id) &&
+		Array.isArray(entry.supportedGenerationMethods) &&
+		entry.supportedGenerationMethods.includes("generateContent")
+	);
 }
 
 const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
-const PROVIDERS: Record<ModelProvider, {
-	origin: string; path: string; headers(key: string): Record<string, string>;
-}> = {
+const PROVIDERS: Record<
+	ModelProvider,
+	{
+		origin: string;
+		path: string;
+		headers(key: string): Record<string, string>;
+	}
+> = {
 	openai: { origin: "https://api.openai.com", path: "/v1/models", headers: bearer },
-	anthropic: { origin: "https://api.anthropic.com", path: "/v1/models",
-		headers: key => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }) },
-	google: { origin: "https://generativelanguage.googleapis.com", path: "/v1beta/models",
-		headers: key => ({ "x-goog-api-key": key }) },
+	anthropic: {
+		origin: "https://api.anthropic.com",
+		path: "/v1/models",
+		headers: key => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }),
+	},
+	google: {
+		origin: "https://generativelanguage.googleapis.com",
+		path: "/v1beta/models",
+		headers: key => ({ "x-goog-api-key": key }),
+	},
 	openrouter: { origin: "https://openrouter.ai", path: "/api/v1/models", headers: bearer },
 };
 
@@ -47,10 +78,18 @@ export async function savedProviders(db: DefaultsDb): Promise<ModelProvider[]> {
 }
 
 function status(row: StatusRow): ModelProviderStatus {
-	return { provider: row.provider, last4: row.last4, addedAt: row.added_at, checkedAt: row.checked_at, ok: !!row.check_ok,
-		...(row.check_ok && row.windlass_models === null && (row.provider === "google" || row.provider === "openrouter") && { needsWindlassCheck: true }),
+	return {
+		provider: row.provider,
+		last4: row.last4,
+		addedAt: row.added_at,
+		checkedAt: row.checked_at,
+		ok: !!row.check_ok,
+		...(row.check_ok &&
+			row.windlass_models === null &&
+			(row.provider === "google" || row.provider === "openrouter") && { needsWindlassCheck: true }),
 		...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
-		...(row.windlass_models !== null && { windlassModels: JSON.parse(row.windlass_models) as string[] }) };
+		...(row.windlass_models !== null && { windlassModels: JSON.parse(row.windlass_models) as string[] }),
+	};
 }
 
 function providerOf(raw: unknown): ModelProvider {
@@ -61,29 +100,50 @@ function providerOf(raw: unknown): ModelProvider {
 async function takeCheck(db: DefaultsDb): Promise<void> {
 	// Saves and rechecks share one per-user budget. The upsert reserves a slot atomically
 	// across concurrent calls and returns no row when the current minute is full.
-	const admitted = await db.execute(`INSERT INTO model_check_budget VALUES (1, ?, 1)
+	const admitted = await db.execute(
+		`INSERT INTO model_check_budget VALUES (1, ?, 1)
 		ON CONFLICT(id) DO UPDATE SET minute = excluded.minute, used = CASE WHEN minute = excluded.minute THEN used + 1 ELSE 1 END
-		WHERE minute != excluded.minute OR used < ? RETURNING id`, Math.floor(Date.now() / MINUTE_MS), MODEL_CHECKS_PER_MINUTE);
-	if (!admitted.length) throw new UserError("Too many model provider checks. Try again next minute.", { code: "rate_limited" });
+		WHERE minute != excluded.minute OR used < ? RETURNING id`,
+		Math.floor(Date.now() / MINUTE_MS),
+		MODEL_CHECKS_PER_MINUTE,
+	);
+	if (!admitted.length)
+		throw new UserError("Too many model provider checks. Try again next minute.", { code: "rate_limited" });
 }
 
 const subject = (uid: string, provider: ModelProvider) => JSON.stringify([uid, provider]);
-const modelKeyTransitSubject = (uid: string, provider: ModelProvider, nonce: string) => JSON.stringify(["model-key", uid, provider, nonce]);
+const modelKeyTransitSubject = (uid: string, provider: ModelProvider, nonce: string) =>
+	JSON.stringify(["model-key", uid, provider, nonce]);
 
-export function openModelKeyTransit(uid: string, provider: ModelProvider, nonce: string, blob: string): { key: string; generation: string } {
-	const { key, generation, exp } = JSON.parse(serverSealer().open("transit", modelKeyTransitSubject(uid, provider, nonce), blob));
+export function openModelKeyTransit(
+	uid: string,
+	provider: ModelProvider,
+	nonce: string,
+	blob: string,
+): { key: string; generation: string } {
+	const { key, generation, exp } = JSON.parse(
+		serverSealer().open("transit", modelKeyTransitSubject(uid, provider, nonce), blob),
+	);
 	if (!Number.isSafeInteger(exp) || exp <= Date.now()) throw new Error("Model key transit expired");
 	return { key, generation };
 }
 
 async function savedKey(db: DefaultsDb, uid: string, provider: ModelProvider) {
-	const [row] = await db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = ?", provider);
+	const [row] = await db.execute<{ sealed: string; generation: string }>(
+		"SELECT sealed, generation FROM model_provider WHERE provider = ?",
+		provider,
+	);
 	if (!row) return null;
 	const sealer = serverSealer();
 	const owner = subject(uid, provider);
 	const key = sealer.open("model-key", owner, row.sealed);
 	if (!sealer.isCurrent(row.sealed)) {
-		await db.execute("UPDATE model_provider SET sealed = ? WHERE provider = ? AND sealed = ?", sealer.seal("model-key", owner, key), provider, row.sealed);
+		await db.execute(
+			"UPDATE model_provider SET sealed = ? WHERE provider = ? AND sealed = ?",
+			sealer.seal("model-key", owner, key),
+			provider,
+			row.sealed,
+		);
 	}
 	return { key, generation: row.generation };
 }
@@ -100,7 +160,10 @@ function safeModelId(id: unknown, key: string): id is string {
 async function fetchModels(provider: ModelProvider, key: string) {
 	const spec = PROVIDERS[provider];
 	const base = new URL(process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] ?? spec.origin);
-	if (base.protocol !== "https:" && !(base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost"))) {
+	if (
+		base.protocol !== "https:" &&
+		!(base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost"))
+	) {
 		throw new Error("Model provider URL requires HTTPS");
 	}
 	const origin = base.href.replace(/\/+$/, "");
@@ -138,18 +201,35 @@ async function fetchModels(provider: ModelProvider, key: string) {
 	return { models: [...models], windlass: windlass && [...windlass] };
 }
 
-async function runCheck(db: DefaultsDb, provider: ModelProvider, key: string, generation: string): Promise<ModelProviderCheck> {
+async function runCheck(
+	db: DefaultsDb,
+	provider: ModelProvider,
+	key: string,
+	generation: string,
+): Promise<ModelProviderCheck> {
 	// Provider bodies, status text and fetch errors can all contain the submitted key.
 	const models = await fetchModels(provider, key).catch(() => null);
-	const [row] = await db.execute<StatusRow>(`UPDATE model_provider SET checked_at = ?, check_ok = ?, models = ?, windlass_models = ?
+	const [row] = await db.execute<StatusRow>(
+		`UPDATE model_provider SET checked_at = ?, check_ok = ?, models = ?, windlass_models = ?
 		WHERE provider = ? AND generation = ? RETURNING ${STATUS_COLUMNS}`,
-		Date.now(), Number(models !== null), models && JSON.stringify(models.models), models?.windlass ? JSON.stringify(models.windlass) : null, provider, generation);
+		Date.now(),
+		Number(models !== null),
+		models && JSON.stringify(models.models),
+		models?.windlass ? JSON.stringify(models.windlass) : null,
+		provider,
+		generation,
+	);
 	if (!row) throw new UserError("The saved key changed during the check.", { code: "model_key_changed" });
-	return { ...status(row), ...(models === null && { message: "Could not check the key with the provider. Verify the key and try again." }) };
+	return {
+		...status(row),
+		...(models === null && { message: "Could not check the key with the provider. Verify the key and try again." }),
+	};
 }
 
 export function savedModelKeys(db: DefaultsDb) {
-	return db.execute<{ provider: ModelProvider; generation: string }>("SELECT provider, generation FROM model_provider WHERE check_ok=1 ORDER BY provider");
+	return db.execute<{ provider: ModelProvider; generation: string }>(
+		"SELECT provider, generation FROM model_provider WHERE check_ok=1 ORDER BY provider",
+	);
 }
 
 export async function providerStatuses(db: DefaultsDb): Promise<ModelProviderStatus[]> {
@@ -165,20 +245,43 @@ export const modelProviderActions = {
 		const { uid } = requireUser(c);
 		const provider = providerOf(input?.provider);
 		const key = input.key;
-		if (!validModelKey(provider, key)) throw new UserError("The key format does not match the provider.", { code: "bad_model_key" });
+		if (!validModelKey(provider, key))
+			throw new UserError("The key format does not match the provider.", { code: "bad_model_key" });
 		await takeCheck(c.db);
 		const generation = randomUUID();
-		const [before] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider=?", provider);
+		const [before] = await c.db.execute<{ generation: string }>(
+			"SELECT generation FROM model_provider WHERE provider=?",
+			provider,
+		);
 		const at = Date.now();
 		const result = await fetchModels(provider, key).catch(() => null);
 		const checked = Date.now();
-		if (!result) return { provider, last4: key.slice(-4), addedAt: at, checkedAt: checked, ok: false, message: "Could not check the key with the provider. Verify the key and try again." };
+		if (!result)
+			return {
+				provider,
+				last4: key.slice(-4),
+				addedAt: at,
+				checkedAt: checked,
+				ok: false,
+				message: "Could not check the key with the provider. Verify the key and try again.",
+			};
 		const sealed = serverSealer().seal("model-key", subject(uid, provider), key);
-		const [row] = await c.db.execute<StatusRow>(`INSERT INTO model_provider (provider, generation, sealed, last4, added_at, checked_at, check_ok, models, windlass_models)
+		const [row] = await c.db.execute<StatusRow>(
+			`INSERT INTO model_provider (provider, generation, sealed, last4, added_at, checked_at, check_ok, models, windlass_models)
 			SELECT ?, ?, ?, ?, ?, ?, 1, ?, ? WHERE (SELECT generation FROM model_provider WHERE provider=?) IS ?
 			ON CONFLICT(provider) DO UPDATE SET generation=excluded.generation, sealed=excluded.sealed, last4=excluded.last4,
 			added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1, models=excluded.models, windlass_models=excluded.windlass_models RETURNING ${STATUS_COLUMNS}`,
-			provider, generation, sealed, key.slice(-4), at, checked, JSON.stringify(result.models), result.windlass && JSON.stringify(result.windlass), provider, before?.generation ?? null);
+			provider,
+			generation,
+			sealed,
+			key.slice(-4),
+			at,
+			checked,
+			JSON.stringify(result.models),
+			result.windlass && JSON.stringify(result.windlass),
+			provider,
+			before?.generation ?? null,
+		);
 		if (!row) throw new UserError("The saved key changed during the check.", { code: "model_key_changed" });
 		return status(row);
 	},
@@ -202,15 +305,26 @@ export const modelProviderActions = {
 	/** A turn can pin the saved generation without opening the key. */
 	async internalModelKeyGeneration(c: Context, raw: ModelProvider): Promise<string | null> {
 		requireServiceFor(c, modelKeyCaller(c.key[0]!));
-		const [row] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider = ? AND check_ok=1", providerOf(raw));
+		const [row] = await c.db.execute<{ generation: string }>(
+			"SELECT generation FROM model_provider WHERE provider = ? AND check_ok=1",
+			providerOf(raw),
+		);
 		return row?.generation ?? null;
 	},
 	async internalModelKey(c: Context, raw: ModelProvider, nonce: string): Promise<string | null> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, modelKeyCaller(uid));
 		const provider = providerOf(raw);
-		if (typeof nonce !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)) throw new UserError("Invalid model key request nonce.", { code: "bad_nonce" });
+		if (typeof nonce !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce))
+			throw new UserError("Invalid model key request nonce.", { code: "bad_nonce" });
 		const saved = await savedKey(c.db, uid, provider);
-		return saved && serverSealer().seal("transit", modelKeyTransitSubject(uid, provider, nonce), JSON.stringify({ ...saved, exp: Date.now() + MINUTE_MS }));
+		return (
+			saved &&
+			serverSealer().seal(
+				"transit",
+				modelKeyTransitSubject(uid, provider, nonce),
+				JSON.stringify({ ...saved, exp: Date.now() + MINUTE_MS }),
+			)
+		);
 	},
 };

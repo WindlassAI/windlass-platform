@@ -9,7 +9,10 @@ import { readGithubReturn } from "../state/github";
 import { PlatformError, type SessionFeed } from "./client";
 import { createMockClient, type MockClient } from "./mock";
 
-const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const ada: AuthResult = {
+	token: "mock:user:u_ada:ada@example.com",
+	profile: { uid: "u_ada", email: "ada@example.com", demo: false },
+};
 const demo: AuthResult = { token: "mock:demo:demo_1:", profile: { uid: "demo_1", email: null, demo: true } };
 
 let client: MockClient | null = null;
@@ -36,7 +39,14 @@ async function refusal(call: Promise<unknown>): Promise<PlatformError> {
 /** The session's stored items as they arrive, like the session screen's feed. */
 function items(mock: MockClient, auth: AuthResult, id: string): TimelineItem[] {
 	const seen: TimelineItem[] = [];
-	const feed: SessionFeed = { onSnapshot: () => undefined, onItem: (item) => seen.push(item), onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined };
+	const feed: SessionFeed = {
+		onSnapshot: () => undefined,
+		onItem: item => seen.push(item),
+		onDelta: () => undefined,
+		onSummary: () => undefined,
+		onQuestion: () => undefined,
+		onConnection: () => undefined,
+	};
 	mock.session(auth, id).open(feed);
 	return seen;
 }
@@ -48,12 +58,14 @@ describe("the mock's GitHub", () => {
 		expect((await off.info()).github).toBeUndefined();
 		expect((await refusal(off.login.start("github"))).reason).toBe("provider_off");
 		expect((await refusal(off.user(ada).github())).reason).toBe("github_off");
-		expect((await off.user(ada).listSessions()).every((session) => !session.repository)).toBe(true);
+		expect((await off.user(ada).listSessions()).every(session => !session.repository)).toBe(true);
 	});
 
 	it("starts a ChatGPT user connected and a demo user not, and connects through the address the server would send the browser back to", async () => {
 		const mock = make();
-		expect((await mock.user(ada).github()).connection?.accounts.map((account) => `${account.login} (${account.kind})`)).toEqual(["ada (user)", "acme (organization)"]);
+		expect(
+			(await mock.user(ada).github()).connection?.accounts.map(account => `${account.login} (${account.kind})`),
+		).toEqual(["ada (user)", "acme (organization)"]);
 		expect((await mock.user(demo).github()).connection).toBeNull();
 		expect((await refusal(mock.user(demo).githubRepositories(""))).reason).toBe("github_not_connected");
 
@@ -72,8 +84,12 @@ describe("the mock's GitHub", () => {
 
 	it("reads what the address says of a return from GitHub, and nothing else", () => {
 		expect(readGithubReturn("#github=gh1.abc.def")).toEqual({ ticket: "gh1.abc.def" });
-		expect(readGithubReturn("#github-error=not_yours")).toEqual({ error: "That installation is not one your GitHub account can reach, so it was not connected." });
-		expect(readGithubReturn("#github-error=something_new")).toEqual({ error: "Connecting GitHub did not work. Try again." });
+		expect(readGithubReturn("#github-error=not_yours")).toEqual({
+			error: "That installation is not one your GitHub account can reach, so it was not connected.",
+		});
+		expect(readGithubReturn("#github-error=something_new")).toEqual({
+			error: "Connecting GitHub did not work. Try again.",
+		});
 		expect(readGithubReturn("#details")).toBeNull();
 		expect(readGithubReturn("")).toBeNull();
 	});
@@ -81,23 +97,51 @@ describe("the mock's GitHub", () => {
 	it("lists repositories: the most recently pushed first, a name that begins with the search before one that contains it", async () => {
 		const user = make().user(ada);
 		const all = await user.githubRepositories("");
-		expect(all.repositories.slice(0, 3).map((repository) => `${repository.owner}/${repository.name}`)).toEqual(["acme/harbor", "ada/tide-tables", "acme/lighthouse-docs"]);
+		expect(all.repositories.slice(0, 3).map(repository => `${repository.owner}/${repository.name}`)).toEqual([
+			"acme/harbor",
+			"ada/tide-tables",
+			"acme/lighthouse-docs",
+		]);
 		const found = await user.githubRepositories("HAR");
-		expect(found.repositories.map((repository) => repository.name)).toEqual(["harbor", "harbor-infrastructure", "charts"]);
+		expect(found.repositories.map(repository => repository.name)).toEqual([
+			"harbor",
+			"harbor-infrastructure",
+			"charts",
+		]);
 		expect((await user.githubRepositories("no-such")).repositories).toEqual([]);
-		expect(all.repositories.find((repository) => repository.name === "quay")?.canPush).toBe(false);
-		expect(await user.githubBranches(7101)).toEqual({ branches: ["main", "fix/tide-tables", "release/2.4", "release/2.3"], defaultBranch: "main", more: false });
+		expect(all.repositories.find(repository => repository.name === "quay")?.canPush).toBe(false);
+		expect(await user.githubBranches(7101)).toEqual({
+			branches: ["main", "fix/tide-tables", "release/2.4", "release/2.3"],
+			defaultBranch: "main",
+			more: false,
+		});
 		client?.mockNextGithub("list");
-		expect((await refusal(user.githubRepositories(""))).message).toBe("GitHub could not be reached. Try again in a moment.");
+		expect((await refusal(user.githubRepositories(""))).message).toBe(
+			"GitHub could not be reached. Try again in a moment.",
+		);
 	});
 
 	it("launches an agent on a repository and records what it was launched on", async () => {
 		const user = make().user(ada);
-		const session = await user.createSession({ profile: "docker-windlass-sandbox", repository: { id: 7101, branch: "release/2.4" } });
-		expect(session.repository).toEqual({ provider: "github", id: 7101, owner: "acme", name: "harbor", branch: "release/2.4", private: true, url: "https://github.com/acme/harbor" });
+		const session = await user.createSession({
+			profile: "docker-windlass-sandbox",
+			repository: { id: 7101, branch: "release/2.4" },
+		});
+		expect(session.repository).toEqual({
+			provider: "github",
+			id: 7101,
+			owner: "acme",
+			name: "harbor",
+			branch: "release/2.4",
+			private: true,
+			url: "https://github.com/acme/harbor",
+		});
 		expect(session.repoUrl).toBe("https://github.com/acme/harbor.git");
 		expect(session.pullRequest).toBeNull();
-		const pasted = await user.createSession({ profile: "docker-windlass-sandbox", repoUrl: "https://github.com/someone/public.git" });
+		const pasted = await user.createSession({
+			profile: "docker-windlass-sandbox",
+			repoUrl: "https://github.com/someone/public.git",
+		});
 		expect(pasted.repository).toBeUndefined();
 	});
 
@@ -106,16 +150,34 @@ describe("the mock's GitHub", () => {
 		const session = mock.session(ada, "add-test");
 		const seen = items(mock, ada, "add-test");
 		const before = await session.publishState();
-		expect(before).toMatchObject({ pullRequest: null, changes: true, blocked: null, branch: "windlass/fix-the-failing-add-test-ddtest", draft: { title: "Fix the failing add test" } });
+		expect(before).toMatchObject({
+			pullRequest: null,
+			changes: true,
+			blocked: null,
+			branch: "windlass/fix-the-failing-add-test-ddtest",
+			draft: { title: "Fix the failing add test" },
+		});
 
 		const opened = await session.publish({ title: "Fix the failing add test", body: "It subtracted." });
 		expect(opened.opened).toBe(true);
-		expect(opened.state.pullRequest).toMatchObject({ number: 41, state: "open", branch: before.branch, base: "main", url: "https://github.com/ada/tide-tables/pull/41" });
+		expect(opened.state.pullRequest).toMatchObject({
+			number: 41,
+			state: "open",
+			branch: before.branch,
+			base: "main",
+			url: "https://github.com/ada/tide-tables/pull/41",
+		});
 		expect(opened.state.changes).toBe(false);
 		expect(await session.changes()).toEqual([]);
-		expect(seen.at(-1)).toMatchObject({ kind: "platform", level: "info", text: "Opened pull request #41 in ada/tide-tables from windlass/fix-the-failing-add-test-ddtest, with 1 file. Its description reports: nothing verified." });
-		expect((await mock.user(ada).listSessions()).find((one) => one.id === "add-test")?.pullRequest?.number).toBe(41);
-		expect((await refusal(session.publish({ title: "Again", body: "" }))).message).toBe("There is nothing to push: windlass/fix-the-failing-add-test-ddtest at GitHub already has everything in the workspace.");
+		expect(seen.at(-1)).toMatchObject({
+			kind: "platform",
+			level: "info",
+			text: "Opened pull request #41 in ada/tide-tables from windlass/fix-the-failing-add-test-ddtest, with 1 file. Its description reports: nothing verified.",
+		});
+		expect((await mock.user(ada).listSessions()).find(one => one.id === "add-test")?.pullRequest?.number).toBe(41);
+		expect((await refusal(session.publish({ title: "Again", body: "" }))).message).toBe(
+			"There is nothing to push: windlass/fix-the-failing-add-test-ddtest at GitHub already has everything in the workspace.",
+		);
 
 		// The session that has an open pull request and a changed file pushes to it.
 		const checks = mock.session(ada, "checks");
@@ -135,17 +197,23 @@ describe("the mock's GitHub", () => {
 		expect(guarded.reason).toBe("github_denied");
 		expect(guarded.message).toContain("protects branches named like windlass/fix-the-failing-add-test-ddtest");
 		mock.mockNextGithub("denied");
-		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toContain("can read ada/tide-tables on GitHub but not write to it");
+		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toContain(
+			"can read ada/tide-tables on GitHub but not write to it",
+		);
 		mock.mockNextGithub("gone");
 		expect((await refusal(session.publish({ title: "x", body: "" }))).reason).toBe("github_gone");
 		// Nothing was pushed by any of them.
 		expect((await session.publishState()).pullRequest).toBeNull();
 
 		const running = mock.session(ada, "harbor-build");
-		expect((await running.publishState()).blocked).toBe("Wait for the turn to end: the platform does not push while the agent is working.");
+		expect((await running.publishState()).blocked).toBe(
+			"Wait for the turn to end: the platform does not push while the agent is working.",
+		);
 		expect((await refusal(running.publish({ title: "x", body: "" }))).reason).toBe("publish_blocked");
 
 		await mock.user(ada).githubDisconnect();
-		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toBe("GitHub is not connected any more. Connect GitHub again in Settings, then try once more.");
+		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toBe(
+			"GitHub is not connected any more. Connect GitHub again in Settings, then try once more.",
+		);
 	});
 });

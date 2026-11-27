@@ -32,7 +32,13 @@
  */
 
 import type { BillingPeriod } from "../contract.js";
-import { BillingProviderError, type BillingEvent, type BillingProvider, type CheckoutInput, type UsageReport } from "./provider.js";
+import {
+	BillingProviderError,
+	type BillingEvent,
+	type BillingProvider,
+	type CheckoutInput,
+	type UsageReport,
+} from "./provider.js";
 import { verify } from "./standard-webhooks.js";
 
 export interface DodoSettings {
@@ -93,7 +99,11 @@ export class DodoProvider implements BillingProvider {
 	readonly name = "dodo";
 	private readonly base: string;
 
-	constructor(private readonly settings: DodoSettings, private readonly fetchImpl: Fetch = fetch, base?: string) {
+	constructor(
+		private readonly settings: DodoSettings,
+		private readonly fetchImpl: Fetch = fetch,
+		base?: string,
+	) {
 		this.base = base ?? dodoBaseUrl(settings.environment);
 	}
 
@@ -108,14 +118,22 @@ export class DodoProvider implements BillingProvider {
 		if (!response.ok) {
 			// Only the provider's own error code, never the message: it may repeat what was sent.
 			let code = "";
-			try { code = text((JSON.parse(raw) as { code?: unknown }).code) ?? ""; } catch { /* not JSON */ }
+			try {
+				code = text((JSON.parse(raw) as { code?: unknown }).code) ?? "";
+			} catch {
+				/* not JSON */
+			}
 			throw new BillingProviderError(response.status, code.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64));
 		}
 		return (raw === "" ? {} : JSON.parse(raw)) as T;
 	}
 
 	async createCustomer(uid: string, email: string): Promise<string> {
-		const answer = await this.call<{ customer_id?: string }>("POST", "/customers", { name: uid, email, metadata: { [UID_KEY]: uid } });
+		const answer = await this.call<{ customer_id?: string }>("POST", "/customers", {
+			name: uid,
+			email,
+			metadata: { [UID_KEY]: uid },
+		});
 		const id = text(answer.customer_id);
 		if (!id) throw new BillingProviderError(502, "no_customer_id");
 		return id;
@@ -137,33 +155,52 @@ export class DodoProvider implements BillingProvider {
 
 	async checkoutReplaceable(session: string, now: number): Promise<boolean> {
 		// Dodo has no checkout void endpoint. An in-flight or successful payment still needs its webhook.
-		const status = await this.call<{ id: string; created_at: string; payment_id: string | null; payment_status: string | null }>(
-			"GET", `/checkouts/${encodeURIComponent(session)}`);
+		const status = await this.call<{
+			id: string;
+			created_at: string;
+			payment_id: string | null;
+			payment_status: string | null;
+		}>("GET", `/checkouts/${encodeURIComponent(session)}`);
 		if (status.id !== session) return false;
 		if (status.payment_status === "failed" || status.payment_status === "cancelled") return true;
 		const created = time(status.created_at);
-		return status.payment_id === null && status.payment_status === null && created !== null && now >= created + 24 * 60 * 60_000;
+		return (
+			status.payment_id === null &&
+			status.payment_status === null &&
+			created !== null &&
+			now >= created + 24 * 60 * 60_000
+		);
 	}
 
 	async portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }> {
 		const query = new URLSearchParams({ return_url: input.returnUrl });
-		const answer = await this.call<{ link?: string }>("POST", `/customers/${encodeURIComponent(input.customerId)}/customer-portal/session?${query}`);
+		const answer = await this.call<{ link?: string }>(
+			"POST",
+			`/customers/${encodeURIComponent(input.customerId)}/customer-portal/session?${query}`,
+		);
 		const url = text(answer.link);
 		if (!url || !url.startsWith("https://")) throw new BillingProviderError(502, "no_portal_link");
 		return { url };
 	}
 
 	async reportUsage(report: UsageReport): Promise<void> {
-		if (!Number.isSafeInteger(report.minutes) || report.minutes <= 0) throw new Error("A usage report needs whole minutes above zero.");
+		if (!Number.isSafeInteger(report.minutes) || report.minutes <= 0)
+			throw new Error("A usage report needs whole minutes above zero.");
 		await this.call("POST", "/events/ingest", {
-			events: [{
-				event_id: report.eventId,
-				customer_id: report.customerId,
-				event_name: this.settings.meterEvent,
-				// Dodo refuses an event older than an hour, so a retry is sent with its own time; its id keeps it one event.
-				timestamp: new Date().toISOString(),
-				metadata: { minutes: report.minutes, period_start: new Date(report.periodStart).toISOString(), subscription_id: report.subscriptionId },
-			}],
+			events: [
+				{
+					event_id: report.eventId,
+					customer_id: report.customerId,
+					event_name: this.settings.meterEvent,
+					// Dodo refuses an event older than an hour, so a retry is sent with its own time; its id keeps it one event.
+					timestamp: new Date().toISOString(),
+					metadata: {
+						minutes: report.minutes,
+						period_start: new Date(report.periodStart).toISOString(),
+						subscription_id: report.subscriptionId,
+					},
+				},
+			],
 		});
 	}
 
@@ -177,23 +214,43 @@ export class DodoProvider implements BillingProvider {
 		const delivery = verify(this.settings.webhookSecret, headers, body, now);
 		if (delivery === null) return null;
 		let envelope: { type?: unknown; timestamp?: unknown; data?: unknown };
-		try { envelope = JSON.parse(body); } catch { return []; }
+		try {
+			envelope = JSON.parse(body);
+		} catch {
+			return [];
+		}
 		const type = text(envelope.type) ?? "";
 		const occurredAt = time(envelope.timestamp) ?? delivery.timestamp * 1000;
-		const data = (typeof envelope.data === "object" && envelope.data !== null ? envelope.data : {}) as DodoSubscription & DodoPayment;
+		const data = (
+			typeof envelope.data === "object" && envelope.data !== null ? envelope.data : {}
+		) as DodoSubscription & DodoPayment;
 		const uid = text(data.metadata?.[UID_KEY]) ?? text(data.customer?.metadata?.[UID_KEY]);
-		const base = { id: delivery.id, occurredAt, uid, customerId: text(data.customer?.customer_id), subscriptionId: text(data.subscription_id), type };
+		const base = {
+			id: delivery.id,
+			occurredAt,
+			uid,
+			customerId: text(data.customer?.customer_id),
+			subscriptionId: text(data.subscription_id),
+			type,
+		};
 
 		if (type === "payment.failed") {
 			// A payment of no subscription is not ours to act on.
 			if (base.subscriptionId === null) return [];
-			return [{ ...base, kind: "payment_failed", period: null, periodStart: null, periodEnd: null, cancelAtPeriodEnd: false }];
+			return [
+				{ ...base, kind: "payment_failed", period: null, periodStart: null, periodEnd: null, cancelAtPeriodEnd: false },
+			];
 		}
 		if (!type.startsWith("subscription.")) return [];
 		const period = this.period(data);
 		// A subscription to another product of the same Dodo account is not Pro.
 		if (period === null) return [];
-		const facts = { period, periodStart: time(data.previous_billing_date) ?? time(data.created_at), periodEnd: time(data.next_billing_date), cancelAtPeriodEnd: data.cancel_at_next_billing_date === true };
+		const facts = {
+			period,
+			periodStart: time(data.previous_billing_date) ?? time(data.created_at),
+			periodEnd: time(data.next_billing_date),
+			cancelAtPeriodEnd: data.cancel_at_next_billing_date === true,
+		};
 		const status = data.status;
 		let kind: BillingEvent["kind"] | null = null;
 		if (ACTIVE_TYPES.has(type)) kind = status === undefined || status === "active" ? "active" : null;
@@ -201,11 +258,16 @@ export class DodoProvider implements BillingProvider {
 		else if (type === "subscription.paused") kind = "paused";
 		else if (ENDED_TYPES.has(type)) kind = "ended";
 		else if (CHANGED_TYPES.has(type)) {
-			kind = status === "active" ? "changed"
-				: status === "on_hold" || status === "past_due" ? "payment_failed"
-				: status === "paused" ? "paused"
-				: status === "cancelled" || status === "expired" || status === "failed" ? "ended"
-				: null;
+			kind =
+				status === "active"
+					? "changed"
+					: status === "on_hold" || status === "past_due"
+						? "payment_failed"
+						: status === "paused"
+							? "paused"
+							: status === "cancelled" || status === "expired" || status === "failed"
+								? "ended"
+								: null;
 		}
 		return kind === null ? [] : [{ ...base, kind, ...facts }];
 	}

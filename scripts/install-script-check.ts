@@ -40,8 +40,15 @@ test("GET /install.sh is the script for this platform, as plain text that is not
 	assert.ok(body.includes("-v /var/run/docker.sock:/var/run/docker.sock"));
 	assert.ok(body.includes("-v windlass-runner:/var/lib/windlass-runner"));
 	// What it runs (its messages aside): nothing with sudo, nothing written in a file.
-	const commands = body.split("\n").filter(line => !/^\s*#/.test(line)).join("\n").replace(/(fail|say) "[^"]*"/g, "");
-	assert.doesNotMatch(commands, /\bsudo\b|mkdir|\btee\b|>>|>\s*(?!\/dev\/null\b|&)[^\s]|\$HOME|chmod|\bcurl\b|\bwget\b/);
+	const commands = body
+		.split("\n")
+		.filter(line => !/^\s*#/.test(line))
+		.join("\n")
+		.replace(/(fail|say) "[^"]*"/g, "");
+	assert.doesNotMatch(
+		commands,
+		/\bsudo\b|mkdir|\btee\b|>>|>\s*(?!\/dev\/null\b|&)[^\s]|\$HOME|chmod|\bcurl\b|\bwget\b/,
+	);
 	const head = get("HEAD");
 	assert.equal(head.status, 200);
 	assert.equal(await head.text(), "");
@@ -49,11 +56,18 @@ test("GET /install.sh is the script for this platform, as plain text that is not
 	assert.equal(get("POST").status, 405);
 	const unpublished = config.machines!.runnerImage;
 	(config.machines as { runnerImage: string | null }).runnerImage = null;
-	try { assert.match(await get().text(), /has not published a runner yet[\s\S]*exit 1/); }
-	finally { (config.machines as { runnerImage: string | null }).runnerImage = unpublished; }
+	try {
+		assert.match(await get().text(), /has not published a runner yet[\s\S]*exit 1/);
+	} finally {
+		(config.machines as { runnerImage: string | null }).runnerImage = unpublished;
+	}
 	const machines = config.machines;
 	(config as { machines: unknown }).machines = null;
-	try { assert.equal(get().status, 404); } finally { (config as { machines: unknown }).machines = machines; }
+	try {
+		assert.equal(get().status, 404);
+	} finally {
+		(config as { machines: unknown }).machines = machines;
+	}
 });
 
 test("the script is POSIX sh that finds Docker's problems, then runs setup or prints it", () => {
@@ -61,11 +75,13 @@ test("the script is POSIX sh that finds Docker's problems, then runs setup or pr
 	try {
 		const script = join(dir, "install.sh");
 		writeFileSync(script, installScript(platform, image));
-		for (const shell of ["sh", "dash"]) if (spawnSync("sh", ["-c", `command -v ${shell}`]).status === 0) execFileSync(shell, ["-n", script]);
+		for (const shell of ["sh", "dash"])
+			if (spawnSync("sh", ["-c", `command -v ${shell}`]).status === 0) execFileSync(shell, ["-n", script]);
 		// A PATH with the tools the script uses, and a fake docker that does what DOCKER says.
 		const bin = join(dir, "bin");
 		execFileSync("mkdir", [bin]);
-		for (const tool of ["uname", "grep", "cat", "sleep"]) symlinkSync(execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), join(bin, tool));
+		for (const tool of ["uname", "grep", "cat", "sleep"])
+			symlinkSync(execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), join(bin, tool));
 		const calls = join(dir, "calls");
 		const setsid = execFileSync("sh", ["-c", "command -v setsid"], { encoding: "utf8" }).trim();
 		const fake = `#!/bin/sh
@@ -78,7 +94,8 @@ case "$DOCKER:$1" in
   *:run) echo "setup ran with a terminal: $( [ -t 0 ] && echo yes || echo no )" ;;
 esac
 `;
-		const home = join(dir, "home"), work = join(dir, "work");
+		const home = join(dir, "home"),
+			work = join(dir, "work");
 		execFileSync("mkdir", [home, work]);
 		const run = (docker: string | null, terminal = false) => {
 			rmSync(join(bin, "docker"), { force: true });
@@ -87,9 +104,17 @@ esac
 			const env = { PATH: bin, HOME: home, DOCKER: docker ?? "" };
 			// setsid: no controlling terminal, as under a CI job or a pipe from another program.
 			const result = terminal
-				? spawnSync("script", ["-qec", `/bin/sh ${script}`, "/dev/null"], { cwd: work, env: { ...env, PATH: bin + ":/usr/bin:/bin" }, encoding: "utf8" })
+				? spawnSync("script", ["-qec", `/bin/sh ${script}`, "/dev/null"], {
+						cwd: work,
+						env: { ...env, PATH: bin + ":/usr/bin:/bin" },
+						encoding: "utf8",
+					})
 				: spawnSync(setsid, ["-w", "/bin/sh", script], { cwd: work, env, encoding: "utf8" });
-			return { code: result.status, out: (result.stdout ?? "") + (result.stderr ?? ""), calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [] };
+			return {
+				code: result.status,
+				out: (result.stdout ?? "") + (result.stderr ?? ""),
+				calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [],
+			};
 		};
 		const missing = run(null);
 		assert.equal(missing.code, 1);
@@ -104,14 +129,22 @@ esac
 		const piped = run("ok");
 		assert.equal(piped.code, 0, piped.out);
 		assert.deepEqual(piped.calls, ["info --format {{.ServerVersion}}", "pull " + image]);
-		assert.match(piped.out, /There is no terminal here[\s\S]*\n {2}docker run -it --rm --log-driver none -v \/var\/run\/docker\.sock:\/var\/run\/docker\.sock -v windlass-runner:\/var\/lib\/windlass-runner ghcr\.io\/windlassai\/windlass-runner@sha256:(ab){32} setup --platform https:\/\/windlass\.example\.org\n/);
+		assert.match(
+			piped.out,
+			/There is no terminal here[\s\S]*\n {2}docker run -it --rm --log-driver none -v \/var\/run\/docker\.sock:\/var\/run\/docker\.sock -v windlass-runner:\/var\/lib\/windlass-runner ghcr\.io\/windlassai\/windlass-runner@sha256:(ab){32} setup --platform https:\/\/windlass\.example\.org\n/,
+		);
 		if (spawnSync("sh", ["-c", "command -v script"]).status === 0) {
 			const terminal = run("ok", true);
 			assert.equal(terminal.code, 0, terminal.out);
-			assert.equal(terminal.calls.at(-1), `run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock -v windlass-runner:/var/lib/windlass-runner ${image} setup --platform ${platform}`);
+			assert.equal(
+				terminal.calls.at(-1),
+				`run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock -v windlass-runner:/var/lib/windlass-runner ${image} setup --platform ${platform}`,
+			);
 			assert.match(terminal.out, /setup ran with a terminal: yes/);
 		}
 		assert.deepEqual(readdirSync(home), []);
 		assert.deepEqual(readdirSync(work), []);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

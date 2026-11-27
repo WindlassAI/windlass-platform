@@ -66,30 +66,47 @@ export function bearerOf(request: Request): string | null {
 type Row = { id: string; name: string; scopes: string; created_at: number; used_at: number | null };
 
 function tokenOf(row: Row): ApiToken {
-	return { id: row.id, name: row.name, scopes: JSON.parse(row.scopes) as ApiTokenScope[], createdAt: row.created_at, usedAt: row.used_at };
+	return {
+		id: row.id,
+		name: row.name,
+		scopes: JSON.parse(row.scopes) as ApiTokenScope[],
+		createdAt: row.created_at,
+		usedAt: row.used_at,
+	};
 }
 
 export async function listApiTokens(db: RawAccess): Promise<ApiToken[]> {
-	const rows = await db.execute<Row>("SELECT id, name, scopes, created_at, used_at FROM api_token ORDER BY created_at DESC, id");
+	const rows = await db.execute<Row>(
+		"SELECT id, name, scopes, created_at, used_at FROM api_token ORDER BY created_at DESC, id",
+	);
 	return rows.map(tokenOf);
 }
 
 function cleanInput(input: unknown): { name: string; scopes: ApiTokenScope[] } {
 	const given = (typeof input === "object" && input !== null ? input : {}) as { name?: unknown; scopes?: unknown };
 	const name = typeof given.name === "string" ? given.name.replace(/\s+/g, " ").trim() : "";
-	if (name === "" || name.length > MAX_TITLE_CHARS) throw new ApiTokenProblem("bad_input", `Name the token, in at most ${MAX_TITLE_CHARS} characters.`);
+	if (name === "" || name.length > MAX_TITLE_CHARS)
+		throw new ApiTokenProblem("bad_input", `Name the token, in at most ${MAX_TITLE_CHARS} characters.`);
 	const scopes = Array.isArray(given.scopes) ? [...new Set(given.scopes)] : [];
-	if (scopes.length === 0 || !scopes.every((scope): scope is ApiTokenScope => SCOPES.includes(scope as ApiTokenScope))) {
+	if (
+		scopes.length === 0 ||
+		!scopes.every((scope): scope is ApiTokenScope => SCOPES.includes(scope as ApiTokenScope))
+	) {
 		throw new ApiTokenProblem("bad_input", `Choose what the token may do: ${SCOPES.join(", ")}.`);
 	}
-	return { name, scopes: SCOPES.filter((scope) => scopes.includes(scope)) };
+	return { name, scopes: SCOPES.filter(scope => scopes.includes(scope)) };
 }
 
 /**
  * Makes a token for `uid`. The row goes in by one statement that counts the user's tokens in the same
  * step, so tokens made at the same moment cannot pass MAX_API_TOKENS together.
  */
-export async function createApiToken(db: RawAccess, uid: string, input: unknown, now: number): Promise<{ token: ApiToken; secret: string }> {
+export async function createApiToken(
+	db: RawAccess,
+	uid: string,
+	input: unknown,
+	now: number,
+): Promise<{ token: ApiToken; secret: string }> {
 	const { name, scopes } = cleanInput(input);
 	const secret = `${PREFIX}${uid}.${randomBytes(32).toString("base64url")}`;
 	const id = `tok_${randomBytes(8).toString("hex")}`;
@@ -103,7 +120,11 @@ export async function createApiToken(db: RawAccess, uid: string, input: unknown,
 		MAX_API_TOKENS,
 	);
 	const [row] = await db.execute<Row>("SELECT id, name, scopes, created_at, used_at FROM api_token WHERE id = ?", id);
-	if (!row) throw new ApiTokenProblem("too_many_tokens", `You have ${MAX_API_TOKENS} API tokens, which is the most. Revoke one first.`);
+	if (!row)
+		throw new ApiTokenProblem(
+			"too_many_tokens",
+			`You have ${MAX_API_TOKENS} API tokens, which is the most. Revoke one first.`,
+		);
 	return { token: tokenOf(row), secret };
 }
 
@@ -112,13 +133,26 @@ export async function revokeApiToken(db: RawAccess, id: unknown): Promise<void> 
 }
 
 /** Authorize and charge in one write on the owning actor, even for simultaneous GET and POST. */
-export async function useApiToken(db: RawAccess, digest: string, scope: ApiTokenScope, now: number, limit: number): Promise<"accepted" | "limited" | "invalid"> {
+export async function useApiToken(
+	db: RawAccess,
+	digest: string,
+	scope: ApiTokenScope,
+	now: number,
+	limit: number,
+): Promise<"accepted" | "limited" | "invalid"> {
 	const minute = Math.floor(now / API_TOKEN_WINDOW_MS) * API_TOKEN_WINDOW_MS;
 	const authorized = "digest = ? AND EXISTS (SELECT 1 FROM json_each(scopes) WHERE value = ?)";
-	const rows = await db.execute(`UPDATE api_token SET used_at = ?,
+	const rows = await db.execute(
+		`UPDATE api_token SET used_at = ?,
 		window_count = CASE WHEN used_at = ? THEN window_count + 1 ELSE 1 END
 		WHERE ${authorized} AND (used_at IS NOT ? OR window_count < ?) RETURNING id`,
-		minute, minute, digest, scope, minute, limit);
+		minute,
+		minute,
+		digest,
+		scope,
+		minute,
+		limit,
+	);
 	if (rows.length) return "accepted";
 	const valid = await db.execute(`SELECT id FROM api_token WHERE ${authorized}`, digest, scope);
 	return valid.length ? "limited" : "invalid";

@@ -1,7 +1,12 @@
 // Executes a pairing's sandbox operations through Docker. Serialize lifecycle changes and act only on pairing-owned resources.
 import { randomBytes } from "node:crypto";
 import { SpareBuildError, WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
-import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
+import {
+	cloneCommand,
+	cloneReadyBase,
+	refreshReadyClone,
+	WORKSPACE_HEAD_COMMAND,
+} from "../../server/src/github/git.js";
 import { runSetupCommand } from "../../server/src/sandbox/setup.js";
 import { spareSetup, type SpareSetup, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
 import { dropPreviousSnapshots } from "./snapshot-retention.js";
@@ -14,7 +19,16 @@ import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { tmpName } from "../../server/src/sandbox/docker.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
-import { ensureRelay, prepareRelay, localProviders, relaySocketVolume, openHarnessKey, endHarnessLeases, removeRelay, stopLegacyClaude } from "./claude-relay.js";
+import {
+	ensureRelay,
+	prepareRelay,
+	localProviders,
+	relaySocketVolume,
+	openHarnessKey,
+	endHarnessLeases,
+	removeRelay,
+	stopLegacyClaude,
+} from "./claude-relay.js";
 import { probeHarnessOptions } from "./harness-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -23,21 +37,50 @@ import { ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "../../server/src/sandbo
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE, type ForwardedKeyLease } from "../../server/src/sandbox/provider.js";
-import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
+import {
+	containerName,
+	removeRunningTokenFiles,
+	DockerSandboxes,
+	DockerSandboxHandle,
+} from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { mirrorOwner, saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
-import { clampStoreLimits, DEFAULT_STORE_LIMITS, type StoreCaps, type StoreLimits } from "../../server/src/sandbox/store-limits.js";
+import {
+	clampStoreLimits,
+	DEFAULT_STORE_LIMITS,
+	type StoreCaps,
+	type StoreLimits,
+} from "../../server/src/sandbox/store-limits.js";
 import { DockerModelRelay } from "../../server/src/sandbox/model-relay.js";
 import { readsModelRelay } from "../../server/src/model-relay-url.js";
 import { probeImage } from "../../server/src/sandbox/tokens.js";
 import { audit, safeSentence } from "./audit.js";
-import { bubblewrap, checkBubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
+import {
+	bubblewrap,
+	checkBubblewrap,
+	externalId,
+	harnessImage,
+	image,
+	shotsImage,
+	MachineDocker,
+	rawId,
+	type Limits,
+	type Profile,
+	type MachineHarness,
+} from "./policy.js";
 import { localSizing } from "./sizing.js";
 import { harnessOfRaw, MACHINE_HARNESSES, SESSION_NAME } from "./machine-harnesses.js";
 import { isMachineHarness } from "./setup-choices.js";
 const legacyLoginLabel = LABEL + ".claude-login=1";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { claudeLoginGeneration, dockerReason, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
+import {
+	claudeLoginGeneration,
+	dockerReason,
+	loginFileState,
+	dropDetachedLoginVolume,
+	retireClaudeRelay,
+	withLoginVolume,
+} from "./harness-login.js";
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
 import { forget, loadPair, read, Refusal, RunnerError, save, VERSION, type Identity } from "./state.js";
@@ -51,14 +94,33 @@ export async function retirePairingRelays(machine: MachineDocker) {
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
 // A newly created or rediscovered box holds its slot until its first observed turn ends.
-export interface Box { activeTurns?: number; size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box {
+	activeTurns?: number;
+	size?: number;
+	claim?: Claim;
+	startTimes?: { spare?: true; image: number; pulled?: true; create: number };
+	resizePending?: true;
+	snapshotCandidate?: boolean;
+	savingSnapshot?: boolean;
+	egress?: string;
+	legacyClaude?: boolean;
+	raw: string;
+	sessionId: string;
+	state: "running" | "paused";
+	profile: Profile;
+	harness?: MachineHarness;
+	usedAt: number;
+	busy: number;
+	workspaceChecked: boolean;
+}
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
 async function hasWorkspaceGit(raw: string) {
 	const path = `/containers/${containerName(raw)}/archive?path=${WORKSPACE}/.git`;
 	const result = await docker(["system", "dial-stdio"], {
-		stdin: `HEAD ${path} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`, timeoutMs: 30_000,
+		stdin: `HEAD ${path} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n`,
+		timeoutMs: 30_000,
 	});
 	if (result.code === 0) {
 		if (result.stdout.startsWith("HTTP/1.1 200 ")) return true;
@@ -76,10 +138,13 @@ async function dockerOutput(args: string[]) {
 	} catch (error) {
 		let line = error instanceof Error ? cleanClaudeOutput(error.message).split(/[\r\n]/, 1)[0] : "";
 		// Docker may echo a setting (including a credential) verbatim in its diagnostic.
-		for (const value of Object.values(process.env).filter((v): v is string => !!v).sort((a, b) => b.length - a.length)) {
+		for (const value of Object.values(process.env)
+			.filter((v): v is string => !!v)
+			.sort((a, b) => b.length - a.length)) {
 			line = line.replaceAll(value, "[redacted]");
 		}
-		line = line.replace(/\b(?!unix:)[a-z][a-z0-9+.-]*:\/\/\S+|\bBasic\s+\S+/gi, "[redacted]")
+		line = line
+			.replace(/\b(?!unix:)[a-z][a-z0-9+.-]*:\/\/\S+|\bBasic\s+\S+/gi, "[redacted]")
 			.replace(/\b(?:token|password|secret|api[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi, "[redacted]");
 		throw new RunnerError(safeSentence(line).trim().slice(0, 500) || "Docker did not provide a diagnostic.");
 	}
@@ -89,60 +154,117 @@ const INVENTORY_TTL_MS = 6 * 60 * 60_000;
 const SIGN_IN_RETRIES_MS = [10_000, 30_000, 60_000];
 const INVENTORY_RETRY_MS = 5 * 60_000;
 
-interface Claim { session: string; key: string; setup?: SpareSetup; attempt?: string }
+interface Claim {
+	session: string;
+	key: string;
+	setup?: SpareSetup;
+	attempt?: string;
+}
 
 // The Docker session label is immutable. The pairing's private state binds each claimed
 // id exactly once, before any session can receive it. Unbound spares never enter boxes.
 function claimFor(value: unknown): Claim | undefined {
-	if (value && typeof value === "object" && "session" in value && typeof value.session === "string" && NAME.test(value.session) &&
-		"key" in value && typeof value.key === "string" && /^[a-f0-9]{64}$/.test(value.key) &&
+	if (
+		value &&
+		typeof value === "object" &&
+		"session" in value &&
+		typeof value.session === "string" &&
+		NAME.test(value.session) &&
+		"key" in value &&
+		typeof value.key === "string" &&
+		/^[a-f0-9]{64}$/.test(value.key) &&
 		(!("setup" in value) || spareSetup(value.setup)) &&
-		(!("attempt" in value) || typeof value.attempt === "string" && /^[a-f0-9]{32}$/.test(value.attempt))) return value as Claim;
+		(!("attempt" in value) || (typeof value.attempt === "string" && /^[a-f0-9]{32}$/.test(value.attempt)))
+	)
+		return value as Claim;
 }
 
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
 	readonly network: EgressNetwork;
 	readonly slots: Report["slots"];
-	get maxTurns() { return this.slots?.max; }
+	get maxTurns() {
+		return this.slots?.max;
+	}
 	readonly boxes = new Map<string, Box>();
 	warmSpares = false;
 	spareSetupTimes = false;
 	spareReseed = false;
 	// A restart forgets all demand. Only a fresh signed recipe from a resumed session can restore it.
 	private needsSpareSeed = true;
-	private readonly spares = new WarmSpares((raw, spec, signal) => this.buildSpare(raw, spec, signal), raw => this.removeUnbound(raw), Date.now, () => this.publishReport?.());
+	private readonly spares = new WarmSpares(
+		(raw, spec, signal) => this.buildSpare(raw, spec, signal),
+		raw => this.removeUnbound(raw),
+		Date.now,
+		() => this.publishReport?.(),
+	);
 	private waitForTurn?: string;
 	private lastSpareSkip?: string;
 	private readonly availableMemory = process.availableMemory;
 	private nextSpareDisk = 0;
 	private spareDisk = 0;
 	private readonly unbound = new Set<string>();
-	private claimFile(raw: string) { return `claim-${this.identity.machineId}-${raw}.json`; }
+	private claimFile(raw: string) {
+		return `claim-${this.identity.machineId}-${raw}.json`;
+	}
 	private spareContext() {
-		return digest([this.identity.uid, this.identity.machineId, VERSION, image, shotsImage, this.claudePin, this.codexPin, this.opencodePin, this.network.policy, this.network.domains(),
-			this.slots, this.screenshots, this.allowedProfiles, this.sessionVolumes]);
+		return digest([
+			this.identity.uid,
+			this.identity.machineId,
+			VERSION,
+			image,
+			shotsImage,
+			this.claudePin,
+			this.codexPin,
+			this.opencodePin,
+			this.network.policy,
+			this.network.domains(),
+			this.slots,
+			this.screenshots,
+			this.allowedProfiles,
+			this.sessionVolumes,
+		]);
 	}
 	private async dropSpare(raw: string) {
-		const rows = await dockerOutput(["ps", "-aq", ...this.filters(), "--filter", "label=" + LABEL + ".session=" + SPARE_SESSION,
-			"--filter", "name=^/" + containerName(raw) + "$"]);
+		const rows = await dockerOutput([
+			"ps",
+			"-aq",
+			...this.filters(),
+			"--filter",
+			"label=" + LABEL + ".session=" + SPARE_SESSION,
+			"--filter",
+			"name=^/" + containerName(raw) + "$",
+		]);
 		if (claimFor(read(this.claimFile(raw)))) return;
 		// A previous removal may have left just the pairing's labelled helpers.
-		try { await this.network.detach(raw); }
-		finally { if (rows.trim()) await this.provider.destroy(raw); }
+		try {
+			await this.network.detach(raw);
+		} finally {
+			if (rows.trim()) await this.provider.destroy(raw);
+		}
 	}
 	private async buildSpare(raw: string, spec: SpareSpec, signal: AbortSignal) {
 		const { spare, profile, harness, prepared, screenshots, size, mirrorRepo } = spec.args;
 		const { uid } = this.identity;
 		if (read(this.claimFile(raw)) !== undefined) throw new SpareBuildError("bound");
-		if (await this.disk() <= Math.max(5e9, this.storeLimits().free)) throw new SpareBuildError("disk");
+		if ((await this.disk()) <= Math.max(5e9, this.storeLimits().free)) throw new SpareBuildError("disk");
 		signal.throwIfAborted();
 		if (harness) this.requireHarness(profile, harness);
 		this.requireProfile(profile);
 		const provider = this.providerFor(harness);
-		await provider.create({ reservedId: raw.slice(-12), uid, sessionId: SPARE_SESSION, profile, harness, screenshots, size, mirrorRepo,
+		await provider.create({
+			reservedId: raw.slice(-12),
+			uid,
+			sessionId: SPARE_SESSION,
+			profile,
+			harness,
+			screenshots,
+			size,
+			mirrorRepo,
 			deferredRelayNonce: harness ? randomBytes(16).toString("hex") : undefined,
-			fromSnapshot: prepared && { ...prepared, attempt: randomBytes(16).toString("hex") }, ownData: harness ? undefined : "required" });
+			fromSnapshot: prepared && { ...prepared, attempt: randomBytes(16).toString("hex") },
+			ownData: harness ? undefined : "required",
+		});
 		signal.throwIfAborted();
 		await this.network.attach(raw, containerName(raw), false);
 		const box = await provider.connect(raw, { ownData: true });
@@ -153,7 +275,8 @@ export class Executor extends MachineDocker {
 			if (!probe.ok) throw new SpareBuildError("bubblewrap");
 		}
 		if (prepared) {
-			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation) throw new SpareBuildError("snapshot");
+			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation)
+				throw new SpareBuildError("snapshot");
 			// The platform refreshes and validates this image through restorePrepared after claim.
 			return;
 		}
@@ -162,7 +285,8 @@ export class Executor extends MachineDocker {
 			const result = await box.run(cloneCommand(spare.url), { timeoutMs: 180_000, signal });
 			if (result.exitCode !== 0) throw new SpareBuildError("clone");
 		} else {
-			if (!await cloneReadyBase(box, spare.url, c.branch, c.commit, mirrorOwner(uid, c.repo), signal)) throw new SpareBuildError("base");
+			if (!(await cloneReadyBase(box, spare.url, c.branch, c.commit, mirrorOwner(uid, c.repo), signal)))
+				throw new SpareBuildError("base");
 			let setup: SpareSetup | undefined;
 			if (c.command) {
 				const startedAt = Date.now();
@@ -178,10 +302,23 @@ export class Executor extends MachineDocker {
 		}
 	}
 	private async verifySpare(raw: string, built: SpareSpec, spec: SpareSpec) {
-		const { spare, prepared } = spec.args, c = spare.connected;
+		const { spare, prepared } = spec.args,
+			c = spare.connected;
 		const box = await this.provider.connect(raw, { ownData: true });
-		if (!box || (!spec.args.harness && !box.ownData) || box.uid !== this.identity.uid || box.profile !== spec.args.profile) return false;
-		if (prepared) return !!box.snapshot && !!box.image && box.image === await this.provider.selectedImage(prepared, this.identity.uid, spec.args.profile, !!spec.args.screenshots);
+		if (
+			!box ||
+			(!spec.args.harness && !box.ownData) ||
+			box.uid !== this.identity.uid ||
+			box.profile !== spec.args.profile
+		)
+			return false;
+		if (prepared)
+			return (
+				!!box.snapshot &&
+				!!box.image &&
+				box.image ===
+					(await this.provider.selectedImage(prepared, this.identity.uid, spec.args.profile, !!spec.args.screenshots))
+			);
 		// A connected request carries a freshly authorized GitHub ref. Setup may depend
 		// on any source file, so its outputs cannot be carried to a different commit.
 		if (c && c.commit === built.args.spare.connected?.commit) return true;
@@ -200,7 +337,12 @@ export class Executor extends MachineDocker {
 		return harness ? this.installed(harness).provider! : this.provider;
 	}
 	private relayNonce(raw: string) {
-		return dockerOutput(["inspect", "-f", `{{index .Config.Labels "${LABEL}.relay-session"}}`, containerName(raw)]).then(value => value.trim());
+		return dockerOutput([
+			"inspect",
+			"-f",
+			`{{index .Config.Labels "${LABEL}.relay-session"}}`,
+			containerName(raw),
+		]).then(value => value.trim());
 	}
 
 	openTurnKey(raw: string, harness: MachineHarness, forward: ForwardedKeyLease) {
@@ -215,21 +357,29 @@ export class Executor extends MachineDocker {
 			const env = record.keyEnv(keys);
 			if (env) return { env };
 			const login = record.machineLogin(this) ?? undefined;
-			if (!login && record.needsLogin && !Object.keys(keys).length) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
+			if (!login && record.needsLogin && !Object.keys(keys).length)
+				throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
 			const nonce = await this.relayNonce(raw);
 			if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
 			return record.credentials(this, nonce, login, keys);
 		});
 	}
 
-	private get spareMemoryMargin() { return Math.max(2 ** 30, this.slots?.reserve.memoryBytes ?? 0); }
+	private get spareMemoryMargin() {
+		return Math.max(2 ** 30, this.slots?.reserve.memoryBytes ?? 0);
+	}
 	private spareRoom(size = 1) {
 		const running = [...this.boxes.values()].filter(b => b.state === "running");
 		const max = this.maxTurns ?? 1;
 		const runningUnits = running.reduce((n, box) => n + (box.size ?? 1), 0);
-		const idle = this.slots ? running.reduce((n, box) => n + (box.activeTurns === 0 && !box.savingSnapshot ? box.size ?? 1 : 0), 0) : 0;
-		const capacity = Math.min(this.limits.spares ?? 1, (this.limits.maxRunning ?? Infinity) - running.length,
-			(this.limits.maxSandboxes ?? Infinity) - this.boxes.size);
+		const idle = this.slots
+			? running.reduce((n, box) => n + (box.activeTurns === 0 && !box.savingSnapshot ? (box.size ?? 1) : 0), 0)
+			: 0;
+		const capacity = Math.min(
+			this.limits.spares ?? 1,
+			(this.limits.maxRunning ?? Infinity) - running.length,
+			(this.limits.maxSandboxes ?? Infinity) - this.boxes.size,
+		);
 		if (capacity <= 0) return "container-limit";
 		const turnRoom = Math.floor((max - runningUnits + idle) / size);
 		if (turnRoom <= 0) return "turn-slots";
@@ -252,11 +402,14 @@ export class Executor extends MachineDocker {
 		const units = running.reduce((sum, box) => sum + (box.size ?? 1), size) + this.spares.units;
 		const pooled = this.spares.raws.length;
 		const uncovered = Math.max(0, (this.maxTurns ?? 1) - units);
-		return units <= (this.maxTurns ?? 1)
-			&& running.length + pooled < (this.limits.maxRunning ?? Infinity)
-			&& this.boxes.size + pooled < (this.limits.maxSandboxes ?? Infinity)
-			&& (!this.slots || (units * this.slots.unit.memoryBytes <= (this.limits.sandboxMemory ?? Infinity)
-				&& this.availableMemory() >= (size + uncovered) * this.slots.unit.memoryBytes + this.spareMemoryMargin));
+		return (
+			units <= (this.maxTurns ?? 1) &&
+			running.length + pooled < (this.limits.maxRunning ?? Infinity) &&
+			this.boxes.size + pooled < (this.limits.maxSandboxes ?? Infinity) &&
+			(!this.slots ||
+				(units * this.slots.unit.memoryBytes <= (this.limits.sandboxMemory ?? Infinity) &&
+					this.availableMemory() >= (size + uncovered) * this.slots.unit.memoryBytes + this.spareMemoryMargin))
+		);
 	}
 	private skipSpare(reason: string) {
 		if (this.lastSpareSkip !== reason) console.info(`spare.skip reason=${reason}`);
@@ -264,9 +417,14 @@ export class Executor extends MachineDocker {
 		return this.spares.trim();
 	}
 	private waitForSpareRemoval(size: number) {
-		return this.freeDiskBytes === null || this.freeDiskBytes <= this.storeLimits().free ||
-			this.limits.maxRunning !== undefined || this.limits.maxSandboxes !== undefined || this.limits.sandboxMemory !== undefined ||
-			!!this.slots && this.availableMemory() < size * this.slots.unit.memoryBytes + this.spareMemoryMargin;
+		return (
+			this.freeDiskBytes === null ||
+			this.freeDiskBytes <= this.storeLimits().free ||
+			this.limits.maxRunning !== undefined ||
+			this.limits.maxSandboxes !== undefined ||
+			this.limits.sandboxMemory !== undefined ||
+			(!!this.slots && this.availableMemory() < size * this.slots.unit.memoryBytes + this.spareMemoryMargin)
+		);
 	}
 	private async removeUnbound(raw: string) {
 		try {
@@ -307,7 +465,9 @@ export class Executor extends MachineDocker {
 			this.spares.fill(room);
 		});
 	}
-	stopSpares() { void this.spares.trim(); }
+	stopSpares() {
+		void this.spares.trim();
+	}
 	turnStarted(box: Box) {
 		box.activeTurns = (box.activeTurns ?? 0) + 1;
 		if (!this.spares.raws.length) return;
@@ -318,7 +478,8 @@ export class Executor extends MachineDocker {
 	}
 	turnEnded(box: Box) {
 		box.activeTurns = Math.max(0, (box.activeTurns ?? 0) - 1);
-		if (!box.activeTurns && this.waitForTurn === externalId(this.identity.machineId, box.raw)) this.waitForTurn = undefined;
+		if (!box.activeTurns && this.waitForTurn === externalId(this.identity.machineId, box.raw))
+			this.waitForTurn = undefined;
 	}
 
 	private readonly codexPin?: string;
@@ -368,23 +529,52 @@ export class Executor extends MachineDocker {
 	private readonly relayLeases = new Map<string, Set<() => Promise<void>>>();
 	private nextVolumeSweep = 0;
 	private storeCaps: StoreCaps = {};
-	platformStoreCaps(caps: StoreCaps | undefined) { this.storeCaps = caps ?? {}; }
+	platformStoreCaps(caps: StoreCaps | undefined) {
+		this.storeCaps = caps ?? {};
+	}
 	private reportedStoreLimits() {
-		const limits = this.storeLimits(), requested = this.limits.store ?? DEFAULT_STORE_LIMITS;
-		const capped = limits.machine !== requested.machine || limits.user !== requested.user || limits.free !== requested.free;
+		const limits = this.storeLimits(),
+			requested = this.limits.store ?? DEFAULT_STORE_LIMITS;
+		const capped =
+			limits.machine !== requested.machine || limits.user !== requested.user || limits.free !== requested.free;
 		return { ...limits, ...(capped && { capped: true as const }) };
 	}
-	storeLimits(): StoreLimits { return clampStoreLimits(this.limits.store ?? DEFAULT_STORE_LIMITS, this.storeCaps); }
+	storeLimits(): StoreLimits {
+		return clampStoreLimits(this.limits.store ?? DEFAULT_STORE_LIMITS, this.storeCaps);
+	}
 
-	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
+	constructor(
+		identity: Identity,
+		private readonly limits: Limits,
+		readonly screenshots = false,
+		readonly claude = false,
+		private readonly allowedProfiles: Profile[] = ["docker-hardened"],
+		policy: Egress = open,
+		readonly opencode = false,
+		readonly codex = false,
+	) {
 		super(identity);
-		this.slots = limits.slots === null ? undefined : limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() });
+		this.slots =
+			limits.slots === null ? undefined : (limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() }));
 		this.network = new EgressNetwork(this, policy);
-		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: async () => { await this.ensureImage(); } });
+		this.modelRelay = new DockerModelRelay({
+			machine: identity.machineId,
+			image,
+			labelFlags: this.pairingLabelFlags,
+			ensureImage: async () => {
+				await this.ensureImage();
+			},
+		});
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
 		const storeLimits = () => this.storeLimits();
-		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage, storeLimits,
+		this.provider = new DockerSandboxes({
+			slots,
+			network,
+			machine: identity.machineId,
+			image,
+			shotsImage,
+			storeLimits,
 			dataVolume: async (_uid, sandbox) => {
 				const name = sandbox === undefined ? this.volume : this.sessionVolume(sandbox);
 				await this.ownedVolume(true, name, sandbox);
@@ -396,19 +586,42 @@ export class Executor extends MachineDocker {
 		if (codex) {
 			this.codexPin = harnessImage("codex");
 			if (!this.codexPin) throw new Refusal("This runner was built without the Codex image.");
-			this.codexProvider = new DockerSandboxes({slots,network,machine:identity.machineId,image:this.codexPin,harness:"codex",storeLimits,
-				sessionRelay: () => this.sessionSocket("codex")});
+			this.codexProvider = new DockerSandboxes({
+				slots,
+				network,
+				machine: identity.machineId,
+				image: this.codexPin,
+				harness: "codex",
+				storeLimits,
+				sessionRelay: () => this.sessionSocket("codex"),
+			});
 		}
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
-			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image, storeLimits,
-				harness: "opencode", sessionRelay: () => this.sessionSocket("opencode") });
+			this.opencodeProvider = new DockerSandboxes({
+				slots,
+				network,
+				machine: identity.machineId,
+				image: this.opencodePin,
+				helperImage: image,
+				storeLimits,
+				harness: "opencode",
+				sessionRelay: () => this.sessionSocket("opencode"),
+			});
 		}
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, storeLimits, sessionRelay: () => this.sessionSocket("claude") });
+			this.claudeProvider = new DockerSandboxes({
+				slots,
+				network,
+				machine: identity.machineId,
+				image: this.claudePin,
+				helperImage: image,
+				storeLimits,
+				sessionRelay: () => this.sessionSocket("claude"),
+			});
 		}
 	}
 	/** Give the forwarder a socket volume and a nonce before the first turn chooses its credential. */
@@ -416,25 +629,31 @@ export class Executor extends MachineDocker {
 		await this.ownedVolume(true, relaySocketVolume(this, harness));
 		return { nonce: randomBytes(16).toString("hex"), env: [] };
 	}
-	prepareClaudeRelay() { return prepareRelay(this); }
+	prepareClaudeRelay() {
+		return prepareRelay(this);
+	}
 	requireHarness(profile: Profile, harness: MachineHarness = "claude") {
 		const record = MACHINE_HARNESSES[harness];
 		// The pin and the provider are set together (constructor).
 		if (!this.installed(harness).provider) throw new Refusal(record.notEnabled);
-		if (profile !== "docker-hardened" && !(record.innerProfile && profile === bubblewrap && this.codexInner)) throw new Refusal(record.profileRefusal);
+		if (profile !== "docker-hardened" && !(record.innerProfile && profile === bubblewrap && this.codexInner))
+			throw new Refusal(record.profileRefusal);
 	}
 	async prepareHarness(profile: Profile, harness: MachineHarness = "claude") {
 		this.requireHarness(profile, harness);
 		const { pin } = this.installed(harness);
 		const missing = MACHINE_HARNESSES[harness].missingImage;
 		if (!missing) return this.ensureImage(pin);
-		try { await this.ensureImage(pin); }
-		catch { throw new Refusal(missing); }
+		try {
+			await this.ensureImage(pin);
+		} catch {
+			throw new Refusal(missing);
+		}
 	}
 	private async refreshLogin() {
 		if (this.codexPin) {
 			const credential = codexLogin(this);
-			this.codexCredential = credential && await this.ownedVolume(false, this.codexVolume) ? credential : undefined;
+			this.codexCredential = credential && (await this.ownedVolume(false, this.codexVolume)) ? credential : undefined;
 			if ((this.codexCredential?.generation ?? "signed-out") !== this.codexGeneration) this.codexOptions = undefined;
 		}
 		if (this.opencodePin) {
@@ -444,18 +663,27 @@ export class Executor extends MachineDocker {
 		if (!this.claudePin) return;
 		let reason: string | undefined;
 		await withLoginVolume(this, async () => {
-			this.signIn = await loginFileState(this, { start: true, why: why => { reason = why; } });
+			this.signIn = await loginFileState(this, {
+				start: true,
+				why: why => {
+					reason = why;
+				},
+			});
 			this.claudeGeneration = this.signIn === "token" ? claudeLoginGeneration(this) : undefined;
 		}).catch((error: unknown) => {
 			this.signIn = "unknown";
-			reason = error instanceof RunnerError ? error.message : `the check could not run: ${error instanceof Error ? dockerReason(error.message) : "no reason given"}`;
+			reason =
+				error instanceof RunnerError
+					? error.message
+					: `the check could not run: ${error instanceof Error ? dockerReason(error.message) : "no reason given"}`;
 		});
 		this.signInChecked(reason);
 	}
 	/** Logs a new reason the sign-in could not be checked, once, and checks again soon while it is unknown. */
 	private signInChecked(reason: string | undefined) {
 		if (this.signIn !== "unknown") {
-			if (this.signInReason !== undefined) console.log(`Claude Code sign-in checked: ${this.signIn === "token" ? "signed in" : "not signed in"}.`);
+			if (this.signInReason !== undefined)
+				console.log(`Claude Code sign-in checked: ${this.signIn === "token" ? "signed in" : "not signed in"}.`);
 			this.signInReason = undefined;
 			this.signInRetries = 0;
 			clearTimeout(this.signInRetry);
@@ -469,7 +697,10 @@ export class Executor extends MachineDocker {
 		const delay = SIGN_IN_RETRIES_MS[this.signInRetries++]!;
 		this.signInRetry = setTimeout(() => {
 			this.signInRetry = undefined;
-			void this.serial(() => this.refreshLogin()).then(() => this.publishReport?.(), () => {});
+			void this.serial(() => this.refreshLogin()).then(
+				() => this.publishReport?.(),
+				() => {},
+			);
 		}, delay);
 		this.signInRetry.unref?.();
 	}
@@ -482,7 +713,7 @@ export class Executor extends MachineDocker {
 	}
 	private async ensureSignedInRelay() {
 		await withLoginVolume(this, async () => {
-			if (await loginFileState(this) === "token") await ensureRelay(this);
+			if ((await loginFileState(this)) === "token") await ensureRelay(this);
 		});
 	}
 	private async refreshCodexOptions(force = false) {
@@ -498,10 +729,33 @@ export class Executor extends MachineDocker {
 			if (this.codexInner === undefined && this.allowedProfiles.includes(bubblewrap)) {
 				let passed = true;
 				for (const mode of ["read-only", "workspace-write"]) {
-					const result = await docker(["run","--rm","--name",tmpName(),"--pull","never","--log-driver","none",
-						...this.pairingLabelFlags,...commonRunFlags(1,"none"),...PROFILE_RUN_FLAGS[bubblewrap]!,
-						pin,"codex","-c",`sandbox_mode="${mode}"`,"sandbox","--","/bin/true"], {timeoutMs:30_000});
-					if (result.code !== 0) { passed = false; break; }
+					const result = await docker(
+						[
+							"run",
+							"--rm",
+							"--name",
+							tmpName(),
+							"--pull",
+							"never",
+							"--log-driver",
+							"none",
+							...this.pairingLabelFlags,
+							...commonRunFlags(1, "none"),
+							...PROFILE_RUN_FLAGS[bubblewrap]!,
+							pin,
+							"codex",
+							"-c",
+							`sandbox_mode="${mode}"`,
+							"sandbox",
+							"--",
+							"/bin/true",
+						],
+						{ timeoutMs: 30_000 },
+					);
+					if (result.code !== 0) {
+						passed = false;
+						break;
+					}
 				}
 				this.codexInner = passed;
 			}
@@ -517,7 +771,8 @@ export class Executor extends MachineDocker {
 		} else console.log("Could not read Codex model options.");
 	}
 	async openCodeDefault(keys: ModelProvider[]) {
-		if (!this.harnessKeyRelays || !this.opencodePin) throw new Refusal("This machine does not offer OpenCode Settings keys.");
+		if (!this.harnessKeyRelays || !this.opencodePin)
+			throw new Refusal("This machine does not offer OpenCode Settings keys.");
 		const login = currentProvider(this);
 		const local = login?.providers ?? (login ? [login.provider] : []);
 		const providers = [...localProviders(local, keys), ...keys];
@@ -534,7 +789,7 @@ export class Executor extends MachineDocker {
 		try {
 			await this.ensureImage(pin);
 			const local = login?.providers ?? (login ? [login.provider] : ["free"]);
-			const providers = [...new Set([...local, ...MODEL_PROVIDERS].map(p => p === "chatgpt" ? "openai" : p))];
+			const providers = [...new Set([...local, ...MODEL_PROVIDERS].map(p => (p === "chatgpt" ? "openai" : p)))];
 			const options = await probeHarnessOptions(this, pin, providers);
 			// The terminal can replace the credential while the offline probe is running.
 			await this.refreshLogin();
@@ -542,15 +797,27 @@ export class Executor extends MachineDocker {
 				this.opencodeOptions = options;
 				this.nextOpenCodeProbe = Date.now() + INVENTORY_TTL_MS;
 			}
-		} catch { console.log("Could not read OpenCode model options."); }
+		} catch {
+			console.log("Could not read OpenCode model options.");
+		}
 	}
 	private async restoreRelay() {
 		if (this.codex && this.codexCredential && [...this.boxes.values()].some(b => b.harness === "codex"))
-			await withLoginVolume(this, async () => { const login = codexLogin(this); if (login) await ensureRelay(this,login); });
+			await withLoginVolume(this, async () => {
+				const login = codexLogin(this);
+				if (login) await ensureRelay(this, login);
+			});
 		if (this.opencode && this.opencodeLogin && [...this.boxes.values()].some(b => b.harness === "opencode")) {
-			await withLoginVolume(this, async () => { const login = currentProvider(this); if (login) await ensureRelay(this, login); });
+			await withLoginVolume(this, async () => {
+				const login = currentProvider(this);
+				if (login) await ensureRelay(this, login);
+			});
 		}
-		if (this.claude && this.signIn === "token" && [...this.boxes.values()].some(b => b.harness === "claude" && !b.legacyClaude))
+		if (
+			this.claude &&
+			this.signIn === "token" &&
+			[...this.boxes.values()].some(b => b.harness === "claude" && !b.legacyClaude)
+		)
 			await this.ensureSignedInRelay();
 	}
 	private async refreshClaudeOptions(force = false) {
@@ -562,7 +829,9 @@ export class Executor extends MachineDocker {
 			// Read the pinned adapter with a dummy token, even before login.
 			this.claudeOptions = await probeHarnessOptions(this, pin);
 			this.nextClaudeProbe = Date.now() + INVENTORY_TTL_MS;
-		} catch { console.log("Could not read Claude Code model options."); }
+		} catch {
+			console.log("Could not read Claude Code model options.");
+		}
 	}
 	// Count, reserve and change a container under one ordering, including idle stops and prune.
 	serial<T>(work: () => Promise<T>): Promise<T> {
@@ -571,12 +840,23 @@ export class Executor extends MachineDocker {
 		return next;
 	}
 	private filters() {
-		return [LABEL_ARG, ...Object.entries(this.labels).map(([k, v]) => k + "=" + v)].flatMap(label => ["--filter", "label=" + label]);
+		return [LABEL_ARG, ...Object.entries(this.labels).map(([k, v]) => k + "=" + v)].flatMap(label => [
+			"--filter",
+			"label=" + label,
+		]);
 	}
 	// Docker keeps the container and its workspace across a rename. Finish all such renames
 	// before writing a status.json the rollback runner can read.
 	async migrateClaudeNames() {
-		const names = await dockerOutput(["ps", "-a", ...this.filters(), "--filter", `label=${LABEL}.harness=claude`, "--format", "{{.Names}}"]);
+		const names = await dockerOutput([
+			"ps",
+			"-a",
+			...this.filters(),
+			"--filter",
+			`label=${LABEL}.harness=claude`,
+			"--format",
+			"{{.Names}}",
+		]);
 		for (const name of names.trim().split("\n")) {
 			const raw = /^wlp-session-([a-f0-9]{12})$/.exec(name)?.[1];
 			if (raw) await dockerOutput(["rename", name, containerName("claude-" + raw)]);
@@ -584,8 +864,15 @@ export class Executor extends MachineDocker {
 	}
 	async discover(onlySession?: string) {
 		const filters = this.filters();
-		if (onlySession && ![...this.boxes.values()].some(b => b.sessionId === onlySession && b.claim)) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
-		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}|{{.Label "${LABEL}.relay-session"}}|{{.Label "${LABEL}.slots"}}`]);
+		if (onlySession && ![...this.boxes.values()].some(b => b.sessionId === onlySession && b.claim))
+			filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
+		const rows = await dockerOutput([
+			"ps",
+			"-a",
+			...filters,
+			"--format",
+			`{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}|{{.Label "${LABEL}.relay-session"}}|{{.Label "${LABEL}.slots"}}`,
+		]);
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
 			const [name, state, labelSession, profile, harness, egress, relay, size] = line.split("|");
@@ -596,12 +883,32 @@ export class Executor extends MachineDocker {
 			if (onlySession && sessionId !== onlySession) continue;
 			const prefixed = raw && harnessOfRaw(raw);
 			// A name's prefix and its harness label agree; only Claude's older sandboxes have its label without the prefix.
-			const harnessMatches = !harness ? !prefixed : isMachineHarness(harness) && (prefixed ? prefixed === harness : MACHINE_HARNESSES[harness].unprefixedNames);
-			if (!raw || !harnessMatches || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
+			const harnessMatches = !harness
+				? !prefixed
+				: isMachineHarness(harness) && (prefixed ? prefixed === harness : MACHINE_HARNESSES[harness].unprefixedNames);
+			if (!raw || !harnessMatches || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened"))
+				continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
-			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(isMachineHarness(harness) ? { harness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
-			this.boxes.set(id, Object.assign(box, { egress, claim, size: Number(size) || 1, legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
+			const box = this.boxes.get(id) ?? {
+				raw,
+				sessionId,
+				profile,
+				...(isMachineHarness(harness) ? { harness } : {}),
+				usedAt: Date.now(),
+				busy: 0,
+				workspaceChecked: false,
+			};
+			this.boxes.set(
+				id,
+				Object.assign(box, {
+					egress,
+					claim,
+					size: Number(size) || 1,
+					legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay),
+					state: state === "running" || state === "restarting" ? ("running" as const) : ("paused" as const),
+				}),
+			);
 		}
 		for (const [id, box] of this.boxes) {
 			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
@@ -615,14 +922,17 @@ export class Executor extends MachineDocker {
 	}
 	// Serialize sweeps with creates. The minimum age protects volumes a create is about to mount.
 	async sweepVolumes(minAgeMs?: number) {
-		try { return await this.provider.sweepDataVolumes(minAgeMs, this.labels); }
-		catch { return 0; }
+		try {
+			return await this.provider.sweepDataVolumes(minAgeMs, this.labels);
+		} catch {
+			return 0;
+		}
 	}
 	async secureCredentialPath() {
 		if (this.credentialPathChecked) return;
 		if (this.claude) await withLoginVolume(this, () => stopLegacyClaude(this));
 		else await retireClaudeRelay(this);
-		if (!this.codex && codexLogin(this)) await withLoginVolume(this, () => removeRelay(this,"codex"));
+		if (!this.codex && codexLogin(this)) await withLoginVolume(this, () => removeRelay(this, "codex"));
 		if (!this.opencode && currentProvider(this)) await withLoginVolume(this, () => removeRelay(this, "opencode"));
 		const pair = loadPair();
 		if (pair?.current.machineId === this.identity.machineId) {
@@ -653,9 +963,12 @@ export class Executor extends MachineDocker {
 		try {
 			await this.secureCredentialPath();
 			if (this.enforceEgress) {
-				try { await this.reconcileEgress(); this.egressError = undefined; }
-				catch (error) {
-					this.egressError = error instanceof RunnerError ? error.message : "Docker could not apply the runner’s network policy.";
+				try {
+					await this.reconcileEgress();
+					this.egressError = undefined;
+				} catch (error) {
+					this.egressError =
+						error instanceof RunnerError ? error.message : "Docker could not apply the runner’s network policy.";
 					throw new RunnerError(this.egressError);
 				}
 				await this.reapUnbound();
@@ -669,8 +982,11 @@ export class Executor extends MachineDocker {
 			}
 		} catch (error) {
 			const reason = error instanceof RunnerError ? error.message : "Docker did not provide a diagnostic.";
-			const category = /permission denied|EACCES/i.test(reason) ? "permission denied"
-				: /no such file|ENOENT/i.test(reason) ? "not found" : "unreachable";
+			const category = /permission denied|EACCES/i.test(reason)
+				? "permission denied"
+				: /no such file|ENOENT/i.test(reason)
+					? "not found"
+					: "unreachable";
 			audit(null, null, "docker", category);
 			this.dockerHealth = { ok: false, reason };
 			this.signIn = "unknown";
@@ -708,12 +1024,19 @@ export class Executor extends MachineDocker {
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
 				this.freeDiskBytes = await this.disk();
-				if (first) this.commandSandbox = this.allowedProfiles.includes(bubblewrap) ? await this.probe() : { ok: false, reason: PROFILE_DENIED };
+				if (first)
+					this.commandSandbox = this.allowedProfiles.includes(bubblewrap)
+						? await this.probe()
+						: { ok: false, reason: PROFILE_DENIED };
 			});
 		} catch (error) {
 			if (signal.aborted) return;
 			this.freeDiskBytes = null;
-			if (!this.commandSandbox.ok) this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
+			if (!this.commandSandbox.ok)
+				this.commandSandbox = {
+					ok: false,
+					reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked.",
+				};
 		}
 	}
 	get modelRelayReady(): boolean {
@@ -736,7 +1059,7 @@ export class Executor extends MachineDocker {
 	private async endRelays(id: string, raw: string, harness?: MachineHarness): Promise<void> {
 		const ends = [...(this.relayLeases.get(id) ?? [])];
 		this.relayLeases.delete(id);
-		await Promise.all(ends.map((end) => end().catch(() => {})));
+		await Promise.all(ends.map(end => end().catch(() => {})));
 		if (harness) {
 			const nonce = await this.relayNonce(raw).catch(() => "");
 			if (nonce) await withLoginVolume(this, () => endHarnessLeases(this, harness, nonce));
@@ -753,43 +1076,78 @@ export class Executor extends MachineDocker {
 
 	report(): Report {
 		const harnesses: NonNullable<Report["harnesses"]> = [];
-		if (this.claudePin) harnesses.push({
-			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn, loginGeneration: this.claudeGeneration,
-			...(this.signIn === "unknown" && this.signInReason && { signInReason: this.signInReason.slice(0, 300) }),
-			...(this.claudeOptions && { options: this.claudeOptions }),
-		});
-		if (this.codexPin) harnesses.push({
-			id:"codex", adapter:"codex-acp 2.9.0", image:this.codexPin.split("@").at(-1)!,
-			signIn:!this.dockerHealth.ok ? "unknown" : this.codexCredential ? "token" : "none",
-			loginGeneration:this.codexCredential?.generation,
-			...(this.codexCredential && {method:this.codexCredential.provider === "chatgpt" ? "chatgpt" : "api-key"}),
-			modes:reportedCodexModes(!!this.codexInner),
-			...(!this.codexInner && {modeReason:innerModesReason}),
-			...(this.codexOptions && {options:this.codexOptions}),
-		});
-		if (this.opencodePin) harnesses.push({
-			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
-			signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
-			loginGeneration: this.opencodeLogin?.generation,
-			machineProviders: this.opencodeLogin?.providers ?? (this.opencodeLogin ? [this.opencodeLogin.provider] : []),
-			...(this.opencodeOptions && { options: this.opencodeOptions }),
-		});
-		return { kind: "report", environmentBuild: true, ...(this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }), blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		if (this.claudePin)
+			harnesses.push({
+				id: "claude",
+				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
+				image: this.claudePin.split("@").at(-1)!,
+				signIn: this.signIn,
+				loginGeneration: this.claudeGeneration,
+				...(this.signIn === "unknown" && this.signInReason && { signInReason: this.signInReason.slice(0, 300) }),
+				...(this.claudeOptions && { options: this.claudeOptions }),
+			});
+		if (this.codexPin)
+			harnesses.push({
+				id: "codex",
+				adapter: "codex-acp 2.9.0",
+				image: this.codexPin.split("@").at(-1)!,
+				signIn: !this.dockerHealth.ok ? "unknown" : this.codexCredential ? "token" : "none",
+				loginGeneration: this.codexCredential?.generation,
+				...(this.codexCredential && { method: this.codexCredential.provider === "chatgpt" ? "chatgpt" : "api-key" }),
+				modes: reportedCodexModes(!!this.codexInner),
+				...(!this.codexInner && { modeReason: innerModesReason }),
+				...(this.codexOptions && { options: this.codexOptions }),
+			});
+		if (this.opencodePin)
+			harnesses.push({
+				id: "opencode",
+				adapter: "OpenCode 1.19.6",
+				image: this.opencodePin.split("@").at(-1)!,
+				signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
+				loginGeneration: this.opencodeLogin?.generation,
+				machineProviders: this.opencodeLogin?.providers ?? (this.opencodeLogin ? [this.opencodeLogin.provider] : []),
+				...(this.opencodeOptions && { options: this.opencodeOptions }),
+			});
+		return {
+			kind: "report",
+			environmentBuild: true,
+			...(this.warmSpares &&
+				this.sessionVolumes &&
+				this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }),
+			blockedNetwork: this.network.policy.mode === "restricted",
+			gitMirrors: true,
+			sessionVolumes: true,
+			modelRelay: this.modelRelayReady,
+			egress: this.network.policy.mode,
+			allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
-			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
+			host: {
+				cpus: availableParallelism(),
+				sandboxCpus: this.slots?.unit.cpus ?? 1,
+				memoryBytes: totalmem(),
+				memoryFreeBytes: freemem(),
+				load1: loadavg()[0] ?? null,
+			},
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
 			...(this.network.policy.domains && { egressDomains: this.network.domains()!.length }),
 			...(harnesses.length ? { harnesses: harnesses.map(h => ({ ...h, keyRelay: true as const })) } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
-			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes, storeLimits: this.reportedStoreLimits(),
-			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt, resizePending }]) => ({ id, sessionId, state, usedAt, resizePending })),
+			commandSandbox: this.commandSandbox,
+			freeDiskBytes: this.freeDiskBytes,
+			storeLimits: this.reportedStoreLimits(),
+			sandboxes: [...this.boxes.entries()]
+				.slice(0, MAX_REPORTED_SANDBOXES)
+				.map(([id, { sessionId, state, usedAt, resizePending }]) => ({ id, sessionId, state, usedAt, resizePending })),
 			...(this.limits.maxRunning !== undefined ? { maxRunning: this.limits.maxRunning } : {}),
-			...(this.limits.maxSandboxes !== undefined ? { maxSandboxes: this.limits.maxSandboxes } : {}) };
+			...(this.limits.maxSandboxes !== undefined ? { maxSandboxes: this.limits.maxSandboxes } : {}),
+		};
 	}
 	private room() {
-		if (this.limits.maxRunning !== undefined && [...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning)
+		if (
+			this.limits.maxRunning !== undefined &&
+			[...this.boxes.values()].filter(b => b.state === "running").length >= this.limits.maxRunning
+		)
 			throw new SandboxUserError("This machine has reached its own limit on running sandboxes, set by --max-running.");
 	}
 	private requireProfile(profile: Profile) {
@@ -798,7 +1156,9 @@ export class Executor extends MachineDocker {
 	private requireEgress(box: Box) {
 		if (this.egressError) throw new Refusal(this.egressError);
 		if ((box.egress || "open") !== this.network.policy.mode)
-			throw new Refusal("This kept sandbox has a different network policy. Save its workspace and recreate the sandbox to use the runner’s current --egress setting.");
+			throw new Refusal(
+				"This kept sandbox has a different network policy. Save its workspace and recreate the sandbox to use the runner’s current --egress setting.",
+			);
 	}
 	async existing(sessionId: string, profile: Profile, harness?: MachineHarness) {
 		this.requireProfile(profile);
@@ -815,7 +1175,7 @@ export class Executor extends MachineDocker {
 				this.requireEgress(box);
 				if (box.harness !== harness) throw new Refusal("This session already has a sandbox with a different harness.");
 				if (!box.workspaceChecked) {
-					if (!await hasWorkspaceGit(box.raw)) {
+					if (!(await hasWorkspaceGit(box.raw))) {
 						await this.remove(id);
 						await this.discover(sessionId);
 						if (this.boxes.has(id)) throw new RunnerError("Docker could not remove the unfinished sandbox.");
@@ -828,27 +1188,53 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe, environmentBuild = false, privateData = false): Promise<string> {
+	async create(
+		sessionId: string,
+		profile: Profile,
+		screenshots = false,
+		harness?: MachineHarness,
+		size = 1,
+		prepared?: SnapshotSelection & { privateData: boolean },
+		mirrorRepo?: string,
+		spare?: SpareRecipe,
+		environmentBuild = false,
+		privateData = false,
+	): Promise<string> {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
 		if (existing) return existing;
-		if (environmentBuild && this.spares.raws.length && !this.environmentFits(size)) throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
+		if (environmentBuild && this.spares.raws.length && !this.environmentFits(size))
+			throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
-		const candidate = !privateData && !environmentBuild && spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
-		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
+		const candidate = !privateData &&
+			!environmentBuild &&
+			spare && {
+				context: this.spareContext(),
+				args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo },
+			};
+		const spec =
+			this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate)
+				? candidate
+				: undefined;
 		const readyBefore = this.spares.ready;
-		const taken = spec && await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec));
+		const taken = spec && (await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec)));
 		let claimed = taken?.raw;
-		const claim: Claim | undefined = claimed && spec ? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt } : undefined;
+		const claim: Claim | undefined =
+			claimed && spec
+				? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt }
+				: undefined;
 		if (claimed && claim) {
 			try {
 				if (harness) await this.ownedVolume(true, relaySocketVolume(this, harness));
 				save(this.claimFile(claimed), claim);
+			} catch {
+				console.info(`spare.skip id=${claimed} reason=bind`);
+				await this.removeUnbound(claimed);
+				claimed = undefined;
 			}
-			catch { console.info(`spare.skip id=${claimed} reason=bind`); await this.removeUnbound(claimed); claimed = undefined; }
 		}
 		if (!claimed) {
 			const retiring = environmentBuild ? undefined : this.spares.trim();
@@ -858,11 +1244,35 @@ export class Executor extends MachineDocker {
 			if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		}
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
-		const raw = claimed ?? (harness ? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: privateData || prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes }));
+		const raw =
+			claimed ??
+			(harness
+				? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness }))
+				: await this.provider.create({
+						...input,
+						fromSnapshot: prepared,
+						privateData: privateData || prepared?.privateData,
+						screenshots: this.screenshots && screenshots,
+						ownData: this.sessionVolumes,
+					}));
 		const id = externalId(this.identity.machineId, raw);
-		this.boxes.set(id, { raw, sessionId, profile, harness, size, claim: claimed ? claim : undefined, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
-		try { await this.network.attach(raw, containerName(raw)); }
-		catch (error) {
+		this.boxes.set(id, {
+			raw,
+			sessionId,
+			profile,
+			harness,
+			size,
+			claim: claimed ? claim : undefined,
+			snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness,
+			egress: this.network.policy.mode,
+			state: "running",
+			usedAt: Date.now(),
+			busy: 0,
+			workspaceChecked: true,
+		});
+		try {
+			await this.network.attach(raw, containerName(raw));
+		} catch (error) {
 			await this.remove(id);
 			if (claimed) {
 				console.info(`spare.skip id=${claimed} reason=network`);
@@ -897,13 +1307,24 @@ export class Executor extends MachineDocker {
 		return id;
 	}
 	get canReseed() {
-		return this.spareReseed && this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && this.needsSpareSeed;
+		return (
+			this.spareReseed && this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && this.needsSpareSeed
+		);
 	}
 	seedSpare(session: string, id: string, spare: SpareRecipe, screenshots = false) {
 		const box = this.owned(id, session);
 		if (!box || !this.canReseed) return false;
-		const spec = { context: this.spareContext(), args: { profile: box.profile, harness: box.harness,
-			size: box.size ?? 1, screenshots: !box.harness && this.screenshots && screenshots, mirrorRepo: spare.connected?.repo, spare } };
+		const spec = {
+			context: this.spareContext(),
+			args: {
+				profile: box.profile,
+				harness: box.harness,
+				size: box.size ?? 1,
+				screenshots: !box.harness && this.screenshots && screenshots,
+				mirrorRepo: spare.connected?.repo,
+				spare,
+			},
+		};
 		if (!validSpec(spec)) return false;
 		this.spares.used(spec);
 		this.needsSpareSeed = false;
@@ -920,21 +1341,29 @@ export class Executor extends MachineDocker {
 		if (!box.snapshotCandidate || box.busy || box.harness) return false;
 		box.snapshotCandidate = false;
 		box.savingSnapshot = true;
-		try { return await this.provider.saveSnapshot(box.raw, source); }
-		finally { box.savingSnapshot = false; }
+		try {
+			return await this.provider.saveSnapshot(box.raw, source);
+		} finally {
+			box.savingSnapshot = false;
+		}
 	}
 	private owned(id: string, session?: string) {
 		rawId(this.identity.machineId, id);
 		const box = this.boxes.get(id);
-		if (box && session !== undefined && box.sessionId !== session) throw new Refusal("This sandbox belongs to another session.");
+		if (box && session !== undefined && box.sessionId !== session)
+			throw new Refusal("This sandbox belongs to another session.");
 		return box;
 	}
 	private requireRelaySession(box: Box) {
-		if (box.legacyClaude) throw new Refusal("This Claude session predates credential isolation. Archive its workspace locally and recreate the session.");
+		if (box.legacyClaude)
+			throw new Refusal(
+				"This Claude session predates credential isolation. Archive its workspace locally and recreate the session.",
+			);
 	}
 	running(id: string, session: string) {
 		const box = this.owned(id, session);
-		if (!box || box.state !== "running") throw new Refusal("Commands require a running sandbox owned by this machine and session.");
+		if (!box || box.state !== "running")
+			throw new Refusal("Commands require a running sandbox owned by this machine and session.");
 		this.requireProfile(box.profile);
 		this.requireEgress(box);
 		this.requireRelaySession(box);
@@ -958,7 +1387,7 @@ export class Executor extends MachineDocker {
 			if ((await docker(["container", "inspect", "--format", "{{.Id}}", containerName(raw)])).code === 0)
 				throw new Refusal("This sandbox does not belong to this machine.");
 			if (op === "destroy") this.publishReport?.();
-			return op === "state" ? "none" as const : null;
+			return op === "state" ? ("none" as const) : null;
 		}
 		box.usedAt = Date.now();
 		if (op === "state") {
@@ -993,16 +1422,39 @@ export class Executor extends MachineDocker {
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
 			// Released peers reject unknown keys. Advertise optional fields only after capability negotiation.
-			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: { ...handle.snapshot, ...(box.claim?.attempt && { attempt: box.claim.attempt }) } }), ...(this.warmSpares && box.claim && { readyKey: box.claim.key, ...(this.spareSetupTimes && box.claim.setup && { readySetup: box.claim.setup }) }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
+			const answer = {
+				cwd: handle.cwd,
+				profile: box.profile,
+				...(handle.snapshot && {
+					snapshot: { ...handle.snapshot, ...(box.claim?.attempt && { attempt: box.claim.attempt }) },
+				}),
+				...(this.warmSpares &&
+					box.claim && {
+						readyKey: box.claim.key,
+						...(this.spareSetupTimes && box.claim.setup && { readySetup: box.claim.setup }),
+					}),
+				...(box.harness ? { harness: box.harness } : {}),
+				...(this.screenshots && !box.harness ? { screenshots: true } : {}),
 				...(this.canReseed && { needsSpareSeed: true as const }),
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				...(!box.harness && this.windlassKeyRelays && { windlassKeyRelay: true as const }),
 				// A harness uses its credential relay for forwarded platform leases.
-				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
+				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady)
+					? { modelRelay: true as const }
+					: {}),
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				...(this.memoryEvents && { memoryEvents: true as const }),
-				...(this.startTimes && box.startTimes ? { startTimes: this.warmSpares ? box.startTimes :
-					{ image: box.startTimes.image, create: box.startTimes.create, ...(box.startTimes.pulled && { pulled: true as const }) } } : {}),
+				...(this.startTimes && box.startTimes
+					? {
+							startTimes: this.warmSpares
+								? box.startTimes
+								: {
+										image: box.startTimes.image,
+										create: box.startTimes.create,
+										...(box.startTimes.pulled && { pulled: true as const }),
+									},
+						}
+					: {}),
 				...(this.environmentImage && handle.image ? { image: handle.image } : {}),
 			};
 			delete box.startTimes;
@@ -1039,11 +1491,12 @@ export class Executor extends MachineDocker {
 		await this.provider.destroy(raw);
 		this.boxes.delete(id);
 		if (claim) forget(this.claimFile(raw));
-		if (harness === "claude") await withLoginVolume(this, async () => {
-			// An unrelated or unreadable login volume must survive sandbox removal.
-			const state = await loginFileState(this).catch(() => "unknown");
-			if (state === "none") await dropDetachedLoginVolume(this);
-		});
+		if (harness === "claude")
+			await withLoginVolume(this, async () => {
+				// An unrelated or unreadable login volume must survive sandbox removal.
+				const state = await loginFileState(this).catch(() => "unknown");
+				if (state === "none") await dropDetachedLoginVolume(this);
+			});
 		this.publishReport?.();
 	}
 	async idle(ms: number, connected: (session: string) => boolean) {
@@ -1066,8 +1519,12 @@ export class Executor extends MachineDocker {
 		let failed = false;
 		for (const [id, box] of this.boxes) {
 			if (box.state !== "running") continue;
-			try { await this.lifecycle("suspend", id); }
-			catch { failed = true; audit(box.sessionId, id, "suspend", "failed"); }
+			try {
+				await this.lifecycle("suspend", id);
+			} catch {
+				failed = true;
+				audit(box.sessionId, id, "suspend", "failed");
+			}
 		}
 		if (failed) throw new RunnerError("Docker could not stop all kept sandboxes.");
 	}
@@ -1084,7 +1541,8 @@ export class Executor extends MachineDocker {
 		// A killed runner can also have left a labelled probe or disk-check helper.
 		await withLoginVolume(this, async () => {
 			const helpers = await docker(["ps", "-aq", ...this.filters()], { check: true });
-			for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
+			for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean))
+				await docker(["rm", "-fv", id], { check: true });
 			await this.network.prune();
 			await this.provider.dropSnapshots(this.identity.uid);
 			await dropPreviousSnapshots(this.identity);

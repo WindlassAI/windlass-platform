@@ -29,9 +29,7 @@ export interface GithubStatus {
 /** Mapped teams file work on their repository through a qualifying label or app assignment. */
 export type LinearStatus =
 	/** The deployment has no Linear OAuth client or signing secret (server env): Settings shows nothing to connect. */
-	| { state: "off" }
-	| { state: "disconnected" }
-	| { state: "connected"; connection: LinearConnection };
+	{ state: "off" } | { state: "disconnected" } | { state: "connected"; connection: LinearConnection };
 
 export interface LinearConnection {
 	workspace: { id: string; name: string; urlKey: string };

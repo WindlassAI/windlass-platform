@@ -39,28 +39,75 @@ server.on("connect", (req, socket) => {
     if (data.length >= 5 && data.length >= 5 + data.readUInt16BE(3)) { console.log(req.url + " " + data.toString("hex")); socket.destroy(); }
   });
 });`;
-const browserArgs = (binary: string) => [binary, "--no-sandbox", "--disable-dev-shm-usage", "--dump-dom", `https://${host}/`];
-const proxyEnv = { HTTP_PROXY: RUNNER_HTTP_PROXY, HTTPS_PROXY: RUNNER_HTTP_PROXY, http_proxy: RUNNER_HTTP_PROXY, https_proxy: RUNNER_HTTP_PROXY, NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
+const browserArgs = (binary: string) => [
+	binary,
+	"--no-sandbox",
+	"--disable-dev-shm-usage",
+	"--dump-dom",
+	`https://${host}/`,
+];
+const proxyEnv = {
+	HTTP_PROXY: RUNNER_HTTP_PROXY,
+	HTTPS_PROXY: RUNNER_HTTP_PROXY,
+	http_proxy: RUNNER_HTTP_PROXY,
+	https_proxy: RUNNER_HTTP_PROXY,
+	NO_PROXY: "localhost,127.0.0.1,::1",
+	no_proxy: "localhost,127.0.0.1,::1",
+};
 
 let output: string;
 if (process.argv.includes("--docker")) {
 	const image = await imageId(process.env.WLP_SANDBOX_IMAGE || "windlass-platform-sandbox:shots");
 	const env = Object.entries(proxyEnv).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
 	// The image's own entry points: the wrapper on PATH, which wlp-shot also launches.
-	output = (await docker(["run", "--rm", "--init", "--label", LABEL_ARG, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		...env, image, "node", "-e", capture, "--", ...browserArgs("wlp-headless-shell")], { check: true, timeoutMs: 120_000 })).stdout;
+	output = (
+		await docker(
+			[
+				"run",
+				"--rm",
+				"--init",
+				"--label",
+				LABEL_ARG,
+				"--network",
+				"none",
+				"--cap-drop",
+				"ALL",
+				"--security-opt",
+				"no-new-privileges",
+				...env,
+				image,
+				"node",
+				"-e",
+				capture,
+				"--",
+				...browserArgs("wlp-headless-shell"),
+			],
+			{ check: true, timeoutMs: 120_000 },
+		)
+	).stdout;
 } else {
 	const binary = process.env.WLP_BROWSER;
-	if (!binary) { console.log("SKIP  no WLP_BROWSER (give --docker to use the screenshots image)"); process.exit(0); }
-	const run = spawnSync(process.execPath, ["-e", capture, "--", ...browserArgs(binary)], { encoding: "utf8", env: { ...process.env, ...proxyEnv }, timeout: 60_000 });
+	if (!binary) {
+		console.log("SKIP  no WLP_BROWSER (give --docker to use the screenshots image)");
+		process.exit(0);
+	}
+	const run = spawnSync(process.execPath, ["-e", capture, "--", ...browserArgs(binary)], {
+		encoding: "utf8",
+		env: { ...process.env, ...proxyEnv },
+		timeout: 60_000,
+	});
 	assert.equal(run.status, 0, run.stderr);
 	output = run.stdout;
 }
 
-const hellos = output.trim().split("\n").filter(Boolean).map(line => {
-	const [target, hex] = line.split(" ");
-	return { target, hello: Buffer.from(hex!, "hex") };
-});
+const hellos = output
+	.trim()
+	.split("\n")
+	.filter(Boolean)
+	.map(line => {
+		const [target, hex] = line.split(" ");
+		return { target, hello: Buffer.from(hex!, "hex") };
+	});
 assert.ok(hellos.length > 0, "the browser opened no tunnel through the proxy variables: " + output);
 /** The extension types of a hello that is otherwise well formed. */
 function extensions(hello: Buffer): number[] {
@@ -77,15 +124,22 @@ for (const { target, hello } of hellos) {
 	assert.equal(target, host + ":443");
 	const types = extensions(hello);
 	assert.ok(hello.toString("latin1").includes(host), "the hello names the host");
-	assert.ok(types.includes(0xfe0d), "Chrome sends Encrypted Client Hello: " + types.map(type => type.toString(16)).join());
+	assert.ok(
+		types.includes(0xfe0d),
+		"Chrome sends Encrypted Client Hello: " + types.map(type => type.toString(16)).join(),
+	);
 	// The broker's answer to it: refused, as any Encrypted Client Hello is under a list.
 	assert.equal(clientHelloName(hello), null);
 	// The same hello without that one extension is accepted with its name: ECH is the only reason.
 	const without = Buffer.from(hello);
 	let at = 5 + 4 + 2 + 32;
-	at += 1 + without[at]!; at += 2 + without.readUInt16BE(at); at += 1 + without[at]!;
+	at += 1 + without[at]!;
+	at += 2 + without.readUInt16BE(at);
+	at += 1 + without[at]!;
 	for (let p = at + 2; p < at + 2 + without.readUInt16BE(at); p += 4 + without.readUInt16BE(p + 2))
 		if (without.readUInt16BE(p) === 0xfe0d) without.writeUInt16BE(0xfe0e, p);
 	assert.equal(clientHelloName(without), host);
 }
-console.log(`PASS  ${hellos.length} ClientHello(s) of the sandbox's browser to ${host}: Encrypted Client Hello, refused under --egress-domains; nothing else in them is`);
+console.log(
+	`PASS  ${hellos.length} ClientHello(s) of the sandbox's browser to ${host}: Encrypted Client Hello, refused under --egress-domains; nothing else in them is`,
+);

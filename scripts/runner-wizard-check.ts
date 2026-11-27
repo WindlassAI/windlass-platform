@@ -16,15 +16,33 @@ import { fromFlags, startFlags, validChoices, type SetupChoices } from "../runne
 import { runWizard, type Mode, type WizardEffects, type SignInState } from "../runner/src/setup-wizard.js";
 import type { MachineHarness } from "../runner/src/policy.js";
 
-type Step = { kind: "select" | "multiselect" | "text"; match: RegExp; answer: unknown; check?: (question: any) => void };
-const select = (match: RegExp, answer: unknown, check?: Step["check"]): Step => ({ kind: "select", match, answer, check });
-const multi = (match: RegExp, answer: unknown, check?: Step["check"]): Step => ({ kind: "multiselect", match, answer, check });
+type Step = {
+	kind: "select" | "multiselect" | "text";
+	match: RegExp;
+	answer: unknown;
+	check?: (question: any) => void;
+};
+const select = (match: RegExp, answer: unknown, check?: Step["check"]): Step => ({
+	kind: "select",
+	match,
+	answer,
+	check,
+});
+const multi = (match: RegExp, answer: unknown, check?: Step["check"]): Step => ({
+	kind: "multiselect",
+	match,
+	answer,
+	check,
+});
 const text = (match: RegExp, answer: unknown, check?: Step["check"]): Step => ({ kind: "text", match, answer, check });
 
 class Script implements Prompter {
 	readonly logs: string[] = [];
 	readonly notes: { title: string; lines: string[] }[] = [];
-	constructor(private readonly steps: Step[], readonly interactive = true) {}
+	constructor(
+		private readonly steps: Step[],
+		readonly interactive = true,
+	) {}
 	private next(kind: Step["kind"], question: { message: string }) {
 		const step = this.steps.shift();
 		assert.ok(step, `no answer scripted for ${kind} "${question.message}"`);
@@ -33,47 +51,96 @@ class Script implements Prompter {
 		step.check?.(question);
 		return step.answer;
 	}
-	done() { assert.deepEqual(this.steps.map(s => s.match.source), [], "answers left unasked"); }
+	done() {
+		assert.deepEqual(
+			this.steps.map(s => s.match.source),
+			[],
+			"answers left unasked",
+		);
+	}
 	intro() {}
-	outro(message: string) { this.logs.push("outro: " + message); }
-	note(title: string, lines: string[]) { this.notes.push({ title, lines }); }
-	log(kind: string, message: string) { this.logs.push(kind + ": " + message); }
-	async select<T>(q: { message: string; options: Choice<T>[]; initial?: T }) { return this.next("select", q) as Answer<T>; }
-	async multiselect<T>(q: { message: string; options: Choice<T>[]; initial: T[] }) { return this.next("multiselect", q) as Answer<T[]>; }
+	outro(message: string) {
+		this.logs.push("outro: " + message);
+	}
+	note(title: string, lines: string[]) {
+		this.notes.push({ title, lines });
+	}
+	log(kind: string, message: string) {
+		this.logs.push(kind + ": " + message);
+	}
+	async select<T>(q: { message: string; options: Choice<T>[]; initial?: T }) {
+		return this.next("select", q) as Answer<T>;
+	}
+	async multiselect<T>(q: { message: string; options: Choice<T>[]; initial: T[] }) {
+		return this.next("multiselect", q) as Answer<T[]>;
+	}
 	async text(q: { message: string; initial: string; validate?: (value: string) => string | undefined }) {
 		const answer = this.next("text", q);
 		if (typeof answer === "string") assert.equal(q.validate?.(answer), undefined, `"${answer}" refused`);
 		return answer as Answer<string>;
 	}
-	async wait<T>(_: string, work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>) { return work(new AbortController().signal, () => {}); }
+	async wait<T>(_: string, work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>) {
+		return work(new AbortController().signal, () => {});
+	}
 }
 
 const platform = "https://windlass.example.org";
-function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running" | "stopped" | "absent"; signedIn?: MachineHarness[]; pairResults?: ({ ok: true } | { ok: false; message: string })[]; failSignIn?: MachineHarness[]; stopSignIn?: MachineHarness[]; lock?: boolean[] } = {}) {
+function machine(
+	o: {
+		paired?: boolean;
+		saved?: SetupChoices;
+		service?: "running" | "stopped" | "absent";
+		signedIn?: MachineHarness[];
+		pairResults?: ({ ok: true } | { ok: false; message: string })[];
+		failSignIn?: MachineHarness[];
+		stopSignIn?: MachineHarness[];
+		lock?: boolean[];
+	} = {},
+) {
 	const did: string[] = [];
-	let paired = o.paired ?? false, name: string | undefined = o.saved ? "Studio Mac" : undefined, service = o.service ?? "absent";
+	let paired = o.paired ?? false,
+		name: string | undefined = o.saved ? "Studio Mac" : undefined,
+		service = o.service ?? "absent";
 	let saved = o.saved;
-	const locks = [...o.lock ?? []];
+	const locks = [...(o.lock ?? [])];
 	const fx: WizardEffects = {
 		version: "0.3.5",
 		offered: ["claude", "opencode", "codex"],
-		pairing: () => paired ? { machineId: "m_" + "a".repeat(16), platform } : undefined,
+		pairing: () => (paired ? { machineId: "m_" + "a".repeat(16), platform } : undefined),
 		savedName: () => name,
 		defaultName: async () => "docker-desktop",
-		async saveName(n) { did.push("name " + n); name = n; },
-		checkName: n => n.trim() ? undefined : "Give a name.",
+		async saveName(n) {
+			did.push("name " + n);
+			name = n;
+		},
+		checkName: n => (n.trim() ? undefined : "Give a name."),
 		checkPlatform: () => undefined,
 		choices: () => ({ saved: saved !== undefined, choices: saved ?? {} }),
-		saveChoices(c) { did.push("save " + JSON.stringify(c)); saved = c; },
+		saveChoices(c) {
+			did.push("save " + JSON.stringify(c));
+			saved = c;
+		},
 		slotsDefault: () => 2,
-		checkSlots: n => n > 8 ? "Too many slots for this computer." : undefined,
-		checkSize: v => /^\d+(GB|MB)$/.test(v) ? undefined : "Give a size such as 20GB.",
-		checkDomains: list => list.includes(" ") ? "Give DNS names." : undefined,
+		checkSlots: n => (n > 8 ? "Too many slots for this computer." : undefined),
+		checkSize: v => (/^\d+(GB|MB)$/.test(v) ? undefined : "Give a size such as 20GB."),
+		checkDomains: list => (list.includes(" ") ? "Give DNS names." : undefined),
 		service: async () => service,
-		holdState() { const ok = locks.length ? locks.shift()! : true; did.push("lock " + ok); return ok; },
-		releaseState() { did.push("unlock"); },
-		async stopService() { did.push("stop"); service = "stopped"; },
-		async restartService() { did.push("restart"); service = "running"; },
+		holdState() {
+			const ok = locks.length ? locks.shift()! : true;
+			did.push("lock " + ok);
+			return ok;
+		},
+		releaseState() {
+			did.push("unlock");
+		},
+		async stopService() {
+			did.push("stop");
+			service = "stopped";
+		},
+		async restartService() {
+			did.push("restart");
+			service = "running";
+		},
 		async pair(address, n, show) {
 			did.push(`pair ${address} ${n}`);
 			const result = o.pairResults?.shift() ?? { ok: true };
@@ -85,8 +152,10 @@ function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running
 			}
 			return result;
 		},
-		async prepare(agents) { did.push("prepare " + agents.join(",")); },
-		signInState: async (id): Promise<SignInState> => o.signedIn?.includes(id) ? "signed-in" : "signed-out",
+		async prepare(agents) {
+			did.push("prepare " + agents.join(","));
+		},
+		signInState: async (id): Promise<SignInState> => (o.signedIn?.includes(id) ? "signed-in" : "signed-out"),
 		async signIn(id) {
 			did.push("sign in " + id);
 			if (o.stopSignIn?.includes(id)) return "stopped";
@@ -94,9 +163,17 @@ function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running
 		},
 		laterLogin: id => "docker exec -it windlass-runner windlass-runner login " + id,
 		startCommand: flags => "docker run -d … run " + flags.join(" "),
-		async start(flags, replace) { did.push(`start${replace ? " replace" : ""} ${flags.join(" ")}`); service = "running"; },
-		async waitOnline() { did.push("wait online"); return { ok: true, message: "Online" }; },
-		async reportLogin() { did.push("report login"); },
+		async start(flags, replace) {
+			did.push(`start${replace ? " replace" : ""} ${flags.join(" ")}`);
+			service = "running";
+		},
+		async waitOnline() {
+			did.push("wait online");
+			return { ok: true, message: "Online" };
+		},
+		async reportLogin() {
+			did.push("report login");
+		},
 	};
 	return { fx, did };
 }
@@ -106,7 +183,10 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 	const { fx, did } = machine({ failSignIn: ["claude"] });
 	const p = new Script([
 		select(/Set up this machine/, "go"),
-		text(/Machine name/, BACK, q => { assert.equal(q.initial, "docker-desktop"); assert.match(q.hint, /name of Docker's VM/); }),
+		text(/Machine name/, BACK, q => {
+			assert.equal(q.initial, "docker-desktop");
+			assert.match(q.hint, /name of Docker's VM/);
+		}),
 		select(/^Pairing$/, "keep"),
 		text(/Machine name/, "Studio Mac"),
 		multi(/Which agents/, ["claude", "codex"], q => assert.deepEqual(q.initial, [])),
@@ -119,11 +199,17 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 		select(/Codex: sign in now/, "skip"),
 		select(/Docker profiles/, false),
 		select(/network/, "domains", q => assert.equal(q.initial, "restricted")),
-		text(/Public hosts/, BACK, q => { assert.equal(q.initial, "@npm,@pypi,@github"); assert.equal(q.validate("@npm, bad host"), "Give DNS names."); }),
+		text(/Public hosts/, BACK, q => {
+			assert.equal(q.initial, "@npm,@pypi,@github");
+			assert.equal(q.validate("@npm, bad host"), "Give DNS names.");
+		}),
 		select(/network/, "domains"),
 		text(/Public hosts/, "@npm,example.com"),
 		select(/^Limits: 2 turn slots, 10GB for setup snapshots, keep 40GB of disk free$/, "change"),
-		text(/Turn slots/, "3", q => { assert.equal(q.validate("9"), "Too many slots for this computer."); assert.match(q.validate("0")!, /1 to 64/); }),
+		text(/Turn slots/, "3", q => {
+			assert.equal(q.validate("9"), "Too many slots for this computer.");
+			assert.match(q.validate("0")!, /1 to 64/);
+		}),
 		text(/snapshots/, BACK),
 		text(/Turn slots/, "4", q => assert.equal(q.initial, "3")),
 		text(/snapshots/, "20GB"),
@@ -132,19 +218,47 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 	]);
 	assert.deepEqual(await run(p, fx), { outcome: "done" });
 	p.done();
-	assert.ok(p.logs.includes("error: Claude Code was not signed in: Choose 1 or 2. Setup carries on. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude"), p.logs.join("\n"));
-	assert.ok(p.logs.includes("info: Codex is not signed in. Sign it in later with: docker exec -it windlass-runner windlass-runner login codex"));
+	assert.ok(
+		p.logs.includes(
+			"error: Claude Code was not signed in: Choose 1 or 2. Setup carries on. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude",
+		),
+		p.logs.join("\n"),
+	);
+	assert.ok(
+		p.logs.includes(
+			"info: Codex is not signed in. Sign it in later with: docker exec -it windlass-runner windlass-runner login codex",
+		),
+	);
 	assert.ok(p.logs.includes("success: Paired with octocat. If that is not you, run setup again and pair again."));
 	const pairing = p.notes.find(n => n.title === "Pair this machine")!;
-	assert.deepEqual(pairing.lines.slice(0, 3), [`1. Open      ${platform}/machines/add`, "2. Enter     WXYZ-1210", "3. Check     the page shows machine key K7Q2M-XR4TD"]);
+	assert.deepEqual(pairing.lines.slice(0, 3), [
+		`1. Open      ${platform}/machines/add`,
+		"2. Enter     WXYZ-1210",
+		"3. Check     the page shows machine key K7Q2M-XR4TD",
+	]);
 	const summary = p.notes.find(n => n.title === "Summary")!.lines.join("\n");
 	assert.match(summary, /Agents {7}Windlass, Codex \(not signed in\)/);
 	assert.match(summary, /Limits {7}4 slots, 20GB snapshots, keep 0GB free/);
-	const choices = { agents: ["codex"], windlassSandbox: false, network: { mode: "restricted", domains: ["@npm", "example.com"] }, limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" } };
+	const choices = {
+		agents: ["codex"],
+		windlassSandbox: false,
+		network: { mode: "restricted", domains: ["@npm", "example.com"] },
+		limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" },
+	};
 	const flags = `--platform ${platform} --harness codex --allow-profile docker-hardened --egress restricted --egress-domains @npm,example.com --slots 4 --snapshot-disk 20GB --keep-free 0GB`;
 	assert.deepEqual(did, [
-		"prepare ", "lock true", `pair ${platform} docker-desktop`, "name Studio Mac", "prepare claude,codex", "sign in claude", "prepare claude,codex", "prepare codex",
-		"save " + JSON.stringify(choices), "unlock", "start " + flags, "wait online",
+		"prepare ",
+		"lock true",
+		`pair ${platform} docker-desktop`,
+		"name Studio Mac",
+		"prepare claude,codex",
+		"sign in claude",
+		"prepare claude,codex",
+		"prepare codex",
+		"save " + JSON.stringify(choices),
+		"unlock",
+		"start " + flags,
+		"wait online",
 	]);
 	assert.ok(validChoices(JSON.parse(JSON.stringify(choices))));
 });
@@ -159,12 +273,25 @@ test("Escape cancels: nothing more starts, and a runner setup stopped to pair ag
 	]);
 	assert.deepEqual(await run(p, fx), { outcome: "cancelled" });
 	p.done();
-	assert.deepEqual(did, ["prepare ", "lock false", "stop", "lock true", `pair ${platform} Studio Mac`, "unlock", "restart"]);
+	assert.deepEqual(did, [
+		"prepare ",
+		"lock false",
+		"stop",
+		"lock true",
+		`pair ${platform} Studio Mac`,
+		"unlock",
+		"restart",
+	]);
 	assert.match(p.logs.at(-1)!, /Setup cancelled\. Nothing more was changed\. The pairing is kept/);
 });
 
 test("a re-run offers the saved answers, keeps the pairing and replaces the runner only when asked", async () => {
-	const saved: SetupChoices = { agents: ["claude", "codex"], windlassSandbox: false, network: { mode: "restricted", allow: ["git.internal"], domains: ["@npm", "example.com"] }, limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" } };
+	const saved: SetupChoices = {
+		agents: ["claude", "codex"],
+		windlassSandbox: false,
+		network: { mode: "restricted", allow: ["git.internal"], domains: ["@npm", "example.com"] },
+		limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" },
+	};
 	const { fx, did } = machine({ paired: true, saved, service: "running", signedIn: ["claude"] });
 	const p = new Script([
 		select(/Go through/, "go"),
@@ -172,7 +299,10 @@ test("a re-run offers the saved answers, keeps the pairing and replaces the runn
 		text(/Machine name/, "Studio Mac", q => assert.equal(q.initial, "Studio Mac")),
 		multi(/Which agents/, ["claude", "codex"], q => {
 			assert.deepEqual(q.initial, ["claude", "codex"]);
-			assert.deepEqual(q.options.map((o: Choice<string>) => o.hint), ["signed in", "not signed in", "not signed in"]);
+			assert.deepEqual(
+				q.options.map((o: Choice<string>) => o.hint),
+				["signed in", "not signed in", "not signed in"],
+			);
 		}),
 		select(/Claude Code: signed in on this machine/, "keep", q => assert.equal(q.initial, "keep")),
 		select(/Codex: sign in now/, "now"),
@@ -200,7 +330,12 @@ test("stopping a sign-in with Ctrl+C stops setup", async () => {
 });
 
 test("--quick asks only what is missing", async () => {
-	const saved: SetupChoices = { agents: ["claude", "codex"], windlassSandbox: true, network: { mode: "open" }, limits: {} };
+	const saved: SetupChoices = {
+		agents: ["claude", "codex"],
+		windlassSandbox: true,
+		network: { mode: "open" },
+		limits: {},
+	};
 	const { fx, did } = machine({ paired: true, saved, service: "stopped", signedIn: ["claude"] });
 	const p = new Script([
 		select(/Go through/, "go"),
@@ -210,27 +345,41 @@ test("--quick asks only what is missing", async () => {
 	]);
 	assert.deepEqual(await run(p, fx, { kind: "quick" }), { outcome: "done" });
 	p.done();
-	assert.deepEqual(did, ["prepare ", "prepare codex", "sign in codex", "save " + JSON.stringify(saved),
-		`start replace --platform ${platform} --harness claude --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress open`, "wait online"]);
+	assert.deepEqual(did, [
+		"prepare ",
+		"prepare codex",
+		"sign in codex",
+		"save " + JSON.stringify(saved),
+		`start replace --platform ${platform} --harness claude --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress open`,
+		"wait online",
+	]);
 });
 
 test("a section asks only its own questions, and needs a pairing", async () => {
 	const saved: SetupChoices = { agents: ["opencode"], windlassSandbox: true, network: { mode: "restricted" } };
 	const { fx, did } = machine({ paired: true, saved, service: "absent" });
-	const p = new Script([
-		select(/Codex: sign in now/, "now"),
-		select(/Start the runner/, "start"),
-	]);
+	const p = new Script([select(/Codex: sign in now/, "now"), select(/Start the runner/, "start")]);
 	assert.deepEqual(await run(p, fx, { kind: "section", section: "codex" }), { outcome: "done" });
 	p.done();
-	assert.ok(did.includes(`start --platform ${platform} --harness opencode --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress restricted`), did.join("\n"));
+	assert.ok(
+		did.includes(
+			`start --platform ${platform} --harness opencode --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress restricted`,
+		),
+		did.join("\n"),
+	);
 	const unpaired = machine();
 	const q = new Script([]);
-	assert.deepEqual(await run(q, unpaired.fx, { kind: "section", section: "limits" }), { outcome: "failed", message: "Pair this machine first: run setup." });
+	assert.deepEqual(await run(q, unpaired.fx, { kind: "section", section: "limits" }), {
+		outcome: "failed",
+		message: "Pair this machine first: run setup.",
+	});
 });
 
 test("an expired code can be tried again; without a terminal it ends setup", async () => {
-	const expired = { ok: false as const, message: "The pairing code expired, so re-run the setup command to get a new code." };
+	const expired = {
+		ok: false as const,
+		message: "The pairing code expired, so re-run the setup command to get a new code.",
+	};
 	const { fx, did } = machine({ pairResults: [expired] });
 	const p = new Script([
 		select(/Set up this machine/, "go"),
@@ -249,12 +398,59 @@ test("an expired code can be tried again; without a terminal it ends setup", asy
 });
 
 test("the start flags come from the choices", () => {
-	assert.deepEqual(startFlags(platform, {}), ["--platform", platform, "--allow-profile", "docker-hardened", "--egress", "restricted"]);
-	assert.deepEqual(startFlags(platform, { agents: ["claude"], screenshots: true, windlassSandbox: true, network: { mode: "open", allow: ["a.internal"], domains: ["x.org"] },
-		limits: { snapshotDisk: "10GB", keepFree: "40GB" }, extra: ["--slot-cpus", "2"] }),
-	["--platform", platform, "--harness", "claude", "--screenshots", "--allow-profile", "docker-hardened", "--allow-profile", "docker-windlass-sandbox", "--egress", "open", "--slot-cpus", "2"]);
-	assert.deepEqual(startFlags(platform, { network: { mode: "restricted", allow: ["a.internal"] }, limits: { slots: 3, snapshotDisk: "5GB", keepFree: "40000MB" } }),
-		["--platform", platform, "--allow-profile", "docker-hardened", "--egress", "restricted", "--egress-allow", "a.internal", "--slots", "3", "--snapshot-disk", "5GB"]);
+	assert.deepEqual(startFlags(platform, {}), [
+		"--platform",
+		platform,
+		"--allow-profile",
+		"docker-hardened",
+		"--egress",
+		"restricted",
+	]);
+	assert.deepEqual(
+		startFlags(platform, {
+			agents: ["claude"],
+			screenshots: true,
+			windlassSandbox: true,
+			network: { mode: "open", allow: ["a.internal"], domains: ["x.org"] },
+			limits: { snapshotDisk: "10GB", keepFree: "40GB" },
+			extra: ["--slot-cpus", "2"],
+		}),
+		[
+			"--platform",
+			platform,
+			"--harness",
+			"claude",
+			"--screenshots",
+			"--allow-profile",
+			"docker-hardened",
+			"--allow-profile",
+			"docker-windlass-sandbox",
+			"--egress",
+			"open",
+			"--slot-cpus",
+			"2",
+		],
+	);
+	assert.deepEqual(
+		startFlags(platform, {
+			network: { mode: "restricted", allow: ["a.internal"] },
+			limits: { slots: 3, snapshotDisk: "5GB", keepFree: "40000MB" },
+		}),
+		[
+			"--platform",
+			platform,
+			"--allow-profile",
+			"docker-hardened",
+			"--egress",
+			"restricted",
+			"--egress-allow",
+			"a.internal",
+			"--slots",
+			"3",
+			"--snapshot-disk",
+			"5GB",
+		],
+	);
 	// The Machines page's commands: the sandbox box turned off says --allow-profile docker-hardened, and setup starts with it off.
 	assert.equal(fromFlags({ "allow-profile": ["docker-hardened"] }, { windlassSandbox: true }).windlassSandbox, false);
 	assert.equal(fromFlags({ "allow-profile": ["docker-windlass-sandbox"] }, {}).windlassSandbox, true);

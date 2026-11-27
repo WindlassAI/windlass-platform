@@ -8,7 +8,7 @@ import type { TextBlock, TurnView } from "../lib/timeline";
 
 // The copy control, counted: how often the answer's control renders while the answer grows.
 const renders = vi.hoisted(() => ({ count: 0 }));
-vi.mock("./Copy", async (importOriginal) => {
+vi.mock("./Copy", async importOriginal => {
 	const actual = await importOriginal<typeof import("./Copy")>();
 	return {
 		...actual,
@@ -42,7 +42,7 @@ describe("an answer that streams", () => {
 		const prose = host.querySelector(".prose");
 		expect(prose).not.toBeNull();
 		const changes: MutationRecord[] = [];
-		const observer = new MutationObserver((records) => changes.push(...records));
+		const observer = new MutationObserver(records => changes.push(...records));
 		observer.observe(prose as Element, { childList: true, subtree: true });
 
 		const chunks = [20, 40, 60, text.length];
@@ -52,7 +52,7 @@ describe("an answer that streams", () => {
 
 		expect(renders.count).toBe(1);
 		// One replacement of the HTML per chunk, as before: nothing else touches the text while it streams.
-		expect(changes.filter((record) => record.target === prose)).toHaveLength(chunks.length);
+		expect(changes.filter(record => record.target === prose)).toHaveLength(chunks.length);
 		expect(host.querySelector(".code-block")).toBeNull();
 		act(() => root.unmount());
 	});

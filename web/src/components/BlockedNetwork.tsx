@@ -23,7 +23,14 @@ export interface AllowHostContext {
 }
 
 /** Addresses a cloud's instance metadata answers on: a refusal of one is "cloud metadata", not just a private address. */
-const METADATA_HOSTS = new Set(["169.254.169.254", "fd00:ec2::254", "metadata.google.internal", "metadata.goog", "100.100.100.200", "169.254.170.2"]);
+const METADATA_HOSTS = new Set([
+	"169.254.169.254",
+	"fd00:ec2::254",
+	"metadata.google.internal",
+	"metadata.goog",
+	"100.100.100.200",
+	"169.254.170.2",
+]);
 
 /** "host:port"; the host alone where no port was seen (a hosted lookup), an IPv6 host in brackets. */
 export function destinationWords(entry: Pick<BlockedHost, "host" | "port">): string {
@@ -49,9 +56,11 @@ export function refusalWords(entry: BlockedHost): string {
 
 /** "machine studio-mac's", "machines a and b's", or "this machine's" when the names are not known. */
 function machineWords(names: readonly string[] | undefined): string {
-	const known = (names ?? []).filter((name) => name.trim() !== "");
+	const known = (names ?? []).filter(name => name.trim() !== "");
 	if (known.length === 0) return "this machine's";
-	return known.length === 1 ? `machine ${known[0]}'s` : `machines ${known.slice(0, -1).join(", ")} and ${known.at(-1)}'s`;
+	return known.length === 1
+		? `machine ${known[0]}'s`
+		: `machines ${known.slice(0, -1).join(", ")} and ${known.at(-1)}'s`;
 }
 
 /** "14 requests to 5 destinations", and the ones past the 50 kept. */
@@ -66,8 +75,18 @@ export function blockedHeadline(network: { hosts: readonly BlockedHost[]; overfl
  * its sandbox reach it at once while a turn runs (from the next turn otherwise). Nothing is allowed
  * without the click. `listLink` adds the way to the list itself.
  */
-export function AllowHost({ host, context, listLink = false }: { host: string; context: AllowHostContext; listLink?: boolean }) {
-	const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "failed"; text: string }>({ kind: "idle" });
+export function AllowHost({
+	host,
+	context,
+	listLink = false,
+}: {
+	host: string;
+	context: AllowHostContext;
+	listLink?: boolean;
+}) {
+	const [state, setState] = useState<
+		{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "failed"; text: string }
+	>({ kind: "idle" });
 	const { allow, repositoryId } = context;
 	if (repositoryId === null) return null;
 	const go = async () => {
@@ -75,7 +94,12 @@ export function AllowHost({ host, context, listLink = false }: { host: string; c
 		setState({ kind: "busy" });
 		try {
 			const answer = await allow(host);
-			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed. It applies from the next turn.` });
+			setState({
+				kind: "done",
+				text: answer.applied
+					? `${host} is allowed. This sandbox reaches it now.`
+					: `${host} is allowed. It applies from the next turn.`,
+			});
 		} catch (failure) {
 			setState({ kind: "failed", text: failure instanceof Error ? failure.message : String(failure) });
 		}
@@ -87,12 +111,21 @@ export function AllowHost({ host, context, listLink = false }: { host: string; c
 					<CheckIcon size={13} /> {state.text}
 				</span>
 			) : (
-				<button type="button" className="button button-outline button-small" onClick={() => void go()} disabled={!allow || state.kind === "busy"} aria-label={`Allow ${host} for this repository`}>
+				<button
+					type="button"
+					className="button button-outline button-small"
+					onClick={() => void go()}
+					disabled={!allow || state.kind === "busy"}
+					aria-label={`Allow ${host} for this repository`}
+				>
 					{state.kind === "busy" ? "Allowing…" : "Allow for this repository"}
 				</button>
 			)}
 			{listLink ? (
-				<a className="link" {...linkProps({ name: "repository", id: repositoryId, view: "settings", section: "network" })}>
+				<a
+					className="link"
+					{...linkProps({ name: "repository", id: repositoryId, view: "settings", section: "network" })}
+				>
 					Network list
 				</a>
 			) : null}
@@ -110,13 +143,14 @@ function MachineRefusal({ entry }: { entry: BlockedHost }) {
 	const [open, setOpen] = useState(false);
 	const id = useId();
 	const host = entry.host ?? "";
-	const names = (entry.machineNames ?? []).filter((name) => name.trim() !== "");
+	const names = (entry.machineNames ?? []).filter(name => name.trim() !== "");
 	return (
 		<span className="blocked-why">
 			<span>Blocked by {machineWords(entry.machineNames)} settings</span>
-			<FoldToggle open={open} controls={id} label="How to allow" onToggle={() => setOpen((value) => !value)} />
+			<FoldToggle open={open} controls={id} label="How to allow" onToggle={() => setOpen(value => !value)} />
 			<span id={id} className="blocked-hint" hidden={!open}>
-				Its owner adds <code>{host}</code> to <code>--egress-domains</code> when starting the runner{names.length === 1 ? ` on ${names[0]}` : ""}.
+				Its owner adds <code>{host}</code> to <code>--egress-domains</code> when starting the runner
+				{names.length === 1 ? ` on ${names[0]}` : ""}.
 			</span>
 		</span>
 	);
@@ -133,7 +167,15 @@ function HostAction({ entry, context }: { entry: BlockedHost; context: AllowHost
 }
 
 /** One destination: where, how often, when last, and what can be done. */
-function Destination({ entry, context, when }: { entry: BlockedHost; context: AllowHostContext | null; when(at: number): string }) {
+function Destination({
+	entry,
+	context,
+	when,
+}: {
+	entry: BlockedHost;
+	context: AllowHostContext | null;
+	when(at: number): string;
+}) {
 	return (
 		<div className="blocked-host" data-allow={entry.allow}>
 			<span className="blocked-where">
@@ -142,7 +184,10 @@ function Destination({ entry, context, when }: { entry: BlockedHost; context: Al
 				</code>
 				<span className="blocked-facts">
 					<span title={`${plural(entry.count, "request")} refused`}>×{count(entry.count)}</span>
-					<time dateTime={new Date(entry.lastAt).toISOString()} title={`first ${absoluteTime(entry.firstAt)}, last ${absoluteTime(entry.lastAt)}`}>
+					<time
+						dateTime={new Date(entry.lastAt).toISOString()}
+						title={`first ${absoluteTime(entry.firstAt)}, last ${absoluteTime(entry.lastAt)}`}
+					>
 						{when(entry.lastAt)}
 					</time>
 				</span>
@@ -153,16 +198,42 @@ function Destination({ entry, context, when }: { entry: BlockedHost; context: Al
 }
 
 /** The destinations, the ones that can be allowed first, each with its count; folded after three. `when` says when one was last seen. */
-export function BlockedList({ hosts, overflow, context, when, label }: { hosts: readonly BlockedHost[]; overflow: number; context: AllowHostContext | null; when(at: number): string; label: string }) {
+export function BlockedList({
+	hosts,
+	overflow,
+	context,
+	when,
+	label,
+}: {
+	hosts: readonly BlockedHost[];
+	overflow: number;
+	context: AllowHostContext | null;
+	when(at: number): string;
+	label: string;
+}) {
 	const order = { repository: 0, machine: 1, deployment: 2, never: 3 } as const;
 	const sorted = [...hosts].sort((a, b) => order[a.allow] - order[b.allow] || b.count - a.count || b.lastAt - a.lastAt);
 	return (
 		<div className="blocked-list">
-			{sorted.length > 0 ? <FoldList items={sorted} className="blocked-hosts" label={label} render={(entry) => <Destination entry={entry} context={context} when={when} />} /> : null}
-			{overflow > 0 ? <p className="blocked-overflow">{plural(overflow, "more request")} to destinations past the first 50 kept are counted, not listed.</p> : null}
-			{context?.repositoryId != null && hosts.some((entry) => entry.allow === "repository") ? (
+			{sorted.length > 0 ? (
+				<FoldList
+					items={sorted}
+					className="blocked-hosts"
+					label={label}
+					render={entry => <Destination entry={entry} context={context} when={when} />}
+				/>
+			) : null}
+			{overflow > 0 ? (
+				<p className="blocked-overflow">
+					{plural(overflow, "more request")} to destinations past the first 50 kept are counted, not listed.
+				</p>
+			) : null}
+			{context?.repositoryId != null && hosts.some(entry => entry.allow === "repository") ? (
 				<p className="blocked-foot">
-					<a className="link" {...linkProps({ name: "repository", id: context.repositoryId, view: "settings", section: "network" })}>
+					<a
+						className="link"
+						{...linkProps({ name: "repository", id: context.repositoryId, view: "settings", section: "network" })}
+					>
 						Network list
 					</a>
 				</p>

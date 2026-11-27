@@ -11,7 +11,19 @@ import { createInterface } from "node:readline";
 import { performance } from "node:perf_hooks";
 import { ServerChannel, RunnerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
 import { controlProof, parseRunnerFrame, parseServerFrame, sessionProof } from "../server/src/runner/control.js";
-import { certify, machineStatement, platformWelcome, readPlatformKey, runnerHandshake, signRemoval, verifyRemoval, retentionRequest, signRetention, verifyRetention, type Trust } from "../server/src/runner/frame-auth.js";
+import {
+	certify,
+	machineStatement,
+	platformWelcome,
+	readPlatformKey,
+	runnerHandshake,
+	signRemoval,
+	verifyRemoval,
+	retentionRequest,
+	signRetention,
+	verifyRetention,
+	type Trust,
+} from "../server/src/runner/frame-auth.js";
 import { stub, until } from "./runner-stub-server.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 import type { Executor } from "../runner/src/docker-executor.js";
@@ -33,29 +45,61 @@ const signMachine = (message: string) => sign(null, Buffer.from(message), machin
 const endpoint = "https://fixture.invalid";
 function trust(): Trust {
 	const pin = { endpoint, platformRoot: identity.root, maxSerial: 0 };
-	return { pin, commit(maxSerial, endpoint) { Object.assign(pin, { maxSerial, endpoint }); } };
+	return {
+		pin,
+		commit(maxSerial, endpoint) {
+			Object.assign(pin, { maxSerial, endpoint });
+		},
+	};
 }
 const selected = process.argv[2];
 let failed = 0;
 async function check(n: number, title: string, fn: () => void | Promise<void>) {
 	if (selected && selected !== String(n)) return;
-	try { await fn(); console.log(`PASS ${n} ${title}`); }
-	catch (error) {
+	try {
+		await fn();
+		console.log(`PASS ${n} ${title}`);
+	} catch (error) {
 		failed++;
 		// Assertion operands may be handshake frames. Only print test-authored explanations.
-		console.error(`FAIL ${n} ${title}: ${error instanceof assert.AssertionError && error.generatedMessage ? "assertion failed" : error instanceof Error ? error.message.split("\n")[0] : "error"}`);
+		console.error(
+			`FAIL ${n} ${title}: ${error instanceof assert.AssertionError && error.generatedMessage ? "assertion failed" : error instanceof Error ? error.message.split("\n")[0] : "error"}`,
+		);
 	}
 }
 function audit() {
-	return readdirSync(directory).filter(name => name.startsWith("audit-")).map(name => readFileSync(join(directory, name), "utf8")).join("");
+	return readdirSync(directory)
+		.filter(name => name.startsWith("audit-"))
+		.map(name => readFileSync(join(directory, name), "utf8"))
+		.join("");
 }
 
 async function controlChecks() {
 	// A loopback IP SAN keeps the same trusted TLS address for both platform identities.
 	// The private CA is scoped to this test process. Host DNS and the system trust store stay untouched.
-	const ca = join(directory, "ca.pem"), key = join(directory, "tls.pem");
-	const openssl = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=frame-check",
-		"-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", ca], { stdio: "ignore" });
+	const ca = join(directory, "ca.pem"),
+		key = join(directory, "tls.pem");
+	const openssl = spawnSync(
+		"openssl",
+		[
+			"req",
+			"-x509",
+			"-newkey",
+			"rsa:2048",
+			"-nodes",
+			"-days",
+			"1",
+			"-subj",
+			"/CN=frame-check",
+			"-addext",
+			"subjectAltName=IP:127.0.0.1",
+			"-keyout",
+			key,
+			"-out",
+			ca,
+		],
+		{ stdio: "ignore" },
+	);
 	assert.equal(openssl.status, 0, "local TLS fixture generation failed");
 	const previous = getCACertificates("default");
 	setDefaultCACertificates([...previous, readFileSync(ca, "utf8")]);
@@ -65,17 +109,57 @@ async function controlChecks() {
 	assert.ok(approved.paired, "TLS pairing failed");
 	const paired = approved.paired;
 	const pin = state.pairingTrust(paired);
-	let welcomes = 0, effects = 0;
+	let welcomes = 0,
+		effects = 0;
 	const owner = {
-		identity: paired.current, serial: async (fn: () => Promise<void>) => fn(), checkAuthenticatedNetwork: async () => {}, platformGitHost: () => {}, platformStoreCaps: () => {}, storeLimits: () => ({ machine: 10e9, user: 2e9, free: 40e9 }),
-		welcome: async () => { welcomes++; }, maintainSpares: async () => {}, stopSpares: () => {}, create: () => { effects++; }, requestedRemoval: () => { effects++; },
-		prune: () => { effects++; }, report: () => ({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [] }),
+		identity: paired.current,
+		serial: async (fn: () => Promise<void>) => fn(),
+		checkAuthenticatedNetwork: async () => {},
+		platformGitHost: () => {},
+		platformStoreCaps: () => {},
+		storeLimits: () => ({ machine: 10e9, user: 2e9, free: 40e9 }),
+		welcome: async () => {
+			welcomes++;
+		},
+		maintainSpares: async () => {},
+		stopSpares: () => {},
+		create: () => {
+			effects++;
+		},
+		requestedRemoval: () => {
+			effects++;
+		},
+		prune: () => {
+			effects++;
+		},
+		report: () => ({
+			kind: "report",
+			docker: { ok: true },
+			commandSandbox: { ok: true },
+			freeDiskBytes: null,
+			sandboxes: [],
+		}),
 	} as unknown as Executor;
 	async function attempt(run: (statuses: string[]) => Promise<void>) {
-		const stop = new AbortController(), statuses: string[] = [];
-		const loop = control(owner, paired.key, paired.platform, stop.signal, s => statuses.push(s), undefined, "Auth fixture", pin);
-		try { await run(statuses); }
-		finally { stop.abort(); await loop; await until(() => !srv.online(), "fixture socket still open"); }
+		const stop = new AbortController(),
+			statuses: string[] = [];
+		const loop = control(
+			owner,
+			paired.key,
+			paired.platform,
+			stop.signal,
+			s => statuses.push(s),
+			undefined,
+			"Auth fixture",
+			pin,
+		);
+		try {
+			await run(statuses);
+		} finally {
+			stop.abort();
+			await loop;
+			await until(() => !srv.online(), "fixture socket still open");
+		}
 	}
 	try {
 		await check(1, "same TLS origin, untrusted online certificate", async () => {
@@ -83,7 +167,10 @@ async function controlChecks() {
 			srv.setIdentity(readPlatformKey(certify(other, 1, untilExpiry)));
 			const before = welcomes;
 			await attempt(async status => {
-				await until(() => status.some(s => s.includes("certificate") || s === "Online"), "no platform verification result");
+				await until(
+					() => status.some(s => s.includes("certificate") || s === "Online"),
+					"no platform verification result",
+				);
 				assert.equal(welcomes, before, "runner dispatched an untrusted welcome");
 				assert.equal(effects, 0);
 			});
@@ -101,11 +188,16 @@ async function controlChecks() {
 		});
 		await check(5, "persist serial 2 and reject serial 1", async () => {
 			srv.setIdentity(readPlatformKey(certify(root, 2, untilExpiry)));
-			await attempt(async status => { await until(() => status.includes("Online"), "serial 2 did not connect"); });
+			await attempt(async status => {
+				await until(() => status.includes("Online"), "serial 2 did not connect");
+			});
 			assert.equal(state.loadPair()?.pin?.maxSerial, 2, "serial 2 was not persisted");
 			srv.setIdentity(identity);
 			await attempt(async status => {
-				await until(() => status.some(s => s.includes("frame_auth_failed serial") || s === "Online"), "no serial decision");
+				await until(
+					() => status.some(s => s.includes("frame_auth_failed serial") || s === "Online"),
+					"no serial decision",
+				);
 				assert.ok(!status.includes("Online"), "lower serial reached Online");
 			});
 		});
@@ -117,15 +209,23 @@ async function controlChecks() {
 			Object.assign(pin, moving);
 			srv.setIdentity(readPlatformKey(certify(root, 3, untilExpiry)));
 			await attempt(async status => {
-				await until(() => status.some(s => s.includes("gateway address changed") || s === "Online"), "no gateway decision");
+				await until(
+					() => status.some(s => s.includes("gateway address changed") || s === "Online"),
+					"no gateway decision",
+				);
 				assert.ok(!status.includes("Online"), "unsigned endpoint change reached Online");
 				assert.equal(state.loadPair()?.pin?.endpoint, prior);
 			});
 			srv.setIdentity(readPlatformKey(certify(root, 3, untilExpiry, srv.advertised)));
-			await attempt(async status => { await until(() => status.includes("Online"), "root-authorized move did not connect"); });
+			await attempt(async status => {
+				await until(() => status.includes("Online"), "root-authorized move did not connect");
+			});
 			assert.equal(state.loadPair()?.pin?.endpoint, srv.advertised, "gateway move was not persisted");
 		});
-	} finally { await srv.close(); setDefaultCACertificates(previous); }
+	} finally {
+		await srv.close();
+		setDefaultCACertificates(previous);
+	}
 }
 
 // A deterministic duplex transport. Bytes wait until the test delivers them.
@@ -134,137 +234,272 @@ class Wire implements ChannelSocket {
 	closed = false;
 	receive: (data: unknown) => void = () => {};
 	gone = () => {};
-	send(text: string) { this.out.push(text); }
-	close() { if (!this.closed) { this.closed = true; this.gone(); } }
-	onMessage(fn: typeof this.receive) { this.receive = fn; }
-	onClose(fn: typeof this.gone) { this.gone = fn; }
+	send(text: string) {
+		this.out.push(text);
+	}
+	close() {
+		if (!this.closed) {
+			this.closed = true;
+			this.gone();
+		}
+	}
+	onMessage(fn: typeof this.receive) {
+		this.receive = fn;
+	}
+	onClose(fn: typeof this.gone) {
+		this.gone = fn;
+	}
 }
 const { AttachTickets } = await import("../server/src/machines/ticket.js");
 function channels(secure = true) {
-	const tickets = new AttachTickets(), pin = trust();
+	const tickets = new AttachTickets(),
+		pin = trust();
 	const input: string[] = [];
 	const replies: string[] = [];
 	let processId = "";
 	const acp = new FakeAcpAgent(line => runner.output(processId, 1, line), directory);
 	let ops = 0;
-	const server = new ServerChannel({ platform: secure ? { ...who, identity } : undefined,
-		accept: hello => tickets.admits(hello, { ...who, publicKey: spki }) });
+	const server = new ServerChannel({
+		platform: secure ? { ...who, identity } : undefined,
+		accept: hello => tickets.admits(hello, { ...who, publicKey: spki }),
+	});
 	const runner = new RunnerChannel({
-		onOperation(op) { ops++; if (op.name === "create") runner.respond(op, op.args.mirrorRepo ?? "plain"); if (op.name === "start") { processId = op.id; runner.respond(op, null); } },
-		onInput(_id, line) { input.push(line); acp.input(line); },
-		onCloseIn() {}, onCancel() {}, onDrain() {}, onRefused() {},
+		onOperation(op) {
+			ops++;
+			if (op.name === "create") runner.respond(op, op.args.mirrorRepo ?? "plain");
+			if (op.name === "start") {
+				processId = op.id;
+				runner.respond(op, null);
+			}
+		},
+		onInput(_id, line) {
+			input.push(line);
+			acp.input(line);
+		},
+		onCloseIn() {},
+		onCancel() {},
+		onDrain() {},
+		onRefused() {},
 	});
 	function connect() {
-		const s = new Wire(), r = new Wire(), ticket = tickets.issue();
+		const s = new Wire(),
+			r = new Wire(),
+			ticket = tickets.issue();
 		server.attach(s);
-		runner.attach(r, { machineId: who.machineId, runnerVersion: "0.2.0", ticket, signature: signMachine(sessionProof(who.uid, who.sessionId, who.machineId, ticket)) },
-			secure ? { ...who, machine: machine.privateKey, trust: pin, endpoint } : undefined);
-		s.receive(r.out.shift()!); r.receive(s.out.shift()!);
+		runner.attach(
+			r,
+			{
+				machineId: who.machineId,
+				runnerVersion: "0.2.0",
+				ticket,
+				signature: signMachine(sessionProof(who.uid, who.sessionId, who.machineId, ticket)),
+			},
+			secure ? { ...who, machine: machine.privateKey, trust: pin, endpoint } : undefined,
+		);
+		s.receive(r.out.shift()!);
+		r.receive(s.out.shift()!);
 		assert.ok(server.connected && runner.connected, "session handshake failed");
 		return { s, r };
 	}
-	return { server, runner, input, replies, connect, ops: () => ops, close() { server.close(); runner.close(); acp.stop(); } };
+	return {
+		server,
+		runner,
+		input,
+		replies,
+		connect,
+		ops: () => ops,
+		close() {
+			server.close();
+			runner.close();
+			acp.stop();
+		},
+	};
 }
 const inputLine = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n';
-async function sessionCheck(fn: (c: ReturnType<typeof channels>, wire: ReturnType<ReturnType<typeof channels>["connect"]>, id: string, first: string) => void) {
+async function sessionCheck(
+	fn: (
+		c: ReturnType<typeof channels>,
+		wire: ReturnType<ReturnType<typeof channels>["connect"]>,
+		id: string,
+		first: string,
+	) => void,
+) {
 	const c = channels();
 	try {
 		const wire = c.connect();
 		const proc = c.server.start({ id: "box", tag: "fixture", argv: ["fake-acp"] }, (_fd, line) => c.replies.push(line));
 		const first = wire.s.out.shift()!;
-		wire.r.receive(first); wire.s.receive(wire.r.out.shift()!);
+		wire.r.receive(first);
+		wire.s.receive(wire.r.out.shift()!);
 		fn(c, wire, proc.id, first);
-	} finally { c.close(); }
+	} finally {
+		c.close();
+	}
 }
 async function sessions() {
-	await check(3, "modified session stdin is rejected before ACP input", () => sessionCheck((c, { s, r }, id) => {
-		c.server.write(id, inputLine);
-		const text = s.out.shift()!;
-		r.receive(text.replace("initialize", "initializf"));
-		assert.deepEqual(c.input, [], "modified bytes reached the fake ACP process");
-		assert.ok(r.closed, "bad tag did not drop session");
-	}));
-	await check(4, "same-socket and cross-socket replays are rejected", () => sessionCheck((c, { s, r }, id, first) => {
-		c.server.write(id, inputLine);
-		const text = s.out.shift()!;
-		r.receive(text); r.receive(text);
-		assert.ok(r.closed, "duplicate counter did not close session");
-		s.close();
-		const next = c.connect();
-		// Replay the original counter-zero wire bytes against a socket expecting zero.
-		next.r.receive(first);
-		assert.ok(next.r.closed, "old MAC accepted by new socket");
-		assert.equal(c.input.length, 1);
-	}));
-	await check(7, "resume re-MACs outstanding stdin and delivers it exactly once", () => sessionCheck((c, { s, r }, id) => {
-		function rpc(method: string, params: object, requestId: number) {
-			const line = JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n";
-			c.server.write(id, line); r.receive(s.out.shift()!);
-			while (r.out.length) s.receive(r.out.shift()!);
-		}
-		rpc("session/new", {}, 1);
-		const sid = JSON.parse(c.replies[0]!).result.sessionId;
-		rpc("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: "ask" }] }, 2);
-		const question = c.replies.map(line => JSON.parse(line)).find(m => m.method === "session/request_permission");
-		assert.ok(question, "fake ACP turn did not reach its permission request");
-		const answer = JSON.stringify({ jsonrpc: "2.0", id: question.id, result: { outcome: { outcome: "selected", optionId: "allow-once" } } }) + "\n";
-		c.server.write(id, answer);
-		const original = JSON.parse(s.out.shift()!);
-		s.close(); r.close();
-		const next = c.connect();
-		const resent = next.s.out.shift()!;
-		assert.equal(JSON.parse(resent).seq, original.seq);
-		assert.ok(original.mac && original.mac !== JSON.parse(resent).mac, "backlog has no fresh socket MAC");
-		next.r.receive(resent);
-		while (next.r.out.length) next.s.receive(next.r.out.shift()!);
-		assert.equal(c.input.filter(line => line === answer).length, 1);
-		const results = c.replies.map(line => JSON.parse(line)).filter(m => m.id === 2);
-		assert.equal(results.length, 1);
-		assert.equal(results[0].result.stopReason, "end_turn");
-		assert.equal(c.ops(), 1, "start repeated on resume");
-	}));
+	await check(3, "modified session stdin is rejected before ACP input", () =>
+		sessionCheck((c, { s, r }, id) => {
+			c.server.write(id, inputLine);
+			const text = s.out.shift()!;
+			r.receive(text.replace("initialize", "initializf"));
+			assert.deepEqual(c.input, [], "modified bytes reached the fake ACP process");
+			assert.ok(r.closed, "bad tag did not drop session");
+		}),
+	);
+	await check(4, "same-socket and cross-socket replays are rejected", () =>
+		sessionCheck((c, { s, r }, id, first) => {
+			c.server.write(id, inputLine);
+			const text = s.out.shift()!;
+			r.receive(text);
+			r.receive(text);
+			assert.ok(r.closed, "duplicate counter did not close session");
+			s.close();
+			const next = c.connect();
+			// Replay the original counter-zero wire bytes against a socket expecting zero.
+			next.r.receive(first);
+			assert.ok(next.r.closed, "old MAC accepted by new socket");
+			assert.equal(c.input.length, 1);
+		}),
+	);
+	await check(7, "resume re-MACs outstanding stdin and delivers it exactly once", () =>
+		sessionCheck((c, { s, r }, id) => {
+			function rpc(method: string, params: object, requestId: number) {
+				const line = JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n";
+				c.server.write(id, line);
+				r.receive(s.out.shift()!);
+				while (r.out.length) s.receive(r.out.shift()!);
+			}
+			rpc("session/new", {}, 1);
+			const sid = JSON.parse(c.replies[0]!).result.sessionId;
+			rpc("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: "ask" }] }, 2);
+			const question = c.replies.map(line => JSON.parse(line)).find(m => m.method === "session/request_permission");
+			assert.ok(question, "fake ACP turn did not reach its permission request");
+			const answer =
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: question.id,
+					result: { outcome: { outcome: "selected", optionId: "allow-once" } },
+				}) + "\n";
+			c.server.write(id, answer);
+			const original = JSON.parse(s.out.shift()!);
+			s.close();
+			r.close();
+			const next = c.connect();
+			const resent = next.s.out.shift()!;
+			assert.equal(JSON.parse(resent).seq, original.seq);
+			assert.ok(original.mac && original.mac !== JSON.parse(resent).mac, "backlog has no fresh socket MAC");
+			next.r.receive(resent);
+			while (next.r.out.length) next.s.receive(next.r.out.shift()!);
+			assert.equal(c.input.filter(line => line === answer).length, 1);
+			const results = c.replies.map(line => JSON.parse(line)).filter(m => m.id === 2);
+			assert.equal(results.length, 1);
+			assert.equal(results[0].result.stopReason, "end_turn");
+			assert.equal(c.ops(), 1, "start repeated on resume");
+		}),
+	);
 }
 
 async function oldRunner() {
 	await check(8, "old hello returns the update sentence and publishes the Machines warning", async () => {
-		process.env.WLP_MACHINES = "1"; process.env.WLP_REQUIRE_SIGNED_RUNNER = "1"; process.env.WLP_PLATFORM_KEY = bundle;
+		process.env.WLP_MACHINES = "1";
+		process.env.WLP_REQUIRE_SIGNED_RUNNER = "1";
+		process.env.WLP_PLATFORM_KEY = bundle;
 		const { machine: actor, machineTables } = await import("../server/src/actors/machine.js");
 		// Other checks can have loaded config when machines were off. Set this test actor's mode explicitly.
 		const { config } = await import("../server/src/config.js");
 		config.machines = { runnerImage: null, publicUrl: endpoint, identity };
 		const { DatabaseSync } = await import("node:sqlite");
 		const db = new DatabaseSync(":memory:");
-		const raw = { execute: async (q: string, ...params: (string | number | null)[]) => db.prepare(q).all(...params) } as Parameters<typeof machineTables>[0];
+		const raw = {
+			execute: async (q: string, ...params: (string | number | null)[]) => db.prepare(q).all(...params),
+		} as Parameters<typeof machineTables>[0];
 		await machineTables(raw);
 		db.prepare("INSERT INTO machine (id,name,version,public_key,created) VALUES (1,'fixture','0.1.0',?,0)").run(spki);
-		const frames: Record<string, unknown>[] = [], warnings: { kind: string }[] = [];
-		const listeners: Record<string, (event: {data: string}) => Promise<void>> = {};
-		const ws = { OPEN: 1, readyState: 1, send: (s: string) => frames.push(JSON.parse(s)), close() { this.readyState = 3; },
-			addEventListener: (key: string, fn: typeof listeners[string]) => { listeners[key] = fn; } };
-		const c = { request: new Request("https://fixture.invalid/websocket/control"), key: [who.uid, who.machineId],
-			db: raw, vars: { work: Promise.resolve(), live: null, greeting: null },
-			client: () => ({ user: { get: () => ({ internalMachineChanged: (_: string, facts: { warnings: typeof warnings }) => warnings.push(...facts.warnings) }) } }) };
+		const frames: Record<string, unknown>[] = [],
+			warnings: { kind: string }[] = [];
+		const listeners: Record<string, (event: { data: string }) => Promise<void>> = {};
+		const ws = {
+			OPEN: 1,
+			readyState: 1,
+			send: (s: string) => frames.push(JSON.parse(s)),
+			close() {
+				this.readyState = 3;
+			},
+			addEventListener: (key: string, fn: (typeof listeners)[string]) => {
+				listeners[key] = fn;
+			},
+		};
+		const c = {
+			request: new Request("https://fixture.invalid/websocket/control"),
+			key: [who.uid, who.machineId],
+			db: raw,
+			vars: { work: Promise.resolve(), live: null, greeting: null },
+			client: () => ({
+				user: {
+					get: () => ({
+						internalMachineChanged: (_: string, facts: { warnings: typeof warnings }) =>
+							warnings.push(...facts.warnings),
+					}),
+				},
+			}),
+		};
 		const accept = actor.config.onWebSocket!;
 		try {
 			accept(c as unknown as Parameters<typeof accept>[0], ws as unknown as Parameters<typeof accept>[1]);
 			const challenge = frames.shift()!;
-			await listeners.message({ data: JSON.stringify({ kind: "hello", epoch: "fixture-epoch", runnerVersion: "0.1.0", time: Date.now(),
-				signature: signMachine(controlProof(who.uid, who.machineId, String(challenge.nonce))) }) });
-			assert.equal(frames[0]?.message, "This runner is too old for this platform. Update it with the command on the Machines page.", "old runner was not told to update");
-			assert.ok(warnings.some(w => w.kind === "outdated"), "missing Machines update warning");
-		} finally { await listeners.close({ data: "" }); db.close(); }
+			await listeners.message({
+				data: JSON.stringify({
+					kind: "hello",
+					epoch: "fixture-epoch",
+					runnerVersion: "0.1.0",
+					time: Date.now(),
+					signature: signMachine(controlProof(who.uid, who.machineId, String(challenge.nonce))),
+				}),
+			});
+			assert.equal(
+				frames[0]?.message,
+				"This runner is too old for this platform. Update it with the command on the Machines page.",
+				"old runner was not told to update",
+			);
+			assert.ok(
+				warnings.some(w => w.kind === "outdated"),
+				"missing Machines update warning",
+			);
+		} finally {
+			await listeners.close({ data: "" });
+			db.close();
+		}
 	});
 }
 async function startup() {
 	await check(9, "startup rejects a missing, malformed or expired WLP_PLATFORM_KEY", () => {
-		const probe = 'const {config}=await import("./src/config.ts"); const {startupProblem}=await import("./src/startup.ts"); const p=startupProblem(config); if(p) { console.error(p); process.exitCode=1; }';
+		const probe =
+			'const {config}=await import("./src/config.ts"); const {startupProblem}=await import("./src/startup.ts"); const p=startupProblem(config); if(p) { console.error(p); process.exitCode=1; }';
 		for (const key of ["", "malformed", certify(root, 1, Date.now() - 1)]) {
-			const env = { ...process.env, WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_REQUIRE_SIGNED_RUNNER: "1", WLP_PLATFORM_KEY: key };
-			const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], { env, encoding: "utf8" });
-			assert.equal(child.status, 1, "invalid platform key allowed startup"); assert.match(child.stderr, /WLP_PLATFORM_KEY/);
-			const boot = spawnSync(process.execPath, ["--import", "tsx", "src/index.ts"], { env, encoding: "utf8", timeout: 30_000 });
-			assert.equal(boot.status, 1); assert.match(boot.stderr, /WLP_PLATFORM_KEY/);
-			const off = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], { env: { ...env, WLP_REQUIRE_SIGNED_RUNNER: "0" }, encoding: "utf8" });
+			const env = {
+				...process.env,
+				WLP_SANDBOX: "fake",
+				WLP_MACHINES: "1",
+				WLP_REQUIRE_SIGNED_RUNNER: "1",
+				WLP_PLATFORM_KEY: key,
+			};
+			const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], {
+				env,
+				encoding: "utf8",
+			});
+			assert.equal(child.status, 1, "invalid platform key allowed startup");
+			assert.match(child.stderr, /WLP_PLATFORM_KEY/);
+			const boot = spawnSync(process.execPath, ["--import", "tsx", "src/index.ts"], {
+				env,
+				encoding: "utf8",
+				timeout: 30_000,
+			});
+			assert.equal(boot.status, 1);
+			assert.match(boot.stderr, /WLP_PLATFORM_KEY/);
+			const off = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", probe], {
+				env: { ...env, WLP_REQUIRE_SIGNED_RUNNER: "0" },
+				encoding: "utf8",
+			});
 			assert.equal(off.status, 0, "disabled deployment required a key");
 		}
 	});
@@ -296,20 +531,30 @@ async function loopbackHandshake(secure: boolean) {
 					const ctx = { uid: who.uid, machineId: who.machineId, challenge: frame.nonce };
 					const base = { kind: "hello", epoch: "fixture-epoch", runnerVersion: "0.2.0", time: Date.now() };
 					exchange = secure ? runnerHandshake(ctx, base, machine.privateKey) : undefined;
-					socket.write(JSON.stringify(exchange?.hello ?? { ...base, signature: signMachine(controlProof(ctx.uid, ctx.machineId, ctx.challenge)) }) + "\n");
+					socket.write(
+						JSON.stringify(
+							exchange?.hello ?? {
+								...base,
+								signature: signMachine(controlProof(ctx.uid, ctx.machineId, ctx.challenge)),
+							},
+						) + "\n",
+					);
 				} else {
 					exchange?.finish(frame, trust(), endpoint);
 					if (i) samples.push(performance.now() - start);
 				}
 			}
 		}
-	} finally { await new Promise<void>(done => server.close(() => done())); }
+	} finally {
+		await new Promise<void>(done => server.close(() => done()));
+	}
 	assert.equal(samples.length, 20);
-	samples.sort((a,b) => a-b);
+	samples.sort((a, b) => a - b);
 	return (samples[9]! + samples[10]!) / 2;
 }
 async function benchmark() {
-	const legacy = await loopbackHandshake(false), signed = await loopbackHandshake(true);
+	const legacy = await loopbackHandshake(false),
+		signed = await loopbackHandshake(true);
 	const ctx = { ...who, challenge: "fixture", ticket: "fixture" };
 	const hello = runnerHandshake(ctx, { kind: "hello" }, machine.privateKey);
 	const reply = platformWelcome(ctx, hello.hello, { kind: "welcome" }, identity);
@@ -321,25 +566,37 @@ async function benchmark() {
 	for (let i = 0; i < 1000; i++) JSON.parse(JSON.stringify(frame));
 	const base = process.cpuUsage(baseline);
 	const start = process.cpuUsage();
-	for (let i = 0; i < 1000; i++) { const text = reply.auth.seal(frame); bytes += Buffer.byteLength(text) - Buffer.byteLength(raw); rx.open(text, 131072); }
+	for (let i = 0; i < 1000; i++) {
+		const text = reply.auth.seal(frame);
+		bytes += Buffer.byteLength(text) - Buffer.byteLength(raw);
+		rx.open(text, 131072);
+	}
 	const cpu = process.cpuUsage(start);
-	console.log(`BENCH loopback TCP control handshake median/20: v1 ${legacy.toFixed(3)} ms, v2 ${signed.toFixed(3)} ms, added ${(signed-legacy).toFixed(3)} ms. 1000 frames: ${bytes} additional bytes, ${((cpu.user+cpu.system-base.user-base.system)/1000).toFixed(3)} additional CPU ms (seal + open).`);
+	console.log(
+		`BENCH loopback TCP control handshake median/20: v1 ${legacy.toFixed(3)} ms, v2 ${signed.toFixed(3)} ms, added ${(signed - legacy).toFixed(3)} ms. 1000 frames: ${bytes} additional bytes, ${((cpu.user + cpu.system - base.user - base.system) / 1000).toFixed(3)} additional CPU ms (seal + open).`,
+	);
 }
 try {
-	if (!selected || ["1","2","5","6"].includes(selected)) await controlChecks();
-	await sessions(); await oldRunner(); await startup();
-	await check(12, "retention answer requires the paired root, request nonce, generation list and current serial", () => {
-		const request = retentionRequest(who.uid, who.machineId, Date.now(), "fixture-nonce");
-		const answer = signRetention(request, ["f".repeat(64)], identity);
-		const pin = trust();
-		assert.throws(() => verifyRetention(request + "x", answer, pin), /signature/);
-		assert.throws(() => verifyRetention(request, { ...answer, generations: [] }, pin), /signature/);
-		const other = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, untilExpiry));
-		assert.throws(() => verifyRetention(request, signRetention(request, [], other), pin), /certificate/);
-		verifyRetention(request, answer, pin);
-		pin.pin.maxSerial++;
-		assert.throws(() => verifyRetention(request, answer, pin), /serial/);
-	});
+	if (!selected || ["1", "2", "5", "6"].includes(selected)) await controlChecks();
+	await sessions();
+	await oldRunner();
+	await startup();
+	await check(
+		12,
+		"retention answer requires the paired root, request nonce, generation list and current serial",
+		() => {
+			const request = retentionRequest(who.uid, who.machineId, Date.now(), "fixture-nonce");
+			const answer = signRetention(request, ["f".repeat(64)], identity);
+			const pin = trust();
+			assert.throws(() => verifyRetention(request + "x", answer, pin), /signature/);
+			assert.throws(() => verifyRetention(request, { ...answer, generations: [] }, pin), /signature/);
+			const other = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, untilExpiry));
+			assert.throws(() => verifyRetention(request, signRetention(request, [], other), pin), /certificate/);
+			verifyRetention(request, answer, pin);
+			pin.pin.maxSerial++;
+			assert.throws(() => verifyRetention(request, answer, pin), /serial/);
+		},
+	);
 	await check(14, "ordinary mirror creation reaches the runner under both session protocols", async () => {
 		for (const signed of [false, true]) {
 			const c = channels(signed);
@@ -349,7 +606,9 @@ try {
 				wire.r.receive(wire.s.out.shift()!);
 				wire.s.receive(wire.r.out.shift()!);
 				assert.equal(await reply, "123");
-			} finally { c.close(); }
+			} finally {
+				c.close();
+			}
 		}
 	});
 	await check(13, "protocol 1 refuses prepared creation and saving before dispatch", async () => {
@@ -358,7 +617,11 @@ try {
 			const wire = c.connect();
 			const key = { repo: "1", attempt: "a".repeat(32), inputs: "b".repeat(64), generation: "c".repeat(64) };
 			const ops = [
-				() => c.server.request("create", { profile: "docker-hardened", prepared: { ...key, writer: true, privateData: false } }),
+				() =>
+					c.server.request("create", {
+						profile: "docker-hardened",
+						prepared: { ...key, writer: true, privateData: false },
+					}),
 				() => c.server.request("saveSnapshot", { id: "box", source: { ...key, commit: "d".repeat(40), created: 1 } }),
 			];
 			for (const op of ops) {
@@ -368,28 +631,55 @@ try {
 				await rejected;
 			}
 			assert.equal(c.ops(), 0);
-		} finally { c.close(); }
+		} finally {
+			c.close();
+		}
 	});
 	await check(10, "offline removal binds machine, request nonce and pruning policy", () => {
-		const pin = trust(), nonce = randomBytes(32).toString("base64url");
+		const pin = trust(),
+			nonce = randomBytes(32).toString("base64url");
 		const answer = signRemoval(who.uid, who.machineId, nonce, false, identity);
 		assert.throws(() => verifyRemoval(who.uid, who.machineId, "different", answer, pin), /signature/);
-		assert.throws(() => verifyRemoval(who.uid, who.machineId, nonce, { ...answer, removeSandboxes: true }, pin), /signature/);
+		assert.throws(
+			() => verifyRemoval(who.uid, who.machineId, nonce, { ...answer, removeSandboxes: true }, pin),
+			/signature/,
+		);
 		assert.equal(pin.pin.maxSerial, 0);
 		verifyRemoval(who.uid, who.machineId, nonce, answer, pin);
 		assert.equal(pin.pin.maxSerial, 1);
 	});
 	await check(11, "directional keys, strict schemas, catalog/report/host and counter gaps", () => {
 		const ctx = { uid: who.uid, machineId: who.machineId, challenge: randomBytes(32).toString("base64url") };
-		const slots = { max: 3, unit: { cpus: 2, memoryBytes: 8 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: 4 * 2 ** 30 } };
-		const runner = runnerHandshake(ctx, { kind: "hello", epoch: "fixture-epoch", slots, runnerVersion: "0.2.0", time: Date.now() }, machine.privateKey);
+		const slots = {
+			max: 3,
+			unit: { cpus: 2, memoryBytes: 8 * 2 ** 30, pids: 1024 },
+			reserve: { cpus: 1, memoryBytes: 4 * 2 ** 30 },
+		};
+		const runner = runnerHandshake(
+			ctx,
+			{ kind: "hello", epoch: "fixture-epoch", slots, runnerVersion: "0.2.0", time: Date.now() },
+			machine.privateKey,
+		);
 		assert.deepEqual(parseRunnerFrame(JSON.stringify(runner.hello)), runner.hello);
 		const server = platformWelcome(ctx, runner.hello, { kind: "welcome", idleSuspendMs: 60_000 }, identity);
 		assert.throws(() => runner.finish({ ...server.welcome, ...{ idleSuspendMs: 0 } }, trust(), endpoint), /signature/);
 		const rx = runner.finish(server.welcome, trust(), endpoint);
 		const options = { models: [{ id: "one", name: "One", efforts: [] }], modes: [], defaultModel: "one", checkedAt: 1 };
-		for (const frame of [{ kind: "catalog", id: "opencode", options }, { kind: "host", host: null },
-			{ kind: "report", slots, harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration: "a".repeat(32) }], docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
+		for (const frame of [
+			{ kind: "catalog", id: "opencode", options },
+			{ kind: "host", host: null },
+			{
+				kind: "report",
+				slots,
+				harnesses: [
+					{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration: "a".repeat(32) },
+				],
+				docker: { ok: true },
+				commandSandbox: { ok: true },
+				sandboxes: [],
+				freeDiskBytes: 0,
+			},
+		]) {
 			const text = rx.seal(frame);
 			const fields = JSON.parse(text);
 			assert.throws(() => server.auth.open(JSON.stringify({ ...fields, unknown: "fixture" }), 131072), /mac/);
@@ -402,5 +692,7 @@ try {
 		assert.equal(parseServerFrame(rx.open(text, 131072), true)?.kind, "heartbeat");
 	});
 	if (!selected || selected === "bench") await benchmark();
-} finally { rmSync(directory, { recursive: true, force: true }); }
+} finally {
+	rmSync(directory, { recursive: true, force: true });
+}
 process.exit(failed ? 1 : 0);

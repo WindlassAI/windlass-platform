@@ -10,7 +10,11 @@ import { RunFacts } from "./Item";
 
 const at = Date.UTC(2026, 10, 22, 12);
 const run = (review?: number): NonNullable<ItemView["run"]> => ({
-	n: 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 3, conflict: 0, review: review ?? 0 },
+	n: 1,
+	startedAt: at,
+	endedAt: null,
+	stopReason: null,
+	rounds: { plan: 0, gate: 0, ci: 3, conflict: 0, review: review ?? 0 },
 	step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "started", checks: 0, interruptions: 0 },
 });
 

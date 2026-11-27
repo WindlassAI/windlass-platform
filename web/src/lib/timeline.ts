@@ -22,7 +22,19 @@
  * Nothing here touches the DOM, the clock or the network.
  */
 import { ACP_MESSAGE, contextOf, foldAcp } from "./acp";
-import { SETUP_OUTPUT_CHARS, type AcpContext, type BlockedHost, type NetworkBlockedItem, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
+import {
+	SETUP_OUTPUT_CHARS,
+	type AcpContext,
+	type BlockedHost,
+	type NetworkBlockedItem,
+	type LiveDelta,
+	type SessionSnapshot,
+	type TimelineItem,
+	type TurnOutcome,
+	type TurnUsage,
+	type Verified,
+	type WindlassEvent,
+} from "@contract";
 
 // ---------------------------------------------------------------------------------------------
 // The view
@@ -265,7 +277,19 @@ export interface NetworkBlock extends BlockBase {
 	overflow: number;
 }
 
-export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock | PlanBlock | NetworkBlock;
+export type Block =
+	| UserBlock
+	| PlatformBlock
+	| ReasoningBlock
+	| TextBlock
+	| ToolBlock
+	| ChecksBlock
+	| NoticeBlock
+	| ErrorBlock
+	| NoteBlock
+	| SetupBlock
+	| PlanBlock
+	| NetworkBlock;
 
 export interface TurnEnd {
 	at: number;
@@ -335,7 +359,17 @@ export interface SessionView {
 export const ZERO_USAGE: TurnUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 
 export function emptyView(): SessionView {
-	return { lastSeq: 0, gap: false, turns: [], calls: [], windlassSessionId: null, cwd: null, tainted: false, context: null, nextId: 1 };
+	return {
+		lastSeq: 0,
+		gap: false,
+		turns: [],
+		calls: [],
+		windlassSessionId: null,
+		cwd: null,
+		tainted: false,
+		context: null,
+		nextId: 1,
+	};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -343,11 +377,14 @@ export function emptyView(): SessionView {
 // ---------------------------------------------------------------------------------------------
 
 /** The view of a snapshot: the stored timeline, then the streaming state of the turn in progress. */
-export function fromSnapshot(snapshot: Pick<SessionSnapshot, "timeline" | "pending" | "windlassSessionId">): SessionView {
+export function fromSnapshot(
+	snapshot: Pick<SessionSnapshot, "timeline" | "pending" | "windlassSessionId">,
+): SessionView {
 	let view = emptyView();
 	for (const item of snapshot.timeline) view = applyItem(view, item);
 	for (const delta of snapshot.pending) view = applyDelta(view, delta);
-	if (snapshot.windlassSessionId !== null && view.windlassSessionId === null) view = { ...view, windlassSessionId: snapshot.windlassSessionId };
+	if (snapshot.windlassSessionId !== null && view.windlassSessionId === null)
+		view = { ...view, windlassSessionId: snapshot.windlassSessionId };
 	// A snapshot is whole by definition, whatever numbering its first item has.
 	return view.gap ? { ...view, gap: false } : view;
 }
@@ -361,13 +398,46 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 	switch (item.kind) {
 		case "user":
 			answerSecret(draft, item.turn, item.text, item.steer === true);
-			draft.push(item.turn, { kind: "user", at: item.at, text: item.text, model: item.model, effort: item.effort, steer: item.steer === true, ...(item.held === true && { held: true }) });
+			draft.push(item.turn, {
+				kind: "user",
+				at: item.at,
+				text: item.text,
+				model: item.model,
+				effort: item.effort,
+				steer: item.steer === true,
+				...(item.held === true && { held: true }),
+			});
 			break;
 		case "platform": {
 			// The platform answering a call's question itself is told once, with the call's answer. Its
 			// line carries a code and names the call, so nothing rests on its wording.
-			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call) draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
-			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}), ...(item.code === "turn_paused" ? { resume: "paused" as const } : item.code === "turn_resumed" ? { resume: "resumed" as const } : {}), ...(item.secretRequest ? { secret: { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why, ...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }) } } : {}) });
+			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call)
+				draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
+			else
+				draft.push(item.turn, {
+					kind: "platform",
+					at: item.at,
+					level: item.level,
+					text: item.text,
+					...(item.code === "host_blocked" && item.host
+						? { blocked: { host: item.host, repository: item.repository === true } }
+						: {}),
+					...(item.code === "turn_paused"
+						? { resume: "paused" as const }
+						: item.code === "turn_resumed"
+							? { resume: "resumed" as const }
+							: {}),
+					...(item.secretRequest
+						? {
+								secret: {
+									id: item.secretRequest.id,
+									name: item.secretRequest.name,
+									why: item.secretRequest.why,
+									...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }),
+								},
+							}
+						: {}),
+				});
 			break;
 		}
 		case "windlass":
@@ -379,19 +449,52 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 		case "setup": {
 			const running = draft.find(item.turn, isSetup(item.id));
 			if (item.state === "started") {
-				if (!running) draft.push(item.turn, { kind: "setup", at: item.at, setupId: item.id, command: item.command, state: "running", exitCode: null, durationMs: null, limitMs: item.limitMs, output: "", truncated: false });
+				if (!running)
+					draft.push(item.turn, {
+						kind: "setup",
+						at: item.at,
+						setupId: item.id,
+						command: item.command,
+						state: "running",
+						exitCode: null,
+						durationMs: null,
+						limitMs: item.limitMs,
+						output: "",
+						truncated: false,
+					});
 				break;
 			}
-			const ended = { state: item.state, exitCode: item.exitCode, durationMs: item.durationMs, output: item.output, truncated: item.truncated };
+			const ended = {
+				state: item.state,
+				exitCode: item.exitCode,
+				durationMs: item.durationMs,
+				output: item.output,
+				truncated: item.truncated,
+			};
 			if (running) draft.replace(item.turn, running, ended);
-			else draft.push(item.turn, { kind: "setup", at: item.at, setupId: item.id, command: item.command, limitMs: item.limitMs, ...ended });
+			else
+				draft.push(item.turn, {
+					kind: "setup",
+					at: item.at,
+					setupId: item.id,
+					command: item.command,
+					limitMs: item.limitMs,
+					...ended,
+				});
 			break;
 		}
 		case "turn.ended":
 			endTurn(draft, item);
 			break;
 		case "network.blocked":
-			draft.push(item.turn, { kind: "network", at: item.at, seq: item.seq, revision: item.revision, hosts: item.hosts, overflow: item.overflow });
+			draft.push(item.turn, {
+				kind: "network",
+				at: item.at,
+				seq: item.seq,
+				revision: item.revision,
+				hosts: item.hosts,
+				overflow: item.overflow,
+			});
 			break;
 	}
 	return draft.view;
@@ -400,7 +503,9 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 /** A newer revision of a turn's `network.blocked` row, in place of the one with its `seq`. An older or equal one, or one for no row shown, changes nothing. */
 function replaceNetwork(view: SessionView, item: NetworkBlockedItem): SessionView {
 	const draft = new Draft(view);
-	const shown = view.turns.find((turn) => turn.turn === item.turn)?.blocks.find((block): block is NetworkBlock => block.kind === "network" && block.seq === item.seq);
+	const shown = view.turns
+		.find(turn => turn.turn === item.turn)
+		?.blocks.find((block): block is NetworkBlock => block.kind === "network" && block.seq === item.seq);
 	if (!shown || shown.revision >= item.revision) return view;
 	draft.replace(item.turn, shown, { revision: item.revision, hosts: item.hosts, overflow: item.overflow });
 	return draft.view;
@@ -435,7 +540,9 @@ export function addUsage(a: TurnUsage, b: TurnUsage): TurnUsage {
 export function turnUsage(turn: TurnView): TurnUsage {
 	if (turn.end?.usage) return turn.end.usage;
 	let sum = turn.usage;
-	for (const block of turn.blocks) if (block.kind === "tool" && block.subagent) sum = addUsage(sum, block.subagent.usage ?? sessionUsage(block.subagent.work));
+	for (const block of turn.blocks)
+		if (block.kind === "tool" && block.subagent)
+			sum = addUsage(sum, block.subagent.usage ?? sessionUsage(block.subagent.work));
 	return sum;
 }
 
@@ -475,9 +582,10 @@ export function blockedRequests(network: { hosts: readonly BlockedHost[]; overfl
  */
 export function shownBlocks(blocks: Block[]): Block[] {
 	const listed = new Set<string>();
-	for (const block of blocks) if (block.kind === "network") for (const host of block.hosts) if (host.host) listed.add(host.host);
+	for (const block of blocks)
+		if (block.kind === "network") for (const host of block.hosts) if (host.host) listed.add(host.host);
 	if (listed.size === 0) return blocks;
-	return blocks.filter((block) => !(block.kind === "platform" && block.blocked && listed.has(block.blocked.host)));
+	return blocks.filter(block => !(block.kind === "platform" && block.blocked && listed.has(block.blocked.host)));
 }
 
 export function toolBlocks(turn: TurnView): ToolBlock[] {
@@ -490,7 +598,10 @@ export function toolBlocks(turn: TurnView): ToolBlock[] {
  */
 export function asksAbout(block: ToolBlock, question: { messageId: string; callId: string }): boolean {
 	if (callKey(question) !== callKey(block)) return false;
-	return block.state === "asking" || (block.messageId === ACP_MESSAGE && (block.state === "input" || block.state === "queued"));
+	return (
+		block.state === "asking" ||
+		(block.messageId === ACP_MESSAGE && (block.state === "input" || block.state === "queued"))
+	);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -514,9 +625,19 @@ class Draft {
 	}
 
 	turn(number: number): TurnView {
-		const found = this.view.turns.find((turn) => turn.turn === number);
+		const found = this.view.turns.find(turn => turn.turn === number);
 		if (found) return found;
-		const created: TurnView = { turn: number, blocks: [], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+		const created: TurnView = {
+			turn: number,
+			blocks: [],
+			steps: 0,
+			stepOpen: false,
+			interruptRequested: false,
+			changedFiles: null,
+			usage: ZERO_USAGE,
+			end: null,
+			platformAnswer: null,
+		};
 		const turns = [...this.view.turns, created].sort((a, b) => a.turn - b.turn);
 		this.view = { ...this.view, turns };
 		return created;
@@ -524,7 +645,7 @@ class Draft {
 
 	patchTurn(number: number, patch: Partial<TurnView>): void {
 		const current = this.turn(number);
-		this.view = { ...this.view, turns: this.view.turns.map((turn) => (turn === current ? { ...turn, ...patch } : turn)) };
+		this.view = { ...this.view, turns: this.view.turns.map(turn => (turn === current ? { ...turn, ...patch } : turn)) };
 	}
 
 	push(number: number, block: NewBlock): void {
@@ -541,18 +662,20 @@ class Draft {
 
 	replace<B extends Block>(number: number, block: B, patch: Partial<B>): void {
 		const turn = this.turn(number);
-		this.patchTurn(number, { blocks: turn.blocks.map((candidate) => (candidate === block ? ({ ...block, ...patch } as Block) : candidate)) });
+		this.patchTurn(number, {
+			blocks: turn.blocks.map(candidate => (candidate === block ? ({ ...block, ...patch } as Block) : candidate)),
+		});
 	}
 
 	remove(number: number, block: Block): void {
 		const turn = this.turn(number);
-		this.patchTurn(number, { blocks: turn.blocks.filter((candidate) => candidate !== block) });
+		this.patchTurn(number, { blocks: turn.blocks.filter(candidate => candidate !== block) });
 	}
 
 	mapBlocks(number: number, map: (block: Block) => Block): void {
 		const turn = this.turn(number);
 		let changed = false;
-		const blocks = turn.blocks.map((block) => {
+		const blocks = turn.blocks.map(block => {
 			const next = map(block);
 			if (next !== block) changed = true;
 			return next;
@@ -569,21 +692,49 @@ class Draft {
 function answerSecret(draft: Draft, turn: number, text: string, steer: boolean): void {
 	for (const shown of draft.view.turns.toReversed()) {
 		if (shown.turn > turn) continue;
-		const block = shown.blocks.findLast((one): one is PlatformBlock & { secret: NonNullable<PlatformBlock["secret"]> } => one.kind === "platform" && one.secret !== undefined);
+		const block = shown.blocks.findLast(
+			(one): one is PlatformBlock & { secret: NonNullable<PlatformBlock["secret"]> } =>
+				one.kind === "platform" && one.secret !== undefined,
+		);
 		if (!block) continue;
 		if (block.secret.answer) return;
-		const answer = text === `${block.secret.name} is now set in your environment.` ? "saved" : text === `Continue without ${block.secret.name}.` ? "without" : steer ? null : "none";
+		const answer =
+			text === `${block.secret.name} is now set in your environment.`
+				? "saved"
+				: text === `Continue without ${block.secret.name}.`
+					? "without"
+					: steer
+						? null
+						: "none";
 		if (answer) draft.replace(shown.turn, block, { secret: { ...block.secret, answer } });
 		return;
 	}
 }
 
-const isStreamingText = (messageId: string) => (block: Block): block is TextBlock => block.kind === "text" && block.messageId === messageId && block.streaming;
-const isStreamingReasoning = (messageId: string) => (block: Block): block is ReasoningBlock => block.kind === "reasoning" && block.messageId === messageId && block.streaming;
-const isCall = (messageId: string, callId: string) => (block: Block): block is ToolBlock => block.kind === "tool" && block.messageId === messageId && block.callId === callId;
-const isChecksRun = (run: number) => (block: Block): block is ChecksBlock => block.kind === "checks" && block.run === run;
-const isSetup = (id: string) => (block: Block): block is SetupBlock => block.kind === "setup" && block.setupId === id;
-const isSpawn = (spawnId: string) => (block: Block): block is ToolBlock => block.kind === "tool" && block.subagent?.spawnId === spawnId;
+const isStreamingText =
+	(messageId: string) =>
+	(block: Block): block is TextBlock =>
+		block.kind === "text" && block.messageId === messageId && block.streaming;
+const isStreamingReasoning =
+	(messageId: string) =>
+	(block: Block): block is ReasoningBlock =>
+		block.kind === "reasoning" && block.messageId === messageId && block.streaming;
+const isCall =
+	(messageId: string, callId: string) =>
+	(block: Block): block is ToolBlock =>
+		block.kind === "tool" && block.messageId === messageId && block.callId === callId;
+const isChecksRun =
+	(run: number) =>
+	(block: Block): block is ChecksBlock =>
+		block.kind === "checks" && block.run === run;
+const isSetup =
+	(id: string) =>
+	(block: Block): block is SetupBlock =>
+		block.kind === "setup" && block.setupId === id;
+const isSpawn =
+	(spawnId: string) =>
+	(block: Block): block is ToolBlock =>
+		block.kind === "tool" && block.subagent?.spawnId === spawnId;
 
 function newTool(messageId: string, callId: string, name: string, at: number | null): NewBlock<ToolBlock> {
 	return {
@@ -625,7 +776,8 @@ function fields(event: WindlassEvent): Record<string, unknown> {
 
 function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number | null): void {
 	const data = fields(event);
-	if (typeof event.sessionId === "string" && draft.view.windlassSessionId === null) draft.set({ windlassSessionId: event.sessionId });
+	if (typeof event.sessionId === "string" && draft.view.windlassSessionId === null)
+		draft.set({ windlassSessionId: event.sessionId });
 
 	switch (event.type) {
 		// ---- streaming -------------------------------------------------------------------------
@@ -649,7 +801,8 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			const call = draft.find(turn, isCall(messageId, callId));
 			// Deltas after the durable call (a replayed `pending`) have nothing left to add.
 			if (call && call.state !== "input") return;
-			if (call) draft.replace(turn, call, { inputText: call.inputText + str(data.input), name: str(data.name) || call.name });
+			if (call)
+				draft.replace(turn, call, { inputText: call.inputText + str(data.input), name: str(data.name) || call.name });
 			else draft.push(turn, { ...newTool(messageId, callId, str(data.name), at), inputText: str(data.input) });
 			return;
 		}
@@ -665,7 +818,10 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			if (!run || run.state !== "running") return;
 			const output = run.output + str(data.text);
 			const over = output.length > SETUP_OUTPUT_CHARS;
-			draft.replace(turn, run, { output: over ? output.slice(-SETUP_OUTPUT_CHARS) : output, truncated: run.truncated || over });
+			draft.replace(turn, run, {
+				output: over ? output.slice(-SETUP_OUTPUT_CHARS) : output,
+				truncated: run.truncated || over,
+			});
 			return;
 		}
 
@@ -691,7 +847,8 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			const callId = str(data.callId);
 			const call = draft.find(turn, isCall(messageId, callId));
 			const patch = { name: str(data.name), inputText: str(data.input), state: "queued" as const };
-			if (call) draft.replace(turn, call, call.state === "input" ? patch : { name: patch.name, inputText: patch.inputText });
+			if (call)
+				draft.replace(turn, call, call.state === "input" ? patch : { name: patch.name, inputText: patch.inputText });
 			else draft.push(turn, { ...newTool(messageId, callId, patch.name, at), ...patch });
 			return;
 		}
@@ -727,7 +884,7 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 				note,
 				by: byPlatform ? "platform" : "user",
 				platformText: byPlatform ? pending.text : null,
-				remembers: call.question?.choices.find((candidate) => candidate.id === choice)?.remembers ?? null,
+				remembers: call.question?.choices.find(candidate => candidate.id === choice)?.remembers ?? null,
 			};
 			draft.replace(turn, call, approve ? { state: "queued", answer } : { answer });
 			return;
@@ -765,7 +922,10 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 				progress: null,
 				display,
 				durationMs: refused ? null : (reported ?? measured),
-				truncated: truncation === null ? null : { originalBytes: num(truncation.originalBytes), originalLines: num(truncation.originalLines) },
+				truncated:
+					truncation === null
+						? null
+						: { originalBytes: num(truncation.originalBytes), originalLines: num(truncation.originalLines) },
 			});
 			return;
 		}
@@ -776,7 +936,20 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			const work = isRecord(data.work) ? data.work : null;
 			if (work?.kind !== "subagent") return;
 			const call = draft.find(turn, isCall(str(data.messageId), str(data.callId)));
-			if (call) draft.replace(turn, call, { subagent: { spawnId: str(data.spawnId), sessionId: str(work.sessionId), background: data.background === true, state: "running", detail: null, startedAt: at, durationMs: null, usage: null, work: emptyView() } });
+			if (call)
+				draft.replace(turn, call, {
+					subagent: {
+						spawnId: str(data.spawnId),
+						sessionId: str(work.sessionId),
+						background: data.background === true,
+						state: "running",
+						detail: null,
+						startedAt: at,
+						durationMs: null,
+						usage: null,
+						work: emptyView(),
+					},
+				});
 			return;
 		}
 		case "child.event": {
@@ -793,7 +966,15 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			if (!call?.subagent) return;
 			const run = call.subagent;
 			const state = oneOf(data.outcome, ["completed", "failed", "stopped", "lost"] as const) ?? "failed";
-			draft.replace(turn, call, { subagent: { ...run, state, detail: str(data.detail) || null, usage: usageOf(data.usage), durationMs: at !== null && run.startedAt !== null ? Math.max(0, at - run.startedAt) : null } });
+			draft.replace(turn, call, {
+				subagent: {
+					...run,
+					state,
+					detail: str(data.detail) || null,
+					usage: usageOf(data.usage),
+					durationMs: at !== null && run.startedAt !== null ? Math.max(0, at - run.startedAt) : null,
+				},
+			});
 			return;
 		}
 
@@ -820,7 +1001,13 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			closeStreams(draft, turn, str(data.messageId));
 			draft.patchTurn(turn, { stepOpen: false });
 			recordCall(draft, turn, str(data.messageId), data.usage, true);
-			draft.push(turn, { kind: "error", at, title: "The provider refused to answer", message: str(data.message) || "It gave no reason.", detail: null });
+			draft.push(turn, {
+				kind: "error",
+				at,
+				title: "The provider refused to answer",
+				message: str(data.message) || "It gave no reason.",
+				detail: null,
+			});
 			return;
 		case "retry.scheduled": {
 			const error = isRecord(data.error) ? data.error : {};
@@ -843,15 +1030,18 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			return;
 		case "execution.succeeded":
 		case "turn.ended": {
-
 			return;
 		}
 		case "execution.failed": {
 			const handedIn = aboutHandedIn(str(data.message));
 			const message = handedIn ? HANDED_IN_ERROR.message : str(data.message);
-			const said = draft.turn(turn).blocks.some((block) => block.kind === "error" && block.message === message);
+			const said = draft.turn(turn).blocks.some(block => block.kind === "error" && block.message === message);
 			if (said) return;
-			const title = handedIn ? HANDED_IN_ERROR.title : data.cause === "approval" ? "Stopped: a call needed approval and nobody was there to give it" : "Windlass gave up on this turn";
+			const title = handedIn
+				? HANDED_IN_ERROR.title
+				: data.cause === "approval"
+					? "Stopped: a call needed approval and nobody was there to give it"
+					: "Windlass gave up on this turn";
 			draft.push(turn, { kind: "error", at, title, message, detail: null });
 			return;
 		}
@@ -865,13 +1055,27 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 				if (checks) draft.replace(turn, checks, { report: text });
 				return;
 			}
-			draft.push(turn, { kind: "note", at, tone: "dim", text: firstLine(text) || `Windlass added a note (${origin}).` });
+			draft.push(turn, {
+				kind: "note",
+				at,
+				tone: "dim",
+				text: firstLine(text) || `Windlass added a note (${origin}).`,
+			});
 			return;
 		}
 
 		// ---- verification ----------------------------------------------------------------------
 		case "checks.started":
-			draft.push(turn, { kind: "checks", at, run: num(data.run), names: strings(data.checks), state: "running", results: [], report: null, message: null });
+			draft.push(turn, {
+				kind: "checks",
+				at,
+				run: num(data.run),
+				names: strings(data.checks),
+				state: "running",
+				results: [],
+				report: null,
+				message: null,
+			});
 			return;
 		case "checks.finished": {
 			const evidence = isRecord(data.evidence) ? data.evidence : {};
@@ -884,30 +1088,65 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 					durationMs: num(check.durationMs),
 				}),
 			);
-			const state = results.every((result) => result.status === "passed") ? "passed" : "failed";
+			const state = results.every(result => result.status === "passed") ? "passed" : "failed";
 			const checks = draft.find(turn, isChecksRun(num(data.run)));
 			if (checks) draft.replace(turn, checks, { state, results });
-			else draft.push(turn, { kind: "checks", at, run: num(data.run), names: results.map((result) => result.name), state, results, report: null, message: null });
+			else
+				draft.push(turn, {
+					kind: "checks",
+					at,
+					run: num(data.run),
+					names: results.map(result => result.name),
+					state,
+					results,
+					report: null,
+					message: null,
+				});
 			return;
 		}
 		case "checks.failed": {
 			const error = isRecord(data.error) ? data.error : {};
-			const message = error.kind === "interrupted" ? "The checks were stopped before they finished." : describeStepError(error).message;
+			const message =
+				error.kind === "interrupted"
+					? "The checks were stopped before they finished."
+					: describeStepError(error).message;
 			const checks = draft.find(turn, isChecksRun(num(data.run)));
 			if (checks) draft.replace(turn, checks, { state: "error", message });
-			else draft.push(turn, { kind: "checks", at, run: num(data.run), names: [], state: "error", results: [], report: null, message });
+			else
+				draft.push(turn, {
+					kind: "checks",
+					at,
+					run: num(data.run),
+					names: [],
+					state: "error",
+					results: [],
+					report: null,
+					message,
+				});
 			return;
 		}
 
 		// ---- stored ephemeral events -----------------------------------------------------------
 		case "notice":
-			draft.push(turn, { kind: "notice", at, noticeKind: str(data.kind), title: NOTICE_TITLES[str(data.kind)] ?? "Notice", text: str(data.message) });
+			draft.push(turn, {
+				kind: "notice",
+				at,
+				noticeKind: str(data.kind),
+				title: NOTICE_TITLES[str(data.kind)] ?? "Notice",
+				text: str(data.message),
+			});
 			return;
 		case "taint.noticed":
 			// Windlass tells the user once; a repeat (a fork, a replay) adds nothing.
 			if (draft.view.tainted) return;
 			draft.set({ tainted: true });
-			draft.push(turn, { kind: "notice", at, noticeKind: "taint", title: "Untrusted content is in this conversation", text: str(data.text) });
+			draft.push(turn, {
+				kind: "notice",
+				at,
+				noticeKind: "taint",
+				title: "Untrusted content is in this conversation",
+				text: str(data.text),
+			});
 			return;
 		case "taint.cleared":
 			draft.set({ tainted: false });
@@ -930,13 +1169,22 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 }
 
 function closeStreams(draft: Draft, turn: number, messageId: string): void {
-	draft.mapBlocks(turn, (block) => ((block.kind === "text" || block.kind === "reasoning") && block.messageId === messageId && block.streaming ? { ...block, streaming: false } : block));
+	draft.mapBlocks(turn, block =>
+		(block.kind === "text" || block.kind === "reasoning") && block.messageId === messageId && block.streaming
+			? { ...block, streaming: false }
+			: block,
+	);
 }
 
 /** An event's token counts; null when it carries none. */
 function usageOf(usage: unknown): TurnUsage | null {
 	if (!isRecord(usage)) return null;
-	return { inputTokens: num(usage.inputTokens), cachedInputTokens: num(usage.cachedInputTokens), outputTokens: num(usage.outputTokens), reasoningTokens: num(usage.reasoningTokens) };
+	return {
+		inputTokens: num(usage.inputTokens),
+		cachedInputTokens: num(usage.cachedInputTokens),
+		outputTokens: num(usage.outputTokens),
+		reasoningTokens: num(usage.reasoningTokens),
+	};
 }
 
 function recordCall(draft: Draft, turn: number, messageId: string, usage: unknown, failed: boolean): void {
@@ -953,13 +1201,29 @@ function closed(block: Block): Block {
 	if (block.kind === "tool") {
 		const run = block.subagent;
 		// A subagent still running is cut off with the turn, and so is whatever it had open.
-		const subagent = run?.state === "running" ? { ...run, state: "cut_off" as const, work: { ...run.work, turns: run.work.turns.map((turn) => ({ ...turn, blocks: turn.blocks.map(closed) })) } } : run;
+		const subagent =
+			run?.state === "running"
+				? {
+						...run,
+						state: "cut_off" as const,
+						work: { ...run.work, turns: run.work.turns.map(turn => ({ ...turn, blocks: turn.blocks.map(closed) })) },
+					}
+				: run;
 		if (block.state === "input" || block.state === "queued" || block.state === "asking" || block.state === "running") {
-			return { ...block, state: "failed", interrupted: true, stopRequested: false, progress: null, output: block.output ?? block.progress, subagent };
+			return {
+				...block,
+				state: "failed",
+				interrupted: true,
+				stopRequested: false,
+				progress: null,
+				output: block.output ?? block.progress,
+				subagent,
+			};
 		}
 		return subagent === run ? block : { ...block, subagent };
 	}
-	if (block.kind === "checks" && block.state === "running") return { ...block, state: "error", message: "The checks did not finish." };
+	if (block.kind === "checks" && block.state === "running")
+		return { ...block, state: "error", message: "The checks did not finish." };
 	if (block.kind === "setup" && block.state === "running") return { ...block, state: "cut_off" };
 	return block;
 }
@@ -984,7 +1248,8 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 	const context = item.context === undefined ? null : contextOf(item.context);
 	if (context) draft.set({ context });
 	// Another agent's session id comes with the turn's end: the panel shows it without a reload.
-	if (typeof item.sessionId === "string" && item.sessionId !== "" && draft.view.windlassSessionId !== item.sessionId) draft.set({ windlassSessionId: item.sessionId });
+	if (typeof item.sessionId === "string" && item.sessionId !== "" && draft.view.windlassSessionId !== item.sessionId)
+		draft.set({ windlassSessionId: item.sessionId });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1023,20 +1288,39 @@ const PROVIDER_ERROR_TITLES: Record<string, string> = {
 const aboutHandedIn = (message: string) => message.includes("WINDLASS_ACCESS_TOKEN_FILE");
 const HANDED_IN_ERROR = {
 	title: "The access token of this turn could not be used",
-	message: "Windlass runs on a short-lived access token of your ChatGPT sign-in, which the platform hands it. That token was rejected, or it ran out before the platform replaced it.",
+	message:
+		"Windlass runs on a short-lived access token of your ChatGPT sign-in, which the platform hands it. That token was rejected, or it ran out before the platform replaced it.",
 };
 
 function describeStepError(error: Record<string, unknown>): { title: string; message: string; detail: string | null } {
 	if (error.kind === "provider" && isRecord(error.error)) {
 		const provider = error.error;
-		const detail = [typeof provider.status === "number" ? `HTTP ${provider.status}` : null, typeof provider.code === "string" ? provider.code : null, typeof provider.requestId === "string" ? `request ${provider.requestId}` : null]
+		const detail = [
+			typeof provider.status === "number" ? `HTTP ${provider.status}` : null,
+			typeof provider.code === "string" ? provider.code : null,
+			typeof provider.requestId === "string" ? `request ${provider.requestId}` : null,
+		]
 			.filter((part): part is string => part !== null)
 			.join(" · ");
 		if (aboutHandedIn(str(provider.message))) return { ...HANDED_IN_ERROR, detail: detail || null };
-		return { title: PROVIDER_ERROR_TITLES[str(provider.kind)] ?? "The model call failed", message: str(provider.message) || "The provider gave no message.", detail: detail || null };
+		return {
+			title: PROVIDER_ERROR_TITLES[str(provider.kind)] ?? "The model call failed",
+			message: str(provider.message) || "The provider gave no message.",
+			detail: detail || null,
+		};
 	}
-	if (error.kind === "crashed") return { title: "Windlass was cut off", message: "The process running this step stopped before the step finished.", detail: null };
-	if (error.kind === "internal") return { title: "Windlass hit an internal error", message: str(error.message) || "No message was recorded.", detail: null };
+	if (error.kind === "crashed")
+		return {
+			title: "Windlass was cut off",
+			message: "The process running this step stopped before the step finished.",
+			detail: null,
+		};
+	if (error.kind === "internal")
+		return {
+			title: "Windlass hit an internal error",
+			message: str(error.message) || "No message was recorded.",
+			detail: null,
+		};
 	return { title: "The step did not complete", message: str(error.message) || "No reason was recorded.", detail: null };
 }
 
@@ -1068,7 +1352,8 @@ function describeRefusal(data: Record<string, unknown>): ToolRefusal {
 	const agentRefusal = isRecord(data.refusal) && typeof data.refusal.text === "string" ? data.refusal.text : null;
 	let text: string;
 	if (agentRefusal !== null) text = agentRefusal;
-	else if (reason === "unattended") text = `Not run: it needed approval${needs.length > 0 ? ` for ${list(needs)}` : ""}, and nobody was there to give it.`;
+	else if (reason === "unattended")
+		text = `Not run: it needed approval${needs.length > 0 ? ` for ${list(needs)}` : ""}, and nobody was there to give it.`;
 	else text = `Not run: the approval policy does not allow ${needs.length > 0 ? list(needs) : "this call"}.`;
 	if (data.stop === true) text += " The turn was ended because of it.";
 	return { reason, needs, text };
@@ -1096,7 +1381,7 @@ function contentText(content: unknown): string {
 	if (!Array.isArray(content)) return "";
 	return content
 		.filter(isRecord)
-		.map((part) => (part.type === "text" ? str(part.text) : ""))
+		.map(part => (part.type === "text" ? str(part.text) : ""))
 		.join("");
 }
 

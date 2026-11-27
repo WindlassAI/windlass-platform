@@ -21,10 +21,19 @@ const PROBE_TIMEOUT_MS = 20 * 1000;
 
 const SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-
 /** A branch name git and GitHub would accept, as far as it matters for a command line. */
 export function isBranchName(name: unknown): name is string {
-	return typeof name === "string" && name.length > 0 && name.length <= 250 && !name.startsWith("-") && !name.startsWith("/") && !name.endsWith("/") && !name.endsWith(".lock") && !name.includes("..") && !/[\u0000- ~^:?*[\\\u007f]/.test(name);
+	return (
+		typeof name === "string" &&
+		name.length > 0 &&
+		name.length <= 250 &&
+		!name.startsWith("-") &&
+		!name.startsWith("/") &&
+		!name.endsWith("/") &&
+		!name.endsWith(".lock") &&
+		!name.includes("..") &&
+		!/[\u0000- ~^:?*[\\\u007f]/.test(name)
+	);
 }
 
 /** `https://github.com`: what the credential helper answers for, and nothing else. */
@@ -43,9 +52,14 @@ const PROXY_ENV = 'http_proxy="$wlp_proxy" https_proxy="$wlp_proxy"';
  */
 function tokenGit(host: string): string {
 	const transportFlags = [
-		'-c http.proxy="$wlp_proxy"', "-c http.sslVerify=true", "-c http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt",
-		"-c http.followRedirects=false", "-c core.sshCommand=/bin/false", "-c core.askPass=/bin/false",
-		"-c push.followTags=false", "-c push.recurseSubmodules=no",
+		'-c http.proxy="$wlp_proxy"',
+		"-c http.sslVerify=true",
+		"-c http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt",
+		"-c http.followRedirects=false",
+		"-c core.sshCommand=/bin/false",
+		"-c core.askPass=/bin/false",
+		"-c push.followTags=false",
+		"-c push.recurseSubmodules=no",
 	].join(" ");
 	const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; printf password=; cat <&3; echo; }; f`;
 	return [
@@ -62,7 +76,6 @@ function tokenGit(host: string): string {
 		"}",
 	].join("\n");
 }
-
 
 /** Git with an empty environment and no configuration but its own, for the steps of a token script that need no token. */
 const GIT_ENV = `env -i PATH=${SYSTEM_PATH} HOME=/nonexistent LANG=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1`;
@@ -96,16 +109,18 @@ const READ_TOKEN = `PATH=${SYSTEM_PATH}\nexport PATH\nIFS= read -r WLP_T || true
 // this uid. Only a verified object pack crosses into the transport user's repository.
 function privateStart(options: { refs?: string[]; missing?: "nothing" | "norepo"; fetch?: boolean } = {}): string {
 	const refs = (options.refs ?? []).map(shellQuote).join(" ");
-	const missing = options.missing ? ` || { rc=$?; if [ "$rc" = 2 ]; then echo "wlp:${options.missing}"; exit 0; fi; exit "$rc"; }` : "";
+	const missing = options.missing
+		? ` || { rc=$?; if [ "$rc" = 2 ]; then echo "wlp:${options.missing}"; exit 0; fi; exit "$rc"; }`
+		: "";
 	return [
 		"set -eu",
 		`export PATH=${SYSTEM_PATH}`,
 		"umask 077",
 		PLAIN_GIT,
 		BRIDGE,
-		'private=$(mktemp -d /tmp/wlp-git.XXXXXXXX)',
+		"private=$(mktemp -d /tmp/wlp-git.XXXXXXXX)",
 		`trap 'rm -rf -- "$private"' EXIT`,
-		'tree=$(pwd -P)',
+		"tree=$(pwd -P)",
 		'plain_git -C "$private" init --quiet --bare --template= "$private/repo"',
 		`bridge ${options.fetch ? "fetch" : "import"} ${refs}${missing}`,
 		'git() { plain_git -C "$tree" --git-dir="$private/repo" --work-tree="$tree" "$@"; }',
@@ -142,7 +157,9 @@ export const CLONE_GIT_START = [
  */
 export function cloneCommand(repoUrl: string): string {
 	const url = shellQuote(repoUrl);
-	const name = (repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
+	const name =
+		(repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") ||
+		"repo";
 	return [
 		"set -e",
 		CLONE_GIT_START,
@@ -157,9 +174,14 @@ export function cloneCommand(repoUrl: string): string {
 
 /** The sentence for a workspace `wlp_guard` refused: `what` is the key or ".git". */
 export function unsafeWorkspace(what: string): string {
-	if (what === "gitlink" || what === "nested") return "The workspace contains a submodule or a nested git repository. Remove the gitlink or move the nested repository outside the workspace before retrying.";
-	if (what === "unreadable") return "The platform could not finish checking the workspace for nested git repositories. The git operation was stopped.";
-	const named = what === ".git" ? "its .git is not the repository's own directory (a file, a link, or one that borrows another repository's configuration)" : `its git configuration sets ${what}`;
+	if (what === "gitlink" || what === "nested")
+		return "The workspace contains a submodule or a nested git repository. Remove the gitlink or move the nested repository outside the workspace before retrying.";
+	if (what === "unreadable")
+		return "The platform could not finish checking the workspace for nested git repositories. The git operation was stopped.";
+	const named =
+		what === ".git"
+			? "its .git is not the repository's own directory (a file, a link, or one that borrows another repository's configuration)"
+			: `its git configuration sets ${what}`;
 	return `The workspace's git settings were changed in a way the platform does not run: ${named}, under which git would start a program of the repository's outside the agent's sandbox. Nothing was pushed or read. Undo that change in the workspace (git config --unset, or put .git back), or start a new agent.`;
 }
 
@@ -178,8 +200,12 @@ cd -- "$private"`;
 }
 
 async function removeTransport(sandbox: SandboxHandle, id: string, keepStage = false): Promise<void> {
-	const paths = [transportDirectory(id), ...(keepStage ? [] : [transportDirectory(id) + ".mirror"])].map(shellQuote).join(" ");
-	await sandbox.run(`/bin/rm -rf -- ${paths}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+	const paths = [transportDirectory(id), ...(keepStage ? [] : [transportDirectory(id) + ".mirror"])]
+		.map(shellQuote)
+		.join(" ");
+	await sandbox
+		.run(`/bin/rm -rf -- ${paths}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS })
+		.catch(() => undefined);
 }
 
 /**
@@ -199,14 +225,18 @@ function stageMirror(partial: boolean, repair: boolean): string {
 		'mkdir -m 700 -- "$3"',
 		'cd -- "$3"',
 		...(partial ? ['[ ! -e "$2/repo.git" ] || exit 1'] : []),
-		'plain_git init -q --bare --template= seed',
+		"plain_git init -q --bare --template= seed",
 		'if ref=$(plain_git -C "$1/repo" symbolic-ref -q refs/remotes/origin/HEAD); then head="refs/heads/${ref#refs/remotes/origin/}"; else head=$(plain_git -C "$1/repo" symbolic-ref HEAD); fi',
 		'plain_git --git-dir=seed symbolic-ref HEAD "$head"',
 		`plain_git -C "$1/repo" for-each-ref --format='%(objectname) %(refname) %(symref)' refs/remotes/origin refs/tags |`,
 		`  awk 'NF == 2 { sub(/^refs\\/remotes\\/origin\\//, "refs/heads/", $2); print $1, $2 }' | LC_ALL=C sort -k2 > seed/packed-refs`,
 		// The same refs as the slot's mirror: nothing to save. The helper compares again under its lock.
-		...(repair ? [': > seed/repair'] : ['if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi']),
-		'rm -r seed/objects',
+		...(repair
+			? [": > seed/repair"]
+			: [
+					'if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi',
+				]),
+		"rm -r seed/objects",
 		'cp -al "$1/repo/.git/objects" seed/objects',
 		`[ "$(du -s -B1 seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
 		`[ "$(du -sb seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
@@ -229,8 +259,14 @@ function mirrorPath(owner: string): string {
 /** Check before minting a token. The authenticated operation rechecks under its directory lock. */
 export async function hasMirror(sandbox: SandboxHandle, owner: string, signal?: AbortSignal) {
 	const path = mirrorPath(owner);
-	const result = await sandbox.run(`mountpoint -q -- ${path} && test -d ${path}/repo.git/objects`,
-		{ gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS, signal }).catch(() => null);
+	const result = await sandbox
+		.run(`mountpoint -q -- ${path} && test -d ${path}/repo.git/objects`, {
+			gitUser: true,
+			cwd: "/",
+			timeoutMs: PROBE_TIMEOUT_MS,
+			signal,
+		})
+		.catch(() => null);
 	return result?.exitCode === 0;
 }
 
@@ -248,7 +284,14 @@ export async function hasMirror(sandbox: SandboxHandle, owner: string, signal?: 
  * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
  * afterwards. Neither step needs a token, and neither gets one.
  */
-export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string, mirror?: MirrorAttempt): string {
+export function cloneScript(
+	url: string,
+	branch: string,
+	id: string,
+	work?: string,
+	pinnedBase?: string,
+	mirror?: MirrorAttempt,
+): string {
 	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid setup base SHA.");
 	// Review clones need only the base ref. A pinned subtask also restores its feature or published branch.
 	const cloneFlags = pinnedBase ? (work ? "--no-checkout " : "--single-branch --no-checkout ") : "";
@@ -258,44 +301,50 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
 		READ_TOKEN,
 		tokenGit(hostOf(url)),
 		"target=repo",
-		...(mirror ? [
-			`mirror=${mirrorPath(mirror.owner)}`,
-			`save=${shellQuote(mirrorStage(id))}`,
-			// A stage left by a save that never ran (an interrupted turn, a lost server) goes now.
-			'find /tmp -mindepth 1 -maxdepth 1 -user 65534 -name "wlp-transport-*.mirror" -exec rm -rf -- {} + 2>/dev/null || true',
-			// The mount and its ancestors are platform-created, and read-only here. Older runners have no mount.
-			'mirror_ok() { mountpoint -q -- "$mirror" && [ "$(stat -c %u:%a -- "$mirror")" = 65534:700 ]; }',
-			// Readers share the slot lock; the helper's install swap and eviction take it exclusively.
-			'lock_mirror() { mirror_ok && exec 9<"$mirror" && flock -s "$@" 9; }',
-			// Only these failures are the mirror's: the clone is tried again without it.
-			'mirror_fail() { echo "wlp:mirrorfail"; exit 4; }',
-		] : []),
-		...(mirror?.reference ? [
-			'lock_mirror -w 3 && [ -d "$mirror/repo.git/objects" ] || mirror_fail',
-			`printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config" || mirror_fail`,
-			'for f in alternates http-alternates; do p="$mirror/repo.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || mirror_fail; done',
-			// A reference clone that stalls is the mirror's failure; any other is GitHub's or the network's.
-			`if ! wlp_git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=${MIRROR_STALL_SECONDS} clone --quiet --reference-if-able "$mirror/repo.git" --dissociate ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target" 2>"$private/clone.err"; then`,
-			'	cat -- "$private/clone.err" >&2',
-			'	if grep -q "Operation too slow" -- "$private/clone.err"; then echo "wlp:mirrorfail"; fi',
-			"	exit 1",
-			"fi",
-		] : [
-			`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
-		]),
+		...(mirror
+			? [
+					`mirror=${mirrorPath(mirror.owner)}`,
+					`save=${shellQuote(mirrorStage(id))}`,
+					// A stage left by a save that never ran (an interrupted turn, a lost server) goes now.
+					'find /tmp -mindepth 1 -maxdepth 1 -user 65534 -name "wlp-transport-*.mirror" -exec rm -rf -- {} + 2>/dev/null || true',
+					// The mount and its ancestors are platform-created, and read-only here. Older runners have no mount.
+					'mirror_ok() { mountpoint -q -- "$mirror" && [ "$(stat -c %u:%a -- "$mirror")" = 65534:700 ]; }',
+					// Readers share the slot lock; the helper's install swap and eviction take it exclusively.
+					'lock_mirror() { mirror_ok && exec 9<"$mirror" && flock -s "$@" 9; }',
+					// Only these failures are the mirror's: the clone is tried again without it.
+					'mirror_fail() { echo "wlp:mirrorfail"; exit 4; }',
+				]
+			: []),
+		...(mirror?.reference
+			? [
+					'lock_mirror -w 3 && [ -d "$mirror/repo.git/objects" ] || mirror_fail',
+					`printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config" || mirror_fail`,
+					'for f in alternates http-alternates; do p="$mirror/repo.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || mirror_fail; done',
+					// A reference clone that stalls is the mirror's failure; any other is GitHub's or the network's.
+					`if ! wlp_git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=${MIRROR_STALL_SECONDS} clone --quiet --reference-if-able "$mirror/repo.git" --dissociate ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target" 2>"$private/clone.err"; then`,
+					'	cat -- "$private/clone.err" >&2',
+					'	if grep -q "Operation too slow" -- "$private/clone.err"; then echo "wlp:mirrorfail"; fi',
+					"	exit 1",
+					"fi",
+				]
+			: [`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`]),
 		"WLP_T=",
 		PLAIN_GIT,
-		...(mirror ? [
-			`for f in alternates http-alternates; do p="$target/.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || ${mirror.reference ? "mirror_fail" : "exit 4"}; done`,
-			...(mirror.reference ? [
-				// Connectivity, not a rehash of every blob: every object in a slot was rehashed by
-				// the helper's full fsck before it was installed, and sessions mount the slot
-				// read-only. --dissociate copied what was used, and no alternates remain.
-				'plain_git -C "$target" fsck --connectivity-only --no-reflogs --no-dangling --no-progress >/dev/null || mirror_fail',
-				'echo "wlp:mirror reference"',
-			] : []),
-			stageMirror(cloneFlags.includes("--single-branch"), !!mirror.repair && !mirror.reference),
-		] : []),
+		...(mirror
+			? [
+					`for f in alternates http-alternates; do p="$target/.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || ${mirror.reference ? "mirror_fail" : "exit 4"}; done`,
+					...(mirror.reference
+						? [
+								// Connectivity, not a rehash of every blob: every object in a slot was rehashed by
+								// the helper's full fsck before it was installed, and sessions mount the slot
+								// read-only. --dissociate copied what was used, and no alternates remain.
+								'plain_git -C "$target" fsck --connectivity-only --no-reflogs --no-dangling --no-progress >/dev/null || mirror_fail',
+								'echo "wlp:mirror reference"',
+							]
+						: []),
+					stageMirror(cloneFlags.includes("--single-branch"), !!mirror.repair && !mirror.reference),
+				]
+			: []),
 		...(pinnedBase ? [`plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
 		`base_sha=$(plain_git -C "$target" rev-parse --verify ${work && pinnedBase ? featureRef : "HEAD"})`,
 		'echo "wlp:base $base_sha"',
@@ -305,7 +354,9 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
 			`if at=$(plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} 2>/dev/null); then`,
 			`	echo "wlp:haswork $at"`,
 			"else",
-			...(pinnedBase ? [`	at=$(plain_git -C "$target" rev-parse --verify ${featureRef})`, '\techo "wlp:haswork $at"'] : []),
+			...(pinnedBase
+				? [`	at=$(plain_git -C "$target" rev-parse --verify ${featureRef})`, '\techo "wlp:haswork $at"']
+				: []),
 			`	echo "wlp:nowork"`,
 			"fi",
 		);
@@ -335,7 +386,15 @@ export function workCheckoutScript(directory: string, work: string, start?: stri
 
 /** Merge the confirmed base without invoking workspace config or leaving conflict markers.
  * A deterministic commit lets a retry recognize its own checkout or push after a lost reply. */
-export function mergeBaseForCi(sandbox: SandboxHandle, branch: string, base: string, baseSha: string, head: string, at: number, author: CommitInput["author"]) {
+export function mergeBaseForCi(
+	sandbox: SandboxHandle,
+	branch: string,
+	base: string,
+	baseSha: string,
+	head: string,
+	at: number,
+	author: CommitInput["author"],
+) {
 	const date = shellQuote(new Date(at).toISOString());
 	const ref = shellQuote("refs/heads/" + branch);
 	const script = [
@@ -347,7 +406,7 @@ export function mergeBaseForCi(sandbox: SandboxHandle, branch: string, base: str
 		'if [ "$candidate" != "$original" ]; then',
 		'  prior=$(git rev-parse --verify "$candidate^2") && git merge-base --is-ancestor "$prior" "$base" || { echo "The item branch moved since CI." >&2; exit 1; }',
 		'  base="$prior"',
-		'fi',
+		"fi",
 		'if git merge-base --is-ancestor "$base" "$original"; then echo "The base no longer has new commits." >&2; exit 1; fi',
 		'rc=0; git merge-tree --write-tree "$original" "$base" > "$private/merge" || rc=$?',
 		'if [ "$rc" = 1 ] && [ "$candidate" = "$original" ]; then echo wlp:conflict; exit 0; fi',
@@ -358,14 +417,19 @@ export function mergeBaseForCi(sandbox: SandboxHandle, branch: string, base: str
 		'  git diff --quiet HEAD -- || { echo "The workspace has uncommitted changes." >&2; exit 1; }',
 		`  git checkout --quiet --no-overwrite-ignore -B ${shellQuote(branch)} "$merged"`,
 		`  bridge export HEAD index ${ref}`,
-		'fi',
+		"fi",
 		'echo "wlp:head $merged"',
 	].join("\n");
 	return run(sandbox, script, { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
 /** Runs `workCheckoutScript`. */
-export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<GitOutcome> {
+export function checkoutWork(
+	sandbox: SandboxHandle,
+	directory: string,
+	work: string,
+	start?: string,
+): Promise<GitOutcome> {
 	return run(sandbox, workCheckoutScript(directory, work, start), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
@@ -383,31 +447,74 @@ export function checkoutPreparedReviewBase(sandbox: SandboxHandle, base: string,
 }
 
 /** Record the original workspace refs before fetching. Only the transport uid opens the token. */
-async function fetchRefs(sandbox: SandboxHandle, token: string, url: string, directory: string,
-	refs: Array<{ source: string; destination: string; optional?: boolean }>, signal?: AbortSignal): Promise<GitOutcome> {
+async function fetchRefs(
+	sandbox: SandboxHandle,
+	token: string,
+	url: string,
+	directory: string,
+	refs: Array<{ source: string; destination: string; optional?: boolean }>,
+	signal?: AbortSignal,
+): Promise<GitOutcome> {
 	const id = randomBytes(16).toString("hex");
 	const stage = shellQuote(handoverDirectory(id));
 	const transport = shellQuote(transportDirectory(id));
 	const local = { stdin: "", timeoutMs: PROBE_TIMEOUT_MS, signal };
 	const cd = `cd -- ${shellQuote(directory)}`;
-	const prepare = await run(sandbox, [cd + " || exit 1", privateStart({ refs: refs.map(r => r.destination), fetch: true }),
-		`mv -T "$private" ${stage}`].join("\n"), local);
+	const prepare = await run(
+		sandbox,
+		[
+			cd + " || exit 1",
+			privateStart({ refs: refs.map(r => r.destination), fetch: true }),
+			`mv -T "$private" ${stage}`,
+		].join("\n"),
+		local,
+	);
 	if (!prepare.ok) return prepare;
 	try {
-		const commands = [startTransport(id), READ_TOKEN, PLAIN_GIT, tokenGit(hostOf(url)),
-			'plain_git init --bare --quiet --template= repo'];
+		const commands = [
+			startTransport(id),
+			READ_TOKEN,
+			PLAIN_GIT,
+			tokenGit(hostOf(url)),
+			"plain_git init --bare --quiet --template= repo",
+		];
 		for (const ref of refs) {
 			const fetch = `wlp_git --git-dir="$private/repo" fetch --quiet --no-tags -- ${shellQuote(url)} ${shellQuote("+" + ref.source + ":" + ref.destination)}`;
 			commands.push(ref.optional ? `if ${fetch}; then echo wlp:fetchedwork; fi` : fetch);
 		}
 		const base = refs[0]!;
-		commands.push("WLP_T=", `base_sha=$(plain_git --git-dir=repo rev-parse --verify ${shellQuote(base.destination + "^{commit}")})`,
-			'echo "wlp:base $base_sha"', "chmod -R a+rX repo", 'chmod 711 "$private"');
-		const fetched = await run(sandbox, commands.join("\n"), { gitUser: true, stdin: token + "\n", secrets: [token], timeoutMs: PUSH_TIMEOUT_MS, signal });
+		commands.push(
+			"WLP_T=",
+			`base_sha=$(plain_git --git-dir=repo rev-parse --verify ${shellQuote(base.destination + "^{commit}")})`,
+			'echo "wlp:base $base_sha"',
+			"chmod -R a+rX repo",
+			'chmod 711 "$private"',
+		);
+		const fetched = await run(sandbox, commands.join("\n"), {
+			gitUser: true,
+			stdin: token + "\n",
+			secrets: [token],
+			timeoutMs: PUSH_TIMEOUT_MS,
+			signal,
+		});
 		if (!fetched.ok) return fetched;
-		const destinations = refs.filter(ref => !ref.optional || fetched.marks.has("fetchedwork")).map(ref => shellQuote(ref.destination));
-		const install = await run(sandbox, ["set -eu", cd, `private=${stage}`, BRIDGE, 'rm -rf "$private/repo"',
-			`cp -R -- ${transport}/repo "$private/repo"`, `bridge export ${destinations.join(" ")}`, "echo wlp:fetched"].join("\n"), local);
+		const destinations = refs
+			.filter(ref => !ref.optional || fetched.marks.has("fetchedwork"))
+			.map(ref => shellQuote(ref.destination));
+		const install = await run(
+			sandbox,
+			[
+				"set -eu",
+				cd,
+				`private=${stage}`,
+				BRIDGE,
+				'rm -rf "$private/repo"',
+				`cp -R -- ${transport}/repo "$private/repo"`,
+				`bridge export ${destinations.join(" ")}`,
+				"echo wlp:fetched",
+			].join("\n"),
+			local,
+		);
 		if (install.ok) for (const [key, value] of fetched.marks) install.marks.set(key, value);
 		return install;
 	} finally {
@@ -436,7 +543,16 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 
 /** A PR comment requests a source inspection. The transport user owns both the checkout and its
  * parent under sticky /tmp, so even an unattended agent with a shell cannot edit the reviewed tree. */
-export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, setupNotes?: { id: string; text: string }[], draft?: ReadonlyMap<string, string>): Promise<string> {
+export async function readOnlyReview(
+	sandbox: SandboxHandle,
+	url: string,
+	token: string,
+	head: string,
+	base: string,
+	signal: AbortSignal,
+	setupNotes?: { id: string; text: string }[],
+	draft?: ReadonlyMap<string, string>,
+): Promise<string> {
 	if (![head, base].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review target.");
 	const id = randomBytes(16).toString("hex");
 	if (setupNotes?.some(n => !/^[a-f0-9]{20}$/.test(n.id))) throw Error("Invalid setup note id.");
@@ -446,7 +562,10 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 		inputs.push({ path: "draft/" + path, text });
 	}
 	const script = [
-		startTransport(id), READ_TOKEN, tokenGit(hostOf(url)), PLAIN_GIT,
+		startTransport(id),
+		READ_TOKEN,
+		tokenGit(hostOf(url)),
+		PLAIN_GIT,
 		...inputs.map(({ path }) => {
 			const file = ".windlass-inputs/" + path;
 			return `mkdir -p -- '${file.slice(0, file.lastIndexOf("/"))}'; IFS= read -r encoded; printf %s "$encoded" | base64 -d > '${file}'; chmod 444 '${file}'`;
@@ -458,46 +577,103 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 		`plain_git -C repo checkout -q --detach ${head}`,
 		// Project hooks and agent definitions must stay inert during setup checks.
 		...(setupNotes ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
-		'chmod -R a+rX repo', setupNotes ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
+		"chmod -R a+rX repo",
+		setupNotes ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
 	].join("\n");
-	const result = await run(sandbox, script, { gitUser: true, stdin: [token, ...inputs.map(n => Buffer.from(n.text).toString("base64"))].join("\n") + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
-	if (!result.ok) throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
+	const result = await run(sandbox, script, {
+		gitUser: true,
+		stdin: [token, ...inputs.map(n => Buffer.from(n.text).toString("base64"))].join("\n") + "\n",
+		secrets: [token],
+		timeoutMs: CLONE_TIMEOUT_MS,
+		signal,
+	});
+	if (!result.ok)
+		throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
 	return setupNotes ? transportDirectory(id) : transportDirectory(id) + "/repo";
 }
 
-export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
+export async function checkoutReview(
+	sandbox: SandboxHandle,
+	url: string,
+	token: string,
+	directory: string,
+	pr: number,
+	head: string,
+	signal?: AbortSignal,
+) {
 	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
-	const fetch = await fetchRefs(sandbox, token, url, directory, [{ source: `refs/pull/${pr}/head`, destination: "refs/wlp/review" }], signal);
+	const fetch = await fetchRefs(
+		sandbox,
+		token,
+		url,
+		directory,
+		[{ source: `refs/pull/${pr}/head`, destination: "refs/wlp/review" }],
+		signal,
+	);
 	if (!fetch.ok) {
-		if (fetch.marks.has("unsafe")) throw new GithubProblem("github_denied", unsafeWorkspace(fetch.marks.get("unsafe")!));
-		if (fetch.failure === "denied" || fetch.failure === "gone" || (fetch.failure === "other" && /couldn't find remote ref/i.test(fetch.said))) {
-			throw new GithubProblem(fetch.failure === "denied" ? "github_denied" : "github_gone", "the pull request head is unavailable");
+		if (fetch.marks.has("unsafe"))
+			throw new GithubProblem("github_denied", unsafeWorkspace(fetch.marks.get("unsafe")!));
+		if (
+			fetch.failure === "denied" ||
+			fetch.failure === "gone" ||
+			(fetch.failure === "other" && /couldn't find remote ref/i.test(fetch.said))
+		) {
+			throw new GithubProblem(
+				fetch.failure === "denied" ? "github_denied" : "github_gone",
+				"the pull request head is unavailable",
+			);
 		}
 		throw new Error("the pull request head could not be fetched");
 	}
-	const checkout = await run(sandbox, reviewCheckoutScript(directory, head), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS, signal });
-	if (checkout.marks.has("missing") && !checkout.ok && checkout.failure !== "aborted" && checkout.failure !== "timeout") {
+	const checkout = await run(sandbox, reviewCheckoutScript(directory, head), {
+		stdin: "",
+		timeoutMs: COMMIT_TIMEOUT_MS,
+		signal,
+	});
+	if (
+		checkout.marks.has("missing") &&
+		!checkout.ok &&
+		checkout.failure !== "aborted" &&
+		checkout.failure !== "timeout"
+	) {
 		throw new GithubProblem("github_gone", "the pull ref does not identify the expected commit");
 	}
 	if (!checkout.ok || checkout.marks.get("review") !== head) throw new Error("the checkout of the pull request failed");
 }
 
-export async function changedReviewPaths(sandbox: SandboxHandle, directory: string, base: string, head: string, readOnly = false): Promise<string[]> {
+export async function changedReviewPaths(
+	sandbox: SandboxHandle,
+	directory: string,
+	base: string,
+	head: string,
+	readOnly = false,
+): Promise<string[]> {
 	if (![base, head].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review SHA.");
 	const script = [
 		`cd ${shellQuote(directory)} || exit 1`,
 		// The requested checkout and its Git configuration belong to the transport user.
-		...(readOnly ? [PLAIN_GIT, 'git() { plain_git -c safe.directory="$PWD" "$@"; }'] : [privateStart(), VERIFY_OBJECTS]),
+		...(readOnly
+			? [PLAIN_GIT, 'git() { plain_git -c safe.directory="$PWD" "$@"; }']
+			: [privateStart(), VERIFY_OBJECTS]),
 		`git diff --no-ext-diff --no-renames --name-only -z ${base}...${head} --`,
 	].join("\n");
 	const result = await sandbox.run(script, { timeoutMs: COMMIT_TIMEOUT_MS });
-	if (result.exitCode !== 0 || result.timedOut || result.aborted || (result.stdout && !result.stdout.endsWith("\0"))) throw new Error("could not read the changed paths");
+	if (result.exitCode !== 0 || result.timedOut || result.aborted || (result.stdout && !result.stdout.endsWith("\0")))
+		throw new Error("could not read the changed paths");
 	return result.stdout.split("\0").filter(Boolean);
 }
 
 /** Fetches the base branch with `token`, which is given to the command on its standard input and to nothing else. */
-export function fetchWithToken(sandbox: SandboxHandle, token: string, input: { url: string; base: string; work?: string | null }): Promise<GitOutcome> {
-	const ref = (name: string, optional = false) => ({ source: "refs/heads/" + name, destination: "refs/remotes/origin/" + name, optional });
+export function fetchWithToken(
+	sandbox: SandboxHandle,
+	token: string,
+	input: { url: string; base: string; work?: string | null },
+): Promise<GitOutcome> {
+	const ref = (name: string, optional = false) => ({
+		source: "refs/heads/" + name,
+		destination: "refs/remotes/origin/" + name,
+		optional,
+	});
 	return fetchRefs(sandbox, token, input.url, ".", [ref(input.base), ...(input.work ? [ref(input.work, true)] : [])]);
 }
 
@@ -530,7 +706,8 @@ function outgoingBoundaries(baseSha: string | null, pushed: string | null, head:
 	if (baseSha) {
 		lines.push(`git cat-file -e '${commitId(baseSha)}^{commit}' 2>/dev/null || { ${missing}; }`, `set -- ${baseSha}`);
 	}
-	if (pushed) lines.push(`if git cat-file -e '${commitId(pushed)}^{commit}' 2>/dev/null; then set -- "$@" ${pushed}; fi`);
+	if (pushed)
+		lines.push(`if git cat-file -e '${commitId(pushed)}^{commit}' 2>/dev/null; then set -- "$@" ${pushed}; fi`);
 	lines.push(
 		`[ "$#" -gt 0 ] || { ${missing}; }`,
 		`git merge-base ${head} "$@" >/dev/null || { echo "Call fetch_base and reconcile the workspace with its publishing base." >&2; exit 9; }`,
@@ -689,8 +866,8 @@ export function markers(output: string): Map<string, string> {
 function said(result: ExecResult, secrets: string[]): string {
 	const lines = `${result.stderr}\n${result.stdout}`
 		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line !== "" && !line.startsWith("wlp:"));
+		.map(line => line.trim())
+		.filter(line => line !== "" && !line.startsWith("wlp:"));
 	return redact(lines.slice(-4).join(" ").slice(-400), secrets);
 }
 
@@ -729,16 +906,35 @@ function classify(text: string): GitFailure {
 	if (/non-fast-forward|fetch first|\[rejected\]/i.test(text)) return "diverged";
 	if (/Remote branch .* not found/i.test(text)) return "no_branch";
 	if (/Repository not found|returned error: 404|not found\b/i.test(text)) return "gone";
-	if (/returned error: 40[13]|Permission to .* denied|Authentication failed|Invalid username or (?:token|password)|could not read (?:Username|Password)|Write access to repository not granted/i.test(text)) return "denied";
-	if (/Could not resolve host|Failed to connect|Connection (?:refused|timed out|reset)|unable to access|network is unreachable|returned error: 5\d\d/i.test(text)) return "unreachable";
+	if (
+		/returned error: 40[13]|Permission to .* denied|Authentication failed|Invalid username or (?:token|password)|could not read (?:Username|Password)|Write access to repository not granted/i.test(
+			text,
+		)
+	)
+		return "denied";
+	if (
+		/Could not resolve host|Failed to connect|Connection (?:refused|timed out|reset)|unable to access|network is unreachable|returned error: 5\d\d/i.test(
+			text,
+		)
+	)
+		return "unreachable";
 	return "other";
 }
 
-async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: true; stdin: string; timeoutMs: number; signal?: AbortSignal; secrets?: string[] }): Promise<GitOutcome> {
+async function run(
+	sandbox: SandboxHandle,
+	script: string,
+	options: { gitUser?: true; stdin: string; timeoutMs: number; signal?: AbortSignal; secrets?: string[] },
+): Promise<GitOutcome> {
 	const secrets = options.secrets ?? [];
 	let result: ExecResult;
 	try {
-		result = await sandbox.run(script, { ...(options.gitUser ? { gitUser: true, cwd: "/" } as const : {}), stdin: options.stdin, timeoutMs: options.timeoutMs, signal: options.signal });
+		result = await sandbox.run(script, {
+			...(options.gitUser ? ({ gitUser: true, cwd: "/" } as const) : {}),
+			stdin: options.stdin,
+			timeoutMs: options.timeoutMs,
+			signal: options.signal,
+		});
 	} catch (error) {
 		// Whatever the sandbox layer says of a command it could not run, it does not say with the token in it.
 		throw new Error(redact(errorText(error), secrets));
@@ -766,7 +962,8 @@ const INPUT_REFUSALS: Record<string, (directory: string) => string> = {
 };
 
 function inputPaths(directory: string, alias?: string): void {
-	if (!/^\.[a-z-]+$/.test(directory) || (alias !== undefined && !/^[a-z][a-z0-9-]{0,15}$/.test(alias))) throw new Error("invalid input path");
+	if (!/^\.[a-z-]+$/.test(directory) || (alias !== undefined && !/^[a-z][a-z0-9-]{0,15}$/.test(alias)))
+		throw new Error("invalid input path");
 }
 
 /**
@@ -776,15 +973,19 @@ function inputPaths(directory: string, alias?: string): void {
  * platform commits from the workspace can take it.
  */
 function inputsGuard(directory: string): string {
-	const d = shellQuote(directory), mark = shellQuote(`${directory}/${INPUTS_MARK}`), line = shellQuote(`/${directory}/`);
+	const d = shellQuote(directory),
+		mark = shellQuote(`${directory}/${INPUTS_MARK}`),
+		line = shellQuote(`/${directory}/`);
 	return [
-		"set -eu", `export PATH=${SYSTEM_PATH}`, PLAIN_GIT,
+		"set -eu",
+		`export PATH=${SYSTEM_PATH}`,
+		PLAIN_GIT,
 		`refuse() { echo "wlp:refuse $1"; exit 3; }`,
 		`if [ -L ${d} ]; then refuse symlink; fi`,
 		"if [ -e .git ]; then",
 		`	if [ -n "$(plain_git ls-files -- ${d} | head -1)" ]; then refuse tracked; fi`,
 		`	if plain_git rev-parse -q --verify ${shellQuote(`HEAD:${directory}`)} >/dev/null 2>&1; then refuse committed; fi`,
-		'	exclude=$(plain_git rev-parse --git-path info/exclude) || refuse exclude',
+		"	exclude=$(plain_git rev-parse --git-path info/exclude) || refuse exclude",
 		'	mkdir -p -- "$(dirname -- "$exclude")" || refuse exclude',
 		`	grep -qxF -- ${line} "$exclude" 2>/dev/null || printf '%s\\n' ${line} >> "$exclude" || refuse exclude`,
 		"fi",
@@ -798,7 +999,9 @@ async function guardInputs(sandbox: SandboxHandle, directory: string, signal?: A
 	const guarded = await sandbox.run(inputsGuard(directory), { timeoutMs: PROBE_TIMEOUT_MS, signal });
 	if (guarded.exitCode === 0) return;
 	const reason = /wlp:refuse (\w+)/.exec(guarded.stdout)?.[1];
-	throw new Error(reason && INPUT_REFUSALS[reason] ? INPUT_REFUSALS[reason](directory) : "the workspace has no room for it");
+	throw new Error(
+		reason && INPUT_REFUSALS[reason] ? INPUT_REFUSALS[reason](directory) : "the workspace has no room for it",
+	);
 }
 
 /** The transport's fetch of one commit, alone (`--depth 1`), as the transport user, under `INPUT_LIMITS`; its git directory is gone before anything reaches the workspace. */
@@ -831,23 +1034,57 @@ function inputFetchScript(url: string, sha: string, id: string, limits = INPUT_L
  * remote, no credential, nothing to push with. The token reaches only the fetch's standard input. The directory
  * is the platform's own (`inputsGuard`). Throws, naming why, when the tree cannot be had.
  */
-export async function materializeInput(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; sha: string; directory: string; alias: string; signal?: AbortSignal; limits?: typeof INPUT_LIMITS }): Promise<void> {
+export async function materializeInput(
+	sandbox: SandboxHandle,
+	token: string,
+	input: {
+		url: string;
+		branch: string;
+		sha: string;
+		directory: string;
+		alias: string;
+		signal?: AbortSignal;
+		limits?: typeof INPUT_LIMITS;
+	},
+): Promise<void> {
 	if (!/^[0-9a-f]{40}$/.test(input.sha)) throw new Error("the planning base is not a recorded commit");
 	inputPaths(input.directory, input.alias);
 	await guardInputs(sandbox, input.directory, input.signal);
 	const target = shellQuote(`${input.directory}/${input.alias}`);
-	const clear = await sandbox.run(`set -eu\nif [ -L ${target} ]; then exit 3; fi\nif [ -e ${target} ]; then chmod -R u+w -- ${target}; rm -rf -- ${target}; fi\n[ ! -e ${target} ]`, { timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal });
-	if (clear.exitCode !== 0) throw new Error(`the earlier copy at ${input.directory}/${input.alias} could not be removed`);
+	const clear = await sandbox.run(
+		`set -eu\nif [ -L ${target} ]; then exit 3; fi\nif [ -e ${target} ]; then chmod -R u+w -- ${target}; rm -rf -- ${target}; fi\n[ ! -e ${target} ]`,
+		{ timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal },
+	);
+	if (clear.exitCode !== 0)
+		throw new Error(`the earlier copy at ${input.directory}/${input.alias} could not be removed`);
 	const stage = randomBytes(16).toString("hex");
 	try {
-		const fetched = await run(sandbox, inputFetchScript(input.url, input.sha, stage, input.limits), { gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+		const fetched = await run(sandbox, inputFetchScript(input.url, input.sha, stage, input.limits), {
+			gitUser: true,
+			stdin: token + "\n",
+			timeoutMs: CLONE_TIMEOUT_MS,
+			signal: input.signal,
+			secrets: [token],
+		});
 		if (!fetched.ok) {
 			const limits = input.limits ?? INPUT_LIMITS;
-			if (fetched.marks.has("toolarge")) throw new Error(`it is larger than a planning input may be (${limits.fileMiB} MiB a file, ${limits.treeMiB} MiB in all)`);
+			if (fetched.marks.has("toolarge"))
+				throw new Error(
+					`it is larger than a planning input may be (${limits.fileMiB} MiB a file, ${limits.treeMiB} MiB in all)`,
+				);
 			if (fetched.marks.has("wrongbase")) throw new Error(`it is not at ${input.sha.slice(0, 7)}`);
-			throw new Error(fetched.failure === "denied" ? "GitHub refused to let the platform read it" : fetched.failure === "gone" ? "GitHub no longer has it" : `the fetch failed${fetched.said ? ": " + fetched.said : ""}`);
+			throw new Error(
+				fetched.failure === "denied"
+					? "GitHub refused to let the platform read it"
+					: fetched.failure === "gone"
+						? "GitHub no longer has it"
+						: `the fetch failed${fetched.said ? ": " + fetched.said : ""}`,
+			);
 		}
-		const copy = await sandbox.run(`set -eu\nexport PATH=${SYSTEM_PATH}\nmkdir -- ${target}\ncp -R -- ${shellQuote(transportDirectory(stage))}/repo/. ${target}/\nfind ${target} -type f -exec chmod a-w -- {} +`, { timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal });
+		const copy = await sandbox.run(
+			`set -eu\nexport PATH=${SYSTEM_PATH}\nmkdir -- ${target}\ncp -R -- ${shellQuote(transportDirectory(stage))}/repo/. ${target}/\nfind ${target} -type f -exec chmod a-w -- {} +`,
+			{ timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal },
+		);
 		if (copy.exitCode !== 0) throw new Error("it could not be copied into the workspace read-only");
 	} finally {
 		await removeTransport(sandbox, stage);
@@ -861,66 +1098,123 @@ export async function materializeInput(sandbox: SandboxHandle, token: string, in
  */
 export async function removeInputs(sandbox: SandboxHandle, directory: string): Promise<void> {
 	inputPaths(directory);
-	const d = shellQuote(directory), mark = shellQuote(`${directory}/${INPUTS_MARK}`);
-	const removed = await sandbox.run([
-		"set -eu", `export PATH=${SYSTEM_PATH}`,
-		`if [ -L ${d} ]; then echo "wlp:refuse symlink"; exit 3; fi`,
-		`[ -e ${d} ] || exit 0`,
-		`if [ ! -f ${mark} ] || [ -L ${mark} ]; then echo "wlp:refuse present"; exit 3; fi`,
-		`chmod -R u+w -- ${d}`, `rm -rf -- ${d}`, `[ ! -e ${d} ]`,
-	].join("\n"), { timeoutMs: COMMIT_TIMEOUT_MS });
+	const d = shellQuote(directory),
+		mark = shellQuote(`${directory}/${INPUTS_MARK}`);
+	const removed = await sandbox.run(
+		[
+			"set -eu",
+			`export PATH=${SYSTEM_PATH}`,
+			`if [ -L ${d} ]; then echo "wlp:refuse symlink"; exit 3; fi`,
+			`[ -e ${d} ] || exit 0`,
+			`if [ ! -f ${mark} ] || [ -L ${mark} ]; then echo "wlp:refuse present"; exit 3; fi`,
+			`chmod -R u+w -- ${d}`,
+			`rm -rf -- ${d}`,
+			`[ ! -e ${d} ]`,
+		].join("\n"),
+		{ timeoutMs: COMMIT_TIMEOUT_MS },
+	);
 	if (removed.exitCode === 0) return;
 	const reason = /wlp:refuse (\w+)/.exec(removed.stdout)?.[1];
-	throw new Error(`the planner's copy of the other repositories at ${directory} could not be removed${reason && INPUT_REFUSALS[reason] ? `: ${INPUT_REFUSALS[reason](directory)}` : removed.stderr.trim() ? `: ${removed.stderr.trim().slice(0, 200)}` : ""}`);
+	throw new Error(
+		`the planner's copy of the other repositories at ${directory} could not be removed${reason && INPUT_REFUSALS[reason] ? `: ${INPUT_REFUSALS[reason](directory)}` : removed.stderr.trim() ? `: ${removed.stderr.trim().slice(0, 200)}` : ""}`,
+	);
 }
 
 async function installClone(sandbox: SandboxHandle, stage: string, directory: string, signal?: AbortSignal) {
-	return run(sandbox, ["set -eu", `export PATH=${SYSTEM_PATH}`,
-		'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
-		`target=${shellQuote(directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
-		`cp -R -- ${shellQuote(transportDirectory(stage))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
-		{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal });
+	return run(
+		sandbox,
+		[
+			"set -eu",
+			`export PATH=${SYSTEM_PATH}`,
+			'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
+			`target=${shellQuote(directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
+			`cp -R -- ${shellQuote(transportDirectory(stage))}/repo/. "$target/"`,
+			'echo "wlp:dir $target"',
+		].join("\n"),
+		{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal },
+	);
 }
 
 /** Seed a fresh workspace without ever handing the spare a GitHub credential. Only a
  * full, fsck-checked mirror of this pairing and repository may be used as a remote. */
-export async function cloneReadyBase(sandbox: SandboxHandle, url: string, branch: string, commit: string, owner: string, signal: AbortSignal) {
+export async function cloneReadyBase(
+	sandbox: SandboxHandle,
+	url: string,
+	branch: string,
+	commit: string,
+	owner: string,
+	signal: AbortSignal,
+) {
 	if (!isBranchName(branch) || !/^[a-f0-9]{40}$/.test(commit)) return false;
 	const stage = randomBytes(16).toString("hex");
 	try {
-		const script = [startTransport(stage), GIT_PROXY, PLAIN_GIT, `mirror=${mirrorPath(owner)}`,
+		const script = [
+			startTransport(stage),
+			GIT_PROXY,
+			PLAIN_GIT,
+			`mirror=${mirrorPath(owner)}`,
 			'if mountpoint -q -- "$mirror" && exec 9<"$mirror" && flock -s -w 3 9 && [ -d "$mirror/repo.git/objects" ]; then',
 			`  printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config"`,
 			`  plain_git -c protocol.file.allow=always clone --quiet --no-local --branch ${shellQuote(branch)} -- "$mirror/repo.git" repo`,
 			`  plain_git -C repo remote set-url origin ${shellQuote(url)}`,
-			'else', `  ${GIT_ENV} ${PROXY_ENV} git ${SAFE_FLAGS} clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} repo`, 'fi',
-			`test "$(plain_git -C repo rev-parse HEAD)" = ${commit}`, 'chmod -R a+rX repo', 'chmod 711 "$private"'].join("\n");
+			"else",
+			`  ${GIT_ENV} ${PROXY_ENV} git ${SAFE_FLAGS} clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} repo`,
+			"fi",
+			`test "$(plain_git -C repo rev-parse HEAD)" = ${commit}`,
+			"chmod -R a+rX repo",
+			'chmod 711 "$private"',
+		].join("\n");
 		const cloned = await run(sandbox, script, { gitUser: true, stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal });
 		return cloned.ok && (await installClone(sandbox, stage, "repo", signal)).marks.get("dir") === ".";
-	} finally { await removeTransport(sandbox, stage); }
+	} finally {
+		await removeTransport(sandbox, stage);
+	}
 }
 
 /** Only for a freshly cloned workspace which has never run setup. A changed default
  * branch, force push, dirty checkout or unavailable remote is a cold miss. */
 export function refreshReadyClone(url: string, branch?: string, commit?: string) {
-	return ['set -eu', CLONE_GIT_START, 'tree=$(pwd -P)', 'branch=$(git -C "$tree" symbolic-ref --short HEAD)',
-		branch ? `test "$branch" = ${shellQuote(branch)}` :
-			`test "$(git ls-remote --symref -- ${shellQuote(url)} HEAD | head -1 | cut -f1)" = "ref: refs/heads/$branch"`,
-		'status=$(git -C "$tree" status --porcelain)', 'test -z "$status"',
+	return [
+		"set -eu",
+		CLONE_GIT_START,
+		"tree=$(pwd -P)",
+		'branch=$(git -C "$tree" symbolic-ref --short HEAD)',
+		branch
+			? `test "$branch" = ${shellQuote(branch)}`
+			: `test "$(git ls-remote --symref -- ${shellQuote(url)} HEAD | head -1 | cut -f1)" = "ref: refs/heads/$branch"`,
+		'status=$(git -C "$tree" status --porcelain)',
+		'test -z "$status"',
 		`git -C "$tree" fetch --quiet -- ${shellQuote(url)} "+refs/heads/$branch:refs/remotes/origin/$branch"`,
 		'git -C "$tree" merge --quiet --ff-only "refs/remotes/origin/$branch"',
-		`test "$(git -C "$tree" rev-parse HEAD)" = "${commit || '$(git -C "$tree" rev-parse "refs/remotes/origin/$branch")'}"`].join("\n");
+		`test "$(git -C "$tree" rev-parse HEAD)" = "${commit || '$(git -C "$tree" rev-parse "refs/remotes/origin/$branch")'}"`,
+	].join("\n");
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
+export async function cloneWithToken(
+	sandbox: SandboxHandle,
+	token: string,
+	input: {
+		url: string;
+		branch: string;
+		directory: string;
+		work?: string;
+		pinnedBase?: string;
+		signal?: AbortSignal;
+		mirror?: MirrorAttempt;
+	},
+): Promise<GitOutcome> {
 	const stage = randomBytes(16).toString("hex");
 	let saved = false;
 	try {
-		const cloned = await run(sandbox, cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror),
-			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+		const cloned = await run(
+			sandbox,
+			cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror),
+			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] },
+		);
 		if (!cloned.ok) {
-			if (input.mirror?.reference && cloned.failure !== "aborted" && cloned.marks.has("mirrorfail")) return { ...cloned, failure: "mirror" };
+			if (input.mirror?.reference && cloned.failure !== "aborted" && cloned.marks.has("mirrorfail"))
+				return { ...cloned, failure: "mirror" };
 			return cloned;
 		}
 		const copy = await installClone(sandbox, stage, input.directory, input.signal);
@@ -944,18 +1238,29 @@ export async function cloneWithToken(sandbox: SandboxHandle, token: string, inpu
 export function saveMirrorAfterClone(sandbox: SandboxHandle, outcome: GitOutcome): void {
 	const stage = outcome.marks.get("mirrorsave");
 	if (!stage) return;
-	if (outcome.ok && sandbox.saveMirror) void sandbox.saveMirror(stage, outcome.marks.has("mirrorpartial")).catch(() => false);
-	else void sandbox.run(`/bin/rm -rf -- ${shellQuote(mirrorStage(stage))}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+	if (outcome.ok && sandbox.saveMirror)
+		void sandbox.saveMirror(stage, outcome.marks.has("mirrorpartial")).catch(() => false);
+	else
+		void sandbox
+			.run(`/bin/rm -rf -- ${shellQuote(mirrorStage(stage))}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS })
+			.catch(() => undefined);
 }
 
 // Only the remote receipt is shared. Each publisher carries its own attempt through all three steps.
 const receipts = new WeakMap<SandboxHandle, string>();
 
 /** Commits the workspace's changes on the session's branch. `message` is the commit's whole message. */
-export async function commitWork(sandbox: SandboxHandle, input: CommitInput, message: string): Promise<GitOutcome & { attempt?: PushAttempt }> {
+export async function commitWork(
+	sandbox: SandboxHandle,
+	input: CommitInput,
+	message: string,
+): Promise<GitOutcome & { attempt?: PushAttempt }> {
 	receipts.delete(sandbox);
 	const id = randomBytes(16).toString("hex");
-	const result = await run(sandbox, commitScript(input, id), { stdin: message.endsWith("\n") ? message : `${message}\n`, timeoutMs: COMMIT_TIMEOUT_MS });
+	const result = await run(sandbox, commitScript(input, id), {
+		stdin: message.endsWith("\n") ? message : `${message}\n`,
+		timeoutMs: COMMIT_TIMEOUT_MS,
+	});
 	const head = result.marks.get("head");
 	if (result.ok && head && !result.marks.has("nothing")) {
 		return { ...result, attempt: { head: commitId(head), baseSha: input.baseSha, pushed: input.pushed, id } };
@@ -971,7 +1276,7 @@ export async function outgoingPatch(sandbox: SandboxHandle, pending?: PushAttemp
 		...(pending ? [] : ["exit 1"]), // A real scan requires the commit step's pinned head.
 		startTransport(pending?.id ?? "missing"),
 		PLAIN_GIT,
-		'plain_git init --bare --quiet --template= repo',
+		"plain_git init --bare --quiet --template= repo",
 		'git() { plain_git --git-dir="$private/repo" "$@"; }',
 		"set -o pipefail",
 		// Open the exchange file without following agent-owned symlinks. index-pack verifies
@@ -995,7 +1300,9 @@ export async function outgoingPatch(sandbox: SandboxHandle, pending?: PushAttemp
 		'base64 -w0 "$patch"',
 	].join("\n");
 	const chunks: string[] = [];
-	const result = await sandbox.run(script, { gitUser: true, cwd: "/", timeoutMs: PUSH_TIMEOUT_MS, onStdout: (chunk) => chunks.push(chunk) }).catch(() => null);
+	const result = await sandbox
+		.run(script, { gitUser: true, cwd: "/", timeoutMs: PUSH_TIMEOUT_MS, onStdout: chunk => chunks.push(chunk) })
+		.catch(() => null);
 	const output = chunks.length ? chunks.join("") : (result?.stdout ?? "");
 	if (result?.exitCode === 9) {
 		await discardHandover(sandbox, pending);
@@ -1003,7 +1310,10 @@ export async function outgoingPatch(sandbox: SandboxHandle, pending?: PushAttemp
 	}
 	if (result?.exitCode === 8 || (!pending && Buffer.byteLength(output) >= limit)) {
 		await discardHandover(sandbox, pending);
-		throw new GithubProblem("github_failed", "Nothing was pushed. The change is too large to check for saved secrets (8 MB limit).");
+		throw new GithubProblem(
+			"github_failed",
+			"Nothing was pushed. The change is too large to check for saved secrets (8 MB limit).",
+		);
 	}
 	if (!result || result.exitCode !== 0 || result.timedOut || result.aborted) return null;
 	// The fake interpreter executes no shell or Git and gives redaction its synthetic diff directly.
@@ -1011,7 +1321,15 @@ export async function outgoingPatch(sandbox: SandboxHandle, pending?: PushAttemp
 	const newline = output.indexOf("\n");
 	const [length, objects] = output.slice(0, newline).split(" ");
 	const encoded = output.slice(newline + 1);
-	if (newline < 1 || !length || !/^\d+$/.test(length) || !objects || !/^[0-9a-f]{64}$/.test(objects) || encoded.length !== 4 * Math.ceil(Number(length) / 3)) return null;
+	if (
+		newline < 1 ||
+		!length ||
+		!/^\d+$/.test(length) ||
+		!objects ||
+		!/^[0-9a-f]{64}$/.test(objects) ||
+		encoded.length !== 4 * Math.ceil(Number(length) / 3)
+	)
+		return null;
 	pending.objects = objects;
 	return Buffer.from(encoded, "base64").toString("utf8");
 }
@@ -1060,7 +1378,12 @@ export async function readWork(sandbox: SandboxHandle, baseSha: string | null): 
 		else files.push({ status, path });
 	}
 	const file = (part: string): string | null => (part.startsWith("file\n") ? part.slice(5) : null);
-	return { files, patch: parts[1] as string, config: { before: file(parts[2] as string), after: file(parts[4] as string) }, packageJson: { before: file(parts[3] as string), after: file(parts[5] as string) } };
+	return {
+		files,
+		patch: parts[1] as string,
+		config: { before: file(parts[2] as string), after: file(parts[4] as string) },
+		packageJson: { before: file(parts[3] as string), after: file(parts[5] as string) },
+	};
 }
 
 /** Removes what `commitWork` left for a push that is not going to run. Never throws. */
@@ -1068,7 +1391,9 @@ export async function discardHandover(sandbox: SandboxHandle, attempt?: PushAtte
 	if (!attempt) return;
 	delete attempt.objects;
 	await removeTransport(sandbox, attempt.id);
-	await sandbox.run(`/bin/rm -rf -- ${shellQuote(handoverDirectory(attempt.id))}`, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+	await sandbox
+		.run(`/bin/rm -rf -- ${shellQuote(handoverDirectory(attempt.id))}`, { timeoutMs: PROBE_TIMEOUT_MS })
+		.catch(() => undefined);
 }
 
 /** The receipt for the current serialized publish, including when a later PR operation failed. */
@@ -1077,15 +1402,23 @@ export function actuallyPushed(sandbox: SandboxHandle, head: string): boolean {
 }
 
 /** Pushes what `commitWork` left, with `token` on the command's standard input; `lease` as `pushScript` takes it. */
-export async function pushWithToken(sandbox: SandboxHandle, token: string, input: { attempt?: PushAttempt; url: string; branch: string; lease?: string | null }): Promise<GitOutcome> {
+export async function pushWithToken(
+	sandbox: SandboxHandle,
+	token: string,
+	input: { attempt?: PushAttempt; url: string; branch: string; lease?: string | null },
+): Promise<GitOutcome> {
 	const { attempt } = input;
 	// The in-memory sandbox interpreter has no shell or Git and simulates a push with empty output.
 	// A real shell with no scanned range exits before it receives a credential.
-	if (!attempt?.objects) return run(sandbox, 'echo wlp:nohandover; exit 4', { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
+	if (!attempt?.objects) return run(sandbox, "echo wlp:nohandover; exit 4", { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
 	let result: GitOutcome;
 	try {
-		result = await run(sandbox, pushScript(attempt, input.url, input.branch, input.lease ?? null),
-			{ gitUser: true, stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
+		result = await run(sandbox, pushScript(attempt, input.url, input.branch, input.lease ?? null), {
+			gitUser: true,
+			stdin: token + "\n",
+			timeoutMs: PUSH_TIMEOUT_MS,
+			secrets: [token],
+		});
 	} finally {
 		await removeTransport(sandbox, attempt.id);
 	}

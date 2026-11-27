@@ -37,7 +37,10 @@ export function monthOf(ms: number): string {
 	return monthOfDay(dayOf(ms));
 }
 
-export interface MeterPeriod { start: number; end: number }
+export interface MeterPeriod {
+	start: number;
+	end: number;
+}
 export type SubscriptionDates = Pick<BillingState, "periodStart" | "periodEnd" | "period">;
 
 /** UTC anniversary, clamped to the last day of a shorter month. Always offset from the original anchor. */
@@ -52,7 +55,8 @@ export function shiftMonths(anchor: number, months: number): number {
 }
 
 function anniversaryPeriod(anchor: number, now: number): MeterPeriod {
-	const first = new Date(anchor), date = new Date(now);
+	const first = new Date(anchor),
+		date = new Date(now);
 	let months = (date.getUTCFullYear() - first.getUTCFullYear()) * 12 + date.getUTCMonth() - first.getUTCMonth();
 	if (shiftMonths(anchor, months) > now) months--;
 	return { start: shiftMonths(anchor, months), end: shiftMonths(anchor, months + 1) };

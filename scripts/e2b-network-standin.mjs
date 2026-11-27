@@ -20,9 +20,12 @@ import https from "node:https";
 import net from "node:net";
 
 const [address, keyFile, certFile] = process.argv.slice(2);
-const policy = (source) => {
+const policy = source => {
 	try {
-		return { known: true, config: JSON.parse(readFileSync(`/tmp/policies/${source.replace(/^::ffff:/, "")}.json`, "utf8")) };
+		return {
+			known: true,
+			config: JSON.parse(readFileSync(`/tmp/policies/${source.replace(/^::ffff:/, "")}.json`, "utf8")),
+		};
 	} catch {
 		return { known: false, config: undefined };
 	}
@@ -31,7 +34,9 @@ const allowed = (config, name) => {
 	if (config === null) return true;
 	if (!config || !name) return false;
 	const host = name.toLowerCase().replace(/\.$/, "");
-	return (config.allowOut ?? []).some((rule) => rule === "*" || rule === host || (rule.startsWith("*.") && host.endsWith(rule.slice(1))));
+	return (config.allowOut ?? []).some(
+		rule => rule === "*" || rule === host || (rule.startsWith("*.") && host.endsWith(rule.slice(1))),
+	);
 };
 
 // The server name of a TLS ClientHello, or null. Every length is checked against what is there.
@@ -39,7 +44,7 @@ export function serverName(buffer) {
 	let at = 5;
 	if (buffer.length < 9 || buffer[0] !== 22 || buffer[at] !== 1) return null;
 	at += 4 + 2 + 32;
-	const skip = (size) => {
+	const skip = size => {
 		if (at + size > buffer.length) return false;
 		const length = size === 1 ? buffer[at] : buffer.readUInt16BE(at);
 		at += size + length;
@@ -63,34 +68,36 @@ export function serverName(buffer) {
 
 // The filter: read the start of a connection, decide by name, hand it on to the fixture or drop it.
 function filter(port, upstream, nameOf) {
-	net.createServer((socket) => {
-		const { config } = policy(socket.remoteAddress ?? "");
-		let head = Buffer.alloc(0);
-		const timer = setTimeout(() => socket.destroy(), 5000);
-		socket.on("error", () => {});
-		const onData = (chunk) => {
-			head = Buffer.concat([head, chunk]);
-			const name = nameOf(head);
-			if (name === undefined && head.length < 16384) return;
-			socket.off("data", onData);
-			clearTimeout(timer);
-			if (!allowed(config, name ?? null)) return socket.destroy();
-			const out = net.connect(upstream, "127.0.0.1", () => {
-				out.write(head);
-				socket.pipe(out).pipe(socket);
-			});
-			out.on("error", () => socket.destroy());
-		};
-		socket.on("data", onData);
-	}).listen(port, address);
+	net
+		.createServer(socket => {
+			const { config } = policy(socket.remoteAddress ?? "");
+			let head = Buffer.alloc(0);
+			const timer = setTimeout(() => socket.destroy(), 5000);
+			socket.on("error", () => {});
+			const onData = chunk => {
+				head = Buffer.concat([head, chunk]);
+				const name = nameOf(head);
+				if (name === undefined && head.length < 16384) return;
+				socket.off("data", onData);
+				clearTimeout(timer);
+				if (!allowed(config, name ?? null)) return socket.destroy();
+				const out = net.connect(upstream, "127.0.0.1", () => {
+					out.write(head);
+					socket.pipe(out).pipe(socket);
+				});
+				out.on("error", () => socket.destroy());
+			};
+			socket.on("data", onData);
+		})
+		.listen(port, address);
 }
 // undefined: not enough bytes yet.
-const tlsName = (head) => {
+const tlsName = head => {
 	if (head.length < 5) return undefined;
 	if (head.length < 5 + head.readUInt16BE(3)) return undefined;
 	return serverName(head);
 };
-const hostHeader = (head) => {
+const hostHeader = head => {
 	const text = head.toString("latin1");
 	if (!text.includes("\r\n\r\n")) return undefined;
 	return /\r\nhost:\s*([^\r\n:]+)/i.exec(text)?.[1] ?? null;
@@ -102,16 +109,25 @@ filter(80, 8080, hostHeader);
 function answer(request, response) {
 	const host = (request.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
 	if (host === "github.com" && request.url.startsWith("/acme/")) {
-		const forward = http.request({ host: "127.0.0.1", port: 8081, method: request.method, path: "/cgi-bin/git" + request.url, headers: request.headers }, (reply) => {
-			response.writeHead(reply.statusCode ?? 502, reply.headers);
-			reply.pipe(response);
-		});
+		const forward = http.request(
+			{
+				host: "127.0.0.1",
+				port: 8081,
+				method: request.method,
+				path: "/cgi-bin/git" + request.url,
+				headers: request.headers,
+			},
+			reply => {
+				response.writeHead(reply.statusCode ?? 502, reply.headers);
+				reply.pipe(response);
+			},
+		);
 		forward.on("error", () => response.destroy());
 		request.pipe(forward);
 		return;
 	}
 	let size = 0;
-	request.on("data", (chunk) => (size += chunk.length));
+	request.on("data", chunk => (size += chunk.length));
 	request.on("end", () => {
 		if (host === "api.openai.com") {
 			response.writeHead(401, { "content-type": "application/json" });
@@ -143,7 +159,13 @@ dns.on("message", (query, from) => {
 	header.writeUInt16BE(1, 4);
 	header.writeUInt16BE(type === 1 ? 1 : 0, 6);
 	header.writeUInt32BE(0, 8);
-	const record = type === 1 ? Buffer.concat([Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4]), Buffer.from(address.split(".").map(Number))]) : Buffer.alloc(0);
+	const record =
+		type === 1
+			? Buffer.concat([
+					Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4]),
+					Buffer.from(address.split(".").map(Number)),
+				])
+			: Buffer.alloc(0);
 	dns.send(Buffer.concat([header, question, record]), from.port, from.address);
 });
 dns.bind(53, address);

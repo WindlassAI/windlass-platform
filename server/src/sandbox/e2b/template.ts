@@ -34,7 +34,7 @@ export function templateDockerfile(dockerfile: string, shots = false): string {
 	if (!browser) throw new Error("Missing sandbox Dockerfile shots stage");
 	return (base.replace(/^FROM (\S+) AS base$/m, "FROM $1") + (shots ? browser : ""))
 		.split("\n")
-		.filter((line) => !/^CMD\b/.test(line.trim()))
+		.filter(line => !/^CMD\b/.test(line.trim()))
 		.join("\n");
 }
 
@@ -44,7 +44,9 @@ export function templateDockerfile(dockerfile: string, shots = false): string {
  */
 export function sandboxTemplate(context: string, shots = false, image?: string): TemplateClass {
 	if (image) return Template().fromImage(image).setUser("agent").setWorkdir("/workspace");
-	return Template({ fileContextPath: context }).fromDockerfile(templateDockerfile(readFileSync(join(context, "Dockerfile"), "utf8"), shots));
+	return Template({ fileContextPath: context }).fromDockerfile(
+		templateDockerfile(readFileSync(join(context, "Dockerfile"), "utf8"), shots),
+	);
 }
 
 /** What E2B would be asked to build, as a Dockerfile again: for looking at it without an account. */
@@ -63,10 +65,18 @@ export interface BuildTemplateOptions {
 }
 
 /** Builds the template at E2B and waits for it: uploads the context, runs the steps, snapshots the result. Uses the account's build minutes, and no sandbox afterwards. */
-export async function buildSandboxTemplate(context: string, options: BuildTemplateOptions): Promise<{ name: string; templateId: string; buildId: string; cpuCount: number; memoryMB: number }> {
+export async function buildSandboxTemplate(
+	context: string,
+	options: BuildTemplateOptions,
+): Promise<{ name: string; templateId: string; buildId: string; cpuCount: number; memoryMB: number }> {
 	const name = options.name ?? DEFAULT_TEMPLATE;
 	const cpuCount = options.cpuCount ?? DEFAULT_CPU_COUNT;
 	const memoryMB = options.memoryMB ?? DEFAULT_MEMORY_MB;
-	const built = await Template.build(sandboxTemplate(context, options.shots, options.image), name, { apiKey: options.apiKey, cpuCount, memoryMB, onBuildLogs: defaultBuildLogger() });
+	const built = await Template.build(sandboxTemplate(context, options.shots, options.image), name, {
+		apiKey: options.apiKey,
+		cpuCount,
+		memoryMB,
+		onBuildLogs: defaultBuildLogger(),
+	});
 	return { name: built.name, templateId: built.templateId, buildId: built.buildId, cpuCount, memoryMB };
 }

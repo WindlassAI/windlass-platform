@@ -3,13 +3,44 @@
 // Channel methods run synchronously, so actor actions interleave only between calls.
 import { plain } from "./check.js";
 import type { KeyObject } from "node:crypto";
-import { authFailure, FrameAuthError, platformWelcome, runnerHandshake, type FrameAuth, type PlatformIdentity, type Trust } from "./frame-auth.js";
+import {
+	authFailure,
+	FrameAuthError,
+	platformWelcome,
+	runnerHandshake,
+	type FrameAuth,
+	type PlatformIdentity,
+	type Trust,
+} from "./frame-auth.js";
 import { SandboxConnectionLost, SandboxUserError } from "../sandbox/api.js";
 import type { ProcessEnd } from "../sandbox/provider.js";
 import {
-	ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, PROTOCOL_VERSION, RUNNER_GRACE_MS, WINDOW_BYTES, WINDOW_FRAMES,
-	isName, parseBody, parseFrame, protocolRefusal, validArgs, validValue,
-	type Args, type Body, type Failure, type Frame, type Hello, type Name, type Operation, type Value, type Welcome,
+	ACK_MS,
+	DEAD_MS,
+	MAX_FRAME_BYTES,
+	MAX_MESSAGE_BYTES,
+	MAX_OPS_IN_FLIGHT,
+	OP_MS,
+	PING_MS,
+	PROTOCOL_VERSION,
+	RUNNER_GRACE_MS,
+	WINDOW_BYTES,
+	WINDOW_FRAMES,
+	isName,
+	parseBody,
+	parseFrame,
+	protocolRefusal,
+	validArgs,
+	validValue,
+	type Args,
+	type Body,
+	type Failure,
+	type Frame,
+	type Hello,
+	type Name,
+	type Operation,
+	type Value,
+	type Welcome,
 } from "./protocol.js";
 
 export interface ChannelSocket {
@@ -49,7 +80,12 @@ export function carriesSecret(body: Body): boolean {
 	if (body.name === "modelRelay" && body.args.forward) return true;
 	if (body.name === "writeSecretFile" || body.name === "modelRelayToken") return true;
 	const options = (body.args as { options?: { secretEnv?: unknown } }).options;
-	return !!options && typeof options.secretEnv === "object" && options.secretEnv !== null && Object.keys(options.secretEnv).length > 0;
+	return (
+		!!options &&
+		typeof options.secretEnv === "object" &&
+		options.secretEnv !== null &&
+		Object.keys(options.secretEnv).length > 0
+	);
 }
 
 type Output = (fd: 1 | 2, data: string) => void;
@@ -66,7 +102,8 @@ const MAX_STRANGERS = 4;
 
 function measure(body: Body): string {
 	const json = JSON.stringify(body);
-	if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES) throw new Error("The message is larger than the runner channel carries.");
+	if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES)
+		throw new Error("The message is larger than the runner channel carries.");
 	return json;
 }
 
@@ -92,9 +129,18 @@ abstract class Channel {
 	private clock?: ReturnType<typeof setInterval>;
 	private grace?: ReturnType<typeof setTimeout>;
 	// Write outgoing frames before sending and commit incoming effects before acknowledging.
-	private durable: { frames: Array<[number, string]>; stored: number; committed: number; saved: string | null; onDirty(): void } | null = null;
+	private durable: {
+		frames: Array<[number, string]>;
+		stored: number;
+		committed: number;
+		saved: string | null;
+		onDirty(): void;
+	} | null = null;
 
-	constructor(private readonly base: Options & { onDrain?(): void; onDisconnect?(): void }, private readonly graceReason: string) {}
+	constructor(
+		private readonly base: Options & { onDrain?(): void; onDisconnect?(): void },
+		private readonly graceReason: string,
+	) {}
 
 	// Restore the journal and give the runner a grace period to reconnect. onDirty wakes the journal writer.
 	protected keep(onDirty: () => void, from: ConversationRecord | null): void {
@@ -111,10 +157,15 @@ abstract class Channel {
 			this.bytes += bytes;
 		}
 		Object.assign(this.durable, { stored: from.sent, committed: from.received, saved: from.conversation });
-		this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, this.graceMs());
+		this.grace = setTimeout(() => {
+			this.grace = undefined;
+			this.reset(this.graceReason);
+		}, this.graceMs());
 	}
 
-	protected dirty(): void { this.durable?.onDirty(); }
+	protected dirty(): void {
+		this.durable?.onDirty();
+	}
 
 	protected graceMs(): number {
 		return RUNNER_GRACE_MS;
@@ -124,9 +175,11 @@ abstract class Channel {
 	unsaved(): Unsaved | null {
 		const d = this.durable;
 		if (!d) return null;
-		if (!this.conversation) return d.saved === null ? null : { conversation: null, fresh: true, sent: 0, acked: 0, frames: [] };
+		if (!this.conversation)
+			return d.saved === null ? null : { conversation: null, fresh: true, sent: 0, acked: 0, frames: [] };
 		const fresh = d.saved !== this.conversation;
-		if (!fresh && d.frames.length === 0 && d.stored === this.sent) return { conversation: this.conversation, fresh, sent: this.sent, acked: this.acked, frames: [] };
+		if (!fresh && d.frames.length === 0 && d.stored === this.sent)
+			return { conversation: this.conversation, fresh, sent: this.sent, acked: this.acked, frames: [] };
 		return { conversation: this.conversation, fresh, sent: this.sent, acked: this.acked, frames: d.frames.splice(0) };
 	}
 
@@ -143,7 +196,9 @@ abstract class Channel {
 	}
 
 	/** How much of what was received the owner can commit now, with everything it produced. */
-	get receivedCount(): number { return this.received; }
+	get receivedCount(): number {
+		return this.received;
+	}
 
 	/** The owner committed what the first `received` messages produced: that much is acknowledged. */
 	committed(conversation: string | null, received: number): void {
@@ -153,17 +208,29 @@ abstract class Channel {
 		if (this.socket) this.tick();
 	}
 
-	get conversationId(): string | null { return this.conversation; }
+	get conversationId(): string | null {
+		return this.conversation;
+	}
 
 	/** What is acknowledged: everything received, or on a durable channel what is committed of it. */
-	private get acknowledgeable(): number { return this.durable ? this.durable.committed : this.received; }
+	private get acknowledgeable(): number {
+		return this.durable ? this.durable.committed : this.received;
+	}
 	/** Whether a frame may go out: on a durable channel only once it is stored. */
-	private mayGo(seq: number): boolean { return !this.durable || seq <= this.durable.stored; }
+	private mayGo(seq: number): boolean {
+		return !this.durable || seq <= this.durable.stored;
+	}
 
-	get connected(): boolean { return this.socket !== null; }
-	get buffered(): { bytes: number; frames: number } { return { bytes: this.bytes, frames: this.backlog.size }; }
+	get connected(): boolean {
+		return this.socket !== null;
+	}
+	get buffered(): { bytes: number; frames: number } {
+		return { bytes: this.bytes, frames: this.backlog.size };
+	}
 
-	get authenticated(): boolean { return !!this.socket && this.codecs.has(this.socket); }
+	get authenticated(): boolean {
+		return !!this.socket && this.codecs.has(this.socket);
+	}
 	protected badBody(): void {
 		console.warn("frame_auth_failed schema");
 		this.fail("The authenticated peer sent an invalid session message.");
@@ -177,7 +244,11 @@ abstract class Channel {
 		const socket = this.socket;
 		this.socket = null;
 		clearInterval(this.clock);
-		if (!this.grace && !this.closed && this.conversation) this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, this.graceMs());
+		if (!this.grace && !this.closed && this.conversation)
+			this.grace = setTimeout(() => {
+				this.grace = undefined;
+				this.reset(this.graceReason);
+			}, this.graceMs());
 		socket?.close();
 	}
 
@@ -214,8 +285,11 @@ abstract class Channel {
 	protected watch(socket: ChannelSocket, introduce: (frame: Frame) => void, protocol = 1): void {
 		const [oldest] = this.strangers.keys();
 		if (oldest && this.strangers.size >= MAX_STRANGERS) this.dismiss(oldest);
-		this.strangers.set(socket, setTimeout(() => this.dismiss(socket), DEAD_MS));
-		socket.onMessage((data) => {
+		this.strangers.set(
+			socket,
+			setTimeout(() => this.dismiss(socket), DEAD_MS),
+		);
+		socket.onMessage(data => {
 			if (this.closed) return;
 			if (this.socket === socket) {
 				const auth = this.codecs.get(socket);
@@ -223,7 +297,10 @@ abstract class Channel {
 					const frame = parseFrame(auth ? auth.open(data, MAX_FRAME_BYTES) : data, protocol);
 					if (auth && (!frame || !["msg", "part", "ack"].includes(frame.kind))) throw new FrameAuthError("schema");
 					this.receive(frame);
-				} catch (error) { console.warn(authFailure(error)); this.lost(); }
+				} catch (error) {
+					console.warn(authFailure(error));
+					this.lost();
+				}
 				return;
 			}
 			if (!this.strangers.has(socket)) return;
@@ -233,7 +310,9 @@ abstract class Channel {
 			try {
 				if (frame) introduce(frame);
 				else if (protocol === 2) throw new FrameAuthError("schema");
-			} catch (error) { console.warn(authFailure(error)); }
+			} catch (error) {
+				console.warn(authFailure(error));
+			}
 			// One its introduction did not make current (refused, a resume that failed, or the owner
 			// closing the channel from `onReset` meanwhile) belongs to nobody.
 			if (this.socket !== socket) socket.close();
@@ -257,7 +336,9 @@ abstract class Channel {
 	protected resumable(peerReceived: number): boolean {
 		return peerReceived >= this.acked && peerReceived <= this.sent;
 	}
-	protected get delivered(): number { return this.acknowledgeable; }
+	protected get delivered(): number {
+		return this.acknowledgeable;
+	}
 
 	/** Makes `socket` the current one, after the introduction, and sends what the peer has not received. */
 	protected adopt(socket: ChannelSocket, introduction: Hello | Welcome | null, peerReceived: number): void {
@@ -271,7 +352,12 @@ abstract class Channel {
 		this.clock = setInterval(() => this.tick(), ACK_MS);
 		this.heard = Date.now();
 		if (introduction) {
-			try { socket.send(JSON.stringify(introduction)); } catch { this.lost(); return; }
+			try {
+				socket.send(JSON.stringify(introduction));
+			} catch {
+				this.lost();
+				return;
+			}
 		}
 		this.told = this.acknowledgeable;
 		// Resent before the release can call `onDrain`, so new output cannot overtake what the peer lacks.
@@ -284,22 +370,34 @@ abstract class Channel {
 	protected send(body: Body): void {
 		const json = measure(body);
 		// Not numbered yet: what is withdrawn before a conversation starts must never reach the peer.
-		if (this.conversation === null) { this.unsent.push(body); return; }
+		if (this.conversation === null) {
+			this.unsent.push(body);
+			return;
+		}
 		if (this.bytes > HELD_BYTES) return this.fail("The other side does not acknowledge what it receives.");
 		const ack = this.acknowledgeable;
 		// A secret's frames are stored as a cancel of its id: a runner that never had it ignores that, and the owner asks again.
-		const standIn = this.durable && carriesSecret(body) ? (seq: number) => JSON.stringify({ kind: "msg", seq, ack, body: { kind: "cancel", id: body.id } }) : null;
+		const standIn =
+			this.durable && carriesSecret(body)
+				? (seq: number) => JSON.stringify({ kind: "msg", seq, ack, body: { kind: "cancel", id: body.id } })
+				: null;
 		const whole = JSON.stringify({ kind: "msg", seq: this.sent + 1, ack, body });
-		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) { this.push(whole, standIn); return; }
+		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) {
+			this.push(whole, standIn);
+			return;
+		}
 		for (let at = 0; at < json.length; at += PART_UNITS) {
 			const data = json.slice(at, at + PART_UNITS);
-			this.push(JSON.stringify({ kind: "part", seq: this.sent + 1, ack, data, last: at + PART_UNITS >= json.length }), standIn);
+			this.push(
+				JSON.stringify({ kind: "part", seq: this.sent + 1, ack, data, last: at + PART_UNITS >= json.length }),
+				standIn,
+			);
 		}
 	}
 
 	/** Takes back what was made for `id` and is still waiting for a conversation. */
 	protected withdraw(id: string): void {
-		this.unsent = this.unsent.filter((body) => body.id !== id);
+		this.unsent = this.unsent.filter(body => body.id !== id);
 	}
 
 	/** Whether a stream's source may go on; when not, `onDrain` says when it may again. */
@@ -353,7 +451,9 @@ abstract class Channel {
 				this.socket.send(auth ? auth.seal(JSON.parse(text)) : text);
 			}
 			this.spoke = Date.now();
-		} catch { this.lost(); }
+		} catch {
+			this.lost();
+		}
 	}
 
 	private release(ack: number): void {
@@ -372,7 +472,8 @@ abstract class Channel {
 
 	private receive(frame: Frame | null): void {
 		this.heard = Date.now();
-		if (!frame || (frame.kind !== "msg" && frame.kind !== "part" && frame.kind !== "ack")) return this.fail("The other side sent a frame this conversation does not have.");
+		if (!frame || (frame.kind !== "msg" && frame.kind !== "part" && frame.kind !== "ack"))
+			return this.fail("The other side sent a frame this conversation does not have.");
 		if (frame.ack > this.sent) return this.fail("The other side acknowledged what was never sent.");
 		this.release(frame.ack);
 		if (frame.kind === "ack" || frame.seq <= this.received) return;
@@ -398,7 +499,10 @@ abstract class Channel {
 
 	private tick(): void {
 		const now = Date.now();
-		if (now - this.heard >= DEAD_MS) { this.lost(); return; }
+		if (now - this.heard >= DEAD_MS) {
+			this.lost();
+			return;
+		}
 		const ack = this.acknowledgeable;
 		if (ack > this.told || now - this.spoke >= PING_MS) {
 			this.told = ack;
@@ -407,7 +511,14 @@ abstract class Channel {
 	}
 }
 
-type Pending = { name: Name; resolve(value: unknown): void; reject(error: Error): void; output?: Output; timer: ReturnType<typeof setTimeout>; forget(): void };
+type Pending = {
+	name: Name;
+	resolve(value: unknown): void;
+	reject(error: Error): void;
+	output?: Output;
+	timer: ReturnType<typeof setTimeout>;
+	forget(): void;
+};
 /** `held` is stdin written before the runner answered `start`: it has nowhere to go until then. */
 type Process = { output: Output; finish(end: ProcessEnd): void; open: boolean; held: Body[] | null };
 
@@ -417,7 +528,14 @@ export class ServerChannel extends Channel {
 	private processes = new Map<string, Process>();
 
 	// Verify the ticket and signature before resuming. onConnect must never re-enter the channel.
-	constructor(private readonly options: Options & { platform?: { identity: PlatformIdentity; uid: string; machineId: string; sessionId: string }; accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
+	constructor(
+		private readonly options: Options & {
+			platform?: { identity: PlatformIdentity; uid: string; machineId: string; sessionId: string };
+			accept(hello: Hello): boolean;
+			onConnect?(): void;
+			onDisconnect?(): void;
+		},
+	) {
 		super(options, "The machine did not come back within ten minutes.");
 	}
 
@@ -428,7 +546,9 @@ export class ServerChannel extends Channel {
 	// Register the restored process before asking for its socket so replayed output has a listener.
 	adoptProcess(id: string, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } | null {
 		if (this.closed || !this.conversation || this.processes.has(id)) return null;
-		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true, held: null }));
+		const ended = new Promise<ProcessEnd>(finish =>
+			this.processes.set(id, { output: onOutput, finish, open: true, held: null }),
+		);
 		return { id, ended };
 	}
 
@@ -443,50 +563,85 @@ export class ServerChannel extends Channel {
 
 	/** A socket from the gateway. It counts once its hello is accepted; one that says nothing goes after DEAD_MS. */
 	attach(socket: ChannelSocket): void {
-		if (this.closed) { socket.close(); return; }
+		if (this.closed) {
+			socket.close();
+			return;
+		}
 		const platform = this.options.platform;
 		const protocol = platform ? PROTOCOL_VERSION : 1;
-		this.watch(socket, (hello) => {
-			if (hello.kind === "foreign") {
-				try { socket.send(JSON.stringify({ kind: "welcome", protocol, refused: protocolRefusal(hello.protocol, protocol) })); } catch {}
-				return;
-			}
-			if (hello.kind !== "hello" || !this.accepts(hello)) return;
-			const resumes = hello.resume !== null && hello.resume.conversation === this.conversation && this.resumable(hello.resume.received);
-			// Only the runner that holds the conversation may replace a live socket: it has given up on that one.
-			if (this.socket && !resumes) return;
-			const conversation = resumes ? this.conversation! : crypto.randomUUID();
-			const base = { kind: "welcome" as const, conversation, received: resumes ? this.delivered : 0, resumed: resumes };
-			let welcome: Welcome = { ...base, protocol: 1 };
-			if (platform && hello.protocol === 2) {
-				const greeting = platformWelcome({ ...platform, challenge: hello.ticket, ticket: hello.ticket }, hello, { ...base, protocol: 2 as const }, platform.identity);
-				this.codecs.set(socket, greeting.auth);
-				welcome = greeting.welcome;
-			}
-			// An expired certificate or invalid peer key must not reset outstanding work.
-			if (!resumes) {
-				if (this.conversation) this.reset("The machine's runner restarted, or gave up on this session's work after a long disconnection.");
-				if (this.closed) return;
-				this.conversation = conversation;
-			}
-			this.adopt(socket, welcome, resumes ? hello.resume!.received : 0);
-			if (this.socket === socket) this.options.onConnect?.();
-		}, protocol);
+		this.watch(
+			socket,
+			hello => {
+				if (hello.kind === "foreign") {
+					try {
+						socket.send(
+							JSON.stringify({ kind: "welcome", protocol, refused: protocolRefusal(hello.protocol, protocol) }),
+						);
+					} catch {}
+					return;
+				}
+				if (hello.kind !== "hello" || !this.accepts(hello)) return;
+				const resumes =
+					hello.resume !== null &&
+					hello.resume.conversation === this.conversation &&
+					this.resumable(hello.resume.received);
+				// Only the runner that holds the conversation may replace a live socket: it has given up on that one.
+				if (this.socket && !resumes) return;
+				const conversation = resumes ? this.conversation! : crypto.randomUUID();
+				const base = {
+					kind: "welcome" as const,
+					conversation,
+					received: resumes ? this.delivered : 0,
+					resumed: resumes,
+				};
+				let welcome: Welcome = { ...base, protocol: 1 };
+				if (platform && hello.protocol === 2) {
+					const greeting = platformWelcome(
+						{ ...platform, challenge: hello.ticket, ticket: hello.ticket },
+						hello,
+						{ ...base, protocol: 2 as const },
+						platform.identity,
+					);
+					this.codecs.set(socket, greeting.auth);
+					welcome = greeting.welcome;
+				}
+				// An expired certificate or invalid peer key must not reset outstanding work.
+				if (!resumes) {
+					if (this.conversation)
+						this.reset("The machine's runner restarted, or gave up on this session's work after a long disconnection.");
+					if (this.closed) return;
+					this.conversation = conversation;
+				}
+				this.adopt(socket, welcome, resumes ? hello.resume!.received : 0);
+				if (this.socket === socket) this.options.onConnect?.();
+			},
+			protocol,
+		);
 	}
 
 	private accepts(hello: Hello): boolean {
-		try { return this.options.accept(hello); } catch { return false; }
+		try {
+			return this.options.accept(hello);
+		} catch {
+			return false;
+		}
 	}
 
 	/** Rejects with ConversationLost when the conversation ends first, and with an Error for the runner's own failure. */
-	request<N extends Exclude<Name, "start">>(name: N, args: Args<N>, options: { onOutput?: Output; signal?: AbortSignal } = {}): Promise<Value<N>> {
+	request<N extends Exclude<Name, "start">>(
+		name: N,
+		args: Args<N>,
+		options: { onOutput?: Output; signal?: AbortSignal } = {},
+	): Promise<Value<N>> {
 		return this.call(crypto.randomUUID(), name, args, options) as Promise<Value<N>>;
 	}
 
 	/** `ended` never rejects: a process that could not be started has ended with an error. */
 	start(args: Args<"start">, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } {
 		const id = crypto.randomUUID();
-		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true, held: [] }));
+		const ended = new Promise<ProcessEnd>(finish =>
+			this.processes.set(id, { output: onOutput, finish, open: true, held: [] }),
+		);
 		this.call(id, "start", args, {}).catch((error: Error) => this.finish(id, { code: null, signal: null, error }));
 		return { id, ended };
 	}
@@ -522,22 +677,42 @@ export class ServerChannel extends Channel {
 		for (const body of held) if (this.processes.has(id)) this.send(body);
 	}
 
-	private call(id: string, name: Name, args: unknown, { onOutput, signal }: { onOutput?: Output; signal?: AbortSignal }): Promise<unknown> {
+	private call(
+		id: string,
+		name: Name,
+		args: unknown,
+		{ onOutput, signal }: { onOutput?: Output; signal?: AbortSignal },
+	): Promise<unknown> {
 		return new Promise((resolve, reject) => {
 			if (this.closed) return reject(new ConversationLost("The runner channel is closed."));
 			if (!validArgs(name, args)) return reject(new Error(`Invalid arguments for the runner's ${name}.`));
-			if (this.pending.size >= MAX_OPS_IN_FLIGHT) return reject(new Error("Too many operations are waiting on the machine."));
+			if (this.pending.size >= MAX_OPS_IN_FLIGHT)
+				return reject(new Error("Too many operations are waiting on the machine."));
 			const own = (args as { options?: { timeoutMs?: number } }).options?.timeoutMs;
-			const timer = setTimeout(() => this.settle(id, new ConversationLost("The machine did not answer in time.")), name === "blockedNetwork" || name === "memoryEvents" ? 5_000 : (own ?? OP_MS) + RUNNER_GRACE_MS);
+			const timer = setTimeout(
+				() => this.settle(id, new ConversationLost("The machine did not answer in time.")),
+				name === "blockedNetwork" || name === "memoryEvents" ? 5_000 : (own ?? OP_MS) + RUNNER_GRACE_MS,
+			);
 			const cancel = () => {
 				if (!this.pending.has(id)) return;
 				if (name === "modelRelay" || name === "openCodeDefault") this.settle(id, new Error("The turn was stopped."));
 				this.send({ kind: "cancel", id });
 			};
 			signal?.addEventListener("abort", cancel, { once: true });
-			this.pending.set(id, { name, resolve, reject, output: onOutput, timer, forget: () => signal?.removeEventListener("abort", cancel) });
-			try { this.send({ kind: "op", id, name, args: args as Record<string, unknown> }); }
-			catch (error) { this.settle(id, error as Error); return; }
+			this.pending.set(id, {
+				name,
+				resolve,
+				reject,
+				output: onOutput,
+				timer,
+				forget: () => signal?.removeEventListener("abort", cancel),
+			});
+			try {
+				this.send({ kind: "op", id, name, args: args as Record<string, unknown> });
+			} catch (error) {
+				this.settle(id, error as Error);
+				return;
+			}
 			if (signal?.aborted) cancel();
 		});
 	}
@@ -565,7 +740,11 @@ export class ServerChannel extends Channel {
 			case "res": {
 				const p = this.pending.get(body.id);
 				if (!p) return; // It stopped waiting.
-				if (!body.ok) return this.settle(body.id, body.error.kind === "user" ? new SandboxUserError(body.error.message) : new Error(body.error.message));
+				if (!body.ok)
+					return this.settle(
+						body.id,
+						body.error.kind === "user" ? new SandboxUserError(body.error.message) : new Error(body.error.message),
+					);
 				if (!validValue(p.name, body.value)) {
 					if (this.authenticated) return this.badBody();
 					return this.settle(body.id, new Error(`The machine's answer to ${p.name} could not be read.`));
@@ -578,7 +757,11 @@ export class ServerChannel extends Channel {
 				(this.processes.get(body.id)?.output ?? this.pending.get(body.id)?.output)?.(body.fd, body.data);
 				return;
 			case "end":
-				return this.finish(body.id, { code: body.code, signal: body.signal, error: body.error === null ? null : new Error(body.error) });
+				return this.finish(body.id, {
+					code: body.code,
+					signal: body.signal,
+					error: body.error === null ? null : new Error(body.error),
+				});
 			default:
 				return this.fail("The machine's runner sent a message that only the platform sends.");
 		}
@@ -587,7 +770,8 @@ export class ServerChannel extends Channel {
 	protected drop(reason: string): void {
 		if (this.processes.size > 0) this.lostProcesses += 1;
 		for (const id of [...this.pending.keys()]) this.settle(id, new ConversationLost(reason));
-		for (const id of [...this.processes.keys()]) this.finish(id, { code: null, signal: null, error: new ConversationLost(reason) });
+		for (const id of [...this.processes.keys()])
+			this.finish(id, { code: null, signal: null, error: new ConversationLost(reason) });
 	}
 
 	/** How many times a conversation ended with a process still running in it: a turn that sees this grow lost its machine mid-turn. */
@@ -603,7 +787,13 @@ export class ServerChannel extends Channel {
 	}
 }
 
-export interface SessionTrust { uid: string; sessionId: string; machine: KeyObject; trust: Trust; endpoint: string }
+export interface SessionTrust {
+	uid: string;
+	sessionId: string;
+	machine: KeyObject;
+	trust: Trust;
+	endpoint: string;
+}
 
 /** The runner's end, one per session it serves. */
 export class RunnerChannel extends Channel {
@@ -611,49 +801,87 @@ export class RunnerChannel extends Channel {
 	private processes = new Set<string>();
 
 	// Answer each operation once, and accept a start before sending its output. A reset must stop orphan work.
-	constructor(private readonly options: Options & {
-		onOperation(op: Operation): void;
-		onInput(process: string, data: string): void;
-		onCloseIn(process: string): void;
-		/** The abort signal of a `run` in progress. */
-		onCancel(id: string): void;
-		/** A stream's source may go on after `output` said to wait. */
-		onDrain(): void;
-		/** The platform will not talk to this runner: the sentence says why. Reconnecting will not help. */
-		onRefused(reason: string): void;
-	}) {
+	constructor(
+		private readonly options: Options & {
+			onOperation(op: Operation): void;
+			onInput(process: string, data: string): void;
+			onCloseIn(process: string): void;
+			/** The abort signal of a `run` in progress. */
+			onCancel(id: string): void;
+			/** A stream's source may go on after `output` said to wait. */
+			onDrain(): void;
+			/** The platform will not talk to this runner: the sentence says why. Reconnecting will not help. */
+			onRefused(reason: string): void;
+		},
+	) {
 		super(options, "The platform did not come back within ten minutes.");
 	}
 
 	/** A new socket, opened because the last one was given up on. Its ticket and signature are new. */
-	attach(socket: ChannelSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">, secure?: SessionTrust): void {
-		if (this.closed) { socket.close(); return; }
+	attach(
+		socket: ChannelSocket,
+		identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">,
+		secure?: SessionTrust,
+	): void {
+		if (this.closed) {
+			socket.close();
+			return;
+		}
 		this.detach();
 		this.dismiss();
 		const asked = this.conversation;
-		const base = { kind: "hello" as const, runnerVersion: identity.runnerVersion, machineId: identity.machineId, ticket: identity.ticket, resume: asked ? { conversation: asked, received: this.delivered } : null };
-		const exchange = secure && runnerHandshake({ uid: secure.uid, sessionId: secure.sessionId, machineId: identity.machineId, challenge: identity.ticket, ticket: identity.ticket }, base, secure.machine);
+		const base = {
+			kind: "hello" as const,
+			runnerVersion: identity.runnerVersion,
+			machineId: identity.machineId,
+			ticket: identity.ticket,
+			resume: asked ? { conversation: asked, received: this.delivered } : null,
+		};
+		const exchange =
+			secure &&
+			runnerHandshake(
+				{
+					uid: secure.uid,
+					sessionId: secure.sessionId,
+					machineId: identity.machineId,
+					challenge: identity.ticket,
+					ticket: identity.ticket,
+				},
+				base,
+				secure.machine,
+			);
 		const hello: Hello = exchange?.hello ?? { ...base, protocol: 1, signature: identity.signature };
 		const text = JSON.stringify(hello);
 		if (parseFrame(text, hello.protocol)?.kind !== "hello") throw new Error("Invalid runner identity.");
-		this.watch(socket, (welcome) => {
-			if (welcome.kind !== "welcome") return;
-			if (secure && exchange) {
-				if (!("platformEph" in welcome)) throw new FrameAuthError("handshake");
-				this.codecs.set(socket, exchange.finish(welcome, secure.trust, secure.endpoint));
-			} else if ("platformEph" in welcome) return;
-			if ("refused" in welcome) return this.options.onRefused(welcome.refused);
-			if (welcome.resumed) {
-				if (welcome.conversation !== asked || asked !== this.conversation || !this.resumable(welcome.received)) {
-					return this.fail("The platform resumed a conversation this runner does not have.");
+		this.watch(
+			socket,
+			welcome => {
+				if (welcome.kind !== "welcome") return;
+				if (secure && exchange) {
+					if (!("platformEph" in welcome)) throw new FrameAuthError("handshake");
+					this.codecs.set(socket, exchange.finish(welcome, secure.trust, secure.endpoint));
+				} else if ("platformEph" in welcome) return;
+				if ("refused" in welcome) return this.options.onRefused(welcome.refused);
+				if (welcome.resumed) {
+					if (welcome.conversation !== asked || asked !== this.conversation || !this.resumable(welcome.received)) {
+						return this.fail("The platform resumed a conversation this runner does not have.");
+					}
+					return this.adopt(socket, null, welcome.received);
 				}
-				return this.adopt(socket, null, welcome.received);
-			}
-			if (this.conversation) this.reset("The platform no longer has this session's work: its server restarted, or gave up after a long disconnection.");
-			this.conversation = welcome.conversation;
-			this.adopt(socket, null, 0);
-		}, hello.protocol);
-		try { socket.send(text); } catch { this.dismiss(socket); }
+				if (this.conversation)
+					this.reset(
+						"The platform no longer has this session's work: its server restarted, or gave up after a long disconnection.",
+					);
+				this.conversation = welcome.conversation;
+				this.adopt(socket, null, 0);
+			},
+			hello.protocol,
+		);
+		try {
+			socket.send(text);
+		} catch {
+			this.dismiss(socket);
+		}
 	}
 
 	/** Throws for a value that is not the operation's result: that is the runner's own mistake. */
@@ -663,11 +891,28 @@ export class RunnerChannel extends Channel {
 		if (!validValue(name, value)) throw new Error(`Invalid result for ${name}.`);
 		this.serving.delete(op.id);
 		if (name === "start") this.processes.add(op.id);
-		this.last({ kind: "res", id: op.id, ok: true, value }, { kind: "res", id: op.id, ok: false, error: { kind: "sandbox", message: `The answer to ${name} is larger than a runner can send.` } });
+		this.last(
+			{ kind: "res", id: op.id, ok: true, value },
+			{
+				kind: "res",
+				id: op.id,
+				ok: false,
+				error: { kind: "sandbox", message: `The answer to ${name} is larger than a runner can send.` },
+			},
+		);
 	}
 
 	refuse(op: Operation, error: Failure): void {
-		if (this.serving.delete(op.id)) this.last({ kind: "res", id: op.id, ok: false, error }, { kind: "res", id: op.id, ok: false, error: { kind: error.kind, message: "The machine's error is larger than a runner can send." } });
+		if (this.serving.delete(op.id))
+			this.last(
+				{ kind: "res", id: op.id, ok: false, error },
+				{
+					kind: "res",
+					id: op.id,
+					ok: false,
+					error: { kind: error.kind, message: "The machine's error is larger than a runner can send." },
+				},
+			);
 	}
 
 	/** Output of a `run` in progress or of a started process. False: stop reading until `onDrain`. */
@@ -679,27 +924,45 @@ export class RunnerChannel extends Channel {
 
 	end(process: string, end: ProcessEnd): void {
 		const body = { kind: "end", id: process, code: end.code, signal: end.signal } as const;
-		if (this.processes.delete(process)) this.last({ ...body, error: end.error?.message ?? null }, { ...body, error: "The process ended with an error larger than a runner can send." });
+		if (this.processes.delete(process))
+			this.last(
+				{ ...body, error: end.error?.message ?? null },
+				{ ...body, error: "The process ended with an error larger than a runner can send." },
+			);
 	}
 
 	/** The message that settles something: its tracking is already gone, so one too large to send is replaced, never lost. */
 	private last(body: Body, instead: Body): void {
-		try { this.send(body); } catch { this.send(instead); }
+		try {
+			this.send(body);
+		} catch {
+			this.send(instead);
+		}
 	}
 
 	protected deliver(body: Body): void {
 		switch (body.kind) {
 			case "op": {
-				if (this.serving.has(body.id) || this.processes.has(body.id)) return this.fail("The platform used an operation id twice.");
+				if (this.serving.has(body.id) || this.processes.has(body.id))
+					return this.fail("The platform used an operation id twice.");
 				const name = body.name;
 				const known = isName(name);
 				const valid = known && validArgs(name, body.args);
 				if (this.authenticated && known && !valid) return this.badBody();
-				const snapshot = name === "saveSnapshot" || name === "hasSnapshot" || (name === "create" && plain(body.args) && body.args.prepared !== undefined);
-				const refusal = snapshot && !this.authenticated ? "Machine snapshots require an authenticated session."
-					: !valid ? "This runner does not serve that operation."
-					: this.serving.size >= MAX_OPS_IN_FLIGHT ? "Too many operations are waiting on this machine." : null;
-				if (refusal) return this.send({ kind: "res", id: body.id, ok: false, error: { kind: "refused", message: refusal } });
+				const snapshot =
+					name === "saveSnapshot" ||
+					name === "hasSnapshot" ||
+					(name === "create" && plain(body.args) && body.args.prepared !== undefined);
+				const refusal =
+					snapshot && !this.authenticated
+						? "Machine snapshots require an authenticated session."
+						: !valid
+							? "This runner does not serve that operation."
+							: this.serving.size >= MAX_OPS_IN_FLIGHT
+								? "Too many operations are waiting on this machine."
+								: null;
+				if (refusal)
+					return this.send({ kind: "res", id: body.id, ok: false, error: { kind: "refused", message: refusal } });
 				this.serving.set(body.id, name as Name);
 				return this.options.onOperation(body as Operation);
 			}

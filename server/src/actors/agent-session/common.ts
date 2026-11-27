@@ -13,8 +13,8 @@ export class ReviewRefused extends TurnProblem {}
 export function tail(text: string, lines = 6, chars = 800): string {
 	const kept = text
 		.split("\n")
-		.map((line) => line.trimEnd())
-		.filter((line) => line !== "")
+		.map(line => line.trimEnd())
+		.filter(line => line !== "")
 		.slice(-lines)
 		.join("\n");
 	return kept.length > chars ? kept.slice(-chars) : kept;
@@ -22,7 +22,9 @@ export function tail(text: string, lines = 6, chars = 800): string {
 
 /** What every connect to the session's sandbox is told: the hosts its repository's network list allows, for a hosted one. */
 export function connectOptions(meta: SessionMeta): { network?: string[] } {
-	return meta.place.kind === "hosted" && meta.networkHosts && meta.networkHosts.length > 0 ? { network: meta.networkHosts } : {};
+	return meta.place.kind === "hosted" && meta.networkHosts && meta.networkHosts.length > 0
+		? { network: meta.networkHosts }
+		: {};
 }
 
 // Acquire before awaiting. Idle cleanup cannot run while a reader, publisher or turn owns the sandbox.
@@ -52,7 +54,9 @@ export function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConne
 }
 
 export function itemPrompt(row: InboxRow): string {
-	return row.checkout && !row.text ? `Review pull request #${row.checkout.pr} at ${row.checkout.head.slice(0, 7)} against the task and its acceptance criteria.` : row.text;
+	return row.checkout && !row.text
+		? `Review pull request #${row.checkout.pr} at ${row.checkout.head.slice(0, 7)} against the task and its acceptance criteria.`
+		: row.text;
 }
 
 /** Waits for `promise`, but no longer than `ms`. Never rejects. */
@@ -61,7 +65,7 @@ export async function within(promise: Promise<unknown> | null, ms: number): Prom
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	await Promise.race([
 		promise.catch(() => undefined),
-		new Promise<void>((resolve) => {
+		new Promise<void>(resolve => {
 			timer = setTimeout(resolve, ms);
 		}),
 	]);

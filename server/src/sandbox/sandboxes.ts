@@ -11,12 +11,48 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type SandboxProfileId } from "../contract.js";
 import { CLAUDE, machineHarness } from "./harnesses.js";
-import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
-import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, WORKSPACE, docker, randomId } from "./docker.js";
+import {
+	type ConnectOptions,
+	type CreateSandboxInput,
+	type ExecOptions,
+	type ExecResult,
+	type ListedSandbox,
+	type SandboxPrice,
+	SandboxUserError,
+	type Sandboxes,
+} from "./api.js";
+import {
+	DATA_DIR,
+	IMAGE,
+	SHOTS_IMAGE,
+	LABEL,
+	LABEL_ARG,
+	MACHINE_LABEL,
+	NO_LOGS,
+	WORKSPACE,
+	docker,
+	randomId,
+} from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
 import { codexDefaultMode } from "./codex-modes.js";
 import { SESSION_VOLUME_PROFILES, commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
-import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
+import {
+	type Answer,
+	type InternalExecResult,
+	GIT_USER_ENV,
+	NAME,
+	type ProcessEnd,
+	RUN_TAG,
+	SECRET_FILE_SCRIPT,
+	SWEEP_SCRIPT,
+	type SandboxProcess,
+	type StartOptions,
+	type TurnSandbox,
+	assertEnvNames,
+	gitProcess,
+	signalGitProcess,
+	markTurnSandbox,
+} from "./provider.js";
 import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
 import { type DockerModelRelay, type DockerTurnRelay, MODEL_RELAY_WINDLASS } from "./model-relay.js";
 import { readsModelRelay } from "../model-relay-url.js";
@@ -49,7 +85,6 @@ export interface DockerProcess extends SandboxProcess {
 	pauseOutput(paused: boolean): void;
 }
 
-
 /**
  * Starts a stopped sandbox container. Docker resolves a mirror's volume-subpath again here.
  * Should its slot be gone, an empty one is put back (the clone treats that as no mirror) and
@@ -57,7 +92,7 @@ export interface DockerProcess extends SandboxProcess {
  */
 export async function startContainer(name: string, helperImage: string, store?: MirrorStore): Promise<void> {
 	let started = await docker(["start", name], { timeoutMs: 60_000 });
-	if (started.code !== 0 && await restoreGitMirror(name, helperImage, store).catch(() => false))
+	if (started.code !== 0 && (await restoreGitMirror(name, helperImage, store).catch(() => false)))
 		started = await docker(["start", name], { timeoutMs: 60_000 });
 	if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 }
@@ -122,17 +157,38 @@ export class DockerSandboxHandle implements TurnSandbox {
 		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
 		assertEnvNames(options.env);
 		assertEnvNames(options.secretEnv);
-		const env = Object.entries(options.gitUser ? GIT_USER_ENV : options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const secret = Object.entries(options.gitUser ? {} : options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
-		for (const [key] of secret) if (key.startsWith(SECRET_ALIAS)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: its name is the platform's`);
+		const env = Object.entries(options.gitUser ? GIT_USER_ENV : (options.env ?? {})).flatMap(([key, value]) => [
+			"-e",
+			`${key}=${value}`,
+		]);
+		const secret = Object.entries(options.gitUser ? {} : (options.secretEnv ?? {})).filter(
+			([key]) => options.env?.[key] === undefined,
+		);
+		for (const [key] of secret)
+			if (key.startsWith(SECRET_ALIAS))
+				throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: its name is the platform's`);
 		// Named only, by alias: the client takes each value from its own environment, which is this process's with the aliases added.
 		// Values stay off the client command line, but the daemon receives them, and its debug request logging can record them.
 		const aliases = secret.map(([, value], n) => [`${SECRET_ALIAS}${n}`, value] as const);
 		const names = secret.length === 0 ? [] : ["sh", "-c", secretNamesScript(secret.map(([key]) => key)), "sh"];
 		const user = options.gitUser ? ["--user", "65534:65534"] : [];
 		const program = options.gitUser ? gitProcess(tag, argv) : ["wlp-run", "exec", tag, ...argv];
-		const args = ["exec", ...user, "-i", "-w", options.gitUser ? "/" : options.cwd ?? this.cwd, ...env, ...aliases.flatMap(([alias]) => ["-e", alias]), this.container, ...names, ...program];
-		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"], ...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(aliases) } }) });
+		const args = [
+			"exec",
+			...user,
+			"-i",
+			"-w",
+			options.gitUser ? "/" : (options.cwd ?? this.cwd),
+			...env,
+			...aliases.flatMap(([alias]) => ["-e", alias]),
+			this.container,
+			...names,
+			...program,
+		];
+		const child = spawn("docker", args, {
+			stdio: ["pipe", "pipe", "pipe"],
+			...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(aliases) } }),
+		});
 		const out = new StringDecoder("utf8");
 		const err = new StringDecoder("utf8");
 		let hasEnded = false;
@@ -149,7 +205,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		child.stderr.on("data", (chunk: Buffer) => emit(options.onStderr, err.write(chunk)));
 		child.stdin.on("error", () => (stdinOpen = false));
 		child.stdin.on("close", () => (stdinOpen = false));
-		const ended = new Promise<ProcessEnd>((resolve) => {
+		const ended = new Promise<ProcessEnd>(resolve => {
 			let failure: Error | null = null;
 			const finish = (code: number | null, signal: string | null) => {
 				if (hasEnded) return;
@@ -159,7 +215,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 				stdinOpen = false;
 				resolve({ code, signal, error: failure });
 			};
-			child.on("error", (error) => {
+			child.on("error", error => {
 				failure = new Error(`could not run docker exec: ${error.message}`);
 				// Without a process there is no "close" to wait for.
 				if (child.pid === undefined) finish(null, null);
@@ -168,13 +224,13 @@ export class DockerSandboxHandle implements TurnSandbox {
 		});
 		return {
 			tag,
-			pauseOutput: (paused) => {
+			pauseOutput: paused => {
 				for (const pipe of [child.stdout, child.stderr]) {
 					if (paused) pipe.pause();
 					else pipe.resume();
 				}
 			},
-			write: (text) => {
+			write: text => {
 				if (!stdinOpen) return false;
 				child.stdin.write(text);
 				return true;
@@ -199,10 +255,17 @@ export class DockerSandboxHandle implements TurnSandbox {
 	}
 
 	/** Runs argv directly with `docker exec`: no shell, no standard input, not under wlp-run. Null when `docker` could not be run. */
-	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
+	async ask(
+		argv: string[],
+		options: { env?: Record<string, string>; timeoutMs?: number } = {},
+	): Promise<Answer | null> {
 		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const result = await docker(["exec", ...env, this.container, ...argv], { timeoutMs: options.timeoutMs }).catch(() => null);
-		return result === null ? null : { code: result.timedOut ? null : result.code, stdout: result.stdout, stderr: result.stderr };
+		const result = await docker(["exec", ...env, this.container, ...argv], { timeoutMs: options.timeoutMs }).catch(
+			() => null,
+		);
+		return result === null
+			? null
+			: { code: result.timedOut ? null : result.code, stdout: result.stdout, stderr: result.stderr };
 	}
 
 	/** A container runs until it is stopped: there is nothing to keep alive for a turn. */
@@ -221,9 +284,9 @@ export class DockerSandboxHandle implements TurnSandbox {
 	 */
 	async stopLeftovers(program: string): Promise<number> {
 		const found = await docker(["exec", this.container, "wlp-run", "tags-of", program], { timeoutMs: 10_000 });
-		const tags = found.stdout.split("\n").filter((tag) => /^[A-Za-z0-9_-]+$/.test(tag));
+		const tags = found.stdout.split("\n").filter(tag => /^[A-Za-z0-9_-]+$/.test(tag));
 		await Promise.all(
-			tags.map(async (tag) => {
+			tags.map(async tag => {
 				await docker(["exec", this.container, "wlp-run", "signal", tag, "INT", "leader"], { timeoutMs: 10_000 });
 				await this.sweep(tag, { waitMs: 3000 });
 			}),
@@ -238,9 +301,11 @@ export class DockerSandboxHandle implements TurnSandbox {
 	async sweep(tag: string, options: { waitMs?: number; files?: string[] } = {}): Promise<number> {
 		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
 		const list = async () => {
-			const result = await docker(["exec", this.container, "wlp-run", "list", tag], { timeoutMs: 10_000 }).catch(() => null);
+			const result = await docker(["exec", this.container, "wlp-run", "list", tag], { timeoutMs: 10_000 }).catch(
+				() => null,
+			);
 			if (result === null || result.code !== 0) return 0; // the container is gone or stopped: nothing runs
-			return result.stdout.split("\n").filter((line) => line.trim() !== "").length;
+			return result.stdout.split("\n").filter(line => line.trim() !== "").length;
 		};
 		const files = options.files ?? [];
 		const waitMs = options.waitMs ?? 0;
@@ -254,7 +319,9 @@ export class DockerSandboxHandle implements TurnSandbox {
 			if (count === 0 && files.length === 0) return 0;
 		}
 		// One call: SIGKILL to what is left, the files removed, and what still runs after that counted.
-		const result = await docker(["exec", this.container, "sh", "-c", SWEEP_SCRIPT, "sh", tag, ...files], { timeoutMs: 15_000 }).catch(() => null);
+		const result = await docker(["exec", this.container, "sh", "-c", SWEEP_SCRIPT, "sh", tag, ...files], {
+			timeoutMs: 15_000,
+		}).catch(() => null);
 		const left = result === null || result.code !== 0 ? 0 : Number(result.stdout.trim());
 		return Number.isFinite(left) ? left : 0;
 	}
@@ -266,10 +333,24 @@ export class DockerSandboxHandle implements TurnSandbox {
 	}
 
 	async writeTextFile(path: string, content: string): Promise<void> {
-		const result = await docker(["exec", "-i", "-w", this.cwd, this.container, "sh", "-c", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", path], {
-			stdin: content,
-			timeoutMs: 60_000,
-		});
+		const result = await docker(
+			[
+				"exec",
+				"-i",
+				"-w",
+				this.cwd,
+				this.container,
+				"sh",
+				"-c",
+				'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
+				"sh",
+				path,
+			],
+			{
+				stdin: content,
+				timeoutMs: 60_000,
+			},
+		);
 		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.stderr.trim()}`);
 	}
 
@@ -280,9 +361,15 @@ export class DockerSandboxHandle implements TurnSandbox {
 	 * line. One write of a path at a time.
 	 */
 	async writeSecretFile(path: string, content: string): Promise<void> {
-		const result = await docker(["exec", "-i", this.container, "sh", "-c", SECRET_FILE_SCRIPT, "sh", path], { stdin: content, timeoutMs: 30_000 });
+		const result = await docker(["exec", "-i", this.container, "sh", "-c", SECRET_FILE_SCRIPT, "sh", path], {
+			stdin: content,
+			timeoutMs: 30_000,
+		});
 		// What `sh` says about a failure names the path, never the content.
-		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`);
+		if (result.code !== 0)
+			throw new Error(
+				`cannot write ${path}: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`,
+			);
 	}
 
 	/** Removes files. A no-op for those that are gone, and when the container is. */
@@ -336,14 +423,30 @@ function stateOf(status: string): "none" | "running" | "paused" {
 /** Clear the private file and any pre-upgrade copy on the data volume. */
 async function forgetTokenFile(id: string): Promise<void> {
 	const paths = [tokenFilePath(id), tokenFilePath(id, DATA_DIR)];
-	await docker(["exec", containerName(id), "rm", "-f", "--", ...paths.flatMap(path => [path, path + ".tmp"])], { timeoutMs: 10_000 }).catch(() => undefined);
+	await docker(["exec", containerName(id), "rm", "-f", "--", ...paths.flatMap(path => [path, path + ".tmp"])], {
+		timeoutMs: 10_000,
+	}).catch(() => undefined);
 }
 
 async function listDockerSandboxes(uid: string, machineLabel: string): Promise<ListedSandbox[]> {
 	assertUid(uid);
 	// Docker cannot filter by a label's absence: the hosted provider's are told apart below.
 	const onMachine = machineLabel === "" ? [] : ["--filter", `label=${MACHINE_LABEL}=${machineLabel}`];
-	const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, ...onMachine, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
+	const result = await docker(
+		[
+			"ps",
+			"-a",
+			"--no-trunc",
+			"--filter",
+			`label=${LABEL_ARG}`,
+			"--filter",
+			`label=${LABEL}.uid=${uid}`,
+			...onMachine,
+			"--format",
+			`{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${MACHINE_LABEL}"}}`,
+		],
+		{ timeoutMs: 30_000, check: true },
+	);
 	const found: ListedSandbox[] = [];
 	for (const line of result.stdout.split("\n")) {
 		const [name = "", status = "", sessionId = "", machine = ""] = line.trim().split("|");
@@ -355,14 +458,25 @@ async function listDockerSandboxes(uid: string, machineLabel: string): Promise<L
 }
 
 /** Remove each session's private file on logout, including containers with private transcript storage. */
-export async function removeRunningTokenFiles(uid: string, machine: string, fileId = (raw: string) => raw): Promise<void> {
+export async function removeRunningTokenFiles(
+	uid: string,
+	machine: string,
+	fileId = (raw: string) => raw,
+): Promise<void> {
 	const sessions = await listDockerSandboxes(uid, machine);
-	await Promise.all(sessions.filter(session => session.state === "running" && /^[a-f0-9]{12}$/.test(session.id)).map(async ({ id }) => {
-		const path = tokenFilePath(fileId(id));
-		const result = await docker(["exec", containerName(id), "rm", "-f", "--", path, path + ".tmp"], { timeoutMs: 10_000 });
-		// A concurrent stop or removal already discarded the tmpfs.
-		if (result.code !== 0 && !/is not running|No such container/i.test(result.stderr)) throw new Error("Could not remove the session's access token.");
-	}));
+	await Promise.all(
+		sessions
+			.filter(session => session.state === "running" && /^[a-f0-9]{12}$/.test(session.id))
+			.map(async ({ id }) => {
+				const path = tokenFilePath(fileId(id));
+				const result = await docker(["exec", containerName(id), "rm", "-f", "--", path, path + ".tmp"], {
+					timeoutMs: 10_000,
+				});
+				// A concurrent stop or removal already discarded the tmpfs.
+				if (result.code !== 0 && !/is not running|No such container/i.test(result.stderr))
+					throw new Error("Could not remove the session's access token.");
+			}),
+	);
 }
 
 /** What the hosted provider and a runner's differ in. */
@@ -400,34 +514,37 @@ export type DockerSandboxOptions = {
 	 * other's sandboxes.
 	 */
 	machine: string | null;
-} & ({
-	/**
-	 * Makes sure a data volume of `uid`'s exists and returns its name: the one volume a container
-	 * mounts, at Windlass's data directory. Without `sandbox`, the volume the user's sessions share: the
-	 * hosted provider's is `wlp-user-<uid>`, which it also takes old sign-ins out of (volumes.ts); a
-	 * runner's is its own, so the two never share one. With `sandbox` (a raw id), the volume of that one
-	 * sandbox (SESSION_VOLUME_PROFILES), labelled `${LABEL}.sandbox=<id>`.
-	 */
-	dataVolume(uid: string, sandbox?: string): Promise<string>;
-	/** Removes the volume `dataVolume(uid, sandbox)` made, when it is there and its labels are that user's and sandbox's. */
-	dropDataVolume(uid: string, sandbox: string): Promise<void>;
-	/**
-	 * The name of the volume `dataVolume(uid, sandbox)` makes for one sandbox. Where it is given, a new
-	 * Windlass sandbox of SESSION_VOLUME_PROFILES gets a volume of its own unless `create` is told
-	 * otherwise (a runner, for a server that did not name `session-volumes`), and the provider tells
-	 * sandboxes and their volumes apart by it. Where it is not, every sandbox mounts `dataVolume(uid)`.
-	 */
-	ownVolumeName?(uid: string, sandbox: string): string;
-	sessionRelay?: never;
-	harness?: never;
-} | {
-	/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
-	machine: string;
-	image: string;
-	harness?: "claude" | "opencode" | "codex";
-	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
-	ownVolumeName?: never;
-});
+} & (
+	| {
+			/**
+			 * Makes sure a data volume of `uid`'s exists and returns its name: the one volume a container
+			 * mounts, at Windlass's data directory. Without `sandbox`, the volume the user's sessions share: the
+			 * hosted provider's is `wlp-user-<uid>`, which it also takes old sign-ins out of (volumes.ts); a
+			 * runner's is its own, so the two never share one. With `sandbox` (a raw id), the volume of that one
+			 * sandbox (SESSION_VOLUME_PROFILES), labelled `${LABEL}.sandbox=<id>`.
+			 */
+			dataVolume(uid: string, sandbox?: string): Promise<string>;
+			/** Removes the volume `dataVolume(uid, sandbox)` made, when it is there and its labels are that user's and sandbox's. */
+			dropDataVolume(uid: string, sandbox: string): Promise<void>;
+			/**
+			 * The name of the volume `dataVolume(uid, sandbox)` makes for one sandbox. Where it is given, a new
+			 * Windlass sandbox of SESSION_VOLUME_PROFILES gets a volume of its own unless `create` is told
+			 * otherwise (a runner, for a server that did not name `session-volumes`), and the provider tells
+			 * sandboxes and their volumes apart by it. Where it is not, every sandbox mounts `dataVolume(uid)`.
+			 */
+			ownVolumeName?(uid: string, sandbox: string): string;
+			sessionRelay?: never;
+			harness?: never;
+	  }
+	| {
+			/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
+			machine: string;
+			image: string;
+			harness?: "claude" | "opencode" | "codex";
+			sessionRelay(): Promise<{ env: string[]; nonce: string }>;
+			ownVolumeName?: never;
+	  }
+);
 
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
@@ -446,34 +563,67 @@ export class DockerSandboxes implements Sandboxes {
 
 	private resources(size: number) {
 		const unit = this.options.slots?.unit ?? { cpus: this.options.cpus ?? 1, memoryBytes: 1536 * 2 ** 20, pids: 512 };
-		return { cpus: Math.round(unit.cpus * 1e9) * size / 1e9, memoryBytes: unit.memoryBytes * size, pids: unit.pids * size };
+		return {
+			cpus: (Math.round(unit.cpus * 1e9) * size) / 1e9,
+			memoryBytes: unit.memoryBytes * size,
+			pids: unit.pids * size,
+		};
 	}
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
 		// JSON has no raw newline in it, so each of the two takes a line of its own.
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.Image}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
+		const result = await docker([
+			"container",
+			"inspect",
+			"--format",
+			`{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.Image}}\n{{json .Mounts}}\n{{json .Config.Labels}}`,
+			containerName(id),
+		]);
 		if (result.code !== 0) return null;
 		const [fields = "", mountsJson = "", labelsJson = ""] = result.stdout.trim().split("\n");
 		const [status, shares, nanos, memory, swap, pids, image] = fields.split("|");
 		let labels: Record<string, string> | null;
 		let mounts: { Type?: string; Name?: string; Destination?: string }[] | null;
-		try { labels = JSON.parse(labelsJson); mounts = JSON.parse(mountsJson); }
-		catch { throw new Error(`docker container inspect returned missing or invalid labels or mounts JSON for ${containerName(id)}`); }
+		try {
+			labels = JSON.parse(labelsJson);
+			mounts = JSON.parse(mountsJson);
+		} catch {
+			throw new Error(
+				`docker container inspect returned missing or invalid labels or mounts JSON for ${containerName(id)}`,
+			);
+		}
 		if (labels?.[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine) return null;
 		const label = labels[LABEL + ".requested-slots"] || labels[LABEL + ".slots"] || "1";
 		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
 		const unit = this.resources(size);
-		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
-			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
-		const profile = labels[LABEL + ".profile"] as SandboxProfileId, uid = labels[LABEL + ".uid"];
-		const data = (mounts ?? []).find((mount) => mount.Destination === DATA_DIR);
-		const windlass = !labels[LABEL + ".harness"] && this.options.sessionRelay === undefined && /^[a-f0-9]{12}$/.test(id);
-		const ownName = windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
+		const matches =
+			shares === "256" &&
+			Number(nanos) === Math.round(unit.cpus * 1e9) &&
+			Number(memory) === unit.memoryBytes &&
+			Number(swap) === unit.memoryBytes &&
+			Number(pids) === unit.pids;
+		const profile = labels[LABEL + ".profile"] as SandboxProfileId,
+			uid = labels[LABEL + ".uid"];
+		const data = (mounts ?? []).find(mount => mount.Destination === DATA_DIR);
+		const windlass =
+			!labels[LABEL + ".harness"] && this.options.sessionRelay === undefined && /^[a-f0-9]{12}$/.test(id);
+		const ownName =
+			windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
 		const ownData = data?.Type === "volume" && ownName !== undefined && data.Name === ownName;
-		return { status, profile, uid, session: labels[LABEL + ".session"], ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
-			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory), image: /^sha256:[a-f0-9]{64}$/.test(image ?? "") ? image : undefined,
-			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
+		return {
+			status,
+			profile,
+			uid,
+			session: labels[LABEL + ".session"],
+			ownData,
+			sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
+			screenshots: labels[variantLabel] === "shots",
+			snapshot: sourceFromLabels(labels),
+			memory: Number(memory),
+			image: /^sha256:[a-f0-9]{64}$/.test(image ?? "") ? image : undefined,
+			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined,
+		};
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -498,7 +648,18 @@ export class DockerSandboxes implements Sandboxes {
 	/** The users with hosted sandboxes on this Docker: a runner's, which carry a machine label, are not this layer's. */
 	async owners(): Promise<string[]> {
 		if (this.machine !== "") return [];
-		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--format", `{{.Names}}|{{.Label "${LABEL}.uid"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
+		const result = await docker(
+			[
+				"ps",
+				"-a",
+				"--no-trunc",
+				"--filter",
+				`label=${LABEL_ARG}`,
+				"--format",
+				`{{.Names}}|{{.Label "${LABEL}.uid"}}|{{.Label "${MACHINE_LABEL}"}}`,
+			],
+			{ timeoutMs: 30_000, check: true },
+		);
 		const uids = new Set<string>();
 		for (const line of result.stdout.split("\n")) {
 			const [name = "", uid = "", machine = ""] = line.trim().split("|");
@@ -509,7 +670,8 @@ export class DockerSandboxes implements Sandboxes {
 
 	profiles(): SandboxProfile[] {
 		return profilesFor("docker", undefined, this.relayOn === true).map(p =>
-			this.options.hostedKeys && p.id === "docker-hardened" ? { ...p, platformKeys: true } : p);
+			this.options.hostedKeys && p.id === "docker-hardened" ? { ...p, platformKeys: true } : p,
+		);
 	}
 
 	/** Whether the image's Windlass reads the relay's address, once known (`modelRelayReady`). */
@@ -530,7 +692,8 @@ export class DockerSandboxes implements Sandboxes {
 
 	async prepareModelRelay(): Promise<string> {
 		const relay = this.options.modelRelay;
-		if (relay === undefined) return "[wlp] model_relay: off (WLP_MODEL_RELAY=off): each turn's access token is written into its sandbox";
+		if (relay === undefined)
+			return "[wlp] model_relay: off (WLP_MODEL_RELAY=off): each turn's access token is written into its sandbox";
 		const on = await this.modelRelayReady();
 		const removed = await relay.sweep().catch(() => 0);
 		const left = removed ? `; removed ${removed} forwarder(s) and the relay's token files a stopped server left` : "";
@@ -550,24 +713,42 @@ export class DockerSandboxes implements Sandboxes {
 	 * the data went with the sandbox. Left out: it gets one of its own where the provider makes them
 	 * (`DockerSandboxOptions.ownVolumeName`).
 	 */
-	async create(input: CreateSandboxInput & { ownData?: boolean | "required"; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
+	async create(
+		input: CreateSandboxInput & { ownData?: boolean | "required"; reservedId?: string; deferredRelayNonce?: string },
+	): Promise<string> {
 		assertUid(input.uid);
-		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : this.options.machine === null ? input.harness : undefined;
+		const harness = this.options.sessionRelay
+			? (this.options.harness ?? "claude")
+			: this.options.machine === null
+				? input.harness
+				: undefined;
 		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
 		if (harness !== input.harness) throw new SandboxUserError(`${agent.name} runs only on a machine offering it.`);
-		if (harness && this.options.machine === null && !this.options.hostedKeys) throw new SandboxUserError("Hosted agents need a configured platform model relay.");
-		const supported = this.options.machine === null ? input.profile === "docker-hardened" : agent.profiles.includes(input.profile);
+		if (harness && this.options.machine === null && !this.options.hostedKeys)
+			throw new SandboxUserError("Hosted agents need a configured platform model relay.");
+		const supported =
+			this.options.machine === null ? input.profile === "docker-hardened" : agent.profiles.includes(input.profile);
 		if (harness && (!supported || input.screenshots))
 			throw new SandboxUserError(`${agent.name} requires the hardened ${agent.name} image.`);
-		const base = harness && this.options.machine === null
-			? process.env[`WLP_${harness.toUpperCase()}_IMAGE`] || `windlass-platform-${harness}:dev`
-			: input.screenshots ? this.shotsImage : this.image;
-		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
-			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;
+		const base =
+			harness && this.options.machine === null
+				? process.env[`WLP_${harness.toUpperCase()}_IMAGE`] || `windlass-platform-${harness}:dev`
+				: input.screenshots
+					? this.shotsImage
+					: this.image;
+		const selected =
+			input.fromSnapshot && !harness
+				? await this.snapshots(base, !!input.screenshots)
+						.select(input.fromSnapshot, input.uid, input.profile)
+						.catch(() => null)
+				: null;
 		const image = selected?.image ?? base;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
-		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
+		if (!profile.available || flags === undefined)
+			throw new SandboxUserError(
+				`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`,
+			);
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		if (input.reservedId && !/^[a-f0-9]{12}$/.test(input.reservedId)) throw new Error("Invalid reserved sandbox id.");
 		const id = (harness ? harness + "-" : "") + (input.reservedId ?? randomId(6));
@@ -575,15 +756,29 @@ export class DockerSandboxes implements Sandboxes {
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		// A session whose commands run directly in the container gets a volume of its own.
 		// A spare runs repository setup before claim. Even a bubblewrap spare must never mount the shared data.
-		const own = !harness && !input.privateData && this.options.ownVolumeName !== undefined &&
-			(input.ownData === "required" || SESSION_VOLUME_PROFILES.includes(input.profile) && input.ownData !== false);
+		const own =
+			!harness &&
+			!input.privateData &&
+			this.options.ownVolumeName !== undefined &&
+			(input.ownData === "required" || (SESSION_VOLUME_PROFILES.includes(input.profile) && input.ownData !== false));
 		if (input.ownData === "required" && !own) throw new Error("The sandbox requires a private data volume.");
-		const volume = input.privateData || harness || this.options.sessionRelay ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
+		const volume =
+			input.privateData || harness || this.options.sessionRelay
+				? null
+				: await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
-		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;
+		const mirror =
+			input.mirrorRepo && scope
+				? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, {
+						floor: this.limits().free,
+					}).catch(() => null)
+				: null;
 		// An idle harness has only its public routing nonce. The runner signs it and
 		// opens its forwarder once a session has claimed this container.
-		const relay = harness && input.deferredRelayNonce ? { nonce: input.deferredRelayNonce, env: [] } : await this.options.sessionRelay?.();
+		const relay =
+			harness && input.deferredRelayNonce
+				? { nonce: input.deferredRelayNonce, env: [] }
+				: await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
 		const limits = this.resources(size);
@@ -604,13 +799,27 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
-				...(selected && input.fromSnapshot ? ["--label", candidateLabel + "=" + (input.fromSnapshot.writer ? selected.key : ""), "--label", variantLabel + "=" + (input.screenshots ? "shots" : "base"), "--label", attemptLabel + "=" + input.fromSnapshot.attempt] : []),
+				...(selected && input.fromSnapshot
+					? [
+							"--label",
+							candidateLabel + "=" + (input.fromSnapshot.writer ? selected.key : ""),
+							"--label",
+							variantLabel + "=" + (input.screenshots ? "shots" : "base"),
+							"--label",
+							attemptLabel + "=" + input.fromSnapshot.attempt,
+						]
+					: []),
 				...(this.options.slots ? ["--label", `${LABEL}.slots=${size}`] : []),
 				...(this.options.slots && requested > size ? ["--label", `${LABEL}.requested-slots=${requested}`] : []),
 				...NO_LOGS,
 				...commonRunFlags(limits.cpus, this.options.network?.name, limits.memoryBytes, limits.pids),
-				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
-					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
+				...(this.options.network
+					? [
+							"--label",
+							`${LABEL}.egress=${this.options.network.mode}`,
+							...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v]),
+						]
+					: []),
 				...flags,
 				// Windlass reads its handed-in token in this container's /dev/shm.
 				...(!harness ? ["--ipc", "private"] : []),
@@ -626,16 +835,25 @@ export class DockerSandboxes implements Sandboxes {
 		);
 		if (result.code !== 0) {
 			// A conflict belongs to the container that already held the name.
-			if (/container name .*already in use/i.test(result.stderr)) throw new Error("The sandbox name was already in use.");
+			if (/container name .*already in use/i.test(result.stderr))
+				throw new Error("The sandbox name was already in use.");
 			await docker(["rm", "-f", name]);
 			// The error said below is the one that matters: a volume left behind goes with the next sweep.
 			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});
 			const message = result.stderr.trim();
 			// Eviction can race docker run. Older daemons also lack volume-subpath.
-			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
-			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
-			if (harness && /No such image|pull access denied|not found/i.test(message)) throw new Error(`Missing harness image ${image}. Build it with sandbox/harness/build.sh ${harness} or preload the configured image.`);
-			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
+			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message))
+				return this.create({ ...input, mirrorRepo: undefined });
+			if (selected && /No such image|not found/i.test(message))
+				return this.create({ ...input, fromSnapshot: undefined });
+			if (harness && /No such image|pull access denied|not found/i.test(message))
+				throw new Error(
+					`Missing harness image ${image}. Build it with sandbox/harness/build.sh ${harness} or preload the configured image.`,
+				);
+			if (/No such image|pull access denied|not found/i.test(message))
+				throw new Error(
+					`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`,
+				);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
 		if (selected?.hit) return id;
@@ -657,24 +875,49 @@ export class DockerSandboxes implements Sandboxes {
 	 * for the hosted provider) and with `match`, and named as `ownVolumeName` names that sandbox's.
 	 * `sandbox` narrows them to one sandbox's.
 	 */
-	private async ownVolumes(match: Record<string, string>, sandbox?: string): Promise<(InspectedVolume & { uid: string; sandbox: string })[]> {
+	private async ownVolumes(
+		match: Record<string, string>,
+		sandbox?: string,
+	): Promise<(InspectedVolume & { uid: string; sandbox: string })[]> {
 		const nameOf = this.options.sessionRelay === undefined ? this.options.ownVolumeName : undefined;
 		if (!nameOf) return [];
-		const filters = [LABEL_ARG, sandbox === undefined ? SANDBOX_VOLUME_LABEL : `${SANDBOX_VOLUME_LABEL}=${sandbox}`, ...(this.machine ? [`${MACHINE_LABEL}=${this.machine}`] : []),
-			...Object.entries(match).map(([k, v]) => `${k}=${v}`)].flatMap((label) => ["--filter", "label=" + label]);
-		const names = (await docker(["volume", "ls", "-q", ...filters], { timeoutMs: 30_000, check: true })).stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+		const filters = [
+			LABEL_ARG,
+			sandbox === undefined ? SANDBOX_VOLUME_LABEL : `${SANDBOX_VOLUME_LABEL}=${sandbox}`,
+			...(this.machine ? [`${MACHINE_LABEL}=${this.machine}`] : []),
+			...Object.entries(match).map(([k, v]) => `${k}=${v}`),
+		].flatMap(label => ["--filter", "label=" + label]);
+		const names = (await docker(["volume", "ls", "-q", ...filters], { timeoutMs: 30_000, check: true })).stdout
+			.split("\n")
+			.map(line => line.trim())
+			.filter(Boolean);
 		if (names.length === 0) return [];
 		// One removed in between is left out of the answer, which is then not 0.
 		const inspected = await docker(["volume", "inspect", ...names], { timeoutMs: 30_000 });
 		let volumes: InspectedVolume[];
-		try { volumes = JSON.parse(inspected.stdout || "[]"); } catch { return []; }
+		try {
+			volumes = JSON.parse(inspected.stdout || "[]");
+		} catch {
+			return [];
+		}
 		const found: (InspectedVolume & { uid: string; sandbox: string })[] = [];
 		for (const volume of volumes) {
 			const labels = volume.Labels ?? {};
-			const uid = labels[`${LABEL}.uid`] ?? "", id = labels[SANDBOX_VOLUME_LABEL] ?? "";
-			if (labels[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine || !NAME.test(uid) || !/^[a-f0-9]{12}$/.test(id)) continue;
+			const uid = labels[`${LABEL}.uid`] ?? "",
+				id = labels[SANDBOX_VOLUME_LABEL] ?? "";
+			if (
+				labels[LABEL] !== "1" ||
+				(labels[MACHINE_LABEL] ?? "") !== this.machine ||
+				!NAME.test(uid) ||
+				!/^[a-f0-9]{12}$/.test(id)
+			)
+				continue;
 			let expected: string;
-			try { expected = nameOf(uid, id); } catch { continue; }
+			try {
+				expected = nameOf(uid, id);
+			} catch {
+				continue;
+			}
 			if (volume.Name === expected) found.push({ ...volume, uid, sandbox: id });
 		}
 		return found;
@@ -688,11 +931,16 @@ export class DockerSandboxes implements Sandboxes {
 	async sweepDataVolumes(minAgeMs = 10 * 60_000, match: Record<string, string> = {}): Promise<number> {
 		const volumes = await this.ownVolumes(match);
 		if (volumes.length === 0) return 0;
-		const containers = new Set((await docker(["ps", "-a", "--no-trunc", "--format", "{{.Names}}"], { timeoutMs: 30_000, check: true })).stdout.split("\n").map((line) => line.trim()));
+		const containers = new Set(
+			(await docker(["ps", "-a", "--no-trunc", "--format", "{{.Names}}"], { timeoutMs: 30_000, check: true })).stdout
+				.split("\n")
+				.map(line => line.trim()),
+		);
 		let removed = 0;
 		for (const volume of volumes) {
 			const created = Date.parse(volume.CreatedAt ?? "");
-			if (containers.has(containerName(volume.sandbox)) || !Number.isFinite(created) || Date.now() - created < minAgeMs) continue;
+			if (containers.has(containerName(volume.sandbox)) || !Number.isFinite(created) || Date.now() - created < minAgeMs)
+				continue;
 			try {
 				await this.dropOwnVolume(volume.uid, volume.sandbox);
 				removed += 1;
@@ -711,10 +959,20 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	private snapshots(base = this.image, screenshots = false) {
-		return new DockerSnapshots(this.machine, base, this.options.network, this.limits, screenshots, this.options.deployment, this.mirrorScope);
+		return new DockerSnapshots(
+			this.machine,
+			base,
+			this.options.network,
+			this.limits,
+			screenshots,
+			this.options.deployment,
+			this.mirrorScope,
+		);
 	}
 
-	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
+	async hasSnapshot(uid: string, repo: string) {
+		return this.snapshots().has(uid, repo);
+	}
 
 	async selectedImage(input: SnapshotSelection, uid: string, profile: SandboxProfileId, shots: boolean) {
 		const selection = await this.snapshots(shots ? this.shotsImage : this.image, shots).select(input, uid, profile);
@@ -727,8 +985,7 @@ export class DockerSandboxes implements Sandboxes {
 		const name = containerName(id);
 		// Re-resolve the selected pin: a mutable tag may have moved during setup.
 		const base = found.screenshots ? this.shotsImage : this.image;
-		return this.snapshots(base, found.screenshots)
-			.save(name, found.uid, found.profile, source);
+		return this.snapshots(base, found.screenshots).save(name, found.uid, found.profile, source);
 	}
 
 	async sweepSnapshots(retained: (uid: string) => Promise<ReadonlySet<string> | null>) {
@@ -742,7 +999,8 @@ export class DockerSandboxes implements Sandboxes {
 	private async reconcile(name: string, found: Inspected) {
 		if (!found.resize) return false;
 		const { cpus, memoryBytes, pids } = found.resize;
-		const shrinking = (found.memory === 0 || memoryBytes < found.memory) && ["running", "paused", "restarting"].includes(found.status);
+		const shrinking =
+			(found.memory === 0 || memoryBytes < found.memory) && ["running", "paused", "restarting"].includes(found.status);
 		if (shrinking && found.status === "restarting") return true;
 		// cgroup v2 can accept a shrink and OOM-kill the workload. Freeze it while
 		// measuring and applying the limit. A stopped sandbox needs no usage check.
@@ -750,17 +1008,23 @@ export class DockerSandboxes implements Sandboxes {
 		if (freeze) await docker(["pause", name], { check: true });
 		try {
 			if (shrinking) {
-				const stats = await docker(["system", "dial-stdio"], { timeoutMs: 10_000,
-					stdin: `GET /containers/${name}/stats?stream=false&one-shot=true HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n` });
+				const stats = await docker(["system", "dial-stdio"], {
+					timeoutMs: 10_000,
+					stdin: `GET /containers/${name}/stats?stream=false&one-shot=true HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n`,
+				});
 				if (stats.code !== 0 || !/^HTTP\/1\.[01] 200 /.test(stats.stdout)) return true;
 				let used: number;
-				try { used = JSON.parse(stats.stdout.split("\r\n\r\n")[1]).memory_stats.usage; }
-				catch { return true; }
+				try {
+					used = JSON.parse(stats.stdout.split("\r\n\r\n")[1]).memory_stats.usage;
+				} catch {
+					return true;
+				}
 				if (!Number.isSafeInteger(used) || used <= 0 || used >= memoryBytes) return true;
 			}
 			const result = await docker(["update", ...resourceFlags(cpus, memoryBytes, pids), name]);
 			if (result.code === 0) return false;
-			if (shrinking && /current (?:memory )?usage|memory usage|device or resource busy/i.test(result.stderr)) return true;
+			if (shrinking && /current (?:memory )?usage|memory usage|device or resource busy/i.test(result.stderr))
+				return true;
 			throw new Error("Could not update the sandbox limits: " + result.stderr.trim());
 		} finally {
 			if (freeze) await docker(["unpause", name], { check: true });
@@ -790,11 +1054,28 @@ export class DockerSandboxes implements Sandboxes {
 		// those before returning a handle that could run setup or commands against it.
 		if (/^[a-f0-9]{12}$/.test(id)) {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
-			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
+			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], {
+				timeoutMs: 10_000,
+				check: true,
+			});
 		}
 		const windlass = /^[a-f0-9]{12}$/.test(id);
-		const relayReady = windlass ? this.options.sessionRelay === undefined && await this.modelRelayReady() : this.options.hostedKeys;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relayReady ? this.options.modelRelay : undefined, () => this.limits().free, found.image, found.session);
+		const relayReady = windlass
+			? this.options.sessionRelay === undefined && (await this.modelRelayReady())
+			: this.options.hostedKeys;
+		return new DockerSandboxHandle(
+			id,
+			found.profile,
+			found.uid,
+			found.snapshot,
+			resizePending,
+			this.helperImage,
+			found.ownData,
+			relayReady ? this.options.modelRelay : undefined,
+			() => this.limits().free,
+			found.image,
+			found.session,
+		);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
@@ -817,7 +1098,10 @@ export class DockerSandboxes implements Sandboxes {
 		if (found === null) {
 			// The container is gone already (a removal cut off after it, or by the owner's hand): its own volume
 			// is found by its labels. A namesake of someone else's is no sandbox of this provider's.
-			if (/^[a-f0-9]{12}$/.test(id) && (await docker(["container", "inspect", "--format", "{{.Id}}", containerName(id)])).code !== 0)
+			if (
+				/^[a-f0-9]{12}$/.test(id) &&
+				(await docker(["container", "inspect", "--format", "{{.Id}}", containerName(id)])).code !== 0
+			)
 				for (const volume of await this.ownVolumes({}, id)) await this.dropOwnVolume(volume.uid, id);
 			return;
 		}

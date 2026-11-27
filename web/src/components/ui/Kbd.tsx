@@ -5,7 +5,15 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
 	return <kbd className={`ui-kbd${className ? ` ${className}` : ""}`}>{children}</kbd>;
 }
 
-export function KeyHints({ hints, className, id }: { hints: Array<[key: ReactNode, does: ReactNode]>; className?: string; id?: string }) {
+export function KeyHints({
+	hints,
+	className,
+	id,
+}: {
+	hints: Array<[key: ReactNode, does: ReactNode]>;
+	className?: string;
+	id?: string;
+}) {
 	return (
 		<span className={`ui-key-hints${className ? ` ${className}` : ""}`} id={id}>
 			{hints.map(([key, does], index) => (

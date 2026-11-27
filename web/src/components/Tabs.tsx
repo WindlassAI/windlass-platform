@@ -22,11 +22,20 @@ export function moveBetweenTabs(event: KeyboardEvent<HTMLDivElement>) {
 	const at = tabs.findIndex(tab => tab.getAttribute("aria-selected") === "true");
 	let next: HTMLElement | undefined;
 	switch (event.key) {
-		case "ArrowRight": next = tabs[(at + 1) % tabs.length]; break;
-		case "ArrowLeft": next = tabs[(at - 1 + tabs.length) % tabs.length]; break;
-		case "Home": next = tabs[0]; break;
-		case "End": next = tabs[tabs.length - 1]; break;
-		default: return;
+		case "ArrowRight":
+			next = tabs[(at + 1) % tabs.length];
+			break;
+		case "ArrowLeft":
+			next = tabs[(at - 1 + tabs.length) % tabs.length];
+			break;
+		case "Home":
+			next = tabs[0];
+			break;
+		case "End":
+			next = tabs[tabs.length - 1];
+			break;
+		default:
+			return;
 	}
 	event.preventDefault();
 	next?.focus();
@@ -36,10 +45,19 @@ export function moveBetweenTabs(event: KeyboardEvent<HTMLDivElement>) {
 export function Tabs({ id, label, tabs, selected }: { id: string; label: string; tabs: TabLink[]; selected: string }) {
 	return (
 		<div className="tabs" role="tablist" aria-label={label} onKeyDown={moveBetweenTabs}>
-			{tabs.map((tab) => {
+			{tabs.map(tab => {
 				const chosen = tab.key === selected;
 				return (
-					<a key={tab.key} id={tabId(id, tab.key)} className="tab" role="tab" aria-selected={chosen} aria-controls={chosen ? panelId(id) : undefined} tabIndex={chosen ? 0 : -1} {...linkProps(tab.route)}>
+					<a
+						key={tab.key}
+						id={tabId(id, tab.key)}
+						className="tab"
+						role="tab"
+						aria-selected={chosen}
+						aria-controls={chosen ? panelId(id) : undefined}
+						tabIndex={chosen ? 0 : -1}
+						{...linkProps(tab.route)}
+					>
 						{tab.label}
 					</a>
 				);

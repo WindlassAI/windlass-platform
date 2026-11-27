@@ -43,7 +43,7 @@ import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./star
 import { errorText } from "./util.js";
 
 const debug = debuglog("wlp");
-process.on("unhandledRejection", (reason) => {
+process.on("unhandledRejection", reason => {
 	if (isSessionGone(reason)) {
 		debug("A call outlived its actor.");
 		return;
@@ -66,28 +66,41 @@ try {
 	process.exit(1);
 }
 
-console.log(`[wlp] sandbox layer: ${config.sandbox}; demo sign-in: ${config.demo ? "on" : "off"}; web origins: ${config.origins.join(", ")}`);
+console.log(
+	`[wlp] sandbox layer: ${config.sandbox}; demo sign-in: ${config.demo ? "on" : "off"}; web origins: ${config.origins.join(", ")}`,
+);
 if (config.engine.remote) {
-	console.log(`[wlp] engine: ${config.engine.endpoint}, namespace ${config.engine.namespace}, pool ${config.engine.pool}; actor data is kept there`);
+	console.log(
+		`[wlp] engine: ${config.engine.endpoint}, namespace ${config.engine.namespace}, pool ${config.engine.pool}; actor data is kept there`,
+	);
 } else {
 	console.log(`[wlp] engine: local; actor data: ${config.storagePath}/.rivetkit`);
 }
-console.log(`[wlp] http: ${PLATFORM_INFO_PATH}, ${PLATFORM_CONNECTION_PATH} and /health on http://${config.httpHost}:${config.httpPort}`);
+console.log(
+	`[wlp] http: ${PLATFORM_INFO_PATH}, ${PLATFORM_CONNECTION_PATH} and /health on http://${config.httpHost}:${config.httpPort}`,
+);
 if (config.browsers.tokens) {
-	console.log(`[wlp] browsers: ${config.browsers.endpoint}, namespace ${config.engine.namespace}, with tokens this server issues, each for ${Math.round(config.browsers.tokenTtlMs / 60_000)} minutes`);
+	console.log(
+		`[wlp] browsers: ${config.browsers.endpoint}, namespace ${config.engine.namespace}, with tokens this server issues, each for ${Math.round(config.browsers.tokenTtlMs / 60_000)} minutes`,
+	);
 } else {
-	console.log(`[wlp] browsers: ${config.browsers.endpoint ?? "the endpoint the web app was built with"}, with no token (RIVET_ADMIN_TOKEN is not set)`);
+	console.log(
+		`[wlp] browsers: ${config.browsers.endpoint ?? "the endpoint the web app was built with"}, with no token (RIVET_ADMIN_TOKEN is not set)`,
+	);
 }
 if (layer.sandboxes.sweepSnapshots) {
 	let client: ReturnType<typeof createClient<Registry>> | undefined;
-	const sweep = () => layer.sandboxes.sweepSnapshots!(async uid => {
-		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
-		try {
-			const generations = await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations();
-			return new Set(snapshotsFor({ kind: "hosted" }) ? generations : []);
-		}
-		catch (error) { if (isActorGone(error)) return null; throw error; }
-	}).catch(() => console.warn("[wlp] snapshot expiry deferred"));
+	const sweep = () =>
+		layer.sandboxes.sweepSnapshots!(async uid => {
+			client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+			try {
+				const generations = await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations();
+				return new Set(snapshotsFor({ kind: "hosted" }) ? generations : []);
+			} catch (error) {
+				if (isActorGone(error)) return null;
+				throw error;
+			}
+		}).catch(() => console.warn("[wlp] snapshot expiry deferred"));
 	void sweep();
 	setInterval(sweep, 60 * 60_000).unref();
 }
@@ -104,8 +117,12 @@ if (layer.sandboxes.owners) {
 		const owners = await layer.sandboxes.owners!();
 		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
 		for (const uid of owners) {
-			await client.user.get([uid], { params: serviceParams() }).internalSweepSandboxes()
-				.catch((error: unknown) => { if (!isActorGone(error)) console.warn(`[wlp] sandbox.orphan_sweep uid=${uid}: deferred`); });
+			await client.user
+				.get([uid], { params: serviceParams() })
+				.internalSweepSandboxes()
+				.catch((error: unknown) => {
+					if (!isActorGone(error)) console.warn(`[wlp] sandbox.orphan_sweep uid=${uid}: deferred`);
+				});
 		}
 	};
 	const run = () => void sweep().catch(() => console.warn("[wlp] sandbox.orphan_sweep deferred"));
@@ -120,10 +137,18 @@ if (windlassProblem) {
 	process.exit(1);
 }
 // Windlass's model relay of hosted Docker (docs/model-relay.md): on with the image's Windlass 0.7.1 or later, and what a stopped server left removed.
-if (layer.sandboxes.prepareModelRelay) console.log(await layer.sandboxes.prepareModelRelay().catch((error: unknown) => `[wlp] model_relay: could not be prepared (${errorText(error)})`));
+if (layer.sandboxes.prepareModelRelay)
+	console.log(
+		await layer.sandboxes
+			.prepareModelRelay()
+			.catch((error: unknown) => `[wlp] model_relay: could not be prepared (${errorText(error)})`),
+	);
 // Its route for E2B answers only on the relay's own hostname (WLP_MODEL_RELAY_URL), which serves nothing else.
-const relayHost = config.modelRelay.on ? config.modelRelay.url?.host ?? null : null;
-if (config.sandbox === "e2b" && config.modelRelay.on && relayHost === null) console.log("[wlp] model_relay: WLP_MODEL_RELAY_URL is not set, so E2B turns are handed their access token in the sandbox; the platform's public host is never opened to E2B sandboxes in its place");
+const relayHost = config.modelRelay.on ? (config.modelRelay.url?.host ?? null) : null;
+if (config.sandbox === "e2b" && config.modelRelay.on && relayHost === null)
+	console.log(
+		"[wlp] model_relay: WLP_MODEL_RELAY_URL is not set, so E2B turns are handed their access token in the sandbox; the platform's public host is never opened to E2B sandboxes in its place",
+	);
 // An admin token the engine refuses: said now, not to the first visitor.
 void warnAboutConnectionTokens(connectionTokens());
 
@@ -131,42 +156,66 @@ void warnAboutConnectionTokens(connectionTokens());
 try {
 	const { app, missing, webhook } = githubConfig();
 	reportWebhook(webhook !== null);
-	if (missing.length > 0) console.error(`[wlp] WARNING: GitHub is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other GitHub App settings are.`);
+	if (missing.length > 0)
+		console.error(
+			`[wlp] WARNING: GitHub is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other GitHub App settings are.`,
+		);
 	else if (app) {
 		const problem = githubApp()?.keyProblem() ?? null;
 		if (problem) console.error(`[wlp] WARNING: GitHub cannot be used: ${problem}.`);
-		else console.log(`[wlp] github: app ${app.slug} (id ${app.appId}) at ${app.webUrl}; users connect through ${GITHUB_CALLBACK_PATH} on this port`);
+		else
+			console.log(
+				`[wlp] github: app ${app.slug} (id ${app.appId}) at ${app.webUrl}; users connect through ${GITHUB_CALLBACK_PATH} on this port`,
+			);
 	}
 } catch (error) {
 	// A setting that cannot be what it should be. The message names the variable and holds no value.
-	console.error(`[wlp] the GitHub App's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`);
+	console.error(
+		`[wlp] the GitHub App's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`,
+	);
 	process.exit(1);
 }
 
 // Linear, when the deployment has an OAuth app: said now, with a half-set configuration or a value that cannot be what it should be.
 try {
 	const { app, missing } = linearConfig();
-	if (missing.length > 0) console.error(`[wlp] WARNING: Linear is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other Linear settings are.`);
-	else if (app) console.log(`[wlp] linear: owners connect through ${LINEAR_CALLBACK_PATH}; webhooks to ${LINEAR_WEBHOOK_PATH} (callback address ${app.redirectUrl})`);
+	if (missing.length > 0)
+		console.error(
+			`[wlp] WARNING: Linear is off: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set while the other Linear settings are.`,
+		);
+	else if (app)
+		console.log(
+			`[wlp] linear: owners connect through ${LINEAR_CALLBACK_PATH}; webhooks to ${LINEAR_WEBHOOK_PATH} (callback address ${app.redirectUrl})`,
+		);
 } catch (error) {
-	console.error(`[wlp] the Linear app's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`);
+	console.error(
+		`[wlp] the Linear app's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`,
+	);
 	process.exit(1);
 }
 
 // Billing (docs/billing.md): read once, so that a setting that is missing stops the server here, with its name.
 try {
 	const settings = billing();
-	console.log(settings ? `[wlp] billing: ${settings.provider.name}; webhooks to ${BILLING_WEBHOOK_PATH}` : "[wlp] billing: off (WLP_BILLING_PROVIDER is not set); the deployment's limits apply");
+	console.log(
+		settings
+			? `[wlp] billing: ${settings.provider.name}; webhooks to ${BILLING_WEBHOOK_PATH}`
+			: "[wlp] billing: off (WLP_BILLING_PROVIDER is not set); the deployment's limits apply",
+	);
 } catch (error) {
-	console.error(`[wlp] billing's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`);
+	console.error(
+		`[wlp] billing's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`,
+	);
 	process.exit(1);
 }
 
 // The web app, where this server serves it too (WLP_WEB_DIR): its files, and its page for every address of the app.
-const web = config.webDir ? webFiles(config.webDir, {
-	endpoint: config.browsers.endpoint ?? (config.engine.remote ? null : DEFAULT_ENDPOINT),
-	publicUrl: process.env.WLP_PUBLIC_URL,
-}) : null;
+const web = config.webDir
+	? webFiles(config.webDir, {
+			endpoint: config.browsers.endpoint ?? (config.engine.remote ? null : DEFAULT_ENDPOINT),
+			publicUrl: process.env.WLP_PUBLIC_URL,
+		})
+	: null;
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 const linearWebhooks = linearWebhookRoute({ dispatch: dispatchLinearDelivery });
@@ -177,7 +226,8 @@ async function route(request: Request): Promise<Response> {
 	const relayRoute = modelRelayRoute(request, pathname, relayHost);
 	if (relayRoute) return relayRoute;
 	if (pathname.startsWith("/platform/login/")) return loginResponse(request, pathname.slice("/platform/login/".length));
-	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
+	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname))
+		return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	if (pathname === INSTALL_SCRIPT_PATH) return installScriptResponse(request);
 	const api = await apiRoute(request);
@@ -194,13 +244,16 @@ async function route(request: Request): Promise<Response> {
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
 	if (pathname === "/health") return registry.routes.health();
 	// The SPA reads OAuth parameters from the browser address. Static serving only needs the path.
-	const pageRequest = pathname === "/signin" ? new Request(new URL(pathname, request.url), { method: request.method }) : request;
+	const pageRequest =
+		pathname === "/signin" ? new Request(new URL(pathname, request.url), { method: request.method }) : request;
 	const page = web ? await web(pageRequest) : null;
 	if (page) return page;
 	return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
-registry.listen({ port: config.httpPort, host: config.httpHost, application: { fetch: route } }).catch((error: unknown) => {
-	console.error("[wlp] the server could not start:", error instanceof Error ? error.message : error);
-	process.exit(1);
-});
+registry
+	.listen({ port: config.httpPort, host: config.httpHost, application: { fetch: route } })
+	.catch((error: unknown) => {
+		console.error("[wlp] the server could not start:", error instanceof Error ? error.message : error);
+		process.exit(1);
+	});

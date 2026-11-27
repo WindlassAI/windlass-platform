@@ -50,7 +50,12 @@ export interface PublicPage {
 	appForEveryone?: boolean;
 }
 
-export const DEFAULT_IMAGE = { path: "/og.png", alt: "Windlass: put an agent to work, and watch every turn.", width: 1200, height: 630 };
+export const DEFAULT_IMAGE = {
+	path: "/og.png",
+	alt: "Windlass: put an agent to work, and watch every turn.",
+	width: 1200,
+	height: 630,
+};
 
 function landingMarkdown(): string {
 	return [
@@ -62,7 +67,7 @@ function landingMarkdown(): string {
 		"",
 		"A session is one agent on one piece of work. It runs turn by turn, and the browser shows each step as it happens.",
 		"",
-		...SESSION_FEATURES.map((feature) => `- **${feature.title}.** ${feature.text}`),
+		...SESSION_FEATURES.map(feature => `- **${feature.title}.** ${feature.text}`),
 		"",
 		"## Where it runs",
 		"",
@@ -82,11 +87,11 @@ function landingMarkdown(): string {
 		"",
 		"## Agents",
 		"",
-		...AGENTS.map((agent) => `- **${agent.name}** (${agent.state}): ${agent.where}`),
+		...AGENTS.map(agent => `- **${agent.name}** (${agent.state}): ${agent.where}`),
 		"",
 		"## Questions",
 		"",
-		...FAQ.flatMap((item) => [`### ${item.question}`, "", item.answer, ""]),
+		...FAQ.flatMap(item => [`### ${item.question}`, "", item.answer, ""]),
 		"## Access",
 		"",
 		"Access is by invitation. There is no public sign-up and no pricing yet. Sign in at " + absolute("/signin") + ".",
@@ -99,7 +104,10 @@ const landing: PublicPage = {
 	description: LANDING_DESCRIPTION,
 	render: () => <Landing />,
 	markdown: landingMarkdown,
-	llms: { section: "Pages", summary: "What Windlass is: sessions, sandboxes, the Factory, the agents it runs, and answers to common questions." },
+	llms: {
+		section: "Pages",
+		summary: "What Windlass is: sessions, sandboxes, the Factory, the agents it runs, and answers to common questions.",
+	},
 	ogType: "website",
 	appForSignedIn: true,
 	jsonLd: [
@@ -132,7 +140,7 @@ const landing: PublicPage = {
 		{
 			"@type": "FAQPage",
 			"@id": `${SITE_URL}/#faq`,
-			mainEntity: FAQ.map((item) => ({
+			mainEntity: FAQ.map(item => ({
 				"@type": "Question",
 				name: item.question,
 				acceptedAnswer: { "@type": "Answer", text: item.answer },
@@ -142,4 +150,7 @@ const landing: PublicPage = {
 };
 
 /** Every public page. Add yours here (see the comment at the top). */
-export const PUBLIC_PAGES: PublicPage[] = [landing, ...docsPublicPages().map((page) => ({ ...page, appForEveryone: true }))];
+export const PUBLIC_PAGES: PublicPage[] = [
+	landing,
+	...docsPublicPages().map(page => ({ ...page, appForEveryone: true })),
+];

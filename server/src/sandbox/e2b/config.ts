@@ -34,7 +34,10 @@ export function planRefusal(size: HostedSize, said: string): string {
 
 /** Whether E2B's words refuse a size for the plan, rather than the account's count of running sandboxes. */
 export function refusesSize(said: string): boolean {
-	return /\b(cpu|vcpu|memory|ram|mib|mb|gib|gb)\b/i.test(said) && /\b(limit|exceed|maximum|max|plan|tier|quota|allowed|upgrade)\b/i.test(said);
+	return (
+		/\b(cpu|vcpu|memory|ram|mib|mb|gib|gb)\b/i.test(said) &&
+		/\b(limit|exceed|maximum|max|plan|tier|quota|allowed|upgrade)\b/i.test(said)
+	);
 }
 
 export function readE2bSettings(env: NodeJS.ProcessEnv = process.env) {
@@ -49,7 +52,8 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env) {
 	}
 	const relay = e2bModelRelay(env);
 	return {
-		provider: "e2b" as const, ...readHostedSettings(env),
+		provider: "e2b" as const,
+		...readHostedSettings(env),
 		turnLeaseMs: wholeNumber(env, hostedName(env, "TURN_LEASE_MS"), 180_000, 60_000, 30 * 60_000),
 		maxRuntimeMs: wholeNumber(env, hostedName(env, "MAX_CONTINUOUS_MS", "MAX_RUNTIME_MS"), 3_600_000, 10 * 60_000),
 		templates: { small: templates("small"), standard: templates("standard"), large: templates("large") },
@@ -69,6 +73,9 @@ export function templateFor(settings: E2bSettings, size: HostedSize, screenshots
 /** The settings of a server or a script that talks to E2B. Throws, with what to set, when there is no API key. */
 export function readE2bKey(env: NodeJS.ProcessEnv = process.env): string {
 	const apiKey = (env.E2B_API_KEY ?? "").trim();
-	if (apiKey === "") throw new Error('E2B_API_KEY is not set. The E2B provider needs an API key of the E2B account that holds the template (https://e2b.dev/dashboard, "API Keys"); see docs/operating.md, "E2B"');
+	if (apiKey === "")
+		throw new Error(
+			'E2B_API_KEY is not set. The E2B provider needs an API key of the E2B account that holds the template (https://e2b.dev/dashboard, "API Keys"); see docs/operating.md, "E2B"',
+		);
 	return apiKey;
 }

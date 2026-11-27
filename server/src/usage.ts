@@ -49,7 +49,18 @@
  */
 
 import type { RawAccess } from "rivetkit/db";
-import type { HarnessId, HostedMonth, PlanId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type {
+	HarnessId,
+	HostedMonth,
+	PlanId,
+	SandboxPlace,
+	SessionSummary,
+	TurnUsage,
+	WindlassEvent,
+	UsageDay,
+	UsageNumbers,
+	UsageSession,
+} from "./contract.js";
 import { windlassProvider } from "./sandbox/harnesses.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
 import { meterPeriod, monthOf, type MeterPeriod, type SubscriptionDates } from "./billing/meter.js";
@@ -93,7 +104,9 @@ export function dayOf(ms: number): number {
 	return Math.floor(ms / DAY_MS);
 }
 
-export function nextUtcDay(at: number) { return (dayOf(at) + 1) * DAY_MS; }
+export function nextUtcDay(at: number) {
+	return (dayOf(at) + 1) * DAY_MS;
+}
 
 /** Only ChatGPT turns spend the platform’s daily model allowance. */
 export function usesPlatformModel(harness: HarnessId = "windlass", model?: string): boolean {
@@ -102,13 +115,22 @@ export function usesPlatformModel(harness: HarnessId = "windlass", model?: strin
 
 /** Count each child from its durable spawn.ended total. Its streamed child.event copies cover the same requests. */
 export function reportedModelUsage(event: WindlassEvent, includeTitle = false): TurnUsage | null {
-	if (!(includeTitle && event.type === "session.title_usage") && !["step.ended", "step.failed", "step.refused", "compaction.ended", "spawn.ended"].includes(event.type)) return null;
+	if (
+		!(includeTitle && event.type === "session.title_usage") &&
+		!["step.ended", "step.failed", "step.refused", "compaction.ended", "spawn.ended"].includes(event.type)
+	)
+		return null;
 	const raw = event.data?.usage;
 	if (typeof raw !== "object" || raw === null) return null;
 	const usage = raw as Partial<TurnUsage>;
-	const number = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
-	return { inputTokens: number(usage.inputTokens), outputTokens: number(usage.outputTokens),
-		cachedInputTokens: number(usage.cachedInputTokens), reasoningTokens: number(usage.reasoningTokens) };
+	const number = (value: unknown) =>
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+	return {
+		inputTokens: number(usage.inputTokens),
+		outputTokens: number(usage.outputTokens),
+		cachedInputTokens: number(usage.cachedInputTokens),
+		reasoningTokens: number(usage.reasoningTokens),
+	};
 }
 
 /**
@@ -121,19 +143,23 @@ export function cutTurnUsage(events: Iterable<WindlassEvent>): TurnUsage | null 
 	for (const event of events) {
 		const used = reportedModelUsage(event);
 		if (used === null) continue;
-		total = total === null ? used : {
-			inputTokens: total.inputTokens + used.inputTokens,
-			cachedInputTokens: total.cachedInputTokens + used.cachedInputTokens,
-			outputTokens: total.outputTokens + used.outputTokens,
-			reasoningTokens: total.reasoningTokens + used.reasoningTokens,
-		};
+		total =
+			total === null
+				? used
+				: {
+						inputTokens: total.inputTokens + used.inputTokens,
+						cachedInputTokens: total.cachedInputTokens + used.cachedInputTokens,
+						outputTokens: total.outputTokens + used.outputTokens,
+						reasoningTokens: total.reasoningTokens + used.reasoningTokens,
+					};
 	}
 	return total;
 }
 
 /** The timeline's sentence about a cut-off turn's tokens: what is counted of it, or that nothing could be. */
 export function cutTurnUsageNote(usage: TurnUsage | null): string {
-	if (usage === null) return "No model request of this turn reported its tokens before the cut, so none are counted for it.";
+	if (usage === null)
+		return "No model request of this turn reported its tokens before the cut, so none are counted for it.";
 	const tokens = usage.inputTokens + usage.outputTokens;
 	return `The ${tokens.toLocaleString("en-US")} tokens this turn's finished model requests reported before the cut are counted; a request still under way at the cut is not.`;
 }
@@ -141,28 +167,51 @@ export function cutTurnUsageNote(usage: TurnUsage | null): string {
 export const TOKEN_USAGE_TABLE = `CREATE TABLE IF NOT EXISTS token_usage (
 	day INTEGER NOT NULL, session TEXT NOT NULL, seq INTEGER NOT NULL, tokens INTEGER NOT NULL,
 	PRIMARY KEY (day, session, seq))`;
-export interface TokenReceipt { seq: number; at: number; tokens: number; key?: import("./sandbox/provider.js").ModelKeyLease }
+export interface TokenReceipt {
+	seq: number;
+	at: number;
+	tokens: number;
+	key?: import("./sandbox/provider.js").ModelKeyLease;
+}
 
 export async function recordTurnTokens(db: Pick<RawAccess, "execute">, session: string, receipt: TokenReceipt) {
-	if (![receipt.seq, receipt.tokens, receipt.at].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error("Invalid token receipt.");
+	if (![receipt.seq, receipt.tokens, receipt.at].every(n => Number.isSafeInteger(n) && n > 0))
+		throw new Error("Invalid token receipt.");
 	if (receipt.key) {
 		const { provider, generation } = receipt.key;
-		const rows = await db.execute("INSERT INTO model_key_usage(day,session,seq,tokens,provider,generation) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
-			dayOf(receipt.at), session, receipt.seq, receipt.tokens, provider, generation);
+		const rows = await db.execute(
+			"INSERT INTO model_key_usage(day,session,seq,tokens,provider,generation) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
+			dayOf(receipt.at),
+			session,
+			receipt.seq,
+			receipt.tokens,
+			provider,
+			generation,
+		);
 		return rows.length > 0;
 	}
-	const rows = await db.execute("INSERT INTO token_usage(day, session, seq, tokens) VALUES(?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
-		dayOf(receipt.at), session, receipt.seq, receipt.tokens);
+	const rows = await db.execute(
+		"INSERT INTO token_usage(day, session, seq, tokens) VALUES(?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
+		dayOf(receipt.at),
+		session,
+		receipt.seq,
+		receipt.tokens,
+	);
 	return rows.length > 0;
 }
 
 export async function tokensOn(db: Pick<RawAccess, "execute">, at: number): Promise<number> {
-	const [row] = await db.execute<{ used: number }>("SELECT COALESCE(SUM(tokens), 0) AS used FROM token_usage WHERE day=?", dayOf(at));
+	const [row] = await db.execute<{ used: number }>(
+		"SELECT COALESCE(SUM(tokens), 0) AS used FROM token_usage WHERE day=?",
+		dayOf(at),
+	);
 	return row!.used;
 }
 
 export function dailyTokenWait(used: number, limit: number | null): string | null {
-	return limit === null || used < limit ? null : `Your daily model token cap of ${limit.toLocaleString("en-US")} has been reached. New turns can start at 00:00 UTC.`;
+	return limit === null || used < limit
+		? null
+		: `Your daily model token cap of ${limit.toLocaleString("en-US")} has been reached. New turns can start at 00:00 UTC.`;
 }
 
 /** A day as the contract names it: "2026-11-17". */
@@ -247,7 +296,13 @@ function noChange(): UsageChange {
 }
 
 export function isEmptyChange(change: UsageChange): boolean {
-	return change.entries.length === 0 && change.opened.length === 0 && change.closed.length === 0 && change.kept.length === 0 && change.released.length === 0;
+	return (
+		change.entries.length === 0 &&
+		change.opened.length === 0 &&
+		change.closed.length === 0 &&
+		change.kept.length === 0 &&
+		change.released.length === 0
+	);
 }
 
 export type ReserveRefusal =
@@ -256,7 +311,9 @@ export type ReserveRefusal =
 	/** The user keeps as many sandboxes as they may, and this session has none. */
 	| "sandboxes";
 
-export type ReserveResult = { ok: true; hold: UsageHold; change: UsageChange } | { ok: false; reason: ReserveRefusal; change: UsageChange };
+export type ReserveResult =
+	| { ok: true; hold: UsageHold; change: UsageChange }
+	| { ok: false; reason: ReserveRefusal; change: UsageChange };
 
 export interface HoldReport {
 	hold: string;
@@ -292,13 +349,13 @@ export class UsageBook {
 	/** By session: a session has one sandbox, and so one open hold. */
 	private readonly holds = new Map<string, UsageHold>();
 	private readonly claims = new Map<string, KeptClaim>();
-/**
- * The session whose place a session shares, if any: a work item's reviewer shares its builder's, so that an item
- * counts as one place (its reviewer's sandbox is released after each review). Set by whoever knows the sessions.
- */
-sharing: (session: string) => string | undefined = () => undefined;
-/** What a second of a session's sandbox counts as of the monthly allowance: its size's weight (billing/meter.ts). */
-weightOf: (session: string) => number = () => 1;
+	/**
+	 * The session whose place a session shares, if any: a work item's reviewer shares its builder's, so that an item
+	 * counts as one place (its reviewer's sandbox is released after each review). Set by whoever knows the sessions.
+	 */
+	sharing: (session: string) => string | undefined = () => undefined;
+	/** What a second of a session's sandbox counts as of the monthly allowance: its size's weight (billing/meter.ts). */
+	weightOf: (session: string) => number = () => 1;
 
 	constructor(
 		readonly limits: UsageLimits,
@@ -309,7 +366,9 @@ weightOf: (session: string) => number = () => 1;
 		for (const claim of state.kept ?? []) this.claims.set(claim.session, claim);
 	}
 
-	modelTokens(at: number) { return this.modelTotals.get(dayOf(at)) ?? 0; }
+	modelTokens(at: number) {
+		return this.modelTotals.get(dayOf(at)) ?? 0;
+	}
 
 	/** A retried or delayed receipt cannot roll back a committed daily total. */
 	noteModelTokens(at: number, total: number) {
@@ -355,7 +414,8 @@ weightOf: (session: string) => number = () => 1;
 
 	private heldInPeriod(period: MeterPeriod, except?: string): number {
 		let sum = 0;
-		for (const hold of this.holds.values()) if (hold.session !== except && this.countsIn(hold, period)) sum += hold.seconds * this.storedWeight(hold);
+		for (const hold of this.holds.values())
+			if (hold.session !== except && this.countsIn(hold, period)) sum += hold.seconds * this.storedWeight(hold);
 		return sum;
 	}
 
@@ -397,7 +457,12 @@ weightOf: (session: string) => number = () => 1;
 
 	/** Whether a session without a place would be refused one now. */
 	atCap(session: string): boolean {
-		return !this.claims.has(session) && !this.shares(session) && this.limits.maxKept !== null && this.places() >= this.limits.maxKept;
+		return (
+			!this.claims.has(session) &&
+			!this.shares(session) &&
+			this.limits.maxKept !== null &&
+			this.places() >= this.limits.maxKept
+		);
 	}
 
 	/** The day a hold taken now counts against. */
@@ -418,16 +483,38 @@ weightOf: (session: string) => number = () => 1;
 			// Whole seconds, the nearest: a hold that was traded a few milliseconds after its time ran its length, not a second more.
 			seconds = Math.round(reported);
 			if (seconds > most) {
-				notes.push(`the session reported ${seconds} s, more than the ${most} s since its hold was taken: ${most} s counted`);
+				notes.push(
+					`the session reported ${seconds} s, more than the ${most} s since its hold was taken: ${most} s counted`,
+				);
 				seconds = most;
 			}
 		}
 		if (seconds > hold.seconds) notes.push(`${seconds - hold.seconds} s over its hold of ${hold.seconds} s`);
-		return { day: hold.day, startedAt: hold.startedAt, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "used", seconds, at: now, note: notes.length === 0 ? null : notes.join("; ") };
+		return {
+			day: hold.day,
+			startedAt: hold.startedAt,
+			session: hold.session,
+			hold: hold.id,
+			weight: this.storedWeight(hold),
+			kind: "used",
+			seconds,
+			at: now,
+			note: notes.length === 0 ? null : notes.join("; "),
+		};
 	}
 
 	private unreported(hold: UsageHold, at: number, why: string): UsageEntry {
-		return { day: hold.day, startedAt: hold.startedAt, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "unreported", seconds: hold.seconds, at, note: why };
+		return {
+			day: hold.day,
+			startedAt: hold.startedAt,
+			session: hold.session,
+			hold: hold.id,
+			weight: this.storedWeight(hold),
+			kind: "unreported",
+			seconds: hold.seconds,
+			at,
+			note: why,
+		};
 	}
 
 	/** Counts in full every hold that ran out without being settled. Every other step begins with this. */
@@ -436,7 +523,11 @@ weightOf: (session: string) => number = () => 1;
 		for (const hold of [...this.holds.values()]) {
 			if (hold.expiresAt > now) continue;
 			this.holds.delete(hold.session);
-			const entry = this.unreported(hold, hold.expiresAt, "no report came before the hold ran out, so it is counted in full");
+			const entry = this.unreported(
+				hold,
+				hold.expiresAt,
+				"no report came before the hold ran out, so it is counted in full",
+			);
 			this.add(entry);
 			change.entries.push(entry);
 			change.closed.push(hold.id);
@@ -464,12 +555,19 @@ weightOf: (session: string) => number = () => 1;
 		const day = this.holdDay(now);
 		const settled = own !== null && input.settle?.hold === own.id ? this.close(own, input.settle.seconds, now) : null;
 		// A hold of its own that the session does not settle was lost with a server: it is counted in full.
-		const dropped = own !== null && settled === null ? this.unreported(own, now, "its session took another hold without settling this one, so it is counted in full") : null;
+		const dropped =
+			own !== null && settled === null
+				? this.unreported(own, now, "its session took another hold without settling this one, so it is counted in full")
+				: null;
 		const closing = settled ?? dropped;
 
 		let grant = this.limits.holdSeconds;
 		if (this.limits.dailySeconds !== null) {
-			const left = this.limits.dailySeconds - this.usedOn(day) - this.heldOn(day, input.session) - (closing !== null && closing.day === day ? closing.seconds : 0);
+			const left =
+				this.limits.dailySeconds -
+				this.usedOn(day) -
+				this.heldOn(day, input.session) -
+				(closing !== null && closing.day === day ? closing.seconds : 0);
 			if (left < (input.fresh === true ? this.startSeconds : 1)) return { ok: false, reason: "allowance", change };
 			grant = Math.min(grant, left);
 		}
@@ -479,9 +577,11 @@ weightOf: (session: string) => number = () => 1;
 		if (monthly !== null) {
 			const subscription = this.limits.subscription ?? null;
 			const period = meterPeriod(subscription, subscription ? now : day * DAY_MS);
-			const closingWeighted = closing !== null && this.countsIn(closing, period) ? closing.seconds * this.storedWeight(closing) : 0;
+			const closingWeighted =
+				closing !== null && this.countsIn(closing, period) ? closing.seconds * this.storedWeight(closing) : 0;
 			const left = monthly - this.usedInPeriod(period) - this.heldInPeriod(period, input.session) - closingWeighted;
-			if (left < (input.fresh === true ? this.startSeconds : 1) * weight) return { ok: false, reason: "allowance", change };
+			if (left < (input.fresh === true ? this.startSeconds : 1) * weight)
+				return { ok: false, reason: "allowance", change };
 			grant = Math.min(grant, Math.floor(left / weight), Math.ceil((period.end - now) / 1000));
 		}
 		// Asked after the allowance: someone told to free a sandbox must not then be told the day is used up.
@@ -496,7 +596,15 @@ weightOf: (session: string) => number = () => 1;
 			change.closed.push(own.id);
 		}
 		if (input.keep === true) change.kept.push(...this.claim(now, input.session).change.kept);
-		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, weight, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
+		const hold: UsageHold = {
+			id: input.id,
+			session: input.session,
+			day,
+			seconds: grant,
+			weight,
+			startedAt: now,
+			expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000,
+		};
 		this.holds.set(input.session, hold);
 		change.opened.push(hold);
 		return { ok: true, hold, change };
@@ -507,12 +615,18 @@ weightOf: (session: string) => number = () => 1;
 	 * because it came too late corrects the estimate once. `known` is false for a hold this book
 	 * has neither open nor counted as unreported, and for a second report: nothing is counted then.
 	 */
-	settle(now: number, input: HoldReport & { session: string }): { known: boolean; entry: UsageEntry | null; change: UsageChange } {
+	settle(
+		now: number,
+		input: HoldReport & { session: string },
+	): { known: boolean; entry: UsageEntry | null; change: UsageChange } {
 		const change = this.sweep(now);
 		const own = this.holds.get(input.session);
 		if (own === undefined || own.id !== input.hold) {
-			const full = this.entries.find((entry) => entry.kind === "unreported" && entry.hold === input.hold && entry.session === input.session);
-			if (full === undefined || this.entries.some((entry) => entry.hold === `${input.hold}${LATE}`)) return { known: false, entry: null, change };
+			const full = this.entries.find(
+				entry => entry.kind === "unreported" && entry.hold === input.hold && entry.session === input.session,
+			);
+			if (full === undefined || this.entries.some(entry => entry.hold === `${input.hold}${LATE}`))
+				return { known: false, entry: null, change };
 			// An estimate only gives time back. With a provider observation and the original opening
 			// time, the VM may have measurably run beyond the reservation while its server was down.
 			let most = full.seconds;
@@ -521,13 +635,26 @@ weightOf: (session: string) => number = () => 1;
 				// A renewal whose reply was lost may itself already be settled or still open.
 				// Any time in that later hold belongs to it.
 				for (const row of this.entries) {
-					if (row.session === full.session && row.startedAt !== undefined && row.startedAt > full.startedAt) end = Math.min(end, row.startedAt);
+					if (row.session === full.session && row.startedAt !== undefined && row.startedAt > full.startedAt)
+						end = Math.min(end, row.startedAt);
 				}
 				if (own && own.startedAt >= full.startedAt) end = Math.min(end, own.startedAt);
 				most = Math.max(0, Math.round((end - full.startedAt) / 1000));
 			}
-			const ran = Number.isFinite(input.seconds) ? Math.min(most, Math.max(0, Math.round(input.seconds))) : full.seconds;
-			const entry: UsageEntry = { day: full.day, startedAt: openingTime(full), session: full.session, hold: `${full.hold}${LATE}`, weight: this.storedWeight(full), kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
+			const ran = Number.isFinite(input.seconds)
+				? Math.min(most, Math.max(0, Math.round(input.seconds)))
+				: full.seconds;
+			const entry: UsageEntry = {
+				day: full.day,
+				startedAt: openingTime(full),
+				session: full.session,
+				hold: `${full.hold}${LATE}`,
+				weight: this.storedWeight(full),
+				kind: "corrected",
+				seconds: ran - full.seconds,
+				at: now,
+				note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full`,
+			};
 			this.add(entry);
 			change.entries.push(entry);
 			return { known: true, entry, change };
@@ -567,13 +694,21 @@ weightOf: (session: string) => number = () => 1;
 	 * dropped, unless the session still holds time to make the sandbox it just claimed. A sandbox without a
 	 * claim is given one, also past the cap: it exists, and leaving it out would let its user make more.
 	 */
-	reconcile(now: number, existing: readonly string[], canClaim = (_session: string) => true): { added: string[]; dropped: string[]; change: UsageChange } {
+	reconcile(
+		now: number,
+		existing: readonly string[],
+		canClaim = (_session: string) => true,
+	): { added: string[]; dropped: string[]; change: UsageChange } {
 		const change = noChange();
 		const there = new Set(existing);
 		const added: string[] = [];
 		const dropped: string[] = [];
 		for (const claim of [...this.claims.values()]) {
-			if (there.has(claim.session) || (this.holds.has(claim.session) && now - claim.since < CLAIM_SETTLING_MS && canClaim(claim.session))) continue;
+			if (
+				there.has(claim.session) ||
+				(this.holds.has(claim.session) && now - claim.since < CLAIM_SETTLING_MS && canClaim(claim.session))
+			)
+				continue;
 			this.claims.delete(claim.session);
 			change.released.push(claim.session);
 			dropped.push(claim.session);
@@ -616,10 +751,13 @@ weightOf: (session: string) => number = () => 1;
 		const usedSeconds = this.usedInPeriod(period);
 		const heldSeconds = this.heldInPeriod(period);
 		return {
-			month: monthOf(period.start), resetsAt: period.end,
+			month: monthOf(period.start),
+			resetsAt: period.end,
 			...(subscription?.period && { period: subscription.period }),
 			includedSeconds: Math.min(limitSeconds, this.limits.includedSeconds ?? limitSeconds),
-			limitSeconds, usedSeconds, heldSeconds,
+			limitSeconds,
+			usedSeconds,
+			heldSeconds,
 			leftSeconds: Math.max(0, limitSeconds - usedSeconds - heldSeconds),
 			...(this.limits.plan && { plan: this.limits.plan }),
 		};
@@ -646,20 +784,23 @@ weightOf: (session: string) => number = () => 1;
 			}
 			return found;
 		};
-		const corrected = new Set(this.entries.filter((entry) => entry.kind === "corrected").map((entry) => entry.hold));
+		const corrected = new Set(this.entries.filter(entry => entry.kind === "corrected").map(entry => entry.hold));
 		for (const entry of this.entries) {
 			if (entry.day !== day) continue;
 			const found = row(entry.session);
 			found.seconds += entry.seconds;
-			if (entry.kind === "unreported" && !corrected.has(`${entry.hold}${LATE}`)) found.unreportedSeconds += entry.seconds;
+			if (entry.kind === "unreported" && !corrected.has(`${entry.hold}${LATE}`))
+				found.unreportedSeconds += entry.seconds;
 		}
 		for (const hold of this.holds.values()) if (hold.day === day) row(hold.session).heldSeconds += hold.seconds;
-		return [...rows.values()].sort((a, b) => b.seconds + b.heldSeconds - (a.seconds + a.heldSeconds) || (a.sessionId < b.sessionId ? -1 : 1));
+		return [...rows.values()].sort(
+			(a, b) => b.seconds + b.heldSeconds - (a.seconds + a.heldSeconds) || (a.sessionId < b.sessionId ? -1 : 1),
+		);
 	}
 
 	/** The entries of a day, in the order they were counted: for a check, and for whoever reads the ledger. */
 	entriesOn(day: number): UsageEntry[] {
-		return this.entries.filter((entry) => entry.day === day);
+		return this.entries.filter(entry => entry.day === day);
 	}
 }
 
@@ -707,7 +848,12 @@ export interface PendingAsk {
  * and the report for the other counts nothing there. Either way every second from `open.since` to
  * `until` is counted once.
  */
-export function closingReports(open: OpenStretch, asked: PendingAsk | null, until: number, observedUntil?: number): HoldReport[] {
+export function closingReports(
+	open: OpenStretch,
+	asked: PendingAsk | null,
+	until: number,
+	observedUntil?: number,
+): HoldReport[] {
 	const measured = observedUntil === undefined ? {} : { observedUntil };
 	const reports = [{ hold: open.hold, seconds: stretchSeconds(open, until), ...measured }];
 	if (asked) reports.push({ hold: asked.id, seconds: Math.max(0, until - asked.at) / 1000, ...measured });
@@ -738,7 +884,13 @@ export function stretchSeconds(stretch: OpenStretch, until: number): number {
  * stopped it. A provider that stops an unused sandbox by itself (`idleStopMs`) did so that long after
  * the sandbox was last used; where there is no such timeout, nothing is known but now.
  */
-export function stoppedBy(stretch: OpenStretch, lastUsedAt: number, idleStopMs: number | null, now: number, pausedAt?: number): number {
+export function stoppedBy(
+	stretch: OpenStretch,
+	lastUsedAt: number,
+	idleStopMs: number | null,
+	now: number,
+	pausedAt?: number,
+): number {
 	if (pausedAt !== undefined && Number.isFinite(pausedAt)) return Math.min(now, pausedAt);
 	if (idleStopMs === null) return now;
 	return Math.min(now, Math.max(stretch.seen ?? 0, Math.max(stretch.since, lastUsedAt) + idleStopMs));
@@ -746,7 +898,13 @@ export function stoppedBy(stretch: OpenStretch, lastUsedAt: number, idleStopMs: 
 
 /** Close a carried hold at the provider's last pause, even if it ran beyond the hold. Without that
  * measurement, bound the estimate by the provider timeout and the hold we had before the restart. */
-export function foundStoppedAt(stretch: OpenStretch, lastUsedAt: number, idleStopMs: number | null, now: number, pausedAt?: number): number {
+export function foundStoppedAt(
+	stretch: OpenStretch,
+	lastUsedAt: number,
+	idleStopMs: number | null,
+	now: number,
+	pausedAt?: number,
+): number {
 	const until = stoppedBy(stretch, lastUsedAt, idleStopMs, now, pausedAt);
 	return Number.isFinite(pausedAt) ? until : Math.min(until, stretch.since + stretch.seconds * 1000);
 }
@@ -782,7 +940,9 @@ export function spellMinutes(weightedSeconds: number): string {
 export function monthIsShort(numbers: UsageNumbers): boolean {
 	const month = numbers.hosted;
 	if (!month) return false;
-	return numbers.leftSeconds === null || month.leftSeconds < numbers.leftSeconds || month.leftSeconds < numbers.startSeconds;
+	return (
+		numbers.leftSeconds === null || month.leftSeconds < numbers.leftSeconds || month.leftSeconds < numbers.startSeconds
+	);
 }
 
 /** "1 December": the day the month's minutes start again, in UTC. */
@@ -798,11 +958,12 @@ function monthResetWords(month: HostedMonth): string {
 export function monthRefusal(month: HostedMonth): string {
 	const capped = month.limitSeconds > month.includedSeconds;
 	const used = `You have used ${spellMinutes(month.usedSeconds + month.heldSeconds)} of your ${spellMinutes(month.limitSeconds)} hosted minutes ${month.plan === "pro" ? `for the period ending ${monthResetWords(month)}` : "this month"}${capped ? ", up to your overage spend cap" : ""}`;
-	const way = month.plan === "free"
-		? "Run the agent on one of your own machines, which are never counted, or move to Pro for 1,800 hosted minutes a month."
-		: month.plan === "pro"
-			? `${month.period === "year" ? "Switch to monthly Pro for overage, or run" : capped ? "Raise the spend cap in Settings, or run" : "Run"} the agent on one of your own machines, which are never counted.`
-			: "Run the agent on one of your own machines, which are never counted.";
+	const way =
+		month.plan === "free"
+			? "Run the agent on one of your own machines, which are never counted, or move to Pro for 1,800 hosted minutes a month."
+			: month.plan === "pro"
+				? `${month.period === "year" ? "Switch to monthly Pro for overage, or run" : capped ? "Raise the spend cap in Settings, or run" : "Run"} the agent on one of your own machines, which are never counted.`
+				: "Run the agent on one of your own machines, which are never counted.";
 	return `${used}, so nothing more can run hosted. ${way} The minutes start again on ${monthResetWords(month)} at ${new Date(month.resetsAt).toISOString().slice(11, 16)} UTC.`;
 }
 
@@ -827,7 +988,10 @@ export function allowanceRefusal(numbers: UsageNumbers): string {
 }
 
 /** Who holds a place among the kept sandboxes, in words: an agent by its title, a work item's builder or reviewer by its item's. */
-export function keptHolder(sessions: ReadonlyMap<string, Pick<SessionSummary, "title" | "item">>, session: string): string {
+export function keptHolder(
+	sessions: ReadonlyMap<string, Pick<SessionSummary, "title" | "item">>,
+	session: string,
+): string {
 	const held = sessions.get(session);
 	if (!held) return "a sandbox left behind by an agent that no longer exists";
 	if (held.item?.role === "reviewer") return `the reviewer of the item “${held.title}”`;
@@ -840,21 +1004,26 @@ export function sandboxRefusal(numbers: UsageNumbers): string {
 	return `You keep ${limit} hosted ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Sandboxes on your own machines are not counted. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
 }
 
-export const USAGE_UNAVAILABLE = "Your sandbox time could not be checked just now, so nothing was started. Try again in a moment.";
+export const USAGE_UNAVAILABLE =
+	"Your sandbox time could not be checked just now, so nothing was started. Try again in a moment.";
 
 /** The timeline's line when a running turn is stopped because the day's allowance is used up. */
 export function turnStoppedNote(numbers: UsageNumbers): string {
-	if (monthIsShort(numbers)) return `This turn was stopped at the end of the time it held. ${monthRefusal(numbers.hosted!)} The sandbox is suspended with its files as they are, and the conversation is kept.`;
+	if (monthIsShort(numbers))
+		return `This turn was stopped at the end of the time it held. ${monthRefusal(numbers.hosted!)} The sandbox is suspended with its files as they are, and the conversation is kept.`;
 	return `Today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up, so this turn was stopped at the end of the time it held. The sandbox is suspended with its files as they are, and the conversation is kept. ${resetWords(numbers)} A prompt after that goes on from here.`;
 }
 
 /** The timeline's lines when a turn is stopped, or a sandbox with no turn suspended, because its user's sandbox time could not be checked until the hold ran out (`holdDeadline`). */
-export const UNCHECKED_TURN_NOTE = "Your sandbox time could not be checked for several minutes, so this turn was stopped before it ran on uncounted. The sandbox is suspended with its files as they are, and the conversation is kept: send the prompt again in a moment.";
-export const UNCHECKED_IDLE_NOTE = "Suspended the sandbox: your sandbox time could not be checked for several minutes. Its files are kept, and the next prompt resumes it.";
+export const UNCHECKED_TURN_NOTE =
+	"Your sandbox time could not be checked for several minutes, so this turn was stopped before it ran on uncounted. The sandbox is suspended with its files as they are, and the conversation is kept: send the prompt again in a moment.";
+export const UNCHECKED_IDLE_NOTE =
+	"Suspended the sandbox: your sandbox time could not be checked for several minutes. Its files are kept, and the next prompt resumes it.";
 
 /** The timeline's line when a sandbox that runs with no turn in it is suspended for the same reason. */
 export function idleSuspendedNote(numbers: UsageNumbers): string {
-	if (monthIsShort(numbers)) return `Suspended the sandbox: the hosted minutes are used up. Its files are kept. ${monthRefusal(numbers.hosted!)}`;
+	if (monthIsShort(numbers))
+		return `Suspended the sandbox: the hosted minutes are used up. Its files are kept. ${monthRefusal(numbers.hosted!)}`;
 	return `Suspended the sandbox: today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up. Its files are kept. ${resetWords(numbers)}`;
 }
 

@@ -9,7 +9,13 @@ import { Menu, type MenuSpec } from "./Menu";
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "stop";
 export type ButtonSize = "sm" | "md" | "lg";
 
-const VARIANT: Record<ButtonVariant, string> = { primary: "button-primary", secondary: "button-outline", ghost: "button-quiet", danger: "button-danger", stop: "button-stop" };
+const VARIANT: Record<ButtonVariant, string> = {
+	primary: "button-primary",
+	secondary: "button-outline",
+	ghost: "button-quiet",
+	danger: "button-danger",
+	stop: "button-stop",
+};
 const SIZE: Record<ButtonSize, string> = { sm: " button-small", md: "", lg: " button-large" };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -19,9 +25,21 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 	ref?: Ref<HTMLButtonElement>;
 }
 
-export function Button({ variant = "secondary", size = "md", icon, className, children, type = "button", ...rest }: ButtonProps) {
+export function Button({
+	variant = "secondary",
+	size = "md",
+	icon,
+	className,
+	children,
+	type = "button",
+	...rest
+}: ButtonProps) {
 	return (
-		<button type={type} className={`button ${VARIANT[variant]}${SIZE[size]}${className ? ` ${className}` : ""}`} {...rest}>
+		<button
+			type={type}
+			className={`button ${VARIANT[variant]}${SIZE[size]}${className ? ` ${className}` : ""}`}
+			{...rest}
+		>
 			{icon}
 			{children === undefined || children === null ? null : <span>{children}</span>}
 		</button>
@@ -37,15 +55,28 @@ export interface SplitButtonProps extends Omit<ButtonProps, "variant"> {
 }
 
 /** The action, and a chevron that opens its menu; the two read as one control. */
-export function SplitButton({ menu, menuLabel, menuDisabled = false, size = "md", className, ...rest }: SplitButtonProps) {
+export function SplitButton({
+	menu,
+	menuLabel,
+	menuDisabled = false,
+	size = "md",
+	className,
+	...rest
+}: SplitButtonProps) {
 	return (
 		<span className={`ui-split ui-split-${size}${className ? ` ${className}` : ""}`}>
 			<Button variant="primary" size={size} className="ui-split-main" {...rest} />
 			<Menu
 				spec={menu}
 				align="end"
-				trigger={(props) => (
-					<button type="button" className="button button-primary ui-split-more" aria-label={menuLabel} disabled={menuDisabled} {...props}>
+				trigger={props => (
+					<button
+						type="button"
+						className="button button-primary ui-split-more"
+						aria-label={menuLabel}
+						disabled={menuDisabled}
+						{...props}
+					>
 						<ChevronDownIcon size={14} />
 					</button>
 				)}

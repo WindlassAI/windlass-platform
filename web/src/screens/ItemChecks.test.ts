@@ -15,8 +15,16 @@ import { checksSummary, ciState, ItemChecks, openLine, sortedRuns } from "./Item
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const auth = { token: "mock:user:u_checks:ada@example.com", profile: { uid: "u_checks", email: "ada@example.com", demo: false } };
-const links = { src: (id: string) => `/mock/${id}.png`, failed: () => undefined, freshen: () => undefined, generation: 1 };
+const auth = {
+	token: "mock:user:u_checks:ada@example.com",
+	profile: { uid: "u_checks", email: "ada@example.com", demo: false },
+};
+const links = {
+	src: (id: string) => `/mock/${id}.png`,
+	failed: () => undefined,
+	freshen: () => undefined,
+	generation: 1,
+};
 
 let views: ItemView[] = [];
 
@@ -24,12 +32,12 @@ beforeEach(async () => {
 	if (views.length > 0) return;
 	const mock = createMockClient({ pace: 0 });
 	const user = mock.user(auth);
-	views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+	views = await Promise.all((await user.listItems()).map(item => user.item(item.id)));
 	mock.dispose();
 });
 
 const viewNamed = (title: string): ItemView => {
-	const found = views.find((view) => view.title === title);
+	const found = views.find(view => view.title === title);
 	if (!found) throw new Error(`no seeded item "${title}"`);
 	return found;
 };
@@ -44,23 +52,43 @@ describe("what the panel's first line says", () => {
 	});
 
 	it("counts failed and cancelled CI checks, blocking findings and comments", () => {
-		expect(openLine(checksSummary(viewNamed("Replace the deprecated glob call")).open)).toBe("1 open: 1 failed CI check");
-		expect(openLine(checksSummary(viewNamed("Speed up the station import")).open)).toBe("2 open: 2 cancelled CI checks");
-		expect(openLine(checksSummary(viewNamed("Drop the legacy export")).open)).toBe("5 open: 1 thing to look at, 2 blocking findings, 2 comments on GitHub");
-		expect(openLine(checksSummary(viewNamed("Stop lint failing on warnings")).open)).toContain("2 questions from the reviewer");
+		expect(openLine(checksSummary(viewNamed("Replace the deprecated glob call")).open)).toBe(
+			"1 open: 1 failed CI check",
+		);
+		expect(openLine(checksSummary(viewNamed("Speed up the station import")).open)).toBe(
+			"2 open: 2 cancelled CI checks",
+		);
+		expect(openLine(checksSummary(viewNamed("Drop the legacy export")).open)).toBe(
+			"5 open: 1 thing to look at, 2 blocking findings, 2 comments on GitHub",
+		);
+		expect(openLine(checksSummary(viewNamed("Stop lint failing on warnings")).open)).toContain(
+			"2 questions from the reviewer",
+		);
 	});
 
 	it("names the second review as open while it runs", () => {
 		const running = checksSummary(viewNamed("Paginate the artefact list"));
 		expect(running.reviewing).toBe(true);
-		expect(running.open.map((one) => one.words)).toContain("the second review");
+		expect(running.open.map(one => one.words)).toContain("the second review");
 	});
 });
 
 describe("CI's rows", () => {
 	it("sorts failed first, then running, cancelled, skipped, passed", () => {
-		const runs = ["success", "cancelled", "", "failure", "skipped", "not_run"].map((conclusion, index) => ({ name: `c${index}`, app: "github-actions", conclusion, url: "https://github.com/a/b/actions/runs/1" }));
-		expect(sortedRuns(runs).map((run) => ciState(run.conclusion))).toEqual(["failed", "failed", "running", "cancelled", "skipped", "passed"]);
+		const runs = ["success", "cancelled", "", "failure", "skipped", "not_run"].map((conclusion, index) => ({
+			name: `c${index}`,
+			app: "github-actions",
+			conclusion,
+			url: "https://github.com/a/b/actions/runs/1",
+		}));
+		expect(sortedRuns(runs).map(run => ciState(run.conclusion))).toEqual([
+			"failed",
+			"failed",
+			"running",
+			"cancelled",
+			"skipped",
+			"passed",
+		]);
 	});
 });
 
@@ -86,8 +114,22 @@ describe("the panel on the page", () => {
 
 	async function render(title: string) {
 		const view = viewNamed(title);
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ItemChecks, { view, links, when: (at: number) => new Date(at).toISOString().slice(11, 16) }) })));
-		const row = (label: string) => [...host.querySelectorAll(".checks-groups > div")].find((one) => one.querySelector("dt")?.textContent === label) as HTMLElement | undefined;
+		await act(async () =>
+			root.render(
+				createElement(AppProvider, {
+					client,
+					children: createElement(ItemChecks, {
+						view,
+						links,
+						when: (at: number) => new Date(at).toISOString().slice(11, 16),
+					}),
+				}),
+			),
+		);
+		const row = (label: string) =>
+			[...host.querySelectorAll(".checks-groups > div")].find(one => one.querySelector("dt")?.textContent === label) as
+				| HTMLElement
+				| undefined;
 		return { view, row, summary: host.querySelector(".checks-summary")?.textContent ?? "" };
 	}
 
@@ -109,8 +151,13 @@ describe("the panel on the page", () => {
 		expect(first?.textContent).toContain("failed");
 		expect(first?.querySelector("a")?.getAttribute("href")).toBe("https://github.com/acme/harbor/actions/runs/9120");
 		const cancelled = (await render("Speed up the station import")).row("CI")!;
-		expect(cancelled.textContent).toContain("CI did not finish: 2 checks were cancelled (e2e (chromium), e2e (firefox)); nothing failed.");
-		expect([...cancelled.querySelectorAll(".checks-row")].slice(0, 2).map((one) => one.textContent)).toEqual(["e2e (chromium)cancelled", "e2e (firefox)cancelled"]);
+		expect(cancelled.textContent).toContain(
+			"CI did not finish: 2 checks were cancelled (e2e (chromium), e2e (firefox)); nothing failed.",
+		);
+		expect([...cancelled.querySelectorAll(".checks-row")].slice(0, 2).map(one => one.textContent)).toEqual([
+			"e2e (chromium)cancelled",
+			"e2e (firefox)cancelled",
+		]);
 	});
 
 	it("lists the review's blocking findings as rows that unfold, and the open comments with their authors", async () => {
@@ -118,14 +165,22 @@ describe("the panel on the page", () => {
 		const review = row("Review")!;
 		expect(review.querySelector(".review-word")?.textContent).toBe("asks for changes");
 		const findings = [...review.querySelectorAll(".checks-finding")];
-		expect(findings.map((one) => one.querySelector(".checks-finding-title")?.textContent)).toEqual(["The menu's divider went with the export entry", "The settings page keeps the export's heading"]);
+		expect(findings.map(one => one.querySelector(".checks-finding-title")?.textContent)).toEqual([
+			"The menu's divider went with the export entry",
+			"The settings page keeps the export's heading",
+		]);
 		const body = findings[0]?.querySelector(".checks-finding-body");
 		expect(body?.hasAttribute("hidden")).toBe(true);
 		act(() => (findings[0]?.querySelector("button") as HTMLButtonElement).click());
 		expect(body?.hasAttribute("hidden")).toBe(false);
-		expect(body?.querySelector("a")?.getAttribute("href")).toMatch(/^https:\/\/github\.com\/acme\/harbor\/blob\/[0-9a-f]{40}\/src\/menu\.ts#L30-L36$/);
+		expect(body?.querySelector("a")?.getAttribute("href")).toMatch(
+			/^https:\/\/github\.com\/acme\/harbor\/blob\/[0-9a-f]{40}\/src\/menu\.ts#L30-L36$/,
+		);
 		const github = row("GitHub")!;
-		expect([...github.querySelectorAll(".checks-comment .gh-who")].map((one) => one.textContent)).toEqual(["@ada", "@jonas"]);
+		expect([...github.querySelectorAll(".checks-comment .gh-who")].map(one => one.textContent)).toEqual([
+			"@ada",
+			"@jonas",
+		]);
 		expect(github.querySelector(".checks-head")?.textContent).toContain("2 open comments");
 	});
 });

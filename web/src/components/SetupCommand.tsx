@@ -21,7 +21,13 @@ function clean(text: string): string {
 }
 
 /** When and how it runs, in one sentence: the same wherever the command is shown. */
-function howItRuns(when: string, limitMs: number | null, egress?: EgressMode, hosted = false, domains?: number): string {
+function howItRuns(
+	when: string,
+	limitMs: number | null,
+	egress?: EgressMode,
+	hosted = false,
+	domains?: number,
+): string {
 	return `Runs once ${when}, before the agent starts, outside the agent's command sandbox${limitMs === null ? "" : `, for at most ${spelledDuration(limitMs)}`}. ${workspaceNetwork(egress, hosted, domains)}`;
 }
 
@@ -60,11 +66,22 @@ export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 			.user(auth)
 			.repositorySetup(repositoryId)
 			.then(
-				(setup) => {
-					if (current) setDraft((now) => (now.repositoryId !== repositoryId ? now : { ...now, saved: setup.command, limitMs: setup.timeoutMs, text: now.touched ? now.text : setup.command, error: null }));
+				setup => {
+					if (current)
+						setDraft(now =>
+							now.repositoryId !== repositoryId
+								? now
+								: {
+										...now,
+										saved: setup.command,
+										limitMs: setup.timeoutMs,
+										text: now.touched ? now.text : setup.command,
+										error: null,
+									},
+						);
 				},
 				(failure: unknown) => {
-					if (current) setDraft((now) => (now.repositoryId !== repositoryId ? now : { ...now, error: explain(failure) }));
+					if (current) setDraft(now => (now.repositoryId !== repositoryId ? now : { ...now, error: explain(failure) }));
 				},
 			);
 		return () => {
@@ -72,15 +89,30 @@ export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 		};
 	}, [client, auth, explain, repositoryId]);
 
-	const setText = useCallback((text: string) => setDraft((now) => ({ ...now, text, touched: true })), []);
+	const setText = useCallback((text: string) => setDraft(now => ({ ...now, text, touched: true })), []);
 	const text = clean(draft.text);
 	// What could not be read is left as it is unless the user wrote something in its place.
-	const toSave = draft.repositoryId !== null && (draft.saved !== null ? text !== draft.saved : draft.touched) ? text : undefined;
+	const toSave =
+		draft.repositoryId !== null && (draft.saved !== null ? text !== draft.saved : draft.touched) ? text : undefined;
 	return { draft, setText, toSave };
 }
 
 /** The start composer's field. `repository` is the chosen one, in words. */
-export function SetupField({ setup, repository, disabled, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; setup: SetupDraft; repository: string; disabled: boolean }) {
+export function SetupField({
+	setup,
+	repository,
+	disabled,
+	egress,
+	hosted,
+	domains,
+}: {
+	egress?: EgressMode;
+	hosted?: boolean;
+	domains?: number;
+	setup: SetupDraft;
+	repository: string;
+	disabled: boolean;
+}) {
 	const ids = { input: useId(), note: useId() };
 	const { draft } = setup;
 	const reading = draft.saved === null && draft.error === null;
@@ -100,13 +132,14 @@ export function SetupField({ setup, repository, disabled, egress, hosted, domain
 				maxLength={MAX_SETUP_COMMAND_CHARS}
 				placeholder={reading ? "" : "npm ci"}
 				value={draft.text}
-				onChange={(event) => setup.setText(event.target.value)}
+				onChange={event => setup.setText(event.target.value)}
 				disabled={disabled}
 				aria-busy={reading}
 				aria-describedby={ids.note}
 			/>
 			<p className="field-note" id={ids.note}>
-				{howItRuns("when the workspace is created", draft.limitMs, egress, hosted, domains)} Saved for {repository}, and run for every agent you launch on it.
+				{howItRuns("when the workspace is created", draft.limitMs, egress, hosted, domains)} Saved for {repository}, and
+				run for every agent you launch on it.
 			</p>
 			{draft.error ? (
 				<p className="field-note tone-warn" role="status">
@@ -122,7 +155,27 @@ export function SetupField({ setup, repository, disabled, egress, hosted, domain
  * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
  * shown; `onSaved` hears of a save.
  */
-export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress, hosted, domains, compact = false }: { compact?: boolean; egress?: EgressMode; hosted?: boolean; domains?: number; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
+export function SetupEditor({
+	repositoryId,
+	name,
+	labelledBy,
+	applies,
+	onSaved,
+	egress,
+	hosted,
+	domains,
+	compact = false,
+}: {
+	compact?: boolean;
+	egress?: EgressMode;
+	hosted?: boolean;
+	domains?: number;
+	repositoryId: GithubId;
+	name: string;
+	labelledBy: string;
+	applies: string;
+	onSaved?(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { input: useId(), note: useId() };
@@ -141,7 +194,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 			.user(auth)
 			.repositorySetup(repositoryId)
 			.then(
-				(setup) => {
+				setup => {
 					if (!current) return;
 					setSaved({ command: setup.command, limitMs: setup.timeoutMs });
 					setText(setup.command);
@@ -195,7 +248,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 						maxLength={MAX_SETUP_COMMAND_CHARS}
 						placeholder="none"
 						value={text}
-						onChange={(event) => {
+						onChange={event => {
 							setText(event.target.value);
 							setDone(false);
 						}}
@@ -204,7 +257,12 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 						aria-describedby={ids.note}
 					/>
 					<p className="setup-actions">
-						<button type="button" className="button button-outline button-small" onClick={save} disabled={!changed || saving}>
+						<button
+							type="button"
+							className="button button-outline button-small"
+							onClick={save}
+							disabled={!changed || saving}
+						>
 							{saving ? "Saving…" : "Save"}
 						</button>
 						{done && !changed ? (
@@ -216,7 +274,9 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 					{compact ? (
 						<p className="panel-empty setup-note" id={ids.note}>
 							Runs once before the agent starts (max {spelledDuration(saved.limitMs)}).{" "}
-							<a className="link" href="/docs/settings#setup-command">Details</a>
+							<a className="link" href="/docs/settings#setup-command">
+								Details
+							</a>
 						</p>
 					) : (
 						<p className="panel-empty setup-note" id={ids.note}>
@@ -235,7 +295,17 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 }
 
 /** The side panel's section, for a session on a repository of the GitHub connection. */
-export function SetupSection({ summary, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; summary: SessionSummary }) {
+export function SetupSection({
+	summary,
+	egress,
+	hosted,
+	domains,
+}: {
+	egress?: EgressMode;
+	hosted?: boolean;
+	domains?: number;
+	summary: SessionSummary;
+}) {
 	const title = useId();
 	const repository = summary.repository ?? null;
 	if (!repository) return null;
@@ -251,7 +321,11 @@ export function SetupSection({ summary, egress, hosted, domains }: { egress?: Eg
 				repositoryId={repository.id}
 				name={`${repository.owner}/${repository.name}`}
 				labelledBy={title}
-				applies={summary.sandbox === "none" ? "This agent's workspace is created with its first prompt." : "A change applies to workspaces created after it: this agent's current one is not set up again."}
+				applies={
+					summary.sandbox === "none"
+						? "This agent's workspace is created with its first prompt."
+						: "A change applies to workspaces created after it: this agent's current one is not set up again."
+				}
 			/>
 		</section>
 	);

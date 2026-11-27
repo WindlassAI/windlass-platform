@@ -1,16 +1,64 @@
 import type { ProviderRefusal } from "../provider-refusal.js";
 import type { MachinePayerOffer } from "./default-place.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
-import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
+import type {
+	CheckConclusion,
+	ChildPlacement,
+	FeatureRepository,
+	IntegrationView,
+	ReviewRecommendation,
+} from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import type { OutOfMemory } from "../sandbox/api.js";
-import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type {
+	ChoiceId,
+	HostedSize,
+	ItemBudget,
+	ItemSpend,
+	ItemEvent,
+	ItemQuestion,
+	ItemReview,
+	ItemRun,
+	ItemState,
+	ItemStep,
+	ItemTask,
+	SandboxPlace,
+	TurnOutcome,
+	Verdict,
+	VerdictRun,
+	Verified,
+	VerifiedFlag,
+	Wait,
+	Waiting,
+} from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
 import type { RerunnableJob, CiReading, CiState } from "../github/ci.js";
 
-export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
+export type {
+	ChoiceId,
+	FactoryLimits,
+	ItemBudget,
+	ItemSpend,
+	ItemEvent,
+	ItemState,
+	QuestionKind,
+	StepKind,
+	Verdict,
+	VerdictRun,
+	Wait,
+	WaitReason,
+	Waiting,
+} from "../contract.js";
 
-export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix";
+export type TurnStepKind =
+	| "summary"
+	| "refine"
+	| "implement"
+	| "ci_fix"
+	| "run_checks"
+	| "conflict"
+	| "review"
+	| "review_fix";
 
 export type Step = ItemStep;
 
@@ -149,7 +197,10 @@ export interface IntegrationRun extends IntegrationView {
 	charged: boolean;
 }
 
-export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean; missingTarget?: boolean });
+export type JoinResult = { key: string } & (
+	| { head: string }
+	| { reason: string; conflict: boolean; missingTarget?: boolean }
+);
 
 /** The independent CI poll on one feature branch, pinned to its current head. */
 export interface FeatureCi extends BaseFailureDecision {
@@ -269,7 +320,12 @@ export interface FactoryItem {
 		lastIds: string[];
 	};
 	/** Checks opened by this run, including a handed head reopened for rework. */
-	pendingChecks?: { sha: string; existingOnly: boolean; feedback?: boolean; /** Reviewed in this round, which asked for changes: completed by the head a later round hands over. */ reviewRound?: number }[];
+	pendingChecks?: {
+		sha: string;
+		existingOnly: boolean;
+		feedback?: boolean /** Reviewed in this round, which asked for changes: completed by the head a later round hands over. */;
+		reviewRound?: number;
+	}[];
 	lastReverifyAt?: number;
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
@@ -337,7 +393,17 @@ export interface FactoryItem {
 }
 
 /** Stored round-cap causes resume like a repeated failure. */
-export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate" | "ci" | "conflict" | "review" | "sandboxes" | keyof ItemBudget;
+export type StopCause =
+	| "repeated"
+	| "turns"
+	| "interruptions"
+	| "plan"
+	| "gate"
+	| "ci"
+	| "conflict"
+	| "review"
+	| "sandboxes"
+	| keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
@@ -352,9 +418,14 @@ export interface Question extends ItemQuestion {
 
 /** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
 export type ReviewCheckout = { head: string; base: string; pr: number };
-export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "decisions"> & { verdictId: string; earlier: EarlierFinding[] };
+export type ReviewerInput = Pick<
+	ReviewerTaskInput,
+	"round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "decisions"
+> & { verdictId: string; earlier: EarlierFinding[] };
 export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
-export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
+export type HandoffReview =
+	| { review: string; reviewNone: null; assessment?: CheckReview }
+	| { review: null; reviewNone: string };
 
 export interface TurnPlan {
 	/** Include this continuation’s instructions when the agent needs the whole task again. */
@@ -422,38 +493,105 @@ export interface AgentTurn {
 }
 
 export type RequestedReview = Pick<FeatureRepository, "repositoryId" | "installationId" | "owner" | "name"> & {
-	key: string; pr: number; head: string; base: string; sender: string; untrusted: boolean;
+	key: string;
+	pr: number;
+	head: string;
+	base: string;
+	sender: string;
+	untrusted: boolean;
 };
 
 export type BranchPush = Omit<NonNullable<ItemQuestion["push"]>, "head"> & { pusher: string; own: boolean };
 
 export type Fact =
-	| { kind: "branch_push"; at: number; key: string; previous: string | null; head: string; push?: BranchPush; repo?: string }
+	| {
+			kind: "branch_push";
+			at: number;
+			key: string;
+			previous: string | null;
+			head: string;
+			push?: BranchPush;
+			repo?: string;
+	  }
 	| { kind: "sandbox_reclaimed"; at: number; said: string }
 	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
-	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
+	| {
+			kind: "default_place_ready";
+			reviewer: NonNullable<FactoryItem["reviewer"]>;
+			reviewerSessionId: string | null;
+			at: number;
+			place: SandboxPlace;
+			agent: NonNullable<FactoryItem["agent"]>;
+	  }
 	| { kind: "default_place_wait"; offerPayer?: MachinePayerOffer; reviewer?: boolean; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
 	| { kind: "integration_started"; at: number; key: string; attempt: number; runId: string | null; url: string | null }
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
-	| { kind: "integration_read"; at: number; key: string; attempt: number; state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable"; url: string | null; said: string | null; seconds?: number }
+	| {
+			kind: "integration_read";
+			at: number;
+			key: string;
+			attempt: number;
+			state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable";
+			url: string | null;
+			said: string | null;
+			seconds?: number;
+	  }
 	/** A cross-repo feature's pull request in `repo` cannot be read any more: the App lost access, or the repository or PR is gone. */
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
-	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
+	| {
+			kind: "repo_pr_read";
+			at: number;
+			key: string;
+			repo: string;
+			state: "open" | "draft" | "merged" | "closed";
+			prHead: string | null;
+			mergedCommit: string | null /** `merged_at` (ms), null when GitHub did not say. */;
+			mergedAt?: number | null;
+	  }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
-	| { kind: "update_feature"; automatic?: true; at: number; by: Cause; target?: string; child?: string; request?: string }
-	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } | { conflicts: string[] } }
+	| {
+			kind: "update_feature";
+			automatic?: true;
+			at: number;
+			by: Cause;
+			target?: string;
+			child?: string;
+			request?: string;
+	  }
+	| {
+			kind: "feature_updated";
+			at: number;
+			key: string;
+			result: { head: string } | { problem: string } | { conflicts: string[] };
+	  }
 	| { kind: "parent_update_finished"; at: number; key: string }
 	| { kind: "claim_join"; at: number; child: string; key: string }
 	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
-	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
+	| {
+			kind: "child_notice";
+			integratedHead?: string;
+			at: number;
+			child: string;
+			state: FactoryItem["state"];
+			spent: ItemSpend;
+			budget?: ItemBudget;
+	  }
 	| { kind: "file_plan"; inventory?: PlacementInventory; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
 	| { kind: "refresh_plan"; version: number; inventory: PlacementInventory; at: number }
-	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[]; bases?: Record<string, string> }
+	| {
+			kind: "approve_plan";
+			inventory?: PlacementInventory;
+			at: number;
+			by: string;
+			version: number;
+			agents?: string[];
+			bases?: Record<string, string>;
+	  }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "set_subtask_agent"; inventory?: PlacementInventory; at: number; by: string; key: string; agent: unknown }
 	| { kind: "start"; at: number; by: Cause }
@@ -466,7 +604,18 @@ export type Fact =
 	| { kind: "note"; at: number; by: Cause; note: string; steered?: boolean }
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
-	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
+	| {
+			kind: "answer";
+			target?: string;
+			inventory?: PlacementInventory;
+			at: number;
+			by: Cause;
+			question: string;
+			choice: ChoiceId;
+			note?: string;
+			budget?: Partial<ItemBudget>;
+			agents?: string[];
+	  }
 	| { kind: "ci_rerun_result"; repo?: string; at: number; head: string; accepted: string[]; said: string }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number }
@@ -476,18 +625,62 @@ export type Fact =
 export type StepFact =
 	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
 	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
-	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
+	| {
+			kind: "feature_ready";
+			waitForCiOnEachPart?: boolean;
+			at: number;
+			key: string;
+			head: string;
+			pr: NonNullable<FactoryItem["pr"]>;
+			repo?: string;
+	  }
 	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; askMachine?: boolean; offerHosted?: boolean; hostedProfile?: ChildPlacement["profile"]; offerPayer?: MachinePayerOffer; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
-	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
+	| {
+			kind: "placement_wait";
+			at: number;
+			child: string;
+			key: string;
+			sentence: string;
+			askMachine?: boolean;
+			offerHosted?: boolean;
+			hostedProfile?: ChildPlacement["profile"];
+			offerPayer?: MachinePayerOffer;
+			refused?: boolean;
+			dailyCap?: boolean;
+			providerUntil?: number;
+			accountKey?: string;
+	  }
+	| {
+			kind: "child_update";
+			startedAt?: number;
+			wait?: string;
+			placement?: ChildPlacement;
+			failure?: string | null;
+			at: number;
+			key: string;
+			child: string;
+			state: FactoryItem["state"];
+			spent: ItemSpend;
+			budget?: ItemBudget;
+			report: string;
+			head: string | null;
+	  }
 	| { kind: "integrated"; head?: string; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "session_deleted"; at: number; key: string }
-	| { kind: "turn_started"; at: number; key: string; role?: import("./resolve-run.js").RunRole;
-		actual?: Pick<import("./resolve-run.js").ResolvedRun, "place" | "agent" | "model" | "effort" | "profile" | "payer"> & { size?: HostedSize | number | null; payerSource?: "account" | "deployment" } }
+	| {
+			kind: "turn_started";
+			at: number;
+			key: string;
+			role?: import("./resolve-run.js").RunRole;
+			actual?: Pick<
+				import("./resolve-run.js").ResolvedRun,
+				"place" | "agent" | "model" | "effort" | "profile" | "payer"
+			> & { size?: HostedSize | number | null; payerSource?: "account" | "deployment" };
+	  }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
 	| { kind: "turn_running"; at: number; key: string }
 	/** The turn of `key` is paused, not ended: its machine went away mid-turn (`since`). It resumes by itself when the machine is back. */
@@ -497,7 +690,9 @@ export type StepFact =
 	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
 	| { kind: "machine_away"; deadline?: number; at: number; key: string; since: number; machine: string | null }
 	| {
-			kind: "turn_ended"; taskKind?: import("./readiness-track.js").TaskKind; autoApprovePlans?: boolean;
+			kind: "turn_ended";
+			taskKind?: import("./readiness-track.js").TaskKind;
+			autoApprovePlans?: boolean;
 			at: number;
 			key: string;
 			outcome: TurnOutcome;
@@ -529,21 +724,82 @@ export type StepFact =
 			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; approvalProblem?: string; planReview?: import("./autonomy.js").PlanReview; inventory?: PlacementInventory; by?: "critic"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
+	| {
+			kind: "review_ended";
+			approvalProblem?: string;
+			planReview?: import("./autonomy.js").PlanReview;
+			inventory?: PlacementInventory;
+			by?: "critic";
+			at: number;
+			key: string;
+			outcome: TurnOutcome;
+			stepLimit?: number;
+			review: ItemReview | null;
+			said: string | null;
+			refused?: string | null;
+			providerRefusal?: ItemProviderRefusal /** As `turn_ended`'s. */;
+			sandboxFailed?: string;
+			outOfMemory?: OutOfMemory;
+			spend: TurnSpend;
+	  }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan; hostedSize?: HostedSize }
 	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
 	| { kind: "base_conflict"; at: number; key: string }
-	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
+	| {
+			kind: "published";
+			at: number;
+			key: string;
+			head: string;
+			pr: { number: number; url: string } | null;
+			openItems: number;
+			webhooks: boolean;
+	  }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	| { kind: "secret_attempt"; at: number; key: string; previous: number }
-	| { kind: "ci_rerun_started"; repo?: string; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
+	| {
+			kind: "ci_rerun_started";
+			repo?: string;
+			at: number;
+			key: string;
+			head: string;
+			jobs: RerunnableJob[];
+			openItems: number;
+	  }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; basePassed?: boolean; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| {
+			kind: "ci_read";
+			basePassed?: boolean;
+			featureHead?: string;
+			repo?: string;
+			paths?: string[];
+			autoMergeSingles?: boolean;
+			at: number;
+			key: string;
+			head: string;
+			reading: CiReading;
+			baseAhead?: number;
+			baseTip?: string;
+			featureTarget?: string;
+			featureTargetHead?: string;
+			mergeable: boolean | null;
+			prHead: string | null;
+			openItems: number;
+			webhooks: boolean;
+	  }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
-	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean };
+	| {
+			kind: "pr_read";
+			pushCi?: CiReading;
+			mergedByApp?: boolean;
+			at: number;
+			key: string;
+			state: "open" | "draft" | "merged" | "closed";
+			prHead: string | null;
+			webhooks: boolean;
+	  };
 
 /** The actor commits effects with state and replays them by key. An effect time is its earliest execution. */
 export type VerifiedCheckEffect = {
@@ -583,12 +839,34 @@ export type Effect =
 	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
 	| { kind: "dispatch"; child?: string; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "critic" | "planner" | "summary" | "run_checks" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review" | "critic"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
+	| {
+			kind: "deliver";
+			key: string;
+			text: string;
+			feedbackQuote?: TurnPlan["feedbackQuote"];
+			agent: "critic" | "planner" | "summary" | "run_checks" | null;
+			maxSteps: number;
+			fetchBase: string | null /** A builder's turn: the questions its run may still ask (`ask_person`). */;
+			asksLeft?: number;
+			to?: "review" | "critic";
+			checkout?: ReviewCheckout;
+			reviewerInput?: ReviewerInput /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */;
+			untrusted?: string[] /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */;
+			unsandboxed?: true /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */;
+			fresh?: { text: string; untrusted: string[]; unsandboxed?: true };
+	  }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" | "critic" }
 	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
-	| { kind: "fresh_sandbox"; key: string; at?: number; plan: TurnPlan; to?: "review" | "critic"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
+	| {
+			kind: "fresh_sandbox";
+			key: string;
+			at?: number;
+			plan: TurnPlan;
+			to?: "review" | "critic" /** "Start on a larger sandbox": the size of the new one. */;
+			hostedSize?: HostedSize;
+	  }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" | "critic" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
@@ -599,9 +877,16 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true;
-		/** The run's last review asked for changes (or for the person), and no review was filed for the head handed over. */
-		unfinished?: true } & HandoffReview);
+	| ({
+			kind: "handoff";
+			key: string;
+			verdict: Verdict;
+			words: string;
+			continuedIn?: number;
+			reviewDone?: true;
+			/** The run's last review asked for changes (or for the person), and no review was filed for the head handed over. */
+			unfinished?: true;
+	  } & HandoffReview);
 
 /** A transaction-only effect, consumed before the actor performs any deliveries. */
 export interface VerdictEffect {

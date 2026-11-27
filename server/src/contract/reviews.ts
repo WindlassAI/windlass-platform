@@ -28,7 +28,15 @@ export interface ReviewRef {
 export type ReviewBlockInput =
 	| { kind: "summary"; text: ReviewText }
 	| { kind: "text"; heading?: string; text: ReviewText; refs?: ReviewRef[] }
-	| { kind: "finding"; severity: "blocking" | "should_fix" | "note"; title: string; text: ReviewText; at?: ReviewLocation[]; refs?: ReviewRef[]; /** An earlier round's finding id (r1.f2) this one continues. */ continues?: string }
+	| {
+			kind: "finding";
+			severity: "blocking" | "should_fix" | "note";
+			title: string;
+			text: ReviewText;
+			at?: ReviewLocation[];
+			refs?: ReviewRef[] /** An earlier round's finding id (r1.f2) this one continues. */;
+			continues?: string;
+	  }
 	| { kind: "earlier"; finding: string; status: "fixed" | "not_fixed" | "withdrawn"; text?: ReviewText }
 	| { kind: "risk"; text: ReviewText; at?: ReviewLocation[] }
 	| { kind: "question"; text: ReviewText }
@@ -45,13 +53,29 @@ export type ReviewRecord =
 	| { ref: string; kind: "check"; name: string; status: CheckStatus }
 	| { ref: string; kind: "ci"; name: string; app: string; conclusion: string; url: string }
 	| { ref: string; kind: "flag"; flag: VerifiedFlag }
-	| { ref: string; kind: "command"; command: string; exitCode: number | null; outcome: string; /** At most 20 lines, redacted. */ tail: string };
+	| {
+			ref: string;
+			kind: "command";
+			command: string;
+			exitCode: number | null;
+			outcome: string /** At most 20 lines, redacted. */;
+			tail: string;
+	  };
 
 /** The blocks as stored and shown: ids assigned, references resolved, code fetched (R3), files stored (R2). */
 export type ReviewBlock =
 	| { kind: "summary"; text: string }
 	| { kind: "text"; heading: string | null; text: string; refs: ReviewRef[] }
-	| { kind: "finding"; id: string; root: string; severity: "blocking" | "should_fix" | "note"; title: string; text: string; at: ReviewLocation[]; refs: ReviewRef[] }
+	| {
+			kind: "finding";
+			id: string;
+			root: string;
+			severity: "blocking" | "should_fix" | "note";
+			title: string;
+			text: string;
+			at: ReviewLocation[];
+			refs: ReviewRef[];
+	  }
 	| { kind: "earlier"; finding: string; status: "fixed" | "not_fixed" | "withdrawn"; text: string | null }
 	| { kind: "risk"; text: string; at: ReviewLocation[] }
 	| { kind: "question"; text: string }

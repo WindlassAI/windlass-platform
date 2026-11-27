@@ -79,7 +79,14 @@
 
 import { backupConfig } from "../config.js";
 import type { ObjectStore } from "../bucket/store.js";
-import type { BackupOwner, BackupRestoreResult, BackupSaveResult, SandboxHandle, SavedBackup, SessionBackups } from "./api.js";
+import type {
+	BackupOwner,
+	BackupRestoreResult,
+	BackupSaveResult,
+	SandboxHandle,
+	SavedBackup,
+	SessionBackups,
+} from "./api.js";
 import { DATA_DIR, NAME, randomId } from "./provider.js";
 import { errorText } from "../util.js";
 
@@ -99,7 +106,16 @@ const SHA256 = /^[0-9a-f]{64}$/;
  * The environment a step is given (never a secret), and what each step answers with. The fake sandbox
  * layer has no shell: it reads `WLP_BACKUP_STEP` and plays the step by these same names (sandbox-fake.ts).
  */
-export const BACKUP_ENV = { step: "WLP_BACKUP_STEP", data: "WLP_BACKUP_DATA", pack: "WLP_BACKUP_PACK", max: "WLP_BACKUP_MAX", size: "WLP_BACKUP_SIZE", sha256: "WLP_BACKUP_SHA256", session: "WLP_BACKUP_SESSION", seconds: "WLP_BACKUP_SECONDS" } as const;
+export const BACKUP_ENV = {
+	step: "WLP_BACKUP_STEP",
+	data: "WLP_BACKUP_DATA",
+	pack: "WLP_BACKUP_PACK",
+	max: "WLP_BACKUP_MAX",
+	size: "WLP_BACKUP_SIZE",
+	sha256: "WLP_BACKUP_SHA256",
+	session: "WLP_BACKUP_SESSION",
+	seconds: "WLP_BACKUP_SECONDS",
+} as const;
 
 /** The files a copy holds, as paths in Windlass's data directory. `RESTORE` unpacks an archive only when every name in it is one of these. */
 const HELD = "^(sessions/[^/]+\\.db(-wal)?|blobs/[0-9a-f][0-9a-f]/[^/]+|memory/.+\\.(md|json|jsonl))$";
@@ -123,7 +139,7 @@ export const PACK_SCRIPT = [
 	"  if [ -d memory ]; then find memory -type f \\( -name '*.md' -o -name '*.json' -o -name '*.jsonl' \\) ! -name '.*' -print0; fi",
 	'} | LC_ALL=C sort -z > "$list"',
 	'if ! grep -qz "^sessions/" "$list"; then rm -f "$list"; echo empty; exit 0; fi',
-	"raw=$(xargs -0 -r stat -c %s < \"$list\" | awk '{ sum += $1 } END { printf \"%.0f\", sum }')",
+	'raw=$(xargs -0 -r stat -c %s < "$list" | awk \'{ sum += $1 } END { printf "%.0f", sum }\')',
 	'if [ "$raw" -gt $((WLP_BACKUP_MAX * 10)) ]; then rm -f "$list"; echo "too_large $raw"; exit 0; fi',
 	'tar --null --no-recursion -T "$list" -cf - | gzip -n > "$WLP_BACKUP_PACK"',
 	'rm -f "$list"',
@@ -178,7 +194,11 @@ function curlConfig(url: string): string {
 /** The last line a step printed, when it is one of the answers the step can give; null for anything else. */
 function answerOf(stdout: string): string | null {
 	const line = stdout.trim().split("\n").pop()?.trim() ?? "";
-	return /^(packed \d+ [0-9a-f]{64}|empty|too_large \d+|changed|http \d{3}|curl \d+|size \d+|hash [0-9a-f]{64}|contents|unpack|no_session|restored)$/.test(line) ? line : null;
+	return /^(packed \d+ [0-9a-f]{64}|empty|too_large \d+|changed|http \d{3}|curl \d+|size \d+|hash [0-9a-f]{64}|contents|unpack|no_session|restored)$/.test(
+		line,
+	)
+		? line
+		: null;
 }
 
 const messageOf = (error: unknown) => errorText(error).replace(/\s+/g, " ").trim().slice(0, 300);
@@ -207,7 +227,13 @@ export class SandboxSessionBackups implements SessionBackups {
 
 	/** One object per agent session, under its user. */
 	keyOf(owner: BackupOwner): string {
-		if (typeof owner.uid !== "string" || !NAME.test(owner.uid) || typeof owner.sessionId !== "string" || !SESSION.test(owner.sessionId)) throw new Error("a backup is named by a user id and a session id");
+		if (
+			typeof owner.uid !== "string" ||
+			!NAME.test(owner.uid) ||
+			typeof owner.sessionId !== "string" ||
+			!SESSION.test(owner.sessionId)
+		)
+			throw new Error("a backup is named by a user id and a session id");
 		return `${this.prefix}sessions/${owner.uid}/${owner.sessionId}.tgz`;
 	}
 
@@ -216,7 +242,14 @@ export class SandboxSessionBackups implements SessionBackups {
 		try {
 			const key = this.keyOf(owner);
 			const pack = `/tmp/.wlp-backup-${randomId(6)}.tgz`;
-			const packed = await this.step(sandbox, "pack", PACK_SCRIPT, { [BACKUP_ENV.data]: DATA_DIR, [BACKUP_ENV.pack]: pack, [BACKUP_ENV.max]: String(this.maxBytes) }, undefined, PACK_TIMEOUT_MS);
+			const packed = await this.step(
+				sandbox,
+				"pack",
+				PACK_SCRIPT,
+				{ [BACKUP_ENV.data]: DATA_DIR, [BACKUP_ENV.pack]: pack, [BACKUP_ENV.max]: String(this.maxBytes) },
+				undefined,
+				PACK_TIMEOUT_MS,
+			);
 			if (packed === "empty") return { outcome: "empty" };
 			const tooLarge = /^too_large (\d+)$/.exec(packed);
 			if (tooLarge !== null) return { outcome: "too_large", size: Number(tooLarge[1]), limit: this.maxBytes };
@@ -225,30 +258,63 @@ export class SandboxSessionBackups implements SessionBackups {
 			const size = Number(made[1]);
 			const sha256 = made[2];
 			// The sandbox's word for the size is only what the link is made for: more than the limit gets none.
-			if (!Number.isSafeInteger(size) || size > this.maxBytes) return { outcome: "too_large", size, limit: this.maxBytes };
+			if (!Number.isSafeInteger(size) || size > this.maxBytes)
+				return { outcome: "too_large", size, limit: this.maxBytes };
 
 			const link = await this.store.linkToPut(key, { size, ttlMs: LINK_TTL_MS });
-			const sent = await this.step(sandbox, "upload", UPLOAD_SCRIPT, { [BACKUP_ENV.pack]: pack, [BACKUP_ENV.size]: String(size), [BACKUP_ENV.seconds]: String(TRANSFER_SECONDS) }, curlConfig(link.url), TRANSFER_TIMEOUT_MS);
+			const sent = await this.step(
+				sandbox,
+				"upload",
+				UPLOAD_SCRIPT,
+				{ [BACKUP_ENV.pack]: pack, [BACKUP_ENV.size]: String(size), [BACKUP_ENV.seconds]: String(TRANSFER_SECONDS) },
+				curlConfig(link.url),
+				TRANSFER_TIMEOUT_MS,
+			);
 			if (sent !== "http 200") return { outcome: "failed", reason: `the upload answered "${sent}"` };
 			// The store's own word that the object is there. When it cannot be asked just now, the upload's answer stands.
 			const stored = await this.store.size(key).catch(() => undefined);
-			if (stored !== undefined && stored !== size) return { outcome: "failed", reason: stored === null ? "the sandbox reported an upload, but the bucket has no such object" : `the sandbox reported an upload of ${size} bytes, but the bucket's object has ${stored}` };
+			if (stored !== undefined && stored !== size)
+				return {
+					outcome: "failed",
+					reason:
+						stored === null
+							? "the sandbox reported an upload, but the bucket has no such object"
+							: `the sandbox reported an upload of ${size} bytes, but the bucket's object has ${stored}`,
+				};
 			return { outcome: "saved", backup: { size, sha256, at: this.now() }, ms: this.now() - began };
 		} catch (error) {
 			return { outcome: "failed", reason: messageOf(error) };
 		}
 	}
 
-	async restore(sandbox: SandboxHandle, owner: BackupOwner, saved: SavedBackup, windlassSessionId: string): Promise<BackupRestoreResult> {
+	async restore(
+		sandbox: SandboxHandle,
+		owner: BackupOwner,
+		saved: SavedBackup,
+		windlassSessionId: string,
+	): Promise<BackupRestoreResult> {
 		const began = this.now();
 		try {
-			if (!Number.isSafeInteger(saved.size) || saved.size < 0 || !SHA256.test(saved.sha256) || !WINDLASS_SESSION.test(windlassSessionId)) return { outcome: "failed", reason: "the session's record of its copy is not usable" };
+			if (
+				!Number.isSafeInteger(saved.size) ||
+				saved.size < 0 ||
+				!SHA256.test(saved.sha256) ||
+				!WINDLASS_SESSION.test(windlassSessionId)
+			)
+				return { outcome: "failed", reason: "the session's record of its copy is not usable" };
 			const link = await this.store.linkToGet(this.keyOf(owner), { ttlMs: LINK_TTL_MS });
 			const answer = await this.step(
 				sandbox,
 				"restore",
 				RESTORE_SCRIPT,
-				{ [BACKUP_ENV.data]: DATA_DIR, [BACKUP_ENV.pack]: `/tmp/.wlp-backup-${randomId(6)}.tgz`, [BACKUP_ENV.size]: String(saved.size), [BACKUP_ENV.sha256]: saved.sha256, [BACKUP_ENV.session]: windlassSessionId, [BACKUP_ENV.seconds]: String(TRANSFER_SECONDS) },
+				{
+					[BACKUP_ENV.data]: DATA_DIR,
+					[BACKUP_ENV.pack]: `/tmp/.wlp-backup-${randomId(6)}.tgz`,
+					[BACKUP_ENV.size]: String(saved.size),
+					[BACKUP_ENV.sha256]: saved.sha256,
+					[BACKUP_ENV.session]: windlassSessionId,
+					[BACKUP_ENV.seconds]: String(TRANSFER_SECONDS),
+				},
 				curlConfig(link.url),
 				TRANSFER_TIMEOUT_MS,
 			);
@@ -259,7 +325,12 @@ export class SandboxSessionBackups implements SessionBackups {
 				unpack: "the copy could not be unpacked",
 				no_session: "the copy does not hold the Windlass session",
 			};
-			if (/^(size|hash) /.test(answer)) return { outcome: "failed", reason: "the bucket's object is not the copy this session saved (its size or its hash differs), so nothing of it was unpacked" };
+			if (/^(size|hash) /.test(answer))
+				return {
+					outcome: "failed",
+					reason:
+						"the bucket's object is not the copy this session saved (its size or its hash differs), so nothing of it was unpacked",
+				};
 			return { outcome: "failed", reason: why[answer] ?? `the download answered "${answer}"` };
 		} catch (error) {
 			return { outcome: "failed", reason: messageOf(error) };
@@ -274,7 +345,14 @@ export class SandboxSessionBackups implements SessionBackups {
 	 * Runs one script in the sandbox and returns its answer. Whatever else it printed is dropped here:
 	 * the standard input may hold a link, and no error of this layer repeats a sandbox's output.
 	 */
-	private async step(sandbox: SandboxHandle, name: string, script: string, env: Record<string, string>, stdin: string | undefined, timeoutMs: number): Promise<string> {
+	private async step(
+		sandbox: SandboxHandle,
+		name: string,
+		script: string,
+		env: Record<string, string>,
+		stdin: string | undefined,
+		timeoutMs: number,
+	): Promise<string> {
 		let result: Awaited<ReturnType<SandboxHandle["run"]>>;
 		try {
 			result = await sandbox.run(script, { env: { ...env, [BACKUP_ENV.step]: name }, stdin, timeoutMs, cwd: "/" });
@@ -282,7 +360,8 @@ export class SandboxSessionBackups implements SessionBackups {
 			// A provider's error may quote the command; the command's input is the link.
 			throw new Error(`the ${name} step could not be run in the sandbox`);
 		}
-		if (result.timedOut) throw new Error(`the ${name} step took longer than ${Math.round(timeoutMs / 1000)} s and was stopped`);
+		if (result.timedOut)
+			throw new Error(`the ${name} step took longer than ${Math.round(timeoutMs / 1000)} s and was stopped`);
 		const answer = answerOf(result.stdout);
 		if (answer === null) throw new Error(`the ${name} step ended with exit code ${result.exitCode} and no answer`);
 		return answer;
@@ -297,21 +376,33 @@ export class SandboxSessionBackups implements SessionBackups {
  * server's key is said when the server starts and not at the first save. The S3 store is loaded only
  * when it is used. No line holds a setting's value.
  */
-export async function backupsFromConfig(print: (line: string) => void = (line) => console.log(line)): Promise<SessionBackups | null> {
+export async function backupsFromConfig(
+	print: (line: string) => void = line => console.log(line),
+): Promise<SessionBackups | null> {
 	const lost = "an agent whose sandbox is lost starts without its memory of the conversation";
 	try {
 		const found = backupConfig();
 		if (found.bucket === null) {
-			if (found.missing.length > 0) print(`[wlp] WARNING: The bucket for the agents' memory is only partly configured (${found.missing.join(", ")} ${found.missing.length === 1 ? "is" : "are"} not set), so no copy is kept: ${lost}.`);
-			else print(`[wlp] backups: off (no bucket is configured: WLP_BUCKET_ENDPOINT, WLP_BUCKET_NAME, WLP_BUCKET_ACCESS_KEY_ID, WLP_BUCKET_SECRET_ACCESS_KEY): ${lost}.`);
+			if (found.missing.length > 0)
+				print(
+					`[wlp] WARNING: The bucket for the agents' memory is only partly configured (${found.missing.join(", ")} ${found.missing.length === 1 ? "is" : "are"} not set), so no copy is kept: ${lost}.`,
+				);
+			else
+				print(
+					`[wlp] backups: off (no bucket is configured: WLP_BUCKET_ENDPOINT, WLP_BUCKET_NAME, WLP_BUCKET_ACCESS_KEY_ID, WLP_BUCKET_SECRET_ACCESS_KEY): ${lost}.`,
+				);
 			return null;
 		}
 		const { S3ObjectStore } = await import("../bucket/s3.js");
 		const store = new S3ObjectStore(found.bucket);
-		print(`[wlp] backups: on. Windlass's session data is copied to the bucket after every turn, up to ${Math.round(found.maxBytes / 1024 / 1024)} MiB a session, and restored into a sandbox that replaces a lost one.`);
+		print(
+			`[wlp] backups: on. Windlass's session data is copied to the bucket after every turn, up to ${Math.round(found.maxBytes / 1024 / 1024)} MiB a session, and restored into a sandbox that replaces a lost one.`,
+		);
 		// Asked of an object that does not exist: a bucket that takes the key answers that there is none.
 		void store.size(`${found.prefix}sessions/wlp-probe/wlp-probe.tgz`).catch((error: unknown) => {
-			print(`[wlp] WARNING: The bucket for the agents' memory did not take the server's request (${messageOf(error)}). Until it does, no copy can be saved or restored: check WLP_BUCKET_ENDPOINT, WLP_BUCKET_NAME and the access key.`);
+			print(
+				`[wlp] WARNING: The bucket for the agents' memory did not take the server's request (${messageOf(error)}). Until it does, no copy can be saved or restored: check WLP_BUCKET_ENDPOINT, WLP_BUCKET_NAME and the access key.`,
+			);
 		});
 		return new SandboxSessionBackups(store, { maxBytes: found.maxBytes, prefix: found.prefix });
 	} catch (error) {

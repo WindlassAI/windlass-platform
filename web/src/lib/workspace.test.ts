@@ -5,16 +5,72 @@
  */
 import type { GithubId, ItemFeed, ItemSummary, SessionSummary } from "@contract";
 import { describe, expect, it } from "vitest";
-import { NO_FILTERS, activeRepositories, filterCount, itemStatus, loadFilters, loadFoldedOwners, loadRailFolded, matchesItem, matchesSession, railBadge, railOf, saveFilters, saveFoldedOwners, saveRailFolded, searchRail, sessionStatus, toggleFilter, type Filters } from "./workspace";
+import {
+	NO_FILTERS,
+	activeRepositories,
+	filterCount,
+	itemStatus,
+	loadFilters,
+	loadFoldedOwners,
+	loadRailFolded,
+	matchesItem,
+	matchesSession,
+	railBadge,
+	railOf,
+	saveFilters,
+	saveFoldedOwners,
+	saveRailFolded,
+	searchRail,
+	sessionStatus,
+	toggleFilter,
+	type Filters,
+} from "./workspace";
 
-const repo = (id: number, owner: string, name: string) => ({ provider: "github" as const, id: id as GithubId, owner, name, branch: "main", private: false, url: `https://github.com/${owner}/${name}` });
+const repo = (id: number, owner: string, name: string) => ({
+	provider: "github" as const,
+	id: id as GithubId,
+	owner,
+	name,
+	branch: "main",
+	private: false,
+	url: `https://github.com/${owner}/${name}`,
+});
 
 function session(id: string, over: Partial<SessionSummary> = {}): SessionSummary {
-	return { id, title: id, mode: "auto", availableModes: [], capabilities: {} as SessionSummary["capabilities"], place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "m", repoUrl: null, createdAt: 1, updatedAt: 1, status: "idle", turns: 1, lastOutcome: "succeeded", sandbox: "none", ...over } as SessionSummary;
+	return {
+		id,
+		title: id,
+		mode: "auto",
+		availableModes: [],
+		capabilities: {} as SessionSummary["capabilities"],
+		place: { kind: "hosted" },
+		profile: "docker-windlass-sandbox",
+		model: "m",
+		repoUrl: null,
+		createdAt: 1,
+		updatedAt: 1,
+		status: "idle",
+		turns: 1,
+		lastOutcome: "succeeded",
+		sandbox: "none",
+		...over,
+	} as SessionSummary;
 }
 
 function item(id: string, over: Partial<ItemSummary> = {}): ItemSummary {
-	return { id, title: id, repository: repo(1, "acme", "harbor"), place: { kind: "hosted" }, source: "web", state: "working", question: null, pullRequest: null, createdAt: 1, updatedAt: 1, ...over } as ItemSummary;
+	return {
+		id,
+		title: id,
+		repository: repo(1, "acme", "harbor"),
+		place: { kind: "hosted" },
+		source: "web",
+		state: "working",
+		question: null,
+		pullRequest: null,
+		createdAt: 1,
+		updatedAt: 1,
+		...over,
+	} as ItemSummary;
 }
 
 /** A Storage that keeps its values in a map, or throws on every call. */
@@ -46,11 +102,22 @@ describe("the rail", () => {
 		// A work item's session is part of its item, and not counted as an agent.
 		session("f", { repository: repo(2, "acme", "quay"), item: { id: "i9" }, updatedAt: 99 }),
 	];
-	const items = [item("i1", { question: { askedAt: 3 } as ItemSummary["question"], updatedAt: 30 }), item("i2", { repository: repo(3, "ada", "tide-tables"), state: "done", updatedAt: 20 }), item("i3", { parent: { itemId: "i1", key: "k", title: "t" } })];
+	const items = [
+		item("i1", { question: { askedAt: 3 } as ItemSummary["question"], updatedAt: 30 }),
+		item("i2", { repository: repo(3, "ada", "tide-tables"), state: "done", updatedAt: 20 }),
+		item("i3", { parent: { itemId: "i1", key: "k", title: "t" } }),
+	];
 
 	it("groups the repositories by owner, the owner and the repository used last first, and only saved settings last", () => {
-		const rail = railOf({ sessions, items, saved: [{ id: 7 as GithubId, name: "acme/old-pier" }, { id: 1 as GithubId, name: "acme/harbor" }] });
-		expect(rail.groups.map((group) => [group.owner, group.repositories.map((one) => one.name)])).toEqual([
+		const rail = railOf({
+			sessions,
+			items,
+			saved: [
+				{ id: 7 as GithubId, name: "acme/old-pier" },
+				{ id: 1 as GithubId, name: "acme/harbor" },
+			],
+		});
+		expect(rail.groups.map(group => [group.owner, group.repositories.map(one => one.name)])).toEqual([
 			["acme", ["quay", "harbor", "old-pier"]],
 			["ada", ["tide-tables"]],
 		]);
@@ -59,55 +126,102 @@ describe("the rail", () => {
 
 	it("counts each repository's agents and work items, what runs and what asks, and the totals of everything and of no repository", () => {
 		const rail = railOf({ sessions, items, saved: [] });
-		const harbor = rail.groups[0]?.repositories.find((one) => one.name === "harbor");
+		const harbor = rail.groups[0]?.repositories.find(one => one.name === "harbor");
 		expect(harbor).toMatchObject({ agents: 2, items: 1, running: 1, needs: 2 });
-		const quay = rail.groups[0]?.repositories.find((one) => one.name === "quay");
+		const quay = rail.groups[0]?.repositories.find(one => one.name === "quay");
 		expect(quay).toMatchObject({ agents: 1, items: 0, running: 0, needs: 0 });
 		expect(rail.everything).toEqual({ count: 7, running: 1, needs: 3 });
 		expect(rail.none).toEqual({ count: 1, running: 0, needs: 1 });
 	});
 
 	it("counts a repository's items as the feed counts them, the ended ones beyond the feed's rows too", () => {
-		const feed = { counts: { byRepository: [{ repository: 3 as GithubId, owner: "ada", name: "tide-tables", source: "web", open: 0, done: 6, failed: 1, cancelled: 2 }] } } as unknown as ItemFeed;
+		const feed = {
+			counts: {
+				byRepository: [
+					{
+						repository: 3 as GithubId,
+						owner: "ada",
+						name: "tide-tables",
+						source: "web",
+						open: 0,
+						done: 6,
+						failed: 1,
+						cancelled: 2,
+					},
+				],
+			},
+		} as unknown as ItemFeed;
 		const rail = railOf({ sessions, items, feed, saved: [] });
 		expect(rail.groups[1]?.repositories[0]?.items).toBe(9);
 	});
 
 	it("badges: the amber count of what asks, a ring while it runs, no count for a quiet one, and saved for settings alone", () => {
-		expect(railBadge({ running: 1, needs: 2, agents: 2, items: 1, saved: false })).toEqual({ needs: 2, running: true, count: null, saved: false });
-		expect(railBadge({ running: 0, needs: 0, agents: 2, items: 3, saved: false })).toEqual({ needs: 0, running: false, count: null, saved: false });
-		expect(railBadge({ running: 0, needs: 0, agents: 0, items: 0, saved: true })).toEqual({ needs: 0, running: false, count: null, saved: true });
+		expect(railBadge({ running: 1, needs: 2, agents: 2, items: 1, saved: false })).toEqual({
+			needs: 2,
+			running: true,
+			count: null,
+			saved: false,
+		});
+		expect(railBadge({ running: 0, needs: 0, agents: 2, items: 3, saved: false })).toEqual({
+			needs: 0,
+			running: false,
+			count: null,
+			saved: false,
+		});
+		expect(railBadge({ running: 0, needs: 0, agents: 0, items: 0, saved: true })).toEqual({
+			needs: 0,
+			running: false,
+			count: null,
+			saved: true,
+		});
 	});
 
 	it("with a filter on, lists only the repositories something matches, and the one shown whatever it has", () => {
 		const filters: Filters = { ...NO_FILTERS, status: ["needs"] };
 		const rail = railOf({ sessions, items, saved: [{ id: 7 as GithubId, name: "acme/old-pier" }], filters });
-		expect(rail.groups.flatMap((group) => group.repositories.map((one) => one.name))).toEqual(["harbor"]);
+		expect(rail.groups.flatMap(group => group.repositories.map(one => one.name))).toEqual(["harbor"]);
 		const kept = railOf({ sessions, items, saved: [], filters, keep: 3 as GithubId });
-		expect(kept.groups.flatMap((group) => group.repositories.map((one) => one.name))).toEqual(["harbor", "tide-tables"]);
+		expect(kept.groups.flatMap(group => group.repositories.map(one => one.name))).toEqual(["harbor", "tide-tables"]);
 	});
 
 	it("puts the repositories with something running or asking in Active now, what asks first", () => {
 		const rail = railOf({ sessions, items, saved: [{ id: 7 as GithubId, name: "acme/old-pier" }] });
 		const active = activeRepositories(rail.groups);
-		expect(active.every((one) => one.running > 0 || one.needs > 0)).toBe(true);
-		expect(active.map((one) => one.name)).not.toContain("old-pier");
-		const firstQuiet = active.findIndex((one) => one.needs === 0);
-		expect(firstQuiet === -1 || active.slice(firstQuiet).every((one) => one.needs === 0)).toBe(true);
+		expect(active.every(one => one.running > 0 || one.needs > 0)).toBe(true);
+		expect(active.map(one => one.name)).not.toContain("old-pier");
+		const firstQuiet = active.findIndex(one => one.needs === 0);
+		expect(firstQuiet === -1 || active.slice(firstQuiet).every(one => one.needs === 0)).toBe(true);
 	});
 
 	it("finds repositories by owner and name, in any case", () => {
 		const rail = railOf({ sessions, items, saved: [] });
-		expect(searchRail(rail.groups, "TIDE").map((group) => group.repositories.map((one) => one.name))).toEqual([["tide-tables"]]);
-		expect(searchRail(rail.groups, "acme/h").flatMap((group) => group.repositories.map((one) => one.name))).toEqual(["harbor"]);
+		expect(searchRail(rail.groups, "TIDE").map(group => group.repositories.map(one => one.name))).toEqual([
+			["tide-tables"],
+		]);
+		expect(searchRail(rail.groups, "acme/h").flatMap(group => group.repositories.map(one => one.name))).toEqual([
+			"harbor",
+		]);
 		expect(searchRail(rail.groups, "nothing")).toEqual([]);
 	});
 });
 
 describe("the filters", () => {
 	it("say where a session and a work item stand", () => {
-		expect([sessionStatus({ status: "running", lastOutcome: null }), sessionStatus({ status: "waiting", lastOutcome: null }), sessionStatus({ status: "idle", lastOutcome: "succeeded" }), sessionStatus({ status: "idle", lastOutcome: "error" }), sessionStatus({ status: "idle", lastOutcome: null })]).toEqual(["running", "needs", "done", "failed", null]);
-		expect([itemStatus({ state: "working", question: null }), itemStatus({ state: "waiting", question: {} as ItemSummary["question"] }), itemStatus({ state: "done", question: null }), itemStatus({ state: "failed", question: null }), itemStatus({ state: "queued", question: null }), itemStatus({ state: "cancelled", question: null })]).toEqual(["running", "needs", "done", "failed", null, null]);
+		expect([
+			sessionStatus({ status: "running", lastOutcome: null }),
+			sessionStatus({ status: "waiting", lastOutcome: null }),
+			sessionStatus({ status: "idle", lastOutcome: "succeeded" }),
+			sessionStatus({ status: "idle", lastOutcome: "error" }),
+			sessionStatus({ status: "idle", lastOutcome: null }),
+		]).toEqual(["running", "needs", "done", "failed", null]);
+		expect([
+			itemStatus({ state: "working", question: null }),
+			itemStatus({ state: "waiting", question: {} as ItemSummary["question"] }),
+			itemStatus({ state: "done", question: null }),
+			itemStatus({ state: "failed", question: null }),
+			itemStatus({ state: "queued", question: null }),
+			itemStatus({ state: "cancelled", question: null }),
+		]).toEqual(["running", "needs", "done", "failed", null, null]);
 	});
 
 	it("leave what matches every filter that is on, each any of its values", () => {
@@ -143,7 +257,15 @@ describe("the filters", () => {
 
 	it("drop what the browser kept that is not a filter, and start with none from a browser that keeps nothing", () => {
 		const kept = storage();
-		kept.map.set("wlp.workspace.filters", JSON.stringify({ status: ["needs", "sleeping", 3], agent: "claude", place: ["hosted", "machine:", "elsewhere"], kind: ["item", "item"] }));
+		kept.map.set(
+			"wlp.workspace.filters",
+			JSON.stringify({
+				status: ["needs", "sleeping", 3],
+				agent: "claude",
+				place: ["hosted", "machine:", "elsewhere"],
+				kind: ["item", "item"],
+			}),
+		);
 		expect(loadFilters(kept)).toEqual({ status: ["needs"], agent: [], place: ["hosted"], kind: ["item"] });
 		kept.map.set("wlp.workspace.filters", "{not json");
 		expect(loadFilters(kept)).toEqual(NO_FILTERS);

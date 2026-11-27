@@ -14,9 +14,13 @@ async function load(): Promise<SandboxLayer> {
 	}
 	// Not a literal, so this file type-checks and loads without the real layers being present.
 	const specifier = "./sandbox/index.js";
-	const module = (await import(specifier)) as { createSandboxLayer?: () => SandboxLayer; createHostedLayer?: (settings: NonNullable<typeof config.hosted>) => Promise<SandboxLayer> };
+	const module = (await import(specifier)) as {
+		createSandboxLayer?: () => SandboxLayer;
+		createHostedLayer?: (settings: NonNullable<typeof config.hosted>) => Promise<SandboxLayer>;
+	};
 	if (config.hosted) {
-		if (typeof module.createHostedLayer !== "function") throw new Error("server/src/sandbox/index.ts does not export createHostedLayer()");
+		if (typeof module.createHostedLayer !== "function")
+			throw new Error("server/src/sandbox/index.ts does not export createHostedLayer()");
 		return module.createHostedLayer(config.hosted);
 	}
 	if (typeof module.createSandboxLayer !== "function") {
@@ -27,7 +31,7 @@ async function load(): Promise<SandboxLayer> {
 
 export function getLayer(): Promise<SandboxLayer> {
 	if (!loading) {
-		loading = load().catch((error) => {
+		loading = load().catch(error => {
 			loading = null;
 			throw error;
 		});
@@ -45,7 +49,8 @@ export function getLayer(): Promise<SandboxLayer> {
  */
 export async function layerFor(place: SandboxPlace, uid: string, link: RunnerLink | null): Promise<SandboxLayer> {
 	if (place.kind === "hosted") return getLayer();
-	if (link === null || link.who.uid !== uid || link.who.machineId !== place.machineId) throw new Error("A machine's layer is its session's: pass the session's link.");
+	if (link === null || link.who.uid !== uid || link.who.machineId !== place.machineId)
+		throw new Error("A machine's layer is its session's: pass the session's link.");
 	const { machineLayer } = await import("./sandbox/runner-layer.js");
 	return machineLayer(link, await getLayer());
 }

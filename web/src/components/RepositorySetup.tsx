@@ -24,9 +24,24 @@ export function missingVariable(reason: string | null): string | null {
 }
 
 /** "wiki can't connect": the server and what went wrong, in a few words. */
-export const failedWords = (server: Pick<SessionServer, "name" | "remote">) => `${server.name} can't ${server.remote ? "connect" : "start"}`;
+export const failedWords = (server: Pick<SessionServer, "name" | "remote">) =>
+	`${server.name} can't ${server.remote ? "connect" : "start"}`;
 
-export function RepositorySetupSection({ sessionId, summary, question, egress, hosted, domains }: { sessionId: string; summary: SessionSummary; question: PendingQuestion | null; egress?: EgressMode; hosted?: boolean; domains?: number }) {
+export function RepositorySetupSection({
+	sessionId,
+	summary,
+	question,
+	egress,
+	hosted,
+	domains,
+}: {
+	sessionId: string;
+	summary: SessionSummary;
+	question: PendingQuestion | null;
+	egress?: EgressMode;
+	hosted?: boolean;
+	domains?: number;
+}) {
 	const title = useId();
 	const fold = useRef<HTMLDetailsElement>(null);
 	const [servers, setServers] = useState<SessionServers | null>(null);
@@ -36,16 +51,21 @@ export function RepositorySetupSection({ sessionId, summary, question, egress, h
 	const hasServers = (summary.servers?.count ?? 0) > 0;
 	if (!repository && !hasServers) return null;
 
-	const failed = (servers?.servers ?? []).filter((server) => server.state === "failed");
-	const waiting = (servers?.servers ?? []).filter((server) => server.asks && question?.server?.name !== server.name);
+	const failed = (servers?.servers ?? []).filter(server => server.state === "failed");
+	const waiting = (servers?.servers ?? []).filter(server => server.asks && question?.server?.name !== server.name);
 	const name = repository ? `${repository.owner}/${repository.name}` : null;
 	/** Opens the fold and brings the server's row into view. */
 	const show = (server: string) => {
 		const details = fold.current;
 		if (!details) return;
 		details.open = true;
-		const row = [...details.querySelectorAll<HTMLElement>(".server")].find((one) => one.querySelector(".server-name")?.textContent === server);
-		(row ?? details).scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+		const row = [...details.querySelectorAll<HTMLElement>(".server")].find(
+			one => one.querySelector(".server-name")?.textContent === server,
+		);
+		(row ?? details).scrollIntoView({
+			block: "nearest",
+			behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+		});
 		row?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
 	};
 
@@ -54,12 +74,16 @@ export function RepositorySetupSection({ sessionId, summary, question, egress, h
 			<h2 className="panel-title" id={title}>
 				{repository ? "Repository setup" : "MCP servers"}
 				{repository ? (
-					<a className="link panel-title-link" {...linkProps({ name: "repository", id: repository.id, view: "settings" })} aria-label={`Edit the setup of ${name}`}>
+					<a
+						className="link panel-title-link"
+						{...linkProps({ name: "repository", id: repository.id, view: "settings" })}
+						aria-label={`Edit the setup of ${name}`}
+					>
 						Edit
 					</a>
 				) : null}
 			</h2>
-			{failed.map((server) => {
+			{failed.map(server => {
 				const variable = missingVariable(server.reason);
 				return (
 					<p key={server.name} className="repo-setup-problem" role="status">
@@ -72,7 +96,11 @@ export function RepositorySetupSection({ sessionId, summary, question, egress, h
 							) : null}
 						</span>
 						{variable && (repository || server.origin === "user") ? (
-							<button type="button" className="link repo-setup-fix" onClick={() => setAdding({ name: variable, account: server.origin === "user" })}>
+							<button
+								type="button"
+								className="link repo-setup-fix"
+								onClick={() => setAdding({ name: variable, account: server.origin === "user" })}
+							>
 								Add secret
 							</button>
 						) : (
@@ -83,7 +111,7 @@ export function RepositorySetupSection({ sessionId, summary, question, egress, h
 					</p>
 				);
 			})}
-			{waiting.map((server) => (
+			{waiting.map(server => (
 				<p key={server.name} className="repo-setup-ask">
 					<span>{server.name} waits for your approval</span>
 					<button type="button" className="link" onClick={() => show(server.name)}>
@@ -102,7 +130,14 @@ export function RepositorySetupSection({ sessionId, summary, question, egress, h
 					<ServersSection sessionId={sessionId} summary={summary} question={question} onServers={heard} />
 				</div>
 			</details>
-			{adding ? <AddSecretDialog repository={adding.account || !repository ? null : { id: repository.id, name: name ?? "" }} profile={summary.profile} name={adding.name} onClose={() => setAdding(null)} /> : null}
+			{adding ? (
+				<AddSecretDialog
+					repository={adding.account || !repository ? null : { id: repository.id, name: name ?? "" }}
+					profile={summary.profile}
+					name={adding.name}
+					onClose={() => setAdding(null)}
+				/>
+			) : null}
 		</section>
 	);
 }

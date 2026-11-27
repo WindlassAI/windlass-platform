@@ -54,10 +54,17 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 }
 
 /** Latest host sample for an already listed machine. */
-export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
+export interface MachineHostUpdate {
+	machineId: string;
+	host: NonNullable<MachineSummary["host"]> | null;
+}
 /** Whose credential a machine agent uses for a provider both can serve: the machine's own sign-in, or the owner's Settings key. */
 export type CredentialSource = "machine" | "key";
-export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
+export interface MachineDetails {
+	whenToUse: string;
+	tags: string[];
+	orchestrator?: "yes" | "named" | "never";
+}
 export interface MachineSlotCapacity {
 	max: number;
 	unit: { cpus: number; memoryBytes: number; pids: number };
@@ -73,7 +80,11 @@ export function sandboxSlots(requested: number, max: number) {
 export interface MachineSummary extends Partial<MachineDetails> {
 	providerAccounts?: ProviderAccount[];
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
-	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
+	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & {
+		reserve?: MachineSlotCapacity["reserve"];
+		busy: number;
+		queued: number;
+	};
 	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
@@ -89,7 +100,26 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	 * `machineSignIns`: the providers the machine's own sign-in serves. `platformKeys`: the Settings keys its turns
 	 * use, after `source`, the owner's choice (absent: the machine's sign-in first, keys for the rest).
 	 */
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; machineSignIns?: ModelProvider[]; machineMethod?: "api-key" | "chatgpt"; source?: CredentialSource; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{
+		id: Exclude<HarnessId, "windlass">;
+		adapter: string;
+		image: string;
+		loginGeneration?: string;
+		keyRelay?: true;
+		machineProviders?: string[];
+		machineSignIns?: ModelProvider[];
+		machineMethod?: "api-key" | "chatgpt";
+		source?: CredentialSource;
+		platformKeys?: ModelProvider[];
+		method?: "api-key" | "chatgpt" | "subscription";
+		modes?: string[];
+		modeReason?: string;
+		signIn: "token" | "none" | "unknown";
+		signInReason?: string;
+		optionsDigest?: string;
+		optionsCheckedAt?: number;
+		options?: HarnessOptions;
+	}>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;

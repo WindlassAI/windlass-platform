@@ -16,10 +16,19 @@ import { Check } from "./ui/Check";
 import { Failure } from "./ui/Failure";
 
 const SCOPES: Array<{ scope: ApiTokenScope; name: string; means: string }> = [
-	{ scope: "items:create", name: "File work items", means: "POST /api/items: on your repositories, as you would from a repository's page." },
-	{ scope: "items:read", name: "Read work items", means: "GET /api/items/<id>: where an item is, its verdict and its cost." },
+	{
+		scope: "items:create",
+		name: "File work items",
+		means: "POST /api/items: on your repositories, as you would from a repository's page.",
+	},
+	{
+		scope: "items:read",
+		name: "Read work items",
+		means: "GET /api/items/<id>: where an item is, its verdict and its cost.",
+	},
 ];
-const scopeWords = (scopes: ApiTokenScope[]) => scopes.map((scope) => (scope === "items:create" ? "files items" : "reads items")).join(", ");
+const scopeWords = (scopes: ApiTokenScope[]) =>
+	scopes.map(scope => (scope === "items:create" ? "files items" : "reads items")).join(", ");
 
 /** Making a token: its name and what it may do; then its value, this once. */
 function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: ApiToken): void }) {
@@ -67,7 +76,11 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 					</pre>
 					<CopyButton text={secret} label="Copy the token" />
 				</div>
-				<p className="field-note">To file an item, send <code>POST /api/items</code> with <code>Authorization: Bearer {secret.slice(0, 8)}…</code>. Anyone who has it can do what its scopes allow until you revoke it.</p>
+				<p className="field-note">
+					To file an item, send <code>POST /api/items</code> with{" "}
+					<code>Authorization: Bearer {secret.slice(0, 8)}…</code>. Anyone who has it can do what its scopes allow until
+					you revoke it.
+				</p>
 			</Dialog>
 		);
 	}
@@ -93,7 +106,16 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 					<label className="label" htmlFor={ids.name}>
 						Name
 					</label>
-					<input id={ids.name} className="input" value={name} maxLength={64} placeholder="Nightly triage script" onChange={(event) => setName(event.target.value)} readOnly={busy} data-autofocus />
+					<input
+						id={ids.name}
+						className="input"
+						value={name}
+						maxLength={64}
+						placeholder="Nightly triage script"
+						onChange={event => setName(event.target.value)}
+						readOnly={busy}
+						data-autofocus
+					/>
 					<p className="field-note">For you to tell it apart: where it is used.</p>
 				</div>
 				<fieldset className="item-scopes">
@@ -101,7 +123,12 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 					{SCOPES.map(({ scope, name: label, means }) => {
 						const on = scopes.includes(scope);
 						return (
-							<Check key={scope} checked={on} disabled={busy} onChange={(on) => setScopes((now) => (on ? [...now, scope] : now.filter((one) => one !== scope)))}>
+							<Check
+								key={scope}
+								checked={on}
+								disabled={busy}
+								onChange={on => setScopes(now => (on ? [...now, scope] : now.filter(one => one !== scope)))}
+							>
 								<span className="check-name">{label}</span>
 								<span className="check-means">{means}</span>
 							</Check>
@@ -114,7 +141,15 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 	);
 }
 
-function RevokeDialog({ token, onClose, onRevoked }: { token: ApiToken; onClose(): void; onRevoked(list: ApiToken[]): void }) {
+function RevokeDialog({
+	token,
+	onClose,
+	onRevoked,
+}: {
+	token: ApiToken;
+	onClose(): void;
+	onRevoked(list: ApiToken[]): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState(false);
@@ -168,8 +203,9 @@ export function ApiTokens() {
 			.user(auth)
 			.apiTokens()
 			.then(
-				(list) => mine === asked.current && setState({ list, error: null }),
-				(failure: unknown) => mine === asked.current && setState((current) => ({ list: current.list, error: explain(failure) })),
+				list => mine === asked.current && setState({ list, error: null }),
+				(failure: unknown) =>
+					mine === asked.current && setState(current => ({ list: current.list, error: explain(failure) })),
 			);
 	}, [client, auth, explain]);
 
@@ -192,14 +228,20 @@ export function ApiTokens() {
 			<h3 className="usage-title" id="settings-tokens">
 				API tokens
 				{list && list.length > 0 ? <span className="usage-count">{`${list.length} of ${MAX_API_TOKENS}`}</span> : null}
-				<button type="button" className="link secret-add" onClick={() => setMaking(true)} disabled={list === null || full} title={full ? `An account can keep ${MAX_API_TOKENS} tokens: revoke one first` : undefined}>
+				<button
+					type="button"
+					className="link secret-add"
+					onClick={() => setMaking(true)}
+					disabled={list === null || full}
+					title={full ? `An account can keep ${MAX_API_TOKENS} tokens: revoke one first` : undefined}
+				>
 					New token…
 				</button>
 			</h3>
-			<p className="usage-lede">
-				For scripts that file work items.
-			</p>
-			{full ? <p className="usage-note tone-warn">An account can keep {MAX_API_TOKENS} tokens: revoke one to make another.</p> : null}
+			<p className="usage-lede">For scripts that file work items.</p>
+			{full ? (
+				<p className="usage-note tone-warn">An account can keep {MAX_API_TOKENS} tokens: revoke one to make another.</p>
+			) : null}
 			{list === null ? (
 				state.error ? (
 					<div className="state state-error" role="alert">
@@ -219,7 +261,7 @@ export function ApiTokens() {
 				<p className="usage-empty">No API token yet.</p>
 			) : (
 				<ul className="settings-list" aria-label="Your API tokens">
-					{list.map((token) => (
+					{list.map(token => (
 						<li key={token.id} className="usage-kept-row">
 							<div className="usage-kept-main">
 								<span className="usage-kept-title token-name">{token.name}</span>
@@ -228,7 +270,9 @@ export function ApiTokens() {
 									<span>made {day(token.createdAt)}</span>
 								</p>
 							</div>
-							<span className="machine-used" title={token.usedAt === null ? undefined : absoluteTime(token.usedAt)}>{token.usedAt === null ? "never used" : `used ${relativeTime(token.usedAt, now)}`}</span>
+							<span className="machine-used" title={token.usedAt === null ? undefined : absoluteTime(token.usedAt)}>
+								{token.usedAt === null ? "never used" : `used ${relativeTime(token.usedAt, now)}`}
+							</span>
 							<button type="button" className="button button-outline button-small" onClick={() => setRevoking(token)}>
 								<span>
 									Revoke<span className="visually-hidden"> {token.name}</span>…
@@ -238,7 +282,12 @@ export function ApiTokens() {
 					))}
 				</ul>
 			)}
-			{making ? <NewTokenDialog onClose={() => setMaking(false)} onMade={(token) => replace([token, ...(list ?? []).filter((one) => one.id !== token.id)])} /> : null}
+			{making ? (
+				<NewTokenDialog
+					onClose={() => setMaking(false)}
+					onMade={token => replace([token, ...(list ?? []).filter(one => one.id !== token.id)])}
+				/>
+			) : null}
 			{revoking ? <RevokeDialog token={revoking} onClose={() => setRevoking(null)} onRevoked={replace} /> : null}
 		</section>
 	);

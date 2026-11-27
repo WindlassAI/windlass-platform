@@ -30,7 +30,10 @@ async function wait(steps = 8): Promise<void> {
 }
 
 /** Signs in to the mock and renders `screen`, once the list is known. `change` rewrites each item page the server answers. */
-async function render(screen: () => ReturnType<typeof createElement>, change: (view: ItemView) => ItemView = (view) => view): Promise<void> {
+async function render(
+	screen: () => ReturnType<typeof createElement>,
+	change: (view: ItemView) => ItemView = view => view,
+): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173" });
 	const begun = client.login.start();
 	await vi.advanceTimersByTimeAsync(1000);
@@ -43,7 +46,7 @@ async function render(screen: () => ReturnType<typeof createElement>, change: (v
 	await vi.advanceTimersByTimeAsync(1000);
 	items = await listed;
 	const user = client.user.bind(client);
-	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
+	(client as { user: (auth: AuthResult) => UserApi }).user = who => {
 		const api = user(who);
 		return {
 			...api,
@@ -58,9 +61,10 @@ async function render(screen: () => ReturnType<typeof createElement>, change: (v
 	await wait();
 }
 
-const fromIssue = (trusted: boolean) => items.find((item) => item.origin?.issue?.trusted === trusted) as ItemSummary;
+const fromIssue = (trusted: boolean) => items.find(item => item.origin?.issue?.trusted === trusted) as ItemSummary;
 const itemPage = (pick: () => ItemSummary) => () => createElement(Item, { page: useItem(pick().id, true) });
-const buttons = (scope: ParentNode, label: string) => [...scope.querySelectorAll("button")].filter((button) => button.textContent === label);
+const buttons = (scope: ParentNode, label: string) =>
+	[...scope.querySelectorAll("button")].filter(button => button.textContent === label);
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -99,26 +103,40 @@ describe("an item from a GitHub issue", () => {
 		act(() => root.unmount());
 		client.dispose();
 		root = createRoot(host);
-		await render(itemPage(() => items.find((item) => item.source === "web") as ItemSummary));
+		await render(itemPage(() => items.find(item => item.source === "web") as ItemSummary));
 		expect(host.querySelector(".item-origin")).toBeNull();
 		expect(host.querySelector(".item-meta")?.textContent).toContain("from the web");
 	});
 
 	it("links to its issue from its row in the work list, and a row from the web has no such link", async () => {
-		await render(() => createElement(RepositoryPane, { page: useRepository(7101), view: "items", items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] }));
+		await render(() =>
+			createElement(RepositoryPane, {
+				page: useRepository(7101),
+				view: "items",
+				items: useItems(true),
+				filters: NO_FILTERS,
+				onFilters: () => undefined,
+				machines: [],
+			}),
+		);
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
-		const rowOf = (item: ItemSummary) => [...section.querySelectorAll("li.item-row")].find((row) => row.querySelector(".agent-title")?.textContent?.startsWith(item.title)) as HTMLElement;
+		const rowOf = (item: ItemSummary) =>
+			[...section.querySelectorAll("li.item-row")].find(row =>
+				row.querySelector(".agent-title")?.textContent?.startsWith(item.title),
+			) as HTMLElement;
 		for (const item of [fromIssue(false), fromIssue(true)]) {
 			const issue = item.origin?.issue as NonNullable<NonNullable<ItemSummary["origin"]>["issue"]>;
-			const links = [...rowOf(item).querySelectorAll("a")].filter((link) => link.getAttribute("href") === issue.url);
-			expect(links.map((link) => link.textContent)).toEqual([`issue #${issue.number}`]);
+			const links = [...rowOf(item).querySelectorAll("a")].filter(link => link.getAttribute("href") === issue.url);
+			expect(links.map(link => link.textContent)).toEqual([`issue #${issue.number}`]);
 			expect(links[0]?.getAttribute("aria-label")).toBe(`Issue #${issue.number} on GitHub`);
 			expect(links[0]?.target).toBe("_blank");
 		}
 		// The trusted one has a pull request too: both stand in its facts, the pull request first.
-		expect([...rowOf(fromIssue(true)).querySelectorAll(".agent-meta a.item-pull")].map((link) => link.textContent)).toEqual(["#49", "issue #37", "its agent"]);
-		const web = items.find((item) => item.repository.id === 7101 && item.source === "web") as ItemSummary;
-		expect([...rowOf(web).querySelectorAll("a")].some((link) => link.textContent?.startsWith("issue #"))).toBe(false);
+		expect(
+			[...rowOf(fromIssue(true)).querySelectorAll(".agent-meta a.item-pull")].map(link => link.textContent),
+		).toEqual(["#49", "issue #37", "its agent"]);
+		const web = items.find(item => item.repository.id === 7101 && item.source === "web") as ItemSummary;
+		expect([...rowOf(web).querySelectorAll("a")].some(link => link.textContent?.startsWith("issue #"))).toBe(false);
 	});
 
 	it("as a draft of someone else's issue, says whose text it is before the one Start, which starts it", async () => {
@@ -130,7 +148,9 @@ describe("an item from a GitHub issue", () => {
 		const task = host.querySelector("section[aria-labelledby='item-task']") as HTMLElement;
 		expect(host.querySelectorAll("section[aria-labelledby='item-task']")).toHaveLength(1);
 		const note = task.querySelector(".callout") as HTMLElement;
-		expect(note.textContent).toBe("The text below was written by @harbor-user on GitHub, not by you. Starting the item gives the agent this text, as it is shown here.");
+		expect(note.textContent).toBe(
+			"The text below was written by @harbor-user on GitHub, not by you. Starting the item gives the agent this text, as it is shown here.",
+		);
 		expect(host.querySelector(".item-now-text")?.textContent).toBe("A draft: read its task below, then start it.");
 		// In reading order: the line, then the text, then Start.
 		const snapshot = task.querySelector(".item-snapshot") as HTMLElement;
@@ -148,8 +168,19 @@ describe("an item from a GitHub issue", () => {
 	});
 
 	it("shows the snapshot as the literal text the agent is given, never as HTML, Markdown or links", async () => {
-		const hostile = "<b>x</b> and <img src=x onerror=alert(1)>\n[a](javascript:alert(1)) and **bold** and https://example.com/";
-		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, task: { ...view.task, body: `${view.task.body}\n${hostile}`, acceptance: [...view.task.acceptance, "@harbor-user wrote: [b](javascript:alert(2)) <i>y</i>"] } }));
+		const hostile =
+			"<b>x</b> and <img src=x onerror=alert(1)>\n[a](javascript:alert(1)) and **bold** and https://example.com/";
+		await render(
+			itemPage(() => fromIssue(false)),
+			view => ({
+				...view,
+				task: {
+					...view.task,
+					body: `${view.task.body}\n${hostile}`,
+					acceptance: [...view.task.acceptance, "@harbor-user wrote: [b](javascript:alert(2)) <i>y</i>"],
+				},
+			}),
+		);
 		const snapshot = host.querySelector(".item-snapshot") as HTMLElement;
 		expect(snapshot.querySelector(".item-body-text")?.textContent).toContain(hostile);
 		expect(snapshot.textContent).toContain("<b>x</b>");
@@ -159,7 +190,13 @@ describe("an item from a GitHub issue", () => {
 	});
 
 	it("as a draft from the web, or from the person's own issue, keeps Start in the header and its task where it was", async () => {
-		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, origin: view.origin?.issue ? { ...view.origin, issue: { ...view.origin.issue, trusted: true } } : view.origin }));
+		await render(
+			itemPage(() => fromIssue(false)),
+			view => ({
+				...view,
+				origin: view.origin?.issue ? { ...view.origin, issue: { ...view.origin.issue, trusted: true } } : view.origin,
+			}),
+		);
 		expect(buttons(host.querySelector(".item-actions") as HTMLElement, "Start")).toHaveLength(1);
 		expect(buttons(host, "Start")).toHaveLength(1);
 		expect(host.querySelector(".item-snapshot")).toBeNull();
@@ -169,7 +206,7 @@ describe("an item from a GitHub issue", () => {
 });
 
 describe("an item from a Linear issue", () => {
-	const fromLinear = () => items.find((item) => item.source === "linear") as ItemSummary;
+	const fromLinear = () => items.find(item => item.source === "linear") as ItemSummary;
 
 	it("links ENG-123 to its Linear URL, names the source, and warns of the outside author", async () => {
 		await render(itemPage(fromLinear));
@@ -180,13 +217,26 @@ describe("an item from a Linear issue", () => {
 		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
 		expect(link.target).toBe("_blank");
 		const note = host.querySelector("section[aria-labelledby='item-task'] .callout") as HTMLElement;
-		expect(note.textContent).toBe("The text below was written by Grace Hopper on Linear, not by you. Starting the item gives the agent this text, as it is shown here.");
+		expect(note.textContent).toBe(
+			"The text below was written by Grace Hopper on Linear, not by you. Starting the item gives the agent this text, as it is shown here.",
+		);
 		expect(buttons(host, "Start")).toHaveLength(1);
 	});
 
 	it("links its row in the work list to the issue", async () => {
-		await render(() => createElement(RepositoryPane, { page: useRepository(7101), view: "items", items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] }));
-		const link = [...host.querySelectorAll("li.item-row a")].find((one) => one.textContent === "ENG-123") as HTMLAnchorElement;
+		await render(() =>
+			createElement(RepositoryPane, {
+				page: useRepository(7101),
+				view: "items",
+				items: useItems(true),
+				filters: NO_FILTERS,
+				onFilters: () => undefined,
+				machines: [],
+			}),
+		);
+		const link = [...host.querySelectorAll("li.item-row a")].find(
+			one => one.textContent === "ENG-123",
+		) as HTMLAnchorElement;
 		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
 		expect(link.getAttribute("aria-label")).toBe("Issue ENG-123 on Linear");
 	});

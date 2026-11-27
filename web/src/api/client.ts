@@ -95,13 +95,23 @@ export type PlatformErrorCode =
  * screens answer with the way to the usage page: `allowance_used` (too little of the day's sandbox
  * time is left) and `too_many_sandboxes` (the user keeps as many sandboxes as they may).
  */
-export type PlatformErrorReason = "no_question" | "turn_running" | "steer_unavailable" | "allowance_used" | "too_many_sandboxes" | (string & {});
+export type PlatformErrorReason =
+	| "no_question"
+	| "turn_running"
+	| "steer_unavailable"
+	| "allowance_used"
+	| "too_many_sandboxes"
+	| (string & {});
 
 export class PlatformError extends Error {
 	readonly code: PlatformErrorCode;
 	/** For code "user": the code the server gave its UserError, when it gave one. */
 	readonly reason: PlatformErrorReason | null;
-	constructor(code: PlatformErrorCode, message: string, options?: { cause?: unknown; reason?: PlatformErrorReason | null }) {
+	constructor(
+		code: PlatformErrorCode,
+		message: string,
+		options?: { cause?: unknown; reason?: PlatformErrorReason | null },
+	) {
 		super(message, options);
 		this.name = "PlatformError";
 		this.code = code;
@@ -159,7 +169,19 @@ export interface SessionFeed {
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 
-export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider" | "addSetupNotes" | "deleteSetupNote" | "setGuideCheck" | "runReadiness"> {
+export interface UserApi
+	extends Pick<
+		UserActions,
+		| "signOutEverywhere"
+		| "modelProviders"
+		| "saveModelProvider"
+		| "checkModelProvider"
+		| "removeModelProvider"
+		| "addSetupNotes"
+		| "deleteSetupNote"
+		| "setGuideCheck"
+		| "runReadiness"
+	> {
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
@@ -211,7 +233,11 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	 */
 	repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId): Promise<RepositorySecrets>;
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
-	saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	saveRepositorySecret(
+		repositoryId: GithubId,
+		profile: SandboxProfileId,
+		secret: { name: string; value?: string; scope: SecretScope },
+	): Promise<RepositorySecrets>;
 	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
@@ -237,12 +263,20 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	 * Saves an MCP server of the user's own: a new one, or with `existing` the definition of the one of that name.
 	 * Throws with reason `bad_server` (the message names the key), `server_exists`, `server_not_found` or `too_many_servers`.
 	 */
-	savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings>;
+	savePersonalServer(server: {
+		name: string;
+		definition: unknown;
+		unasked?: boolean;
+		existing?: boolean;
+	}): Promise<AccountSettings>;
 	deletePersonalServer(name: string): Promise<AccountSettings>;
 	/** The account's secrets, without their values, and what each reaches in a sandbox of `profile` made now. */
 	accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets>;
 	/** Saves a secret of the account: a new one, or a new value for the one of that name. Throws with reason `bad_secret` or `too_many_secrets`. */
-	saveAccountSecret(profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets>;
+	saveAccountSecret(
+		profile: SandboxProfileId,
+		secret: { name: string; value?: string; scope: SecretScope },
+	): Promise<AccountSecrets>;
 	deleteAccountSecret(profile: SandboxProfileId, name: string): Promise<AccountSecrets>;
 	/** Today's sandbox time against the allowance, and how many sandboxes the user keeps of how many they may. */
 	allowance(): Promise<UsageNumbers>;
@@ -268,10 +302,19 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	/** Removes a machine; with `removeSandboxes` its runner also removes the agents' sandboxes on it. Throws with reason `machine_not_found`. */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
-	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }): Promise<MachineSummary[]>;
+	setMachineDetails(input: {
+		machineId: string;
+		whenToUse: string;
+		tags: string[];
+		orchestrator?: "yes" | "named" | "never";
+	}): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** Whose credential an agent on a machine uses where its sign-in and a Settings key both serve it. Throws as `removeMachine` does. */
-	setCredentialSource(input: { machineId: string; harness: Exclude<HarnessId, "windlass">; source: CredentialSource }): Promise<MachineSummary[]>;
+	setCredentialSource(input: {
+		machineId: string;
+		harness: Exclude<HarnessId, "windlass">;
+		source: CredentialSource;
+	}): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	/** With `page`, a page of them (`ItemListPage`); a page shorter than its limit is the last. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;

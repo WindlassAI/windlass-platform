@@ -30,7 +30,10 @@ export const GIT_USER_ENV = { HOME: "/nonexistent", PATH: "/usr/bin:/bin", ENV: 
 // Existing sandbox images have a single agent-owned wlp-run pid directory.
 // Give the transport uid its own per-command directory and signal the entire Git process group.
 export function gitProcess(tag: string, argv: string[]): string[] {
-	return ["/bin/sh", "-ec", `export PATH=/usr/bin:/bin
+	return [
+		"/bin/sh",
+		"-ec",
+		`export PATH=/usr/bin:/bin
 umask 077
 proxy=
 if [ "\${https_proxy:-}" = '${RUNNER_HTTP_PROXY}' ]; then proxy='${RUNNER_HTTP_PROXY}'; fi
@@ -38,11 +41,22 @@ dir=/tmp/wlp-transport-process-$1
 shift
 mkdir -m 700 -- "$dir"
 trap 'rm -rf -- "$dir"' EXIT
-/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C.UTF-8 https_proxy="$proxy" setsid -w /bin/sh -ec 'echo $$ > "$0/pid"; exec "$@"' "$dir" "$@"`, "git-run", tag, ...argv];
+/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C.UTF-8 https_proxy="$proxy" setsid -w /bin/sh -ec 'echo $$ > "$0/pid"; exec "$@"' "$dir" "$@"`,
+		"git-run",
+		tag,
+		...argv,
+	];
 }
 
 export function signalGitProcess(tag: string, signal: string): string[] {
-	return ["/bin/sh", "-ec", 'dir=/tmp/wlp-transport-process-$1; [ ! -L "$dir" ] && [ -O "$dir" ] && read -r pid < "$dir/pid" && /bin/kill -s "$2" -- "-$pid"', "git-stop", tag, signal];
+	return [
+		"/bin/sh",
+		"-ec",
+		'dir=/tmp/wlp-transport-process-$1; [ ! -L "$dir" ] && [ -O "$dir" ] && read -r pid < "$dir/pid" && /bin/kill -s "$2" -- "-$pid"',
+		"git-stop",
+		tag,
+		signal,
+	];
 }
 
 export interface StartOptions {
@@ -112,7 +126,12 @@ export interface TurnSandbox extends SandboxHandle {
 	/** A relay lease replaces the token with a per-turn placeholder. Failure must abort the turn before any credential is written. */
 	modelRelay?(): Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
-	modelKeyRelay?(sessionId: string, key: KeyReference, signal?: AbortSignal, takeRequest?: TakeRelayRequest): Promise<KeyTurnRelay>;
+	modelKeyRelay?(
+		sessionId: string,
+		key: KeyReference,
+		signal?: AbortSignal,
+		takeRequest?: TakeRelayRequest,
+	): Promise<KeyTurnRelay>;
 	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
 }
@@ -163,7 +182,8 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Throws for a name that is not an environment variable's: one with `=` in it would be read as a name and a value. */
 export function assertEnvNames(env: Record<string, string> | undefined): void {
-	for (const key of Object.keys(env ?? {})) if (!ENV_NAME.test(key)) throw new Error(`invalid environment variable name: ${key}`);
+	for (const key of Object.keys(env ?? {}))
+		if (!ENV_NAME.test(key)) throw new Error(`invalid environment variable name: ${key}`);
 }
 
 /** One argument of a command line, quoted for a POSIX shell: for providers whose command API takes a string. */
@@ -172,7 +192,8 @@ export function shellQuote(argument: string): string {
 }
 
 /** Sweep the tag in $1 and remove only the supplied files. */
-export const SWEEP_SCRIPT = 'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; then wlp-run signal "$tag" KILL all; sleep 0.2; fi; [ $# -gt 0 ] && rm -f -- "$@"; wlp-run list "$tag" | wc -l';
+export const SWEEP_SCRIPT =
+	'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; then wlp-run signal "$tag" KILL all; sleep 0.2; fi; [ $# -gt 0 ] && rm -f -- "$@"; wlp-run list "$tag" | wc -l';
 
 // Runs directly via ask(), outside wlp-run, only at a turn boundary. A process can shed its
 // run tag, session and parent, but remains visible in the container/guest's PID namespace.
@@ -239,7 +260,10 @@ if len(sys.argv) == 3:
 /** Fail closed if the provider cannot confirm that the session is clear for a new handoff. */
 export async function sweepSessionProcesses(sandbox: TurnSandbox, tokenPath?: string): Promise<void> {
 	const kind = sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b") ? "hosted" : "docker";
-	const scan = () => sandbox.ask(["/usr/bin/python3", "-I", "-S", "-c", SWEEP_PROCESSES, kind, ...(tokenPath ? [tokenPath] : [])], { timeoutMs: 15_000 });
+	const scan = () =>
+		sandbox.ask(["/usr/bin/python3", "-I", "-S", "-c", SWEEP_PROCESSES, kind, ...(tokenPath ? [tokenPath] : [])], {
+			timeoutMs: 15_000,
+		});
 	let result = await scan();
 	if (kind === "docker" && result?.code === 75) {
 		// No CAP_KILL: only the Git transport UID can signal its own orphan. Spare the
@@ -251,10 +275,30 @@ export async function sweepSessionProcesses(sandbox: TurnSandbox, tokenPath?: st
 }
 
 /** What `writeSecretFile` runs, the content on standard input: a file beside the path (`<path>.tmp`), mode 0600, renamed into place. `$1` is the path. */
-export const SECRET_FILE_SCRIPT = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; rm -f -- "$tmp"; set -C; cat > "$tmp"; mv -fT -- "$tmp" "$1"';
+export const SECRET_FILE_SCRIPT =
+	'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; rm -f -- "$tmp"; set -C; cat > "$tmp"; mv -fT -- "$tmp" "$1"';
 
 export const RUN_TAG = /^[A-Za-z0-9_-]+$/;
 
 /** Keep in sync with Windlass's bubblewrap startup probe. Providers test the actual sandbox before offering containment. */
-export const BWRAP_PROBE = ["bwrap", "--die-with-parent", "--unshare-user-try", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try", "--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"];
-
+export const BWRAP_PROBE = [
+	"bwrap",
+	"--die-with-parent",
+	"--unshare-user-try",
+	"--unshare-pid",
+	"--unshare-ipc",
+	"--unshare-uts",
+	"--unshare-cgroup-try",
+	"--unshare-net",
+	"--ro-bind",
+	"/",
+	"/",
+	"--dev",
+	"/dev",
+	"--proc",
+	"/proc",
+	"--tmpfs",
+	"/tmp",
+	"--",
+	"true",
+];

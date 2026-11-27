@@ -32,7 +32,15 @@
  * scripts/verified-check.ts runs all of it on recorded events and made-up diffs.
  */
 
-import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type Verified, type VerifiedCheck, type VerifiedFlag, type WindlassEvent } from "./contract.js";
+import {
+	CHECK_OUTPUT_CHARS,
+	type CheckStatus,
+	type RepositoryCheck,
+	type Verified,
+	type VerifiedCheck,
+	type VerifiedFlag,
+	type WindlassEvent,
+} from "./contract.js";
 import type { TurnChecks } from "./sandbox/api.js";
 import { isRecord } from "./util.js";
 
@@ -90,7 +98,10 @@ export class VerificationLog {
 	/** A state of the workspace other than the one the last run was on was recorded after it. */
 	private movedSinceRun = false;
 	private noSandbox = false;
-	private ending: { kind: "succeeded" | "failed" | "interrupted"; verification: Record<string, unknown> | null } | null = null;
+	private ending: {
+		kind: "succeeded" | "failed" | "interrupted";
+		verification: Record<string, unknown> | null;
+	} | null = null;
 
 	note(event: WindlassEvent): void {
 		const data = isRecord(event.data) ? event.data : (event as Record<string, unknown>);
@@ -113,26 +124,33 @@ export class VerificationLog {
 			case "checks.finished": {
 				if (typeof event.seq !== "number") break;
 				const evidence = isRecord(data.evidence) ? data.evidence : {};
-				const checks = (Array.isArray(evidence.checks) ? evidence.checks : []).filter(isRecord).flatMap((check): RanCheck[] => {
-					const status = STATUSES.find((known) => known === check.status);
-					if (status === undefined || text(check.name) === "") return [];
-					return [
-						{
-							name: text(check.name),
-							command: text(check.command),
-							status,
-							exitCode: typeof check.exitCode === "number" ? check.exitCode : null,
-							durationMs: typeof check.durationMs === "number" ? check.durationMs : 0,
-							carried: typeof check.reusedFromSeq === "number",
-							origin: text(check.origin),
-							required: check.required === true,
-							tail: isRecord(check.outputTail) ? text(check.outputTail.text) : "",
-							notStarted: status === "could_not_start" && typeof check.exitCode !== "number",
-							startError: text(check.startError),
-						},
-					];
-				});
-				this.run = { at: typeof event.time === "number" ? event.time : Date.now(), seq: event.seq, checks, snapshot: this.checksEnd };
+				const checks = (Array.isArray(evidence.checks) ? evidence.checks : [])
+					.filter(isRecord)
+					.flatMap((check): RanCheck[] => {
+						const status = STATUSES.find(known => known === check.status);
+						if (status === undefined || text(check.name) === "") return [];
+						return [
+							{
+								name: text(check.name),
+								command: text(check.command),
+								status,
+								exitCode: typeof check.exitCode === "number" ? check.exitCode : null,
+								durationMs: typeof check.durationMs === "number" ? check.durationMs : 0,
+								carried: typeof check.reusedFromSeq === "number",
+								origin: text(check.origin),
+								required: check.required === true,
+								tail: isRecord(check.outputTail) ? text(check.outputTail.text) : "",
+								notStarted: status === "could_not_start" && typeof check.exitCode !== "number",
+								startError: text(check.startError),
+							},
+						];
+					});
+				this.run = {
+					at: typeof event.time === "number" ? event.time : Date.now(),
+					seq: event.seq,
+					checks,
+					snapshot: this.checksEnd,
+				};
 				this.checksEnd = null;
 				this.movedSinceRun = false;
 				this.effectsSinceRun = false;
@@ -140,7 +158,10 @@ export class VerificationLog {
 			}
 			case "synthetic.appended":
 				// The harness's own message with the checks that did not pass. Written before the model is called again, and with an ending that leaves them unresolved.
-				if (data.origin === "check_report" && this.run !== null) this.reported = this.run.checks.filter((check) => check.status !== "passed" && check.status !== "interrupted").map((check) => check.name);
+				if (data.origin === "check_report" && this.run !== null)
+					this.reported = this.run.checks
+						.filter(check => check.status !== "passed" && check.status !== "interrupted")
+						.map(check => check.name);
 				return;
 			case "step.started":
 				// The model is called with that message before it: the agent was sent back.
@@ -182,14 +203,19 @@ export class VerificationLog {
 	 * A turn that ended with no check needed on a state verified earlier, according to Windlass (`reason` and `since` of the ending), rests on the run that state rests on: a run of
 	 * the turn's own was of another state, and only what did not pass in it is kept (`putBack`).
 	 */
-	verified(turn: number, saved: readonly RepositoryCheck[], handed: TurnChecks | undefined, previous: Verified | null): Verified {
+	verified(
+		turn: number,
+		saved: readonly RepositoryCheck[],
+		handed: TurnChecks | undefined,
+		previous: Verified | null,
+	): Verified {
 		const project = handed?.project ?? null;
 		const mine = (check: RanCheck) => check.origin === "session";
 		const verification = this.ending?.kind === "succeeded" ? this.ending.verification : null;
 		const status = text(verification?.status);
 		const reason = text(verification?.reason);
 
-		const why = status === "not_needed" ? UNNEEDED.find((known) => known === reason) : undefined;
+		const why = status === "not_needed" ? UNNEEDED.find(known => known === reason) : undefined;
 		let state: Exclude<Verified["state"], "not_needed">;
 		if (this.ending?.kind === "failed") state = "failed";
 		else if (this.ending?.kind !== "succeeded") state = "stopped";
@@ -225,35 +251,65 @@ export class VerificationLog {
 						),
 					};
 		let run = own ?? previous?.run ?? null;
-		let changedAfter = own === null ? previous !== null && previous.run !== null && (previous.changedAfter || this.changed) : this.changed;
+		let changedAfter =
+			own === null
+				? previous !== null && previous.run !== null && (previous.changedAfter || this.changed)
+				: this.changed;
 		let putBack: VerifiedCheck[] = [];
 		let on: NonNullable<Verified["unneeded"]>["on"] = null;
 		if (why === "state_unchanged" || why === "not_covered") {
 			// The work is on a state verified earlier, or differs from it only in files no check covers. The run that state rests on is the one Windlass names, where the platform holds it: the session's last before this turn.
 			const since = isRecord(verification?.since) ? verification.since : {};
 			const passed = isRecord(since.run) && typeof since.run.seq === "number" ? since.run.seq : null;
-			const held = previous !== null && previous.run !== null && passed !== null && previous.run.seq === passed ? previous : null;
+			const held =
+				previous !== null && previous.run !== null && passed !== null && previous.run.seq === passed ? previous : null;
 			on = held !== null ? "run" : since.run === null ? "start" : null;
 			// A run of this turn's own was of another state, and so is an earlier one that state does not rest on.
 			if (own !== null || on !== null) {
 				run = held === null ? null : held.run;
 				// Of the state that run passed on, files no check covers may differ: this ending says so, or an earlier one that moved the verified state on from the run's did.
 				changedAfter = held !== null && (why === "not_covered" || (held.changedAfter && since.seq !== passed));
-				putBack = (own?.checks ?? []).filter((check) => check.status !== "passed");
+				putBack = (own?.checks ?? []).filter(check => check.status !== "passed");
 			}
 		}
 		// What the evidence carries of a check's output: Windlass kept it for one that did not pass, and for one whose entry asks.
-		const tails = new Map((run === own ? (this.run?.checks ?? []) : []).map((check): [string, string] => [check.name, outputTail(check.tail)]).filter(([, kept]) => kept !== "").slice(0, OUTPUTS_SHOWN));
+		const tails = new Map(
+			(run === own ? (this.run?.checks ?? []) : [])
+				.map((check): [string, string] => [check.name, outputTail(check.tail)])
+				.filter(([, kept]) => kept !== "")
+				.slice(0, OUTPUTS_SHOWN),
+		);
 		const acknowledgement = isRecord(verification?.acknowledgement) ? text(verification.acknowledgement.reason) : "";
 		return withOutputs(
 			{
 				turn,
 				...(why === undefined ? { state } : { state: "not_needed" as const, unneeded: { reason: why, on } }),
-				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode" || reason === "not_started" || reason === "environment") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
+				...(state === "unresolved" &&
+				(reason === "acknowledged" ||
+					reason === "max_rounds" ||
+					reason === "report_mode" ||
+					reason === "not_started" ||
+					reason === "environment")
+					? {
+							unresolved: {
+								reason,
+								said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null,
+							},
+						}
+					: {}),
 				...(putBack.length === 0 ? {} : { putBack }),
 				run,
-				unrun: saved.filter((kept) => ![...(run?.checks ?? []), ...putBack].some((check) => check.whose === "user" && check.name === kept.name && check.command === kept.command)).map(({ name, command }) => ({ name, command })),
-				...(saved.length > 0 && project !== null && (project.checks !== null || project.verify !== null) ? { overruled: true } : {}),
+				unrun: saved
+					.filter(
+						kept =>
+							![...(run?.checks ?? []), ...putBack].some(
+								check => check.whose === "user" && check.name === kept.name && check.command === kept.command,
+							),
+					)
+					.map(({ name, command }) => ({ name, command })),
+				...(saved.length > 0 && project !== null && (project.checks !== null || project.verify !== null)
+					? { overruled: true }
+					: {}),
 				changedAfter,
 			},
 			tails,
@@ -267,7 +323,14 @@ export class VerificationLog {
 	 */
 	cutOff(turn: number, previous: Verified | null): Verified {
 		const changed = this.firstSnapshot !== null ? this.lastSnapshot !== this.firstSnapshot : this.effects;
-		return { turn, state: "stopped", run: previous?.run ?? null, unrun: previous?.unrun ?? [], ...(previous?.overruled ? { overruled: true } : {}), changedAfter: previous !== null && previous.run !== null && (previous.changedAfter || changed) };
+		return {
+			turn,
+			state: "stopped",
+			run: previous?.run ?? null,
+			unrun: previous?.unrun ?? [],
+			...(previous?.overruled ? { overruled: true } : {}),
+			changedAfter: previous !== null && previous.run !== null && (previous.changedAfter || changed),
+		};
 	}
 }
 
@@ -288,7 +351,15 @@ export function outputTail(output: string): string {
 /** `verified` with the output the platform read for its run's checks, by name. */
 export function withOutputs(verified: Verified, outputs: ReadonlyMap<string, string>): Verified {
 	if (verified.run === null || outputs.size === 0) return verified;
-	return { ...verified, run: { ...verified.run, checks: verified.run.checks.map((check) => (outputs.get(check.name) ? { ...check, output: outputs.get(check.name) } : check)) } };
+	return {
+		...verified,
+		run: {
+			...verified.run,
+			checks: verified.run.checks.map(check =>
+				outputs.get(check.name) ? { ...check, output: outputs.get(check.name) } : check,
+			),
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -306,11 +377,13 @@ export interface WorkDiff {
 	packageJson: { before: string | null; after: string | null };
 }
 
-const CODE = /\.(?:[cm]?[jt]sx?|py|go|rb|rs|java|kts?|scala|cs|swift|php|exs?|dart|sh|bats|c|cc|cpp|h|hpp|vue|svelte)$/i;
+const CODE =
+	/\.(?:[cm]?[jt]sx?|py|go|rb|rs|java|kts?|scala|cs|swift|php|exs?|dart|sh|bats|c|cc|cpp|h|hpp|vue|svelte)$/i;
 const TEST_NAME =
 	/(?:^|\/)(?:test_[^/]+\.py|[^/]+_test\.(?:py|go|rb|rs|exs?|dart|c|cc|cpp)|[^/]+_spec\.rb|[^/]+\.(?:test|spec)\.[A-Za-z0-9]+|[^/]+[-_](?:test|spec)\.[cm]?[jt]sx?|[^/]+Tests?\.(?:java|kts?|scala|cs|swift|php))$/;
 const TEST_DIRECTORY = /(?:^|\/)(?:tests?|__tests__|specs?|e2e)\//i;
-const NOT_A_TEST = /(?:^|\/)(?:fixtures?|__fixtures__|__snapshots__|snapshots|testdata|data|mocks?|__mocks__|helpers?|support|utils?)\//i;
+const NOT_A_TEST =
+	/(?:^|\/)(?:fixtures?|__fixtures__|__snapshots__|snapshots|testdata|data|mocks?|__mocks__|helpers?|support|utils?)\//i;
 
 /** Whether a path is a test's: by its file's name, or as code in a directory of tests that is not one of fixtures or helpers. */
 export function isTestPath(path: string): boolean {
@@ -330,7 +403,8 @@ const SKIP_MARKERS = [
 /** A command line that goes on as if what came before had succeeded. */
 const EXIT_IGNORED = /\|\|\s*(?:true|:|exit\s+0|\/bin\/true)(?=$|[\s;)&|'"])|;\s*(?:true|exit\s+0)\s*$|\bset\s+\+e\b/gm;
 
-const count = (lines: string, patterns: readonly RegExp[]) => patterns.reduce((sum, pattern) => sum + (lines.match(pattern)?.length ?? 0), 0);
+const count = (lines: string, patterns: readonly RegExp[]) =>
+	patterns.reduce((sum, pattern) => sum + (lines.match(pattern)?.length ?? 0), 0);
 
 /** The lines a patch adds and takes away, by file. */
 function changedLines(patch: string): Map<string, { added: string; removed: string }> {
@@ -369,7 +443,9 @@ function json(source: string | null): Record<string, unknown> | null {
 
 /** The script of the repository's `package.json` a command runs through a package manager, if it names one. */
 function packageScript(command: string): string | null {
-	const match = /(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:(?:run|run-script)\s+)?([A-Za-z0-9][A-Za-z0-9:._-]*)/.exec(command);
+	const match = /(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:(?:run|run-script)\s+)?([A-Za-z0-9][A-Za-z0-9:._-]*)/.exec(
+		command,
+	);
 	if (!match) return null;
 	// `bun test` is Bun's own test runner, not a script.
 	if (/\bbun\s+test\b/.test(match[0])) return null;
@@ -398,24 +474,46 @@ const FLAG_PATHS = 5;
  * and a test's file run as the check (`node test/a.test.js`) is the work under test, which changes in
  * ordinary work and has the two flags above. Flagging those would put the line on most pull requests.
  */
-export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; command: string }>, owns?: (path: string) => boolean): VerifiedFlag[] {
+export function workFlags(
+	diff: WorkDiff,
+	checks: ReadonlyArray<{ name: string; command: string }>,
+	owns?: (path: string) => boolean,
+): VerifiedFlag[] {
 	const lines = changedLines(diff.patch);
 	const flags: VerifiedFlag[] = [];
 	const flag = (kind: VerifiedFlag["kind"], where: string[]) => {
 		const unique = [...new Set(where)];
-		if (unique.length > 0) flags.push({ kind, where: unique.length > FLAG_PATHS ? [...unique.slice(0, FLAG_PATHS), `and ${unique.length - FLAG_PATHS} more`] : unique });
+		if (unique.length > 0)
+			flags.push({
+				kind,
+				where:
+					unique.length > FLAG_PATHS
+						? [...unique.slice(0, FLAG_PATHS), `and ${unique.length - FLAG_PATHS} more`]
+						: unique,
+			});
 	};
 
 	flag(
 		"tests_removed",
-		diff.files.filter((file) => isTestPath(file.path) && (file.status.startsWith("D") || (file.status.startsWith("R") && !isTestPath(file.to ?? "")))).map((file) => file.path),
+		diff.files
+			.filter(
+				file =>
+					isTestPath(file.path) &&
+					(file.status.startsWith("D") || (file.status.startsWith("R") && !isTestPath(file.to ?? ""))),
+			)
+			.map(file => file.path),
 	);
 	flag(
 		"tests_skipped",
-		[...lines].filter(([path, changed]) => isTestPath(path) && count(changed.added, SKIP_MARKERS) > count(changed.removed, SKIP_MARKERS)).map(([path]) => path),
+		[...lines]
+			.filter(
+				([path, changed]) =>
+					isTestPath(path) && count(changed.added, SKIP_MARKERS) > count(changed.removed, SKIP_MARKERS),
+			)
+			.map(([path]) => path),
 	);
 
-	const touched = new Set(diff.files.flatMap((file) => [file.path, ...(file.to === undefined ? [] : [file.to])]));
+	const touched = new Set(diff.files.flatMap(file => [file.path, ...(file.to === undefined ? [] : [file.to])]));
 	const changed: string[] = [];
 	const ignored: string[] = [];
 	const ignores = (source: string) => source.match(EXIT_IGNORED)?.length ?? 0;
@@ -425,9 +523,19 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	const after = json(diff.config.after);
 	const CONFIG = ".windlass/config.json";
 	if (touched.has(CONFIG)) {
-		const unreadable = (diff.config.before !== null && before === null) || (diff.config.after !== null && after === null);
-		if (unreadable ? diff.config.before !== diff.config.after : !sameJson(before?.checks, after?.checks) || !sameJson(before?.verify, after?.verify)) changed.push(CONFIG);
-		const commands = (config: Record<string, unknown> | null) => (Array.isArray(config?.checks) ? config.checks : []).filter(isRecord).map((check) => text(check.command)).join("\n");
+		const unreadable =
+			(diff.config.before !== null && before === null) || (diff.config.after !== null && after === null);
+		if (
+			unreadable
+				? diff.config.before !== diff.config.after
+				: !sameJson(before?.checks, after?.checks) || !sameJson(before?.verify, after?.verify)
+		)
+			changed.push(CONFIG);
+		const commands = (config: Record<string, unknown> | null) =>
+			(Array.isArray(config?.checks) ? config.checks : [])
+				.filter(isRecord)
+				.map(check => text(check.command))
+				.join("\n");
 		if (ignores(commands(after)) > ignores(commands(before))) ignored.push(CONFIG);
 	}
 
@@ -454,14 +562,21 @@ export function workFlags(diff: WorkDiff, checks: ReadonlyArray<{ name: string; 
 	flag("checks_changed", changed);
 	flag("exit_ignored", ignored);
 	// Both sides of a rename matter: instructions can move into or out of the work. The root config has its own check above.
-	if (owns) flag("outside_scope", [...touched].filter(path => !owns(path)));
+	if (owns)
+		flag(
+			"outside_scope",
+			[...touched].filter(path => !owns(path)),
+		);
 	flag("agent_instructions_changed", [...touched].filter(isAgentInstructionPath));
 	return flags;
 }
 
 function isAgentInstructionPath(path: string): boolean {
-	return path !== ".windlass/config.json" && (
-		/(^|\/)(AGENTS|CLAUDE)\.md$/.test(path) || /(^|\/)\.(windlass|claude|agents|cursor\/rules)\//.test(path) || path === ".github/copilot-instructions.md"
+	return (
+		path !== ".windlass/config.json" &&
+		(/(^|\/)(AGENTS|CLAUDE)\.md$/.test(path) ||
+			/(^|\/)\.(windlass|claude|agents|cursor\/rules)\//.test(path) ||
+			path === ".github/copilot-instructions.md")
 	);
 }
 
@@ -491,12 +606,15 @@ export function checkScripts(command: string): string[] {
 	const clean = (token: string | undefined) => (token ?? "").replace(/^['"]|['"]$/g, "").replace(/^\.\//, "");
 	const found: string[] = [];
 	for (const part of command.split(/&&|\|\||[;|\n()]/)) {
-		const words = part.trim().split(/\s+/).filter((word) => word !== "");
+		const words = part
+			.trim()
+			.split(/\s+/)
+			.filter(word => word !== "");
 		while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!)) words.shift();
 		const first = clean(words[0]);
 		if (first === "") continue;
 		if (SHELLS.has(first)) {
-			const script = clean(words.slice(1).find((word) => !word.startsWith("-")));
+			const script = clean(words.slice(1).find(word => !word.startsWith("-")));
 			if (script !== "") found.push(script);
 		} else if (INTERPRETERS.has(first)) {
 			const next = first === "deno" && words[1] === "run" ? words[2] : words[1];
@@ -547,8 +665,8 @@ export function verifiedHeadline(verified: Verified): string {
 	const turn = `turn ${verified.turn}`;
 	const here = verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
 	// Report a check that could not start separately from one that ran and failed.
-	const unstarted = here.filter((check) => check.startError !== undefined);
-	const failing = here.filter((check) => check.status !== "passed" && check.startError === undefined);
+	const unstarted = here.filter(check => check.startError !== undefined);
+	const failing = here.filter(check => check.status !== "passed" && check.startError === undefined);
 	const file = "the repository's `.windlass/config.json`";
 	const one = unstarted.length === 1;
 	switch (verified.state) {
@@ -557,7 +675,8 @@ export function verifiedHeadline(verified: Verified): string {
 		case "unresolved": {
 			if (failing.length === 0 && unstarted.length > 0) {
 				const fix = `That says nothing about the code, so the agent was not sent back to change anything: what there is to fix is the reason given with ${one ? "the check" : "each"} below.`;
-				if (unstarted.length < here.length) return `The agent's ${turn} ended with ${one ? "a check" : `${unstarted.length} checks`} that ${one ? "was" : "were"} not started. ${fix}`;
+				if (unstarted.length < here.length)
+					return `The agent's ${turn} ended with ${one ? "a check" : `${unstarted.length} checks`} that ${one ? "was" : "were"} not started. ${fix}`;
 				return `Nothing was verified in the agent's ${turn}: ${one ? "the check that applied was" : `the ${unstarted.length} checks that applied were`} not started. ${fix}`;
 			}
 			const why =
@@ -568,12 +687,17 @@ export function verifiedHeadline(verified: Verified): string {
 						: verified.unresolved?.reason === "environment"
 							? `the sandbox could not run ${failing.length === 1 ? "its command" : "their commands"}, which says nothing about the code, so the agent was not sent back`
 							: "the agent had been sent back as often as a turn allows";
-			const besides = unstarted.length === 0 ? "" : ` ${one ? "Another check was" : `${unstarted.length} other checks were`} not started, which says nothing about the code: the agent was not asked to change anything for ${one ? "it" : "them"}, and what there is to fix is the reason given with ${one ? "it" : "each"} below.`;
+			const besides =
+				unstarted.length === 0
+					? ""
+					: ` ${one ? "Another check was" : `${unstarted.length} other checks were`} not started, which says nothing about the code: the agent was not asked to change anything for ${one ? "it" : "them"}, and what there is to fix is the reason given with ${one ? "it" : "each"} below.`;
 			return `The agent's ${turn} ended with ${failing.length === 1 ? "a check" : `${failing.length} checks`} still failing: ${why}.${besides}`;
 		}
 		case "not_needed": {
 			const { unneeded, run } = verified;
-			const none = verified.putBack ? `No check was run again when the agent's ${turn} ended` : `No check ran in the agent's ${turn}`;
+			const none = verified.putBack
+				? `No check was run again when the agent's ${turn} ended`
+				: `No check ran in the agent's ${turn}`;
 			const passed = unneeded.on === "run" && run !== null ? `, at the end of turn ${run.turn}` : null;
 			if (unneeded.reason === "turn_unchanged") return `${none}: the turn changed no file.`;
 			if (unneeded.reason === "state_unchanged")
@@ -598,7 +722,7 @@ export function verifiedHeadline(verified: Verified): string {
 /** For a turn in which a run of checks did not pass and the agent then put the files back (`Verified.putBack`): what that run was, and that it does not stand. "" where there was none. */
 export function putBackWords(verified: Verified, name: (check: VerifiedCheck) => string): string {
 	if (!verified.putBack) return "";
-	return `A run of checks earlier in turn ${verified.turn} did not pass (${verified.putBack.map((check) => `${name(check)} ${checkWords(check)}`).join("; ")}). The agent then changed the files back, so that run says nothing about the work as it is now.`;
+	return `A run of checks earlier in turn ${verified.turn} did not pass (${verified.putBack.map(check => `${name(check)} ${checkWords(check)}`).join("; ")}). The agent then changed the files back, so that run says nothing about the work as it is now.`;
 }
 
 /** For a turn whose user's checks were required ones while the repository's file had a say about checks: whom that held for, in a sentence. */
@@ -608,7 +732,8 @@ export function overruledWords(owner: string): string {
 
 /** Why the user's checks in `unrun` did not run, in a sentence; "" where the headline already says it. */
 export function unrunReason(verified: Verified): string {
-	if (verified.state === "passed" || verified.state === "unresolved") return `No changed file matches ${verified.unrun.length === 1 ? "its" : "their"} patterns.`;
+	if (verified.state === "passed" || verified.state === "unresolved")
+		return `No changed file matches ${verified.unrun.length === 1 ? "its" : "their"} patterns.`;
 	return "";
 }
 
@@ -631,11 +756,16 @@ export function flagWords(kind: VerifiedFlag["kind"]): string {
 }
 
 /** What became of the session's checks, in a few words, for a list: "2 checks passed", "nothing verified, 1 thing to look at". */
-export function verifiedWords(verified: Verified | null, flags: readonly VerifiedFlag[], during: number | null): string {
-	const here = verified !== null && verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
-	const unstarted = here.filter((check) => check.startError !== undefined).length;
-	const failing = here.filter((check) => check.status !== "passed").length - unstarted;
-	const whose = here.length > 0 && here.every((check) => check.whose === "repository") ? " (the repository's own)" : "";
+export function verifiedWords(
+	verified: Verified | null,
+	flags: readonly VerifiedFlag[],
+	during: number | null,
+): string {
+	const here =
+		verified !== null && verified.run !== null && verified.run.turn === verified.turn ? verified.run.checks : [];
+	const unstarted = here.filter(check => check.startError !== undefined).length;
+	const failing = here.filter(check => check.status !== "passed").length - unstarted;
+	const whose = here.length > 0 && here.every(check => check.whose === "repository") ? " (the repository's own)" : "";
 	const base =
 		during !== null
 			? "pushed before the turn's checks ran"
@@ -679,7 +809,7 @@ const inert = (value: string) => value.replace(SECTION_NAME, "windlass-platform 
 function code(value: string): string {
 	const whole = inert(value.replace(/\s+/g, " ").trim());
 	const plain = whole.length > COMMAND_CHARS ? `${whole.slice(0, COMMAND_CHARS)}…` : whole;
-	const fence = "`".repeat(Math.max(1, ...(plain.match(/`+/g) ?? []).map((run) => run.length + 1)));
+	const fence = "`".repeat(Math.max(1, ...(plain.match(/`+/g) ?? []).map(run => run.length + 1)));
 	return plain.includes("`") ? `${fence} ${plain} ${fence}` : `\`${plain}\``;
 }
 
@@ -709,40 +839,70 @@ export function verifiedSection(input: SectionInput): string {
 	const parts: string[] = [];
 	if (input.machine) {
 		// The runner supplies the name. Keep it in one paragraph and quote inline Markdown characters.
-		const name = input.machine.name && inert(input.machine.name).replace(/\s+/g, " ").replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1");
-		parts.push(`These checks ran on ${owner} own machine${name ? `, “${name}”` : ""}; this is what that machine reported.`);
+		const name =
+			input.machine.name &&
+			inert(input.machine.name)
+				.replace(/\s+/g, " ")
+				.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1");
+		parts.push(
+			`These checks ran on ${owner} own machine${name ? `, “${name}”` : ""}; this is what that machine reported.`,
+		);
 	}
-	if (during !== null) parts.push(`This was pushed while the agent's turn ${during} was still running: what that turn changed had not been checked yet.`);
+	if (during !== null)
+		parts.push(
+			`This was pushed while the agent's turn ${during} was still running: what that turn changed had not been checked yet.`,
+		);
 	if (verified === null) {
 		if (during === null) parts.push("Nothing was verified: no turn of the agent's has ended in this session.");
 	} else {
 		const run = verified.run;
 		const earlier = run !== null && run.turn !== verified.turn;
 		parts.push(during !== null ? `Before it: ${verifiedHeadline(verified)}` : verifiedHeadline(verified));
-		if (verified.putBack) parts.push(inert(putBackWords(verified, (check) => `**${check.name}**`)));
+		if (verified.putBack) parts.push(inert(putBackWords(verified, check => `**${check.name}**`)));
 		if (run !== null && run.checks.length > 0) {
-			const list = run.checks.map((check) => `- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} ${check.required ? "required check" : "check"}` : "from the repository's `.windlass/config.json`"}: ${inert(checkWords(check))}.`).join("\n");
-			parts.push(earlier ? `${verified.putBack ? "The checks as they passed" : "Checks last ran"} when turn ${run.turn} ended:\n\n${list}` : list);
+			const list = run.checks
+				.map(
+					check =>
+						`- **${inert(check.name)}** (${code(check.command)}), ${check.whose === "user" ? `${owner} ${check.required ? "required check" : "check"}` : "from the repository's `.windlass/config.json`"}: ${inert(checkWords(check))}.`,
+				)
+				.join("\n");
+			parts.push(
+				earlier
+					? `${verified.putBack ? "The checks as they passed" : "Checks last ran"} when turn ${run.turn} ended:\n\n${list}`
+					: list,
+			);
 		}
 		if (verified.unrun.length > 0) {
 			const reason = unrunReason(verified);
-			parts.push(`Did not run: ${verified.unrun.map((check) => `**${inert(check.name)}** (${code(check.command)})`).join(", ")}.${reason === "" ? "" : ` ${reason}`}`);
+			parts.push(
+				`Did not run: ${verified.unrun.map(check => `**${inert(check.name)}** (${code(check.command)})`).join(", ")}.${reason === "" ? "" : ` ${reason}`}`,
+			);
 		}
 		if (verified.overruled) parts.push(overruledWords(owner));
 	}
 	const seen = [
-		...(verified?.changedAfter ? ["- Files changed after the checks last ran, so the results above are of an earlier state of the work."] : []),
-		...(flags ?? []).map((flag) => `- ${flagWords(flag.kind)}: ${flag.where.map((path) => (path.startsWith("and ") ? path : code(path))).join(", ")}.`),
+		...(verified?.changedAfter
+			? ["- Files changed after the checks last ran, so the results above are of an earlier state of the work."]
+			: []),
+		...(flags ?? []).map(
+			flag =>
+				`- ${flagWords(flag.kind)}: ${flag.where.map(path => (path.startsWith("and ") ? path : code(path))).join(", ")}.`,
+		),
 	];
 	if (seen.length > 0) parts.push(["To look at:", "", ...seen].join("\n"));
-	if (flags === null) parts.push("The platform could not read the changes from the session's sandbox, so it looked for nothing in them.");
+	if (flags === null)
+		parts.push("The platform could not read the changes from the session's sandbox, so it looked for nothing in them.");
 	for (const check of verified?.run?.checks ?? []) {
 		if (!check.output) continue;
 		const body = inert(check.output);
-		const fence = "`".repeat(Math.max(3, ...(body.match(/`+/g) ?? []).map((run) => run.length + 1)));
-		parts.push(`<details>\n<summary>The end of what ${inert(check.name)} printed</summary>\n\n${fence}text\n${body}\n${fence}\n\n</details>`);
+		const fence = "`".repeat(Math.max(3, ...(body.match(/`+/g) ?? []).map(run => run.length + 1)));
+		parts.push(
+			`<details>\n<summary>The end of what ${inert(check.name)} printed</summary>\n\n${fence}text\n${body}\n${fence}\n\n</details>`,
+		);
 	}
-	parts.push("<sub>Written by Windlass Platform from what Windlass recorded of the session's checks, and replaced each time the platform pushes. It says what ran; it is not a review.</sub>");
+	parts.push(
+		"<sub>Written by Windlass Platform from what Windlass recorded of the session's checks, and replaced each time the platform pushes. It says what ran; it is not a review.</sub>",
+	);
 	return [SECTION_START, "### What was verified", ...parts, SECTION_END].join("\n\n");
 }
 

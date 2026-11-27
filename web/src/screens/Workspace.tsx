@@ -24,7 +24,15 @@ import { PHONE_QUERY, useMediaQuery } from "../components/ui/useMediaQuery";
 import { plural } from "../lib/format";
 import { repositoryLabel } from "../lib/nav";
 import { linkProps, usePageLabel, type RepositoryPaneView, type Route } from "../lib/router";
-import { filterCount, loadFilters, railOf, saveFilters, type Filters, type Rail, type RailRepository } from "../lib/workspace";
+import {
+	filterCount,
+	loadFilters,
+	railOf,
+	saveFilters,
+	type Filters,
+	type Rail,
+	type RailRepository,
+} from "../lib/workspace";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useSessions } from "../state/hooks";
 import { Home, useSavedRepositories } from "./Home";
@@ -33,7 +41,10 @@ import { useMachines } from "../state/machines";
 import { RepositoryPane, useRepository } from "./Repository";
 
 /** What the right side shows. */
-export type Selection = { kind: "everything" } | { kind: "none" } | { kind: "repository"; id: GithubId; view?: RepositoryPaneView; launching?: boolean };
+export type Selection =
+	| { kind: "everything" }
+	| { kind: "none" }
+	| { kind: "repository"; id: GithubId; view?: RepositoryPaneView; launching?: boolean };
 
 /** The filters, as this browser remembers them: read once, written on each change. */
 export function useFilters(): [Filters, (next: Filters) => void] {
@@ -62,8 +73,20 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	const chosen = selection.kind === "repository" ? selection.id : null;
 	const rail = railOf({ sessions, items: items.list, feed: items.feed, saved, filters, keep: chosen });
 	// What the back control of a page opened from here calls it: "tide-tables · Work items".
-	const chosenName = chosen === null ? null : (rail.groups.flatMap((group) => group.repositories).find((repository) => String(repository.id) === String(chosen))?.name ?? null);
-	usePageLabel(selection.kind === "repository" ? (chosenName ? repositoryLabel(chosenName, selection.view) : null) : selection.kind === "none" ? "No repository" : "Agents");
+	const chosenName =
+		chosen === null
+			? null
+			: (rail.groups.flatMap(group => group.repositories).find(repository => String(repository.id) === String(chosen))
+					?.name ?? null);
+	usePageLabel(
+		selection.kind === "repository"
+			? chosenName
+				? repositoryLabel(chosenName, selection.view)
+				: null
+			: selection.kind === "none"
+				? "No repository"
+				: "Agents",
+	);
 	const [sheet, setSheet] = useState(false);
 	const openSheet = useCallback(() => setSheet(true), []);
 
@@ -105,9 +128,26 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 			>
 				{phone ? <PhoneSwitcher rail={rail} selection={selection} onOpen={() => setSheet(true)} /> : null}
 				{selection.kind === "repository" ? (
-					<RepositorySide key={selection.id} id={selection.id} view={selection.view} launching={selection.launching ?? false} items={items} filters={filters} onFilters={setFilters} machines={machineList} />
+					<RepositorySide
+						key={selection.id}
+						id={selection.id}
+						view={selection.view}
+						launching={selection.launching ?? false}
+						items={items}
+						filters={filters}
+						onFilters={setFilters}
+						machines={machineList}
+					/>
 				) : (
-					<Home state={state} items={platform.info?.items ? items.list : []} usage={usage} scope={selection.kind === "none" ? "none" : "all"} filters={filters} onFilters={setFilters} machines={machineList} />
+					<Home
+						state={state}
+						items={platform.info?.items ? items.list : []}
+						usage={usage}
+						scope={selection.kind === "none" ? "none" : "all"}
+						filters={filters}
+						onFilters={setFilters}
+						machines={machineList}
+					/>
 				)}
 			</RailFrame>
 			{phone ? (
@@ -119,21 +159,47 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	);
 }
 
-const railRoute = (choice: RailChoice): Route => (choice.kind === "repository" ? { name: "repository", id: choice.id } : choice.kind === "none" ? { name: "home", scope: "none" } : { name: "home" });
+const railRoute = (choice: RailChoice): Route =>
+	choice.kind === "repository"
+		? { name: "repository", id: choice.id }
+		: choice.kind === "none"
+			? { name: "home", scope: "none" }
+			: { name: "home" };
 
 /** A repository row's actions on hover: a new agent there, and its saved settings. */
 const repositoryActions = (repository: RailRepository, name: string) => (
 	<>
-		<a className="ws-rail-action" {...linkProps({ name: "new", repository: repository.id })} aria-label={`New agent on ${name}`} title="New agent here">
+		<a
+			className="ws-rail-action"
+			{...linkProps({ name: "new", repository: repository.id })}
+			aria-label={`New agent on ${name}`}
+			title="New agent here"
+		>
 			<PlusIcon size={13} />
 		</a>
-		<a className="ws-rail-action" {...linkProps({ name: "repository", id: repository.id, view: "settings" })} aria-label={`Saved settings of ${name}`} title="Saved settings">
+		<a
+			className="ws-rail-action"
+			{...linkProps({ name: "repository", id: repository.id, view: "settings" })}
+			aria-label={`Saved settings of ${name}`}
+			title="Saved settings"
+		>
 			<SlidersIcon size={13} />
 		</a>
 	</>
 );
 
-function RepositorySide({ id, ...props }: { id: GithubId; view?: RepositoryPaneView; launching: boolean; items: ItemsState; filters: Filters; onFilters(filters: Filters): void; machines: readonly MachineSummary[] }) {
+function RepositorySide({
+	id,
+	...props
+}: {
+	id: GithubId;
+	view?: RepositoryPaneView;
+	launching: boolean;
+	items: ItemsState;
+	filters: Filters;
+	onFilters(filters: Filters): void;
+	machines: readonly MachineSummary[];
+}) {
 	const page = useRepository(id);
 	return <RepositoryPane page={page} {...props} />;
 }
@@ -141,8 +207,11 @@ function RepositorySide({ id, ...props }: { id: GithubId; view?: RepositoryPaneV
 // ---- a phone's switcher ----------------------------------------------------------------------------
 
 function PhoneSwitcher({ rail, selection, onOpen }: { rail: Rail; selection: Selection; onOpen(): void }) {
-	const all = rail.groups.flatMap((group) => group.repositories);
-	const chosen = selection.kind === "repository" ? (all.find((repository) => String(repository.id) === String(selection.id)) ?? null) : null;
+	const all = rail.groups.flatMap(group => group.repositories);
+	const chosen =
+		selection.kind === "repository"
+			? (all.find(repository => String(repository.id) === String(selection.id)) ?? null)
+			: null;
 	const needs = chosen ? chosen.needs : selection.kind === "none" ? rail.none.needs : rail.everything.needs;
 	return (
 		<div className="ws-switch">
@@ -168,14 +237,26 @@ function PhoneSwitcher({ rail, selection, onOpen }: { rail: Rail; selection: Sel
 			</button>
 			<ul className="ws-strip" aria-label="Repositories">
 				<li>
-					<a className="ws-strip-chip" aria-current={selection.kind === "everything" ? "page" : undefined} {...linkProps({ name: "home" })}>
+					<a
+						className="ws-strip-chip"
+						aria-current={selection.kind === "everything" ? "page" : undefined}
+						{...linkProps({ name: "home" })}
+					>
 						Everything
 					</a>
 				</li>
-				{all.map((repository) => (
+				{all.map(repository => (
 					<li key={String(repository.id)}>
-						<a className="ws-strip-chip" aria-current={chosen?.id === repository.id ? "page" : undefined} {...linkProps({ name: "repository", id: repository.id })}>
-							{repository.needs > 0 ? <span className="ws-lamp" aria-label="needs you" /> : repository.running > 0 ? <RingIcon size={11} className="ws-ring" /> : null}
+						<a
+							className="ws-strip-chip"
+							aria-current={chosen?.id === repository.id ? "page" : undefined}
+							{...linkProps({ name: "repository", id: repository.id })}
+						>
+							{repository.needs > 0 ? (
+								<span className="ws-lamp" aria-label="needs you" />
+							) : repository.running > 0 ? (
+								<RingIcon size={11} className="ws-ring" />
+							) : null}
 							{repository.name}
 						</a>
 					</li>

@@ -21,7 +21,10 @@ export interface MachinesState {
 export function useMachines(enabled = true): MachinesState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
+	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({
+		list: null,
+		error: null,
+	});
 	const asked = useRef(0);
 	const samplesDuringReload = useRef<Map<string, MachineSummary["host"]> | null>(null);
 
@@ -31,10 +34,19 @@ export function useMachines(enabled = true): MachinesState {
 		samplesDuringReload.current = samples;
 		readTwice(() => client.user(auth).machines())
 			.then(
-				(list) => mine === asked.current && setState({ list: list.map(machine =>
-					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
-			).finally(() => { if (samplesDuringReload.current === samples) samplesDuringReload.current = null; });
+				list =>
+					mine === asked.current &&
+					setState({
+						list: list.map(machine =>
+							samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine,
+						),
+						error: null,
+					}),
+				(failure: unknown) => mine === asked.current && setState(now => ({ list: now.list, error: explain(failure) })),
+			)
+			.finally(() => {
+				if (samplesDuringReload.current === samples) samplesDuringReload.current = null;
+			});
 	}, [client, auth, explain]);
 
 	const replace = useCallback((list: MachineSummary[]) => {
@@ -51,10 +63,15 @@ export function useMachines(enabled = true): MachinesState {
 			onMachines: replace,
 			onMachineHost: ({ machineId, host }) => {
 				samplesDuringReload.current?.set(machineId, host ?? undefined);
-				setState(now => ({ ...now, list: now.list?.map(machine =>
-					machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine) ?? null }));
+				setState(now => ({
+					...now,
+					list:
+						now.list?.map(machine =>
+							machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine,
+						) ?? null,
+				}));
 			},
-			onConnection: (connection) => {
+			onConnection: connection => {
 				if (connection !== "connected") return;
 				// What the actor sent while the feed was down is lost: the list is read again when it is back.
 				if (connected) reload();

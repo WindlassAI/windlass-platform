@@ -54,12 +54,18 @@ async function make(): Promise<SignIns> {
 	const sealer = serverSealer();
 	if (config.sandbox === "fake" && (process.env.WLP_SIGNIN_RUNNER ?? "").trim() === "") {
 		const { createFakeSignInCommands } = await import("../sandbox-fake.js");
-		return { commands: createFakeSignInCommands(), sealer, hooks: {}, describe: "the fake layer's stand-in for Windlass", check: async () => null };
+		return {
+			commands: createFakeSignInCommands(),
+			sealer,
+			hooks: {},
+			describe: "the fake layer's stand-in for Windlass",
+			check: async () => null,
+		};
 	}
 	const hooks: SignInHooks = {};
 	if (config.sandbox === "docker") {
 		const { removeTokenFiles } = await import("../sandbox/volumes.js");
-		hooks.revoke = (uid) => removeTokenFiles(uid);
+		hooks.revoke = uid => removeTokenFiles(uid);
 	}
 	let runner: LoginRunner;
 	let describe: string;
@@ -73,7 +79,13 @@ async function make(): Promise<SignIns> {
 		describe = "a helper container of the sandbox image";
 	}
 	const check = async () => windlassVersionProblem(await runner.version(), describe);
-	return { commands: new WindlassSignIns(runner, { log: (line) => console.error(line) }), sealer, hooks, describe, check };
+	return {
+		commands: new WindlassSignIns(runner, { log: line => console.error(line) }),
+		sealer,
+		hooks,
+		describe,
+		check,
+	};
 }
 
 let made: Promise<SignIns> | null = null;

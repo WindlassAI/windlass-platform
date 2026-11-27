@@ -7,7 +7,19 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import { MAX_TITLE_CHARS, type AccountDefaults, type GithubId, type ItemFeed, type ItemSummary, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
+import {
+	MAX_TITLE_CHARS,
+	type AccountDefaults,
+	type GithubId,
+	type ItemFeed,
+	type ItemSummary,
+	type ModelList,
+	type PlatformInfo,
+	type PullRequestInfo,
+	type SandboxProfileId,
+	type SessionRepository,
+	type SessionSummary,
+} from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -16,7 +28,8 @@ import { MAX_TITLE_CHARS, type AccountDefaults, type GithubId, type ItemFeed, ty
  * its own among the user's sessions (`SessionSummary.item`); it is part of its item, and is reached
  * from the item's row and page, so no list of agents shows it a second time.
  */
-export const ownAgents = (sessions: readonly SessionSummary[]): SessionSummary[] => sessions.filter((session) => session.item === undefined);
+export const ownAgents = (sessions: readonly SessionSummary[]): SessionSummary[] =>
+	sessions.filter(session => session.item === undefined);
 
 /**
  * What is at work, in the parts the home page names. `ceilinged` is what the server counts against
@@ -25,7 +38,11 @@ export const ownAgents = (sessions: readonly SessionSummary[]): SessionSummary[]
  * item's turn wherever it runs. `items` is how many of those are work items'. `onMachines`: the user's
  * own agents at work on their machines, which are not counted against it.
  */
-export function workingCounts(sessions: readonly SessionSummary[]): { ceilinged: number; items: number; onMachines: number } {
+export function workingCounts(sessions: readonly SessionSummary[]): {
+	ceilinged: number;
+	items: number;
+	onMachines: number;
+} {
 	let ceilinged = 0;
 	let items = 0;
 	let onMachines = 0;
@@ -42,7 +59,10 @@ export function workingCounts(sessions: readonly SessionSummary[]): { ceilinged:
 }
 
 /** "3 of 6 working, 2 of them work items": what `workingCounts` counts against the ceiling, said of the whole when it is known. */
-export function workingWords({ ceilinged, items }: { ceilinged: number; items: number }, ceiling: number | null): string {
+export function workingWords(
+	{ ceilinged, items }: { ceilinged: number; items: number },
+	ceiling: number | null,
+): string {
 	const head = `${ceiling === null ? ceilinged : `${ceilinged} of ${ceiling}`} working`;
 	if (items === 0) return head;
 	if (items === ceilinged) return `${head}, ${items === 1 ? "a work item" : "all work items"}`;
@@ -70,7 +90,8 @@ export interface SessionGroup {
 
 export const NO_REPOSITORY = "none";
 
-const byUse = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1);
+const byUse = (a: SessionSummary, b: SessionSummary) =>
+	b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1);
 
 /**
  * The agents under their repositories: the repository that was used last comes first, and the agents
@@ -106,7 +127,12 @@ export function groupSessions(sessions: readonly SessionSummary[]): SessionGroup
 		if (session.status !== "idle") group.working += 1;
 		if (session.status === "waiting") group.waiting += 1;
 	}
-	return [...groups.values()].sort((a, b) => Number(a.key === NO_REPOSITORY) - Number(b.key === NO_REPOSITORY) || b.usedAt - a.usedAt || (a.key < b.key ? -1 : 1));
+	return [...groups.values()].sort(
+		(a, b) =>
+			Number(a.key === NO_REPOSITORY) - Number(b.key === NO_REPOSITORY) ||
+			b.usedAt - a.usedAt ||
+			(a.key < b.key ? -1 : 1),
+	);
 }
 
 /** How many agents of a group are shown before the rest is folded away, where there are several groups, and where there is one. */
@@ -120,7 +146,10 @@ const FOLD_AT_LEAST = 3;
  * that is at work or waits on its user, which is never hidden. `hidden` is how many are left out, and
  * is 0 when the group is short enough to be shown whole.
  */
-export function foldGroup(sessions: readonly SessionSummary[], limit: number): { shown: SessionSummary[]; hidden: number } {
+export function foldGroup(
+	sessions: readonly SessionSummary[],
+	limit: number,
+): { shown: SessionSummary[]; hidden: number } {
 	const shown = sessions.filter((session, index) => index < limit || session.status !== "idle");
 	const hidden = sessions.length - shown.length;
 	return hidden < FOLD_AT_LEAST ? { shown: [...sessions], hidden: 0 } : { shown, hidden };
@@ -132,7 +161,8 @@ export const shownLimit = (groups: number) => (groups <= 1 ? LONE_GROUP_SHOWN : 
 // ---- a repository's page ---------------------------------------------------------------------------
 
 /** "owner/name". */
-export const repositoryName = (repository: Pick<SessionRepository, "owner" | "name">) => `${repository.owner}/${repository.name}`;
+export const repositoryName = (repository: Pick<SessionRepository, "owner" | "name">) =>
+	`${repository.owner}/${repository.name}`;
 
 // ---- the work items' counts -------------------------------------------------------------------------
 
@@ -147,7 +177,10 @@ export interface FeedFilters {
  * (`ItemFeed.counts`): the feed carries only the newest ended items, so the ended ones are never
  * counted by its rows. Zero everywhere until the feed is read.
  */
-export function feedCounts(feed: ItemFeed | null, filters: FeedFilters = {}): { open: number; done: number; failed: number; cancelled: number; ended: number; total: number } {
+export function feedCounts(
+	feed: ItemFeed | null,
+	filters: FeedFilters = {},
+): { open: number; done: number; failed: number; cancelled: number; ended: number; total: number } {
 	const sum = { open: 0, done: 0, failed: 0, cancelled: 0, ended: 0, total: 0 };
 	for (const row of feed?.counts.byRepository ?? []) {
 		if (filters.repository !== undefined && String(row.repository) !== String(filters.repository)) continue;
@@ -176,7 +209,7 @@ export function feedRepositories(feed: ItemFeed | null): Array<{ id: GithubId; n
 
 /** The user's sessions on one repository, their work items' among them (`ownAgents` leaves those out), the most recently used first. */
 export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: GithubId): SessionSummary[] {
-	return sessions.filter((session) => session.repository?.id === repositoryId).sort(byUse);
+	return sessions.filter(session => session.repository?.id === repositoryId).sort(byUse);
 }
 
 export interface OpenPull {
@@ -218,25 +251,36 @@ export interface StartingChoices {
  * is left out, and `ignored` says so in words: of a list that only stands in for the plan's, that the
  * model is left out for now.
  */
-export function startingChoices(defaults: AccountDefaults | null, info: Pick<PlatformInfo, "profiles"> | null, models: ModelList | null, whose: "repository" | "account" = "repository"): StartingChoices {
+export function startingChoices(
+	defaults: AccountDefaults | null,
+	info: Pick<PlatformInfo, "profiles"> | null,
+	models: ModelList | null,
+	whose: "repository" | "account" = "repository",
+): StartingChoices {
 	const choices: StartingChoices = { profile: null, model: null, ignored: { profile: null, model: null } };
 	if (defaults === null) return choices;
 	const the = whose === "account" ? "Your account's default" : "The default";
 	if (defaults.profile !== null && info !== null) {
-		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
+		const saved = info.profiles.find(profile => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
 		else {
 			// Which one, and what is used in its place: the account's default under a repository's, the deployment's first under the account's.
 			const what = saved ? `${saved.name} isolation isn't available here` : "Your saved isolation is no longer offered";
-			const first = info.profiles.find((profile) => profile.available)?.name;
-			choices.ignored.profile = whose === "account" ? `${what}. New agents use ${first ?? "the default"} instead.` : `${what}. Agents here use your account's default instead.`;
+			const first = info.profiles.find(profile => profile.available)?.name;
+			choices.ignored.profile =
+				whose === "account"
+					? `${what}. New agents use ${first ?? "the default"} instead.`
+					: `${what}. Agents here use your account's default instead.`;
 		}
 	}
 	if (defaults.model !== null && models !== null) {
-		if (models.models.some((model) => model.id === defaults.model)) choices.model = defaults.model;
-		else if (models.source === "account") choices.ignored.model = `${the} model, ${defaults.model}, is not among the models your ChatGPT plan offers now, so it is ignored.`;
-		else if (models.source === "demo") choices.ignored.model = `${the} model, ${defaults.model}, is not offered here any more, so it is ignored.`;
-		else choices.ignored.model = `${the} model, ${defaults.model}, is not in the list that stands in for your plan's models, so it is ignored for now.`;
+		if (models.models.some(model => model.id === defaults.model)) choices.model = defaults.model;
+		else if (models.source === "account")
+			choices.ignored.model = `${the} model, ${defaults.model}, is not among the models your ChatGPT plan offers now, so it is ignored.`;
+		else if (models.source === "demo")
+			choices.ignored.model = `${the} model, ${defaults.model}, is not offered here any more, so it is ignored.`;
+		else
+			choices.ignored.model = `${the} model, ${defaults.model}, is not in the list that stands in for your plan's models, so it is ignored for now.`;
 	}
 	return choices;
 }
@@ -256,11 +300,17 @@ export interface LayeredChoices {
  * a model leaves the sandbox to the account. Both were held against the deployment already
  * (`startingChoices`), so a default that cannot be used gives way to the next.
  */
-export function layerChoices(repository: Pick<StartingChoices, "profile" | "model">, account: Pick<StartingChoices, "profile" | "model">): LayeredChoices {
+export function layerChoices(
+	repository: Pick<StartingChoices, "profile" | "model">,
+	account: Pick<StartingChoices, "profile" | "model">,
+): LayeredChoices {
 	return {
 		profile: repository.profile ?? account.profile,
 		model: repository.model ?? account.model,
-		from: { profile: repository.profile !== null ? "repository" : account.profile !== null ? "account" : null, model: repository.model !== null ? "repository" : account.model !== null ? "account" : null },
+		from: {
+			profile: repository.profile !== null ? "repository" : account.profile !== null ? "account" : null,
+			model: repository.model !== null ? "repository" : account.model !== null ? "account" : null,
+		},
 	};
 }
 
@@ -268,15 +318,24 @@ export function layerChoices(repository: Pick<StartingChoices, "profile" | "mode
  * What a launch starts on: the user's own choice when they made one, then the chosen repository's
  * default, then the account's, then the deployment's.
  */
-export function startingProfile(chosen: SandboxProfileId | null, choices: Pick<StartingChoices, "profile">, info: Pick<PlatformInfo, "profiles"> | null): SandboxProfileId | null {
-	const available = (id: SandboxProfileId | null) => id !== null && info !== null && info.profiles.some((profile) => profile.id === id && profile.available);
+export function startingProfile(
+	chosen: SandboxProfileId | null,
+	choices: Pick<StartingChoices, "profile">,
+	info: Pick<PlatformInfo, "profiles"> | null,
+): SandboxProfileId | null {
+	const available = (id: SandboxProfileId | null) =>
+		id !== null && info !== null && info.profiles.some(profile => profile.id === id && profile.available);
 	if (available(chosen)) return chosen;
 	if (available(choices.profile)) return choices.profile;
-	return info?.profiles.find((profile) => profile.available)?.id ?? null;
+	return info?.profiles.find(profile => profile.available)?.id ?? null;
 }
 
-export function startingModel(chosen: string, choices: Pick<StartingChoices, "model">, models: ModelList | null): string {
-	if (chosen !== "" && (models === null || models.models.some((model) => model.id === chosen))) return chosen;
+export function startingModel(
+	chosen: string,
+	choices: Pick<StartingChoices, "model">,
+	models: ModelList | null,
+): string {
+	if (chosen !== "" && (models === null || models.models.some(model => model.id === chosen))) return chosen;
 	if (choices.model !== null) return choices.model;
 	return models?.defaultModel ?? "";
 }
@@ -284,7 +343,11 @@ export function startingModel(chosen: string, choices: Pick<StartingChoices, "mo
 /** Keep the repository selected when opening the composer from the agents home. */
 export function lastRepository(sessions: readonly SessionSummary[] | null) {
 	const newest = ownAgents(sessions ?? []).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))[0];
-	return newest?.repository ? { kind: "github" as const, repository: newest.repository } : newest?.repoUrl ? { kind: "address" as const, url: newest.repoUrl } : null;
+	return newest?.repository
+		? { kind: "github" as const, repository: newest.repository }
+		: newest?.repoUrl
+			? { kind: "address" as const, url: newest.repoUrl }
+			: null;
 }
 
 /**
@@ -292,7 +355,10 @@ export function lastRepository(sessions: readonly SessionSummary[] | null) {
  * where it is longer. None for an empty text.
  */
 export function titleOf(task: string): string | undefined {
-	const line = task.split("\n").map((part) => part.replace(/\s+/g, " ").trim()).find((part) => part !== "");
+	const line = task
+		.split("\n")
+		.map(part => part.replace(/\s+/g, " ").trim())
+		.find(part => part !== "");
 	if (line === undefined) return undefined;
 	if (line.length <= MAX_TITLE_CHARS) return line;
 	const cut = line.slice(0, MAX_TITLE_CHARS - 1);
@@ -309,7 +375,10 @@ export function itemOf(text: string): { title: string; body: string } | null {
 	const title = titleOf(text);
 	if (title === undefined) return null;
 	const lines = text.split("\n");
-	const first = lines.findIndex((line) => line.trim() !== "");
-	const rest = lines.slice(first + 1).join("\n").trim();
+	const first = lines.findIndex(line => line.trim() !== "");
+	const rest = lines
+		.slice(first + 1)
+		.join("\n")
+		.trim();
 	return { title, body: title.endsWith("…") ? text.trim() : rest };
 }

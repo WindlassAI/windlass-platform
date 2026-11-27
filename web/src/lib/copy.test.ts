@@ -61,7 +61,9 @@ describe("what a tool call's controls copy", () => {
 
 	it("copies other input as the input part shows it", () => {
 		expect(toolInputText(tool("read", { path: "src/add.ts" }))).toBe("src/add.ts");
-		expect(toolInputText(tool("edit", { path: "src/add.ts", old: "a - b", new: "a + b" }))).toBe("path: src/add.ts\nold: a - b\nnew: a + b");
+		expect(toolInputText(tool("edit", { path: "src/add.ts", old: "a - b", new: "a + b" }))).toBe(
+			"path: src/add.ts\nold: a - b\nnew: a + b",
+		);
 		// Arguments still being written are not JSON yet: they are copied as they stand.
 		expect(toolInputText(tool("shell", '{"command": "bun te', { state: "input" }))).toBe('{"command": "bun te');
 	});
@@ -69,16 +71,28 @@ describe("what a tool call's controls copy", () => {
 	it("copies all of the output, the output so far while a call runs, and an edit's patch when it shows one", () => {
 		const long = Array.from({ length: 100 }, (_, index) => `line ${index}`).join("\n");
 		expect(toolOutputText(tool("shell", { command: "seq" }, { output: long }))).toBe(long);
-		expect(toolOutputText(tool("shell", { command: "make" }, { state: "running", progress: "building…\n" }))).toBe("building…\n");
-		expect(toolOutputText(tool("edit", { path: "src/add.ts" }, { output: "edited", display: { diff: TWO_FILES } }))).toBe(TWO_FILES);
+		expect(toolOutputText(tool("shell", { command: "make" }, { state: "running", progress: "building…\n" }))).toBe(
+			"building…\n",
+		);
+		expect(
+			toolOutputText(tool("edit", { path: "src/add.ts" }, { output: "edited", display: { diff: TWO_FILES } })),
+		).toBe(TWO_FILES);
 		// A "diff" the diff view cannot read is not what the body shows: the output is.
-		expect(toolOutputText(tool("edit", { path: "x" }, { output: "edited", display: { diff: "not a diff" } }))).toBe("edited");
+		expect(toolOutputText(tool("edit", { path: "x" }, { output: "edited", display: { diff: "not a diff" } }))).toBe(
+			"edited",
+		);
 		expect(toolOutputText(tool("shell", { command: "true" }))).toBe("");
 	});
 
 	it("names each control by what it copies", () => {
-		expect(toolCopyLabels(tool("shell", { command: "ls" }))).toEqual({ input: "Copy the command of this shell call", output: "Copy the output of this shell call" });
-		expect(toolCopyLabels(tool("edit", { path: "a" }, { display: { diff: TWO_FILES } }))).toEqual({ input: "Copy the input of this edit call", output: "Copy the diff of this edit call" });
+		expect(toolCopyLabels(tool("shell", { command: "ls" }))).toEqual({
+			input: "Copy the command of this shell call",
+			output: "Copy the output of this shell call",
+		});
+		expect(toolCopyLabels(tool("edit", { path: "a" }, { display: { diff: TWO_FILES } }))).toEqual({
+			input: "Copy the input of this edit call",
+			output: "Copy the diff of this edit call",
+		});
 	});
 });
 
@@ -90,7 +104,7 @@ describe("a diff cut into files", () => {
 		expect(parts[1]).toBe(TWO_FILES.slice(TWO_FILES.indexOf("diff --git a/made.txt")));
 		expect(parts.join("")).toBe(TWO_FILES);
 		// Each part is a diff of its own file.
-		expect(parseDiff(parts[1] ?? "").map((file) => file.path)).toEqual(["made.txt"]);
+		expect(parseDiff(parts[1] ?? "").map(file => file.path)).toEqual(["made.txt"]);
 	});
 
 	it("cuts a plain `diff -u` at each file's header, and not at changed lines that look like one", () => {
@@ -100,7 +114,8 @@ describe("a diff cut into files", () => {
 	});
 
 	it("does not cut a git diff at a changed line that reads like a file's first line", () => {
-		const tricky = "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-diff --git a/x b/x\n+--- a/x\n context\n";
+		const tricky =
+			"diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n-diff --git a/x b/x\n+--- a/x\n context\n";
 		expect(splitDiff(tricky)).toEqual([tricky]);
 	});
 });
@@ -127,7 +142,8 @@ describe("putting text on the clipboard", () => {
 		// What the fallback copies is whatever is selected in its text area when it asks.
 		execCommand.mockImplementation(() => {
 			const area = document.activeElement;
-			if (area instanceof HTMLTextAreaElement) copiedFromArea.push(area.value.slice(area.selectionStart, area.selectionEnd));
+			if (area instanceof HTMLTextAreaElement)
+				copiedFromArea.push(area.value.slice(area.selectionStart, area.selectionEnd));
 			return true;
 		});
 		Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });

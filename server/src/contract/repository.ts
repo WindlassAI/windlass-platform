@@ -132,22 +132,81 @@ export interface NetworkPreset {
 }
 
 export const NETWORK_PRESETS: readonly NetworkPreset[] = [
-	{ id: "@npm", name: "npm registry", about: "npm, pnpm, Yarn and Bun packages", hosts: ["registry.npmjs.org", "registry.yarnpkg.com"] },
+	{
+		id: "@npm",
+		name: "npm registry",
+		about: "npm, pnpm, Yarn and Bun packages",
+		hosts: ["registry.npmjs.org", "registry.yarnpkg.com"],
+	},
 	{ id: "@pypi", name: "PyPI", about: "pip, uv and Poetry packages", hosts: ["pypi.org", "files.pythonhosted.org"] },
-	{ id: "@github", name: "GitHub downloads", about: "Release assets, raw files and archives", hosts: ["github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com"] },
-	{ id: "@crates", name: "crates.io", about: "Cargo packages", hosts: ["crates.io", "index.crates.io", "static.crates.io"] },
-	{ id: "@go", name: "Go module proxy", about: "Go modules and their checksums", hosts: ["proxy.golang.org", "sum.golang.org"] },
-	{ id: "@node", name: "nodejs.org", about: "Node.js downloads, and the headers node-gyp builds native addons with", hosts: ["nodejs.org"] },
-	{ id: "@playwright", name: "Playwright browsers", about: "What playwright install downloads. On x86_64 its Chromium download redirects to Google Cloud Storage, which is not in this preset: add @gcs for it", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com"] },
-	{ id: "@gcs", name: "Google Cloud Storage", about: "Reaches every public Google Cloud Storage bucket, anyone's, not only the one a download needs. Playwright's Chromium for x86_64 comes from it", hosts: ["storage.googleapis.com"] },
-	{ id: "@prisma", name: "Prisma engines", about: "The engines Prisma downloads when it is installed", hosts: ["binaries.prisma.sh"] },
-	{ id: "@debian", name: "Debian packages", about: "Debian's apt sources", hosts: ["deb.debian.org", "security.debian.org"] },
-	{ id: "@ubuntu", name: "Ubuntu packages", about: "Ubuntu's apt sources; the sandbox runs Ubuntu", hosts: ["archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"] },
+	{
+		id: "@github",
+		name: "GitHub downloads",
+		about: "Release assets, raw files and archives",
+		hosts: [
+			"github.com",
+			"codeload.github.com",
+			"objects.githubusercontent.com",
+			"raw.githubusercontent.com",
+			"release-assets.githubusercontent.com",
+		],
+	},
+	{
+		id: "@crates",
+		name: "crates.io",
+		about: "Cargo packages",
+		hosts: ["crates.io", "index.crates.io", "static.crates.io"],
+	},
+	{
+		id: "@go",
+		name: "Go module proxy",
+		about: "Go modules and their checksums",
+		hosts: ["proxy.golang.org", "sum.golang.org"],
+	},
+	{
+		id: "@node",
+		name: "nodejs.org",
+		about: "Node.js downloads, and the headers node-gyp builds native addons with",
+		hosts: ["nodejs.org"],
+	},
+	{
+		id: "@playwright",
+		name: "Playwright browsers",
+		about:
+			"What playwright install downloads. On x86_64 its Chromium download redirects to Google Cloud Storage, which is not in this preset: add @gcs for it",
+		hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com"],
+	},
+	{
+		id: "@gcs",
+		name: "Google Cloud Storage",
+		about:
+			"Reaches every public Google Cloud Storage bucket, anyone's, not only the one a download needs. Playwright's Chromium for x86_64 comes from it",
+		hosts: ["storage.googleapis.com"],
+	},
+	{
+		id: "@prisma",
+		name: "Prisma engines",
+		about: "The engines Prisma downloads when it is installed",
+		hosts: ["binaries.prisma.sh"],
+	},
+	{
+		id: "@debian",
+		name: "Debian packages",
+		about: "Debian's apt sources",
+		hosts: ["deb.debian.org", "security.debian.org"],
+	},
+	{
+		id: "@ubuntu",
+		name: "Ubuntu packages",
+		about: "Ubuntu's apt sources; the sandbox runs Ubuntu",
+		hosts: ["archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"],
+	},
 ];
 
 /** Warnings shared by every surface that offers to allow a broad host. */
 export const WIDE_HOSTS: Readonly<Record<string, string>> = {
-	"storage.googleapis.com": "storage.googleapis.com serves every public Google Cloud Storage bucket, anyone's: allowed, it lets a command send to or fetch from any of them, not only the one a download needs.",
+	"storage.googleapis.com":
+		"storage.googleapis.com serves every public Google Cloud Storage bucket, anyone's: allowed, it lets a command send to or fetch from any of them, not only the one a download needs.",
 };
 
 /** A blocked lookup is a request only. Granting access requires repository settings permission. */
@@ -240,14 +299,17 @@ export interface VerifiedCheck {
 }
 
 /** Verification is derived from Windlass's recorded gate for the turn and its measured file state. */
-export type Verified = ({
-	state: "not_needed";
-	/** A restored state can refer to a prior check run or the state at turn start. */
-	unneeded: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
-} | {
-	state: "passed" | "unresolved" | "none_set" | "off" | "no_sandbox" | "not_in_force" | "stopped" | "failed";
-	unneeded?: never;
-}) & {
+export type Verified = (
+	| {
+			state: "not_needed";
+			/** A restored state can refer to a prior check run or the state at turn start. */
+			unneeded: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
+	  }
+	| {
+			state: "passed" | "unresolved" | "none_set" | "off" | "no_sandbox" | "not_in_force" | "stopped" | "failed";
+			unneeded?: never;
+	  }
+) & {
 	turn: number;
 	/**
 	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
@@ -255,7 +317,10 @@ export type Verified = ({
 	 * the turn ended at once and the agent was not sent back. "environment": every check that failed did so because the
 	 * sandbox could not run it (factory/check-environment.ts), so the agent was not sent back either.
 	 */
-	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started" | "environment"; said: string | null };
+	unresolved?: {
+		reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started" | "environment";
+		said: string | null;
+	};
 
 	/** Failed checks whose changes were subsequently undone. They are separate from the run that verifies the final state. */
 	putBack?: VerifiedCheck[];
@@ -267,11 +332,17 @@ export type Verified = ({
 	overruled?: boolean;
 	/** True when Windlass recorded another state of the workspace after `run` finished than the one the checks ran on. */
 	changedAfter: boolean;
-}
+};
 
 /** Observations on the changes for a human reviewer. Post-check edits are recorded separately in Verified.changedAfter. */
 export interface VerifiedFlag {
-	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed" | "outside_scope";
+	kind:
+		| "tests_removed"
+		| "tests_skipped"
+		| "checks_changed"
+		| "exit_ignored"
+		| "agent_instructions_changed"
+		| "outside_scope";
 	/** What it was seen in: paths, at most a few. */
 	where: string[];
 }

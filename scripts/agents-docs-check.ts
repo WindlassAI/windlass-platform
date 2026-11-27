@@ -8,11 +8,17 @@ import { checkGuide, guideTree, isGuide } from "../server/src/repo-setup/guide-c
 
 const checkout = fileURLToPath(new URL("../", import.meta.url));
 const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-	cwd: checkout, encoding: "utf8",
-}).split("\0").filter(file => file && existsSync(join(checkout, file)));
+	cwd: checkout,
+	encoding: "utf8",
+})
+	.split("\0")
+	.filter(file => file && existsSync(join(checkout, file)));
 const guides = files.filter(isGuide);
-const tree = guideTree(files, path => existsSync(join(checkout, path)) ? readFileSync(join(checkout, path), "utf8") : undefined,
-	(dir, tool) => existsSync(join(checkout, dir, "node_modules/.bin", tool)));
+const tree = guideTree(
+	files,
+	path => (existsSync(join(checkout, path)) ? readFileSync(join(checkout, path), "utf8") : undefined),
+	(dir, tool) => existsSync(join(checkout, dir, "node_modules/.bin", tool)),
+);
 const errors = guides.flatMap(path => checkGuide(path, readFileSync(join(checkout, path), "utf8"), tree));
 if (errors.length) {
 	for (const { path, line, message } of errors) console.error(`${path}:${line}: ${message}`);

@@ -21,23 +21,31 @@ import type { ScreenshotLinks } from "./Screenshots";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const auth = { token: "mock:user:u_review:ada@example.com", profile: { uid: "u_review", email: "ada@example.com", demo: false } };
+const auth = {
+	token: "mock:user:u_review:ada@example.com",
+	profile: { uid: "u_review", email: "ada@example.com", demo: false },
+};
 
 /** Every image has a link: what an image on the page could only come from. */
-const links: ScreenshotLinks = { src: (id) => `/mock/${id}.png`, failed: () => undefined, freshen: () => undefined, generation: 1 };
+const links: ScreenshotLinks = {
+	src: id => `/mock/${id}.png`,
+	failed: () => undefined,
+	freshen: () => undefined,
+	generation: 1,
+};
 
 let views: ItemView[] = [];
 
 async function seeded(): Promise<ItemView[]> {
 	const mock = createMockClient({ pace: 0 });
 	const user = mock.user(auth);
-	const list = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+	const list = await Promise.all((await user.listItems()).map(item => user.item(item.id)));
 	mock.dispose();
 	return list;
 }
 
 const viewNamed = (title: string): ItemView => {
-	const found = views.find((view) => view.title === title);
+	const found = views.find(view => view.title === title);
 	if (!found) throw new Error(`no seeded item "${title}"`);
 	return found;
 };
@@ -45,7 +53,9 @@ const viewNamed = (title: string): ItemView => {
 /** The section as the page renders it, and its text with the spaces made plain. */
 function section(title: string) {
 	const view = viewNamed(title);
-	const html = renderToStaticMarkup(createElement(SecondReview, { view, links, when: (at: number) => new Date(at).toISOString().slice(11, 16) }));
+	const html = renderToStaticMarkup(
+		createElement(SecondReview, { view, links, when: (at: number) => new Date(at).toISOString().slice(11, 16) }),
+	);
 	const host = document.createElement("div");
 	host.innerHTML = html;
 	return { view, html, host, text: (host.textContent ?? "").replace(/\s+/g, " ") };
@@ -78,9 +88,15 @@ describe("the second review's section", () => {
 			["Fix the typo in the contributing guide", "No second review: turned off for this deployment."],
 			["Read the port from the environment", "No second review: the reviewer could not reach the repository."],
 			["Rename the tide table columns", "No second review: the pull request moved after the agent pushed."],
-			["Split the importer into two files", "No second review: the reviewer did not file a review the platform could read."],
+			[
+				"Split the importer into two files",
+				"No second review: the reviewer did not file a review the platform could read.",
+			],
 			["Trim the docs' trailing spaces", "No second review: the reviewer's checkout of"],
-			["Quote the artefact names in the upload log", "No second review: the reviewer's sandbox has a Windlass that cannot offer it the review tool."],
+			[
+				"Quote the artefact names in the upload log",
+				"No second review: the reviewer's sandbox has a Windlass that cannot offer it the review tool.",
+			],
 			["Mention the docs site in the README", "No second review: the push did not identify the commit to review."],
 		] as const;
 		for (const [title, line] of cases) {
@@ -93,9 +109,13 @@ describe("the second review's section", () => {
 	it("says where the review is while it runs, waits, or is tried again after a cut-off, with a link to the reviewer's session", () => {
 		const running = section("Paginate the artefact list");
 		expect(running.text).toContain("The second reviewer is reading the change.");
-		expect(running.host.querySelector("a.review-session")?.getAttribute("href")).toBe(`/agents/${running.view.reviewerSessionId}`);
+		expect(running.host.querySelector("a.review-session")?.getAttribute("href")).toBe(
+			`/agents/${running.view.reviewerSessionId}`,
+		);
 		const waiting = section("Sort the station list by name");
-		expect(waiting.text).toContain(`The second review of ${waiting.view.head?.slice(0, 7)} waits: waiting for one of the 20 sandboxes you may keep`);
+		expect(waiting.text).toContain(
+			`The second review of ${waiting.view.head?.slice(0, 7)} waits: waiting for one of the 20 sandboxes you may keep`,
+		);
 		const retried = section("Round the tide heights to centimetres");
 		expect(retried.text).toContain("The review was cut off by a deploy or a restart; it is tried again (1 of 3).");
 	});
@@ -106,19 +126,36 @@ describe("the second review's section", () => {
 
 	it("orders findings blocking first, then to fix, then notes, whatever the filed order", () => {
 		const { view, host } = section("Drop the legacy export");
-		const filed = view.reviews?.[0]?.blocks.filter((block) => block.kind === "finding").map((block) => (block.kind === "finding" ? block.severity : ""));
+		const filed = view.reviews?.[0]?.blocks
+			.filter(block => block.kind === "finding")
+			.map(block => (block.kind === "finding" ? block.severity : ""));
 		expect(filed).toEqual(["note", "blocking", "should_fix", "blocking"]);
-		expect([...host.querySelectorAll(".review-block-finding .review-severity")].map((node) => node.textContent)).toEqual(["Blocking", "Blocking", "Should fix", "Note"]);
-		expect(reviewOrder(view.reviews?.[0]?.blocks ?? []).lead.map((block) => block.kind)).toEqual(["summary", "finding", "finding", "finding", "finding"]);
+		expect([...host.querySelectorAll(".review-block-finding .review-severity")].map(node => node.textContent)).toEqual([
+			"Blocking",
+			"Blocking",
+			"Should fix",
+			"Note",
+		]);
+		expect(reviewOrder(view.reviews?.[0]?.blocks ?? []).lead.map(block => block.kind)).toEqual([
+			"summary",
+			"finding",
+			"finding",
+			"finding",
+			"finding",
+		]);
 	});
 
 	it("marks a claim the platform's record does not bear out, with both sentences, and shows a command's last lines", () => {
 		const { host } = section("Drop the legacy export");
 		const disagreeing = [...host.querySelectorAll("[data-disagrees]")];
 		expect(disagreeing).toHaveLength(1);
-		expect(disagreeing[0]?.querySelector(".tone-warn")?.textContent).toBe("The reviewer says it failed; the platform's record:");
+		expect(disagreeing[0]?.querySelector(".tone-warn")?.textContent).toBe(
+			"The reviewer says it failed; the platform's record:",
+		);
 		expect(disagreeing[0]?.textContent?.replace(/\s+/g, " ")).toMatch(/CI \S+ success\.$/);
-		const command = [...host.querySelectorAll(".review-refs li")].find((node) => node.textContent?.includes("pnpm vitest run"));
+		const command = [...host.querySelectorAll(".review-refs li")].find(node =>
+			node.textContent?.includes("pnpm vitest run"),
+		);
 		expect(command?.textContent).toContain("exit 1");
 		expect(command?.querySelector("details.review-tail pre")?.textContent).toContain("expected 2 dividers, got 1");
 	});
@@ -126,16 +163,18 @@ describe("the second review's section", () => {
 	it("links places in the code to the reviewed commit on GitHub, and shows a path the contract does not allow as text", () => {
 		const { view, host } = section("Drop the legacy export");
 		const head = view.reviews?.[0]?.head;
-		const hrefs = [...host.querySelectorAll(".review-blocks a")].map((node) => node.getAttribute("href"));
+		const hrefs = [...host.querySelectorAll(".review-blocks a")].map(node => node.getAttribute("href"));
 		expect(hrefs).toContain(`https://github.com/acme/harbor/blob/${head}/src/menu.ts#L30-L36`);
 		expect(hrefs).toContain(`https://github.com/acme/harbor/blob/${head}/src/api/routes.ts#L88`);
 		const hostile = section("Cache the station list");
 		const at = [...hostile.host.querySelectorAll(".review-at > *")];
-		expect(at.map((node) => [node.tagName, node.textContent])).toEqual([
+		expect(at.map(node => [node.tagName, node.textContent])).toEqual([
 			["CODE", "../../etc/passwd:1"],
 			["A", "src/<b>stations</b>.ts:3–9"],
 		]);
-		expect(at[1]?.getAttribute("href")).toBe(`https://github.com/acme/harbor/blob/${hostile.view.reviews?.[0]?.head}/src/%3Cb%3Estations%3C/b%3E.ts#L3-L9`);
+		expect(at[1]?.getAttribute("href")).toBe(
+			`https://github.com/acme/harbor/blob/${hostile.view.reviews?.[0]?.head}/src/%3Cb%3Estations%3C/b%3E.ts#L3-L9`,
+		);
 	});
 
 	it("keeps hostile reviewer text as typed: no link but the platform's, no image but the attachments, no markup", () => {
@@ -146,7 +185,7 @@ describe("the second review's section", () => {
 			const href = link.getAttribute("href") ?? "";
 			expect(href.startsWith(blob) || href === `/agents/${view.reviewerSessionId}`, href).toBe(true);
 		}
-		const attachments = new Set(review?.screenshots.map((shot) => `/mock/${shot.id}.png`));
+		const attachments = new Set(review?.screenshots.map(shot => `/mock/${shot.id}.png`));
 		const images = [...host.querySelectorAll("img")];
 		expect(images.length).toBe(1);
 		for (const image of images) expect(attachments.has(image.getAttribute("src") ?? "")).toBe(true);
@@ -176,7 +215,9 @@ describe("the second review's section", () => {
 		const { view, host } = section("Log the request id with each error");
 		const shots = host.querySelector("section.item-shots");
 		expect(shots?.getAttribute("aria-label")).toBe("Screenshots by the second reviewer");
-		expect(shots?.textContent).toContain(`Taken by the second reviewer in its own checkout of ${view.reviews?.[0]?.head.slice(0, 7)}.`);
+		expect(shots?.textContent).toContain(
+			`Taken by the second reviewer in its own checkout of ${view.reviews?.[0]?.head.slice(0, 7)}.`,
+		);
 		expect(shots?.querySelectorAll("figure")).toHaveLength(8);
 		// ada/tide-tables takes no screenshots: its item's page has no screenshot area, not an empty one.
 		const off = section("Make the station parser accept tabs");
@@ -187,15 +228,23 @@ describe("the second review's section", () => {
 
 	it("answers earlier findings in a later round, and folds the review of an earlier commit", () => {
 		const { view, host, text } = section("Add a health check endpoint");
-		expect(view.reviews?.map((review) => [review.run, review.round])).toEqual([
+		expect(view.reviews?.map(review => [review.run, review.round])).toEqual([
 			[1, 1],
 			[2, 2],
 		]);
 		const shown = host.querySelector(".review-article");
 		expect(shown?.textContent).toContain("the second round");
-		expect([...(shown?.querySelectorAll(".review-block-earlier .review-title") ?? [])].map((node) => node.textContent?.replace(/\s+/g, " "))).toEqual(["Round 1, finding 1 fixed", "Round 1, finding 2 not fixed"]);
-		expect(shown?.querySelector(".review-block-earlier .review-continues")?.textContent).toBe("GET /healthz answers 200 during a migration");
-		expect(shown?.querySelector(".review-block-finding .review-continues")?.textContent).toBe("First raised in Round 1, finding 2: The version is read from package.json at every request");
+		expect(
+			[...(shown?.querySelectorAll(".review-block-earlier .review-title") ?? [])].map(node =>
+				node.textContent?.replace(/\s+/g, " "),
+			),
+		).toEqual(["Round 1, finding 1 fixed", "Round 1, finding 2 not fixed"]);
+		expect(shown?.querySelector(".review-block-earlier .review-continues")?.textContent).toBe(
+			"GET /healthz answers 200 during a migration",
+		);
+		expect(shown?.querySelector(".review-block-finding .review-continues")?.textContent).toBe(
+			"First raised in Round 1, finding 2: The version is read from package.json at every request",
+		);
 		expect(text).toContain("Show 1 earlier review");
 		const folded = host.querySelector("[hidden]");
 		expect(folded?.textContent).toContain("Second review: asks for changes");
@@ -207,7 +256,9 @@ describe("the second review's section", () => {
 describe("the item's row", () => {
 	it("shows the recommendation compactly beside the verdict, as the reviewer's", () => {
 		const html = (title: string) => renderToStaticMarkup(createElement(ReviewWord, { item: viewNamed(title) }));
-		expect(html("Show the upload's checksum in the log")).toBe('<span class="item-row-review">reviewed: approves</span>');
+		expect(html("Show the upload's checksum in the log")).toBe(
+			'<span class="item-row-review">reviewed: approves</span>',
+		);
 		expect(html("Drop the legacy export")).toContain("reviewed: asks for changes");
 		expect(html("Stop lint failing on warnings")).toContain("reviewed: needs you");
 		expect(html("Paginate the artefact list")).toContain("being reviewed");
@@ -245,18 +296,26 @@ describe("rendered on the item's page", () => {
 		] as const) {
 			const view = viewNamed(title);
 			const page = { view, error: null, missing: false, reload: () => undefined, replace: () => undefined };
-			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })));
+			await act(async () =>
+				root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })),
+			);
 			const panel = host.querySelector('section[aria-labelledby="item-checks"]');
 			expect(panel, title).not.toBeNull();
 			expect(host.querySelector('section[aria-labelledby="item-second"]'), title).toBeNull();
-			const row = [...(panel?.querySelectorAll(".checks-groups > div") ?? [])].find((one) => one.querySelector("dt")?.textContent === "Review");
+			const row = [...(panel?.querySelectorAll(".checks-groups > div") ?? [])].find(
+				one => one.querySelector("dt")?.textContent === "Review",
+			);
 			expect(row, title).toBeDefined();
 			if (word) expect(row?.querySelector(".review-word")?.textContent, title).toBe(word);
 			else expect(row?.textContent, title).toMatch(/second reviewer is reading|No second review/);
 			const report = host.querySelector('section[aria-labelledby="item-report"]');
-			if (report) expect((panel?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
+			if (report)
+				expect((panel?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
 			// The header links the reviewer's session beside the builder's, where the item has one.
-			expect([...host.querySelectorAll(".item-actions a")].map((link) => link.textContent).includes("Code review"), title).toBe(view.reviewerSessionId !== null);
+			expect(
+				[...host.querySelectorAll(".item-actions a")].map(link => link.textContent).includes("Code review"),
+				title,
+			).toBe(view.reviewerSessionId !== null);
 		}
 	});
 });
@@ -289,7 +348,15 @@ describe("the repository's screenshots setting", () => {
 		const replace = vi.fn((next: RepositoryView) => {
 			view = next;
 		});
-		const render = () => act(async () => root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id: 7102, replace }, view }) })));
+		const render = () =>
+			act(async () =>
+				root.render(
+					createElement(AppProvider, {
+						client,
+						children: createElement(ScreenshotsSetting, { page: { id: 7102, replace }, view }),
+					}),
+				),
+			);
 		await render();
 		const box = () => host.querySelector<HTMLInputElement>("input.check-input");
 		expect(host.querySelector("h3")?.textContent).toBe("Screenshots");
@@ -297,7 +364,7 @@ describe("the repository's screenshots setting", () => {
 		expect(box()?.checked).toBe(false);
 		await act(async () => {
 			box()?.click();
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await new Promise(resolve => setTimeout(resolve, 50));
 		});
 		expect(replace).toHaveBeenCalled();
 		expect(view.defaults.screenshots).toBe(true);
@@ -315,14 +382,23 @@ describe("the repository's screenshots setting", () => {
 		client.dispose();
 		client = createMockClient({ pace: 0, screenshots: false });
 		const user = client.user(auth);
-		for (const [id, on] of [[7102, false], [7101, true]] as const) {
+		for (const [id, on] of [
+			[7102, false],
+			[7101, true],
+		] as const) {
 			const view = await user.repository(id);
 			expect(view.defaults.screenshots).toBe(on);
 			await act(async () => {
-				root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id, replace: vi.fn() }, view }) }));
+				root.render(
+					createElement(AppProvider, {
+						client,
+						children: createElement(ScreenshotsSetting, { page: { id, replace: vi.fn() }, view }),
+					}),
+				);
 			});
 			// Platform info arrives after the mock's latency.
-			for (let waited = 0; waited < 3000 && !host.textContent?.includes("turned off for this deployment"); waited += 50) await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+			for (let waited = 0; waited < 3000 && !host.textContent?.includes("turned off for this deployment"); waited += 50)
+				await act(() => new Promise(resolve => setTimeout(resolve, 50)));
 			const box = host.querySelector<HTMLInputElement>("input.check-input");
 			expect(host.textContent).toContain("Screenshots are turned off for this deployment");
 			expect(box?.disabled).toBe(!on);

@@ -15,15 +15,31 @@ const fresh = "new-secret-for-local-keyring-checks";
 const overlap = `new:${fresh},old:${old}`;
 
 function server(roots: string, operation: string, input = ""): string {
-	const env = { ...process.env, WLP_SECRET: roots.split(",")[0]!.split(":")[1]!, WLP_SECRET_KEYS: roots, WLP_SIGNIN_KEYS: roots, INPUT: input };
-	const run = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+	const env = {
+		...process.env,
+		WLP_SECRET: roots.split(",")[0]!.split(":")[1]!,
+		WLP_SECRET_KEYS: roots,
+		WLP_SIGNIN_KEYS: roots,
+		INPUT: input,
+	};
+	const run = spawnSync(
+		process.execPath,
+		[
+			"--import",
+			"tsx",
+			"--input-type=module",
+			"-e",
+			`
 		import { issueUserToken, issueServiceToken, verifyToken } from "./src/tokens.ts";
 		import { serverSealer } from "./src/signin/seal.ts";
 		import { issueState, verifyState, issueTicket, verifyTicket } from "./src/github/state.ts";
 		const input = process.env.INPUT;
 		const profile = {uid:"u_test", email:null, demo:true};
 		console.log(${operation});
-	`], { cwd: fileURLToPath(new URL("../server/", import.meta.url)), env, encoding: "utf8" });
+	`,
+		],
+		{ cwd: fileURLToPath(new URL("../server/", import.meta.url)), env, encoding: "utf8" },
+	);
 	assert.equal(run.status, 0, run.stderr);
 	return run.stdout.trim();
 }
@@ -38,31 +54,43 @@ test("old tokens verify during overlap and stop at retirement", () => {
 
 test("each signer uses its designated HKDF key", () => {
 	for (const [operation, purpose] of [
-		["issueUserToken(profile, 0)", "user-token"], ["issueServiceToken()", "service-token"],
+		["issueUserToken(profile, 0)", "user-token"],
+		["issueServiceToken()", "service-token"],
 		['issueState("u","n","https://example.invalid")', "github-state"],
 		['issueTicket("u",{user:{id:1,login:"fixture"},installations:[]})', "github-ticket"],
 	]) {
 		const token = server(overlap, operation!);
 		const body = token.slice(0, token.lastIndexOf("."));
 		const signature = token.slice(body.length + 1);
-		const sign = (label: string) => createHmac("sha256", Buffer.from(hkdfSync("sha256", fresh, "", "windlass-platform v2 " + label, 32))).update(body).digest("base64url");
+		const sign = (label: string) =>
+			createHmac("sha256", Buffer.from(hkdfSync("sha256", fresh, "", "windlass-platform v2 " + label, 32)))
+				.update(body)
+				.digest("base64url");
 		assert.equal(signature, sign(purpose!), purpose);
 		const wrong = purpose === "user-token" ? "service-token" : "user-token";
-		const verify = purpose === "github-state" ? "verifyState" : purpose === "github-ticket" ? "verifyTicket" : "verifyToken";
+		const verify =
+			purpose === "github-state" ? "verifyState" : purpose === "github-ticket" ? "verifyTicket" : "verifyToken";
 		assert.equal(server(overlap, `${verify}(input)`, body + "." + sign(wrong)), "null");
 	}
 });
 
 test("a saved sign-in is opened and re-sealed by a status read", () => {
-	const blob = server(`old:${old}`, 'serverSealer().seal("user",profile.uid,JSON.stringify({files:{"auth.json":JSON.stringify({account:{sub:"sub"}})}}))');
-	const result = server(overlap, `await (async () => {
+	const blob = server(
+		`old:${old}`,
+		'serverSealer().seal("user",profile.uid,JSON.stringify({files:{"auth.json":JSON.stringify({account:{sub:"sub"}})}}))',
+	);
+	const result = server(
+		overlap,
+		`await (async () => {
 		const { SignInHolder } = await import("./src/signin/holder.ts");
 		let row = {sealed: input, generation: 7, shortNoted: false};
 		const holder = new SignInHolder({uid:profile.uid, sealer:serverSealer(), commands:{},
 			store:{ load: async () => row, save: async next => {row = next} }});
 		await holder.status();
 		return row.sealed;
-	})()`, blob);
+	})()`,
+		blob,
+	);
 	assert.equal(result.split(".")[1], "new");
 	assert.match(server(`new:${fresh}`, 'serverSealer().open("user",profile.uid,input)', result), /sub/);
 });
@@ -74,18 +102,27 @@ test("current-key status returns while a token command is still running", async 
 	const sealed = sealer.seal("user", "u", material);
 	const commands = createFakeSignInCommands();
 	let release!: () => void;
-	const gate = new Promise<void>(resolve => { release = resolve; });
+	const gate = new Promise<void>(resolve => {
+		release = resolve;
+	});
 	let started!: () => void;
-	const running = new Promise<void>(resolve => { started = resolve; });
+	const running = new Promise<void>(resolve => {
+		started = resolve;
+	});
 	t.mock.method(commands, "token", async () => {
 		started();
 		await gate;
 		throw new Error("fixture stopped the refresh");
 	});
-	const holder = new SignInHolder({ uid: "u", sealer, commands, store: {
-		load: async () => ({ sealed, generation: 7, shortNoted: false }),
-		save: async () => assert.fail("a current key needs no save"),
-	} });
+	const holder = new SignInHolder({
+		uid: "u",
+		sealer,
+		commands,
+		store: {
+			load: async () => ({ sealed, generation: 7, shortNoted: false }),
+			save: async () => assert.fail("a current key needs no save"),
+		},
+	});
 	const refresh = assert.rejects(holder.accessToken(), /fixture stopped/);
 	try {
 		await running;
@@ -98,18 +135,27 @@ test("current-key status returns while a token command is still running", async 
 });
 
 test("status reports the account and retries rotation after a failed re-seal save", async () => {
-	const sealer = createSealer([{ id: "new", secret: Buffer.from(fresh) }, { id: "old", secret: Buffer.from(old) }]);
+	const sealer = createSealer([
+		{ id: "new", secret: Buffer.from(fresh) },
+		{ id: "old", secret: Buffer.from(old) },
+	]);
 	const original = createSealer(old).seal("user", "u", material);
 	let row: StoredSignIn = { sealed: original, generation: 7, shortNoted: false };
 	let fail = true;
 	const log: string[] = [];
-	const holder = new SignInHolder({ uid: "u", sealer, commands: createFakeSignInCommands(), log: line => log.push(line), store: {
-		load: async () => ({ ...row }),
-		save: async next => {
-			if (fail) throw new Error("storage unavailable");
-			row = { ...next };
+	const holder = new SignInHolder({
+		uid: "u",
+		sealer,
+		commands: createFakeSignInCommands(),
+		log: line => log.push(line),
+		store: {
+			load: async () => ({ ...row }),
+			save: async next => {
+				if (fail) throw new Error("storage unavailable");
+				row = { ...next };
+			},
 		},
-	} });
+	});
 	assert.equal((await holder.status())?.sub, "test-sub");
 	assert.equal(row.sealed, original);
 	assert.equal(log.length, 1);
@@ -120,7 +166,9 @@ test("status reports the account and retries rotation after a failed re-seal sav
 });
 
 test("account and repository reads replace old ciphertext without overwriting concurrent edits", () => {
-	const result = server(overlap, `await (async () => {
+	const result = server(
+		overlap,
+		`await (async () => {
 		const { sealSecret } = await import("./src/repo-secrets.ts");
 		const { refreshSecretRows } = await import("./src/signin/secret-rows.ts");
 		const { ACCOUNT_SECRET_PROJECT } = await import("./src/account-secrets.ts");
@@ -143,12 +191,15 @@ test("account and repository reads replace old ciphertext without overwriting co
 			if (db.prepare("SELECT sealed FROM "+table).get().sealed !== "newer-edit") return "lost edit";
 		}
 		return "ok";
-	})()`);
+	})()`,
+	);
 	assert.equal(result, "ok");
 });
 
 test("loading a pending sign-in upgrades its saved blob before the next callback", () => {
-	const result = server(overlap, `await (async () => {
+	const result = server(
+		overlap,
+		`await (async () => {
 		const { login } = await import("./src/actors/login.ts");
 		const { createSealer } = await import("./src/signin/seal.ts");
 		const { DatabaseSync } = await import("node:sqlite");
@@ -161,15 +212,19 @@ test("loading a pending sign-in upgrades its saved blob before the next callback
 		const saved = db.prepare("SELECT sealed FROM attempt").get().sealed;
 		if (saved !== vars.attempt.sealed) return "only rotated in memory";
 		return saved.split(".")[1];
-	})()`);
+	})()`,
+	);
 	assert.equal(result, "new");
 });
 
 test("pairing budgets and attach-ticket lookups use independent HKDF keys", () => {
-	const actual = server(overlap, `await (async () => {
+	const actual = server(
+		overlap,
+		`await (async () => {
 		const { keyedDigest } = await import("./src/signatures.ts");
 		return ["pairing-budget", "attach-ticket"].map(label => keyedDigest(label, "fixture").toString("hex")).join(",");
-	})()`);
+	})()`,
+	);
 	const expected = ["pairing-budget", "attach-ticket"].map(label => {
 		const key = Buffer.from(hkdfSync("sha256", fresh, "", "windlass-platform v2 " + label, 32));
 		return createHmac("sha256", key).update("fixture").digest("hex");

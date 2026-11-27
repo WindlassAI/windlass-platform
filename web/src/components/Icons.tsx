@@ -9,7 +9,19 @@ type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
 function Svg({ size = 16, children, ...rest }: IconProps & { children: ReactNode }) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...rest}>
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={1.6}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+			focusable="false"
+			{...rest}
+		>
 			{children}
 		</svg>
 	);
@@ -247,9 +259,28 @@ export const UserIcon = (props: IconProps) => (
  * its side and down to a link. With `turning` the drum turns, which is how the interface says an
  * agent is at work.
  */
-export function Mark({ size = 20, turning = false, className }: { size?: number; turning?: boolean; className?: string }) {
+export function Mark({
+	size = 20,
+	turning = false,
+	className,
+}: {
+	size?: number;
+	turning?: boolean;
+	className?: string;
+}) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false" className={`mark${turning ? " mark-turning" : ""}${className ? ` ${className}` : ""}`}>
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 28 28"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={2}
+			strokeLinecap="round"
+			aria-hidden="true"
+			focusable="false"
+			className={`mark${turning ? " mark-turning" : ""}${className ? ` ${className}` : ""}`}
+		>
 			<g className="mark-drum">
 				<circle cx="11.5" cy="11.5" r="7.5" />
 				<path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1" />
@@ -328,4 +359,3 @@ export const ArrowUpIcon = (props: IconProps) => (
 		<path d="M8 13V3.5M4 7.5l4-4 4 4" />
 	</Svg>
 );
-

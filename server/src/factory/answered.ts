@@ -2,10 +2,17 @@ import type { ChoiceId } from "../contract.js";
 import { harnessName } from "../sandbox/harnesses.js";
 
 export const CHOICES: Record<ChoiceId, string> = {
-	use_machine_payer: "Use the offered machine and payer", use_hosted: "Run on Hosted", use_windlass: harnessName("windlass"), use_claude: harnessName("claude"), use_opencode: harnessName("opencode"),
-	send_back: "Hand it back", dismiss: "Dismiss",
-	send: "Send it to the agent", leave: "Leave it",
-	run_single: "Approve the current Windlass session as one implementer", orchestrate_anyway: "Ask for subtasks",
+	use_machine_payer: "Use the offered machine and payer",
+	use_hosted: "Run on Hosted",
+	use_windlass: harnessName("windlass"),
+	use_claude: harnessName("claude"),
+	use_opencode: harnessName("opencode"),
+	send_back: "Hand it back",
+	dismiss: "Dismiss",
+	send: "Send it to the agent",
+	leave: "Leave it",
+	run_single: "Approve the current Windlass session as one implementer",
+	orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Go on",

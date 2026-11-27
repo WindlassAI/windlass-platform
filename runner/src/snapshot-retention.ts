@@ -12,7 +12,13 @@ export async function dropPreviousSnapshots(identity: Identity) {
 }
 
 /** `limits`: the machine's store limits in force (`Executor.storeLimits`), read at each sweep. */
-export function snapshotMaintenance(identity: Identity, key: KeyObject, platform: string, trust: Trust | null, limits: () => StoreLimits) {
+export function snapshotMaintenance(
+	identity: Identity,
+	key: KeyObject,
+	platform: string,
+	trust: Trust | null,
+	limits: () => StoreLimits,
+) {
 	let next = 0;
 	const cache = new DockerSnapshots(identity.machineId, image, undefined, limits);
 	return async (now: number) => {
@@ -23,9 +29,22 @@ export function snapshotMaintenance(identity: Identity, key: KeyObject, platform
 		if (!trust) return;
 		const nonce = randomBytes(32).toString("base64url");
 		const statement = retentionRequest(identity.uid, identity.machineId, now, nonce);
-		const response = await fetch(platform + RETENTION_PATH, { method: "POST", redirect: "error", signal: AbortSignal.timeout(5000),
-			headers: { "content-type": "application/json" }, body: JSON.stringify({ ...identity, time: now, nonce, signature: sign(null, Buffer.from(statement), key).toString("base64url") }) });
-		if (!response.ok) { await response.body?.cancel(); return; }
+		const response = await fetch(platform + RETENTION_PATH, {
+			method: "POST",
+			redirect: "error",
+			signal: AbortSignal.timeout(5000),
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				...identity,
+				time: now,
+				nonce,
+				signature: sign(null, Buffer.from(statement), key).toString("base64url"),
+			}),
+		});
+		if (!response.ok) {
+			await response.body?.cancel();
+			return;
+		}
 		const chunks: Uint8Array[] = [];
 		let size = 0;
 		for await (const chunk of response.body ?? []) {

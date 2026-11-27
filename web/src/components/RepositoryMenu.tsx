@@ -38,13 +38,14 @@ export function useRepositorySearch(open: boolean, connectedAt: number | null = 
 	const search = useCallback(
 		(text: string, fresh = false) => {
 			const mine = ++asked.current;
-			setFound((current) => ({ ...current, query: text, loading: true, error: null }));
+			setFound(current => ({ ...current, query: text, loading: true, error: null }));
 			client
 				.user(auth)
 				.githubRepositories(text, fresh)
 				.then(
-					(list) => mine === asked.current && setFound({ query: text, list, error: null, loading: false }),
-					(error: unknown) => mine === asked.current && setFound({ query: text, list: null, error: explain(error), loading: false }),
+					list => mine === asked.current && setFound({ query: text, list, error: null, loading: false }),
+					(error: unknown) =>
+						mine === asked.current && setFound({ query: text, list: null, error: explain(error), loading: false }),
 				);
 		},
 		[client, auth, explain],
@@ -79,10 +80,10 @@ export function useBranches() {
 				.user(auth)
 				.githubBranches(id)
 				.then(
-					(list) => setLists((current) => ({ ...current, [id]: { list, error: null } })),
+					list => setLists(current => ({ ...current, [id]: { list, error: null } })),
 					(error: unknown) => {
 						asked.current.delete(id);
-						setLists((current) => ({ ...current, [id]: { list: null, error: explain(error) } }));
+						setLists(current => ({ ...current, [id]: { list: null, error: explain(error) } }));
 					},
 				);
 		},
@@ -92,7 +93,13 @@ export function useBranches() {
 }
 
 /** The repository's name, the owner quieter, with the letters the query matched marked. */
-function RepositoryLabel({ repository, query }: { repository: Pick<GithubRepository, "owner" | "name">; query: string }) {
+function RepositoryLabel({
+	repository,
+	query,
+}: {
+	repository: Pick<GithubRepository, "owner" | "name">;
+	query: string;
+}) {
 	const owner = `${repository.owner}/`;
 	const full = `${owner}${repository.name}`;
 	const needle = query.trim().toLowerCase();
@@ -124,14 +131,30 @@ function RepositoryLabel({ repository, query }: { repository: Pick<GithubReposit
  * in its submenu at that branch. `footer` holds the actions the composer adds (paste an address, no
  * repository) and its note.
  */
-export function repositoryMenu({ search, branches, chosen, accounts, onChoose, header, footer }: { search: ReturnType<typeof useRepositorySearch>; branches: ReturnType<typeof useBranches>; chosen: PickedRepository | null; accounts: GithubAccount[]; onChoose(picked: PickedRepository): void; header?: ReactNode; footer?: ReactNode }): MenuSpec {
+export function repositoryMenu({
+	search,
+	branches,
+	chosen,
+	accounts,
+	onChoose,
+	header,
+	footer,
+}: {
+	search: ReturnType<typeof useRepositorySearch>;
+	branches: ReturnType<typeof useBranches>;
+	chosen: PickedRepository | null;
+	accounts: GithubAccount[];
+	onChoose(picked: PickedRepository): void;
+	header?: ReactNode;
+	footer?: ReactNode;
+}): MenuSpec {
 	const { found, query } = search;
 	const now = Date.now();
-	const rows: MenuItem[] = (found.list?.repositories ?? []).map((repository) => {
+	const rows: MenuItem[] = (found.list?.repositories ?? []).map(repository => {
 		const of = branches.of(repository.id);
 		const isChosen = chosen?.repository.id === repository.id;
 		const branchRows: MenuItem[] =
-			of?.list?.branches.map((branch) => ({
+			of?.list?.branches.map(branch => ({
 				id: branch,
 				label: branch,
 				icon: <BranchIcon size={13} />,
@@ -139,7 +162,11 @@ export function repositoryMenu({ search, branches, chosen, accounts, onChoose, h
 				checked: isChosen && chosen?.branch === branch,
 				onSelect: () => onChoose({ repository, branch }),
 			})) ?? [];
-		const facts = [repository.private ? "private" : null, repository.canPush ? null : "read only", repository.pushedAt !== null ? `pushed ${relativeTime(repository.pushedAt, now)}` : null].filter((fact) => fact !== null);
+		const facts = [
+			repository.private ? "private" : null,
+			repository.canPush ? null : "read only",
+			repository.pushedAt !== null ? `pushed ${relativeTime(repository.pushedAt, now)}` : null,
+		].filter(fact => fact !== null);
 		return {
 			id: String(repository.id),
 			value: `${repository.owner}/${repository.name}`,
@@ -155,7 +182,11 @@ export function repositoryMenu({ search, branches, chosen, accounts, onChoose, h
 				label: `Branch of ${repository.name}`,
 				width: 240,
 				filter: branchRows.length > 8 ? { placeholder: "Filter branches" } : undefined,
-				empty: of?.error ? `The branches could not be read: ${of.error}` : of === null ? "Reading the branches…" : "No branch.",
+				empty: of?.error
+					? `The branches could not be read: ${of.error}`
+					: of === null
+						? "Reading the branches…"
+						: "No branch.",
 				groups: [{ id: "branches", label: `${repository.name} · branch`, items: branchRows }],
 				header: of?.list?.more ? <p className="ui-menu-note">Only the first branches are listed.</p> : undefined,
 			},
@@ -186,20 +217,40 @@ export function repositoryMenu({ search, branches, chosen, accounts, onChoose, h
 		filter: { placeholder: "Filter repositories…", value: query, onChange: search.setQuery, busy: found.loading },
 		empty: state,
 		header,
-		groups: [{ id: "repositories", label: "Your repositories", note: found.list?.more ? "more match: type more of the name" : undefined, items: rows }],
+		groups: [
+			{
+				id: "repositories",
+				label: "Your repositories",
+				note: found.list?.more ? "more match: type more of the name" : undefined,
+				items: rows,
+			},
+		],
 		footer: (
 			<>
 				{footer}
 				<p className="ui-menu-note repo-access">
 					{found.list?.incomplete && rows.length > 0 ? "GitHub was slow to answer, so some may be missing. " : null}
 					Not listed? Give the app access at GitHub:{" "}
-					{accounts.map((account) => (
-						<a key={account.installationId} className="link repo-access-link" href={account.manageUrl} target="_blank" rel="noreferrer">
+					{accounts.map(account => (
+						<a
+							key={account.installationId}
+							className="link repo-access-link"
+							href={account.manageUrl}
+							target="_blank"
+							rel="noreferrer"
+						>
 							{account.login}
 							<ExternalIcon size={11} />
 						</a>
 					))}
-					<button type="button" className="icon-button icon-button-small repo-reload" onClick={search.reload} disabled={found.loading} aria-label="Reload the list of repositories" title="Reload">
+					<button
+						type="button"
+						className="icon-button icon-button-small repo-reload"
+						onClick={search.reload}
+						disabled={found.loading}
+						aria-label="Reload the list of repositories"
+						title="Reload"
+					>
 						<RefreshIcon size={13} className={found.loading ? "spin" : undefined} />
 					</button>
 				</p>

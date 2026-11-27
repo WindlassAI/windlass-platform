@@ -21,7 +21,18 @@
 import { MAX_NOTE_CHARS } from "@contract";
 import type { GithubId, HostAllowed, PendingQuestion, QuestionChoice } from "@contract";
 import { ACP_MESSAGE } from "../lib/acp";
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+	createContext,
+	useCallback,
+	useContext,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+	type KeyboardEvent,
+	type ReactNode,
+} from "react";
 import { hasReason, type SessionApi } from "../api/client";
 import { absoluteTime, countdown } from "../lib/format";
 import type { ToolBlock } from "../lib/timeline";
@@ -50,12 +61,20 @@ export interface QuestionFlow {
 
 const NOTE_LIMIT = MAX_NOTE_CHARS;
 
-const isTextField = (element: Element | null) => element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || (element instanceof HTMLInputElement && element.type !== "button") || (element instanceof HTMLElement && element.isContentEditable);
+const isTextField = (element: Element | null) =>
+	element instanceof HTMLTextAreaElement ||
+	element instanceof HTMLSelectElement ||
+	(element instanceof HTMLInputElement && element.type !== "button") ||
+	(element instanceof HTMLElement && element.isContentEditable);
 
 /** How long the line about a question that went away stays. */
 const GONE_MS = 7000;
 
-export function useQuestionFlow(api: SessionApi, question: PendingQuestion | null, explain: (error: unknown) => string): QuestionFlow {
+export function useQuestionFlow(
+	api: SessionApi,
+	question: PendingQuestion | null,
+	explain: (error: unknown) => string,
+): QuestionFlow {
 	const [sending, setSending] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [gone, setGone] = useState<string | null>(null);
@@ -83,23 +102,32 @@ export function useQuestionFlow(api: SessionApi, question: PendingQuestion | nul
 			const trimmed = note.trim();
 			setSending(choice.id);
 			setError(null);
-			api.answer({ questionId: question.id, choice: choice.id, note: !choice.approve && trimmed !== "" ? trimmed.slice(0, NOTE_LIMIT) : undefined }).then(
-				// The question goes when the server says so (the `question` event), not before.
-				() => undefined,
-				(failure: unknown) => {
-					setSending(null);
-					if (hasReason(failure, "no_question")) {
-						setGone(explain(failure));
-						// The server says it is gone: take the session as it is now.
-						api.resync();
-					} else setError(explain(failure));
-				},
-			);
+			api
+				.answer({
+					questionId: question.id,
+					choice: choice.id,
+					note: !choice.approve && trimmed !== "" ? trimmed.slice(0, NOTE_LIMIT) : undefined,
+				})
+				.then(
+					// The question goes when the server says so (the `question` event), not before.
+					() => undefined,
+					(failure: unknown) => {
+						setSending(null);
+						if (hasReason(failure, "no_question")) {
+							setGone(explain(failure));
+							// The server says it is gone: take the session as it is now.
+							api.resync();
+						} else setError(explain(failure));
+					},
+				);
 		},
 		[api, question, sending, note, explain],
 	);
 
-	return useMemo(() => ({ question, sending, error, gone, note, setNote, answer, inlineInView, setInlineInView }), [question, sending, error, gone, note, answer, inlineInView]);
+	return useMemo(
+		() => ({ question, sending, error, gone, note, setNote, answer, inlineInView, setInlineInView }),
+		[question, sending, error, gone, note, answer, inlineInView],
+	);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -133,7 +161,8 @@ export function useInteractive(): Interactive | null {
 export const questionAnchor = (question: PendingQuestion) => `question-${question.id}`;
 
 /** Who asks, for a screen reader: a subagent, the agent, or (about a project's server) the platform, before the agent has it. */
-const asker = (question: PendingQuestion) => (question.server ? "The platform asks: " : question.subagent ? "A subagent asks: " : "The agent asks: ");
+const asker = (question: PendingQuestion) =>
+	question.server ? "The platform asks: " : question.subagent ? "A subagent asks: " : "The agent asks: ";
 
 /** What a server is left as when nobody says to start it: one that is reached at an address is not started in the first place. */
 const leftAs = (question: PendingQuestion) => (question.server?.remote ? "unconnected" : "stopped");
@@ -149,7 +178,9 @@ function Countdown({ question }: { question: PendingQuestion }) {
 	const soon = left < 60_000;
 	// A call nobody allows is declined. A server nobody starts only stays as it is, and the turn goes on without it.
 	const server = question.server;
-	const title = server ? `If nobody answers by ${absoluteTime(expiresAt)}, the server stays ${leftAs(question)}${server.holdsTurn ? " and the turn goes on without it" : ""}.` : `If nobody answers by ${absoluteTime(expiresAt)}, the platform declines for you.`;
+	const title = server
+		? `If nobody answers by ${absoluteTime(expiresAt)}, the server stays ${leftAs(question)}${server.holdsTurn ? " and the turn goes on without it" : ""}.`
+		: `If nobody answers by ${absoluteTime(expiresAt)}, the platform declines for you.`;
 	return (
 		<p className={`q-countdown${soon ? " q-countdown-soon" : ""}`} title={title}>
 			{left <= 0 ? (
@@ -160,18 +191,34 @@ function Countdown({ question }: { question: PendingQuestion }) {
 				)
 			) : (
 				<>
-					{server ? `stays ${leftAs(question)} in` : "declines in"} <time dateTime={new Date(expiresAt).toISOString()}>{countdown(left)}</time>
+					{server ? `stays ${leftAs(question)} in` : "declines in"}{" "}
+					<time dateTime={new Date(expiresAt).toISOString()}>{countdown(left)}</time>
 				</>
 			)}
 		</p>
 	);
 }
 
-function ChoiceButton({ choice, flow, describedBy }: { choice: QuestionChoice; flow: QuestionFlow; describedBy?: string }) {
+function ChoiceButton({
+	choice,
+	flow,
+	describedBy,
+}: {
+	choice: QuestionChoice;
+	flow: QuestionFlow;
+	describedBy?: string;
+}) {
 	const busy = flow.sending !== null;
 	const mine = flow.sending === choice.id;
 	return (
-		<button type="button" className={`q-choice ${choice.approve ? "q-choice-approve" : "q-choice-decline"}${mine ? " q-choice-sending" : ""}`} disabled={busy} aria-describedby={describedBy} title={choice.remembers ? `Remembers ${choice.remembers}` : undefined} onClick={() => flow.answer(choice)}>
+		<button
+			type="button"
+			className={`q-choice ${choice.approve ? "q-choice-approve" : "q-choice-decline"}${mine ? " q-choice-sending" : ""}`}
+			disabled={busy}
+			aria-describedby={describedBy}
+			title={choice.remembers ? `Remembers ${choice.remembers}` : undefined}
+			onClick={() => flow.answer(choice)}
+		>
 			<span className="q-choice-label">{mine ? "Sending…" : choice.label}</span>
 			{choice.remembers ? <span className="visually-hidden">, remembers {choice.remembers}</span> : null}
 		</button>
@@ -188,16 +235,18 @@ function DeclineNote({ flow, id, compact }: { flow: QuestionFlow; id: string; co
 				className="input q-note-input"
 				value={flow.note}
 				maxLength={NOTE_LIMIT}
-				placeholder={compact ? "Why, or what instead (optional)" : "Tell the agent why, or what to do instead (optional)"}
-				onChange={(event) => flow.setNote(event.target.value)}
+				placeholder={
+					compact ? "Why, or what instead (optional)" : "Tell the agent why, or what to do instead (optional)"
+				}
+				onChange={event => flow.setNote(event.target.value)}
 				disabled={flow.sending !== null}
 				autoComplete="off"
 				enterKeyHint="send"
-				onKeyDown={(event) => {
+				onKeyDown={event => {
 					// Enter in the note declines with it: the note only goes with declining.
 					if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
 					event.preventDefault();
-					const decline = flow.question?.choices.find((choice) => !choice.approve);
+					const decline = flow.question?.choices.find(choice => !choice.approve);
 					if (decline) flow.answer(decline);
 				}}
 			/>
@@ -225,14 +274,18 @@ export function QuestionCard({
 }) {
 	const ids = { title: useId(), subject: useId(), note: useId(), details: useId() };
 	const [noteOpen, setNoteOpen] = useState(false);
-	const approving = question.choices.filter((choice) => choice.approve);
-	const declining = question.choices.filter((choice) => !choice.approve);
+	const approving = question.choices.filter(choice => choice.approve);
+	const declining = question.choices.filter(choice => !choice.approve);
 	const showNote = noteOpen || flow.note !== "";
 	const server = question.server;
 	const publishing = question.publish;
 
 	return (
-		<div className={`q ${compact ? "q-compact" : "q-full"}${server || publishing ? " q-server" : ""}`} aria-labelledby={ids.title} role="group">
+		<div
+			className={`q ${compact ? "q-compact" : "q-full"}${server || publishing ? " q-server" : ""}`}
+			aria-labelledby={ids.title}
+			role="group"
+		>
 			<div className="q-head">
 				<p className="q-title" id={ids.title}>
 					<span className="visually-hidden">{asker(question)}</span>
@@ -266,7 +319,18 @@ export function QuestionCard({
 					</dd>
 				</dl>
 			) : question.subject && !underItsCall ? (
-				<pre className="q-subject" id={ids.subject} tabIndex={compact ? undefined : 0} aria-label={server ? (server.remote ? "The address it is reached at" : "The command that starts it") : "What it is about"}>
+				<pre
+					className="q-subject"
+					id={ids.subject}
+					tabIndex={compact ? undefined : 0}
+					aria-label={
+						server
+							? server.remote
+								? "The address it is reached at"
+								: "The command that starts it"
+							: "What it is about"
+					}
+				>
 					{question.subject}
 				</pre>
 			) : null}
@@ -277,26 +341,31 @@ export function QuestionCard({
 			) : null}
 			{!compact && question.details.length > 0 ? (
 				<div className="q-details" id={ids.details}>
-					{question.details.map((detail) => (
+					{question.details.map(detail => (
 						<p key={detail}>{detail}</p>
 					))}
 				</div>
 			) : null}
 			<div className="q-choices">
 				<div className="q-approve">
-					{approving.map((choice) => (
+					{approving.map(choice => (
 						<ChoiceButton key={choice.id} choice={choice} flow={flow} describedBy={compact ? undefined : ids.details} />
 					))}
 				</div>
 				<div className="q-decline">
-					{declining.map((choice) => (
+					{declining.map(choice => (
 						<ChoiceButton key={choice.id} choice={choice} flow={flow} />
 					))}
 					{/* Claude Code takes a choice without a note (the server refuses one). */}
 					{server || question.messageId === ACP_MESSAGE ? null : showNote ? (
 						<DeclineNote flow={flow} id={ids.note} compact={compact} />
 					) : (
-						<button type="button" className="link q-note-open" onClick={() => setNoteOpen(true)} disabled={flow.sending !== null}>
+						<button
+							type="button"
+							className="link q-note-open"
+							onClick={() => setNoteOpen(true)}
+							disabled={flow.sending !== null}
+						>
 							add a note
 						</button>
 					)}
@@ -321,7 +390,17 @@ export function QuestionCard({
  * The question at its place in the conversation. It tells the flow whether it is on screen, from the
  * element it actually renders, so the dock knows when to step aside.
  */
-export function InlineQuestion({ question, flow, underItsCall = false, className = "" }: { question: PendingQuestion; flow: QuestionFlow; underItsCall?: boolean; className?: string }) {
+export function InlineQuestion({
+	question,
+	flow,
+	underItsCall = false,
+	className = "",
+}: {
+	question: PendingQuestion;
+	flow: QuestionFlow;
+	underItsCall?: boolean;
+	className?: string;
+}) {
 	const element = useRef<HTMLDivElement>(null);
 	const { setInlineInView } = flow;
 
@@ -358,7 +437,6 @@ export function InlineQuestion({ question, flow, underItsCall = false, className
 // ---------------------------------------------------------------------------------------------
 // The dock above the composer
 // ---------------------------------------------------------------------------------------------
-
 
 export function QuestionDock({ flow }: { flow: QuestionFlow }) {
 	const dock = useRef<HTMLElement>(null);
@@ -406,7 +484,17 @@ export function QuestionDock({ flow }: { flow: QuestionFlow }) {
 
 	return (
 		<div className="q-dock-wrap">
-			<section className="q-dock" ref={dock} tabIndex={-1} aria-label={question.server && !question.server.holdsTurn ? "A question is waiting for your answer" : "The agent is waiting for your answer"} onKeyDown={onKeyDown}>
+			<section
+				className="q-dock"
+				ref={dock}
+				tabIndex={-1}
+				aria-label={
+					question.server && !question.server.holdsTurn
+						? "A question is waiting for your answer"
+						: "The agent is waiting for your answer"
+				}
+				onKeyDown={onKeyDown}
+			>
 				<p className="visually-hidden" role="status">
 					{asker(question)}
 					{question.title}
@@ -417,7 +505,10 @@ export function QuestionDock({ flow }: { flow: QuestionFlow }) {
 						className="link q-show"
 						onClick={() => {
 							const target = document.getElementById(questionAnchor(question));
-							target?.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+							target?.scrollIntoView({
+								block: "center",
+								behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+							});
 							target?.querySelector<HTMLElement>(".q-choice")?.focus({ preventScroll: true });
 						}}
 					>
@@ -444,7 +535,11 @@ export function AnswerLine({ block }: { block: ToolBlock }) {
 		words = <>{answer.platformText ?? "Nobody answered in time, so the platform declined."}</>;
 	} else if (answer.approve) {
 		tone = "allowed";
-		words = answer.remembers ? `You allowed ${answer.remembers}` : answer.choice === "once" ? "You allowed this once" : "You allowed this";
+		words = answer.remembers
+			? `You allowed ${answer.remembers}`
+			: answer.choice === "once"
+				? "You allowed this once"
+				: "You allowed this";
 	} else {
 		tone = "declined";
 		words = answer.note ? (
@@ -458,7 +553,13 @@ export function AnswerLine({ block }: { block: ToolBlock }) {
 	return (
 		<p className={`q-history q-history-${tone}`}>
 			<span className="q-history-glyph" aria-hidden="true">
-				{tone === "allowed" ? <CheckIcon size={13} /> : tone === "platform" ? <InfoIcon size={13} /> : <RefusedIcon size={13} />}
+				{tone === "allowed" ? (
+					<CheckIcon size={13} />
+				) : tone === "platform" ? (
+					<InfoIcon size={13} />
+				) : (
+					<RefusedIcon size={13} />
+				)}
 			</span>
 			<span className="q-history-text">
 				{block.question?.title ? <span className="q-history-asked">{block.question.title}</span> : null}

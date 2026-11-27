@@ -19,18 +19,37 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		mode: meta.mode,
 		availableModes: meta.availableModes,
 		repoUrl: meta.repoUrl,
-		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null, publishUnasked: meta.publishUnasked === true } : {}),
+		...(meta.repo
+			? {
+					repository: repositoryOf(meta.repo),
+					pullRequest: meta.pull ?? null,
+					publishUnasked: meta.publishUnasked === true,
+				}
+			: {}),
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
 		...(meta.turnStartedAt != null && { turnStartedAt: meta.turnStartedAt }),
 		status: meta.status,
-		...(meta.status === "paused" && meta.run?.paused ? { paused: { reason: meta.run.paused.reason, since: meta.run.paused.at, held: meta.run.held?.length ?? 0 } } : {}),
+		...(meta.status === "paused" && meta.run?.paused
+			? { paused: { reason: meta.run.paused.reason, since: meta.run.paused.at, held: meta.run.held?.length ?? 0 } }
+			: {}),
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
 		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
 		sandbox: meta.sandbox,
-		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
-		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", subtaskScreenshots: meta.origin.subtaskScreenshots, ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
+		...(meta.servers && meta.servers.length > 0
+			? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } }
+			: {}),
+		...(meta.origin
+			? {
+					item: {
+						id: meta.origin.itemId,
+						role: meta.origin.role ?? "builder",
+						subtaskScreenshots: meta.origin.subtaskScreenshots,
+						...(meta.origin.planCritic && { planCritic: true }),
+					},
+				}
+			: {}),
 		...(meta.readiness && { readiness: true as const }),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
@@ -76,5 +95,13 @@ export function publish(c: Ctx): void {
 }
 
 export function repositoryOf(repo: StoredRepository): NonNullable<SessionSummary["repository"]> {
-	return { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url };
+	return {
+		provider: repo.provider,
+		id: repo.id,
+		owner: repo.owner,
+		name: repo.name,
+		branch: repo.branch,
+		private: repo.private,
+		url: repo.url,
+	};
 }

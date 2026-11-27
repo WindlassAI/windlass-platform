@@ -1,9 +1,17 @@
-import { machineLabel, type MachineSummary, type SandboxPlace, type SandboxProfileId, type StartPlace } from "./contract.js";
+import {
+	machineLabel,
+	type MachineSummary,
+	type SandboxPlace,
+	type SandboxProfileId,
+	type StartPlace,
+} from "./contract.js";
 
 /** Paired machines can accept a personal launch while offline. */
 export function startProfiles(machine: MachineSummary) {
 	if (machine.warnings.some(w => w.kind === "outdated" || w.kind === "signing-disabled")) return [];
-	return machine.profiles.filter(p => p.available && (!machine.allowedProfiles || machine.allowedProfiles.some(id => id === p.id)));
+	return machine.profiles.filter(
+		p => p.available && (!machine.allowedProfiles || machine.allowedProfiles.some(id => id === p.id)),
+	);
 }
 
 /** Also checks the shape at the action boundary before anything is stored. */
@@ -12,7 +20,9 @@ export function startPlaceProblem(place: StartPlace, machines: readonly MachineS
 	if (place?.kind !== "machine") return "Choose Hosted or one of your paired machines.";
 	const machine = machines.find(m => m.machineId === place.machineId);
 	if (!machine) return "The selected machine is no longer in your account.";
-	return startProfiles(machine).some(p => p.id === place.profile) ? null : `“${machineLabel(machine)}” does not offer the selected profile.`;
+	return startProfiles(machine).some(p => p.id === place.profile)
+		? null
+		: `“${machineLabel(machine)}” does not offer the selected profile.`;
 }
 
 type Source = "launch" | "repository default" | "account default" | "deployment default";
@@ -34,7 +44,9 @@ export function resolveStartPlace(input: {
 }): StartDestination {
 	const notes: string[] = [];
 	const candidates: [Source, SandboxPlace | StartPlace | null | undefined][] = [
-		["launch", input.launch], ["repository default", input.repository], ["account default", input.account],
+		["launch", input.launch],
+		["repository default", input.repository],
+		["account default", input.account],
 	];
 	for (const [source, place] of candidates) {
 		if (!place) continue;
@@ -44,12 +56,21 @@ export function resolveStartPlace(input: {
 		const profiles = machine && startProfiles(machine);
 		if (machine && profiles?.length) {
 			if (!("profile" in place)) {
-				const saved = [input.repository, input.account].find(p => p?.kind === "machine" && p.machineId === machine.machineId && profiles.some(offered => offered.id === p.profile));
+				const saved = [input.repository, input.account].find(
+					p =>
+						p?.kind === "machine" &&
+						p.machineId === machine.machineId &&
+						profiles.some(offered => offered.id === p.profile),
+				);
 				return { source, machine, profile: saved?.kind === "machine" ? saved.profile : undefined, notes };
 			}
 			if (profiles.some(p => p.id === place.profile)) return { source, machine, profile: place.profile, notes };
 		}
-		notes.push(machine ? `The machine or profile from your ${source} is unavailable on “${machineLabel(machine)}”.` : `The machine from your ${source} is no longer paired.`);
+		notes.push(
+			machine
+				? `The machine or profile from your ${source} is unavailable on “${machineLabel(machine)}”.`
+				: `The machine from your ${source} is no longer paired.`,
+		);
 	}
 	return { source: "deployment default", machine: null, notes };
 }

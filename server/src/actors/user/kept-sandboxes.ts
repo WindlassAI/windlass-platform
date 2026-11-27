@@ -7,7 +7,8 @@ const ITEM_SANDBOX_IDLE_MS = 3 * 86_400_000;
 
 export function releaseAt(item: ItemSummary): number {
 	if (["done", "failed", "cancelled"].includes(item.state)) return 0;
-	if (item.state === "review" || item.question || item.wait?.reason === "person") return item.updatedAt + ITEM_SANDBOX_IDLE_MS;
+	if (item.state === "review" || item.question || item.wait?.reason === "person")
+		return item.updatedAt + ITEM_SANDBOX_IDLE_MS;
 	return Infinity;
 }
 
@@ -22,7 +23,8 @@ function candidates(c: ItemsCtx, personal = false) {
 		const due = item ? releaseAt(item) : Infinity;
 		if (session.item && !Number.isFinite(due)) return [];
 		const place = session.place;
-		const box = place.kind === "machine" && machines.get(place.machineId)?.sandboxes.find(box => box.sessionId === session.id);
+		const box =
+			place.kind === "machine" && machines.get(place.machineId)?.sandboxes.find(box => box.sessionId === session.id);
 		if (session.sandbox === "none" && !box && !usage.keeps(session.id)) return [];
 		const used = Math.max(session.updatedAt, box ? box.usedAt : 0);
 		return [{ session, item, due, used }];
@@ -30,7 +32,10 @@ function candidates(c: ItemsCtx, personal = false) {
 }
 
 export function nextSandboxRelease(c: ItemsCtx): number {
-	return candidates(c).reduce((first, { session, due }) => Math.min(first, Math.max(due, c.vars.items.sandboxRetries?.get(session.id) ?? 0)), Infinity);
+	return candidates(c).reduce(
+		(first, { session, due }) => Math.min(first, Math.max(due, c.vars.items.sandboxRetries?.get(session.id) ?? 0)),
+		Infinity,
+	);
 }
 
 async function free(c: ItemsCtx, session: SessionSummary, reason: string, pressure = false) {
@@ -44,7 +49,10 @@ async function free(c: ItemsCtx, session: SessionSummary, reason: string, pressu
 		const machine = session.place.kind === "machine" && c.vars.machines.get(session.place.machineId);
 		const box = machine && machine.sandboxes.find(box => box.sessionId === session.id);
 		const cutoff = session.item ? undefined : Date.now() - ITEM_SANDBOX_IDLE_MS;
-		const { freed } = await sessionActor(c, c.key[0]!, session.id).internalFreeSandbox(undefined, undefined, { reason, cutoff });
+		const { freed } = await sessionActor(c, c.key[0]!, session.id).internalFreeSandbox(undefined, undefined, {
+			reason,
+			cutoff,
+		});
 		// The runner confirmed destruction. Its next inventory may still be in flight.
 		if (freed && machine && box) machine.sandboxes = machine.sandboxes.filter(other => other !== box);
 		return freed;
@@ -55,12 +63,18 @@ async function free(c: ItemsCtx, session: SessionSummary, reason: string, pressu
 }
 
 export async function releaseDueSandboxes(c: ItemsCtx) {
-	const retries = c.vars.items.sandboxRetries ??= new Map();
+	const retries = (c.vars.items.sandboxRetries ??= new Map());
 	for (const [id, at] of retries) if (at <= Date.now()) retries.delete(id);
 	for (const { session, due } of candidates(c)) {
 		if (due > Date.now() || retries.has(session.id)) continue;
 		retries.set(session.id, Date.now() + 60_000);
-		const freed = await free(c, session, due === 0 ? "Freed the sandbox because the work item ended." : "Freed the sandbox after three days of item inactivity.");
+		const freed = await free(
+			c,
+			session,
+			due === 0
+				? "Freed the sandbox because the work item ended."
+				: "Freed the sandbox after three days of item inactivity.",
+		);
 		if (freed) retries.delete(session.id);
 	}
 }
@@ -68,7 +82,12 @@ export async function releaseDueSandboxes(c: ItemsCtx) {
 export function keptFull(c: ItemsCtx, session: SessionSummary): boolean {
 	if (session.place.kind === "hosted") return c.vars.usage.atCap(session.id);
 	const machine = c.vars.machines.get(session.place.machineId);
-	return !!machine && machine.maxSandboxes !== undefined && machine.sandboxes.length >= machine.maxSandboxes && !machine.sandboxes.some(box => box.sessionId === session.id);
+	return (
+		!!machine &&
+		machine.maxSandboxes !== undefined &&
+		machine.sandboxes.length >= machine.maxSandboxes &&
+		!machine.sandboxes.some(box => box.sessionId === session.id)
+	);
 }
 
 export async function makeSandboxRoom(c: ItemsCtx, asking: SessionSummary): Promise<boolean> {
@@ -82,8 +101,9 @@ export async function makeSandboxRoom(c: ItemsCtx, asking: SessionSummary): Prom
 		if (!item && used >= Date.now() - ITEM_SANDBOX_IDLE_MS) continue;
 		if (place.kind === "hosted" && !c.vars.usage.keeps(session.id)) continue;
 		const said = `Freed the sandbox of “${item?.title ?? session.title}” to make room.`;
-		if (!await free(c, session, said, true)) continue;
-		if (asking.item) await itemActor(c, c.key[0]!, asking.item.id).internalFact({ kind: "sandbox_reclaimed", said, at: Date.now() });
+		if (!(await free(c, session, said, true))) continue;
+		if (asking.item)
+			await itemActor(c, c.key[0]!, asking.item.id).internalFact({ kind: "sandbox_reclaimed", said, at: Date.now() });
 		else await sessionActor(c, c.key[0]!, asking.id).internalSandboxReclaimed(said);
 	}
 	return !keptFull(c, asking);

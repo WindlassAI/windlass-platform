@@ -13,12 +13,19 @@ import { machineHarness } from "../server/src/sandbox/harnesses.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { HOSTED_SIZES, HOSTED_SIZE_SPECS, isHostedSize } from "../server/src/contract.js";
-import { buildShape, planRefusal, readE2bSettings, refusesSize, templateFor, templateVariables } from "../server/src/sandbox/e2b/config.js";
+import {
+	buildShape,
+	planRefusal,
+	readE2bSettings,
+	refusesSize,
+	templateFor,
+	templateVariables,
+} from "../server/src/sandbox/e2b/config.js";
 import { buildSandboxTemplate, describeTemplate } from "../server/src/sandbox/e2b/template.js";
 
 const args = process.argv.slice(2);
 const print = args.includes("--print");
-const context = args.find((arg) => !arg.startsWith("--"));
+const context = args.find(arg => !arg.startsWith("--"));
 
 async function main(): Promise<number> {
 	const variant = process.env.WLP_SANDBOX_VARIANT ?? "base";
@@ -26,9 +33,18 @@ async function main(): Promise<number> {
 	const shots = variant === "shots";
 	const harness = machineHarness(process.env.WLP_E2B_HARNESS);
 	const image = process.env.WLP_E2B_HARNESS_IMAGE;
-	if (process.env.WLP_E2B_HARNESS && (!harness || !image || shots)) throw new Error("Choose a harness and set WLP_E2B_HARNESS_IMAGE to its published amd64 image.");
-	if (!harness && (context === undefined || !["Dockerfile", "wlp-run", "wlp-pnpm", "windlass", ...(shots ? ["wlp-shot"] : [])].every((file) => existsSync(join(context, file))))) {
-		console.error("e2b-template: give the build context: a directory with Dockerfile, wlp-run and windlass, plus wlp-shot for the shots variant (sandbox/e2b/build.sh makes one)");
+	if (process.env.WLP_E2B_HARNESS && (!harness || !image || shots))
+		throw new Error("Choose a harness and set WLP_E2B_HARNESS_IMAGE to its published amd64 image.");
+	if (
+		!harness &&
+		(context === undefined ||
+			!["Dockerfile", "wlp-run", "wlp-pnpm", "windlass", ...(shots ? ["wlp-shot"] : [])].every(file =>
+				existsSync(join(context, file)),
+			))
+	) {
+		console.error(
+			"e2b-template: give the build context: a directory with Dockerfile, wlp-run and windlass, plus wlp-shot for the shots variant (sandbox/e2b/build.sh makes one)",
+		);
 		return 2;
 	}
 	// The size: E2B fixes CPUs and memory when a template is built, so each size is a template of its own (config.ts).
@@ -37,7 +53,10 @@ async function main(): Promise<number> {
 	const settings = readE2bSettings();
 	const name = templateFor(settings, size, shots, harness?.id);
 	const { cpuCount, memoryMB } = buildShape(process.env, size);
-	if (cpuCount !== HOSTED_SIZE_SPECS[size].cpus || memoryMB !== HOSTED_SIZE_SPECS[size].memoryMiB) console.log(`# Note: ${size} is ${HOSTED_SIZE_SPECS[size].cpus} vCPU and ${HOSTED_SIZE_SPECS[size].memoryMiB} MiB, which the server prices it at; this build differs.`);
+	if (cpuCount !== HOSTED_SIZE_SPECS[size].cpus || memoryMB !== HOSTED_SIZE_SPECS[size].memoryMiB)
+		console.log(
+			`# Note: ${size} is ${HOSTED_SIZE_SPECS[size].cpus} vCPU and ${HOSTED_SIZE_SPECS[size].memoryMiB} MiB, which the server prices it at; this build differs.`,
+		);
 	console.log(`# The ${size} template "${name}": ${cpuCount} vCPU, ${memoryMB} MiB. E2B is asked to build this:`);
 	console.log(describeTemplate(context ?? ".", shots, harness ? image : undefined));
 	if (print) {
@@ -46,22 +65,35 @@ async function main(): Promise<number> {
 	}
 	const apiKey = (process.env.E2B_API_KEY ?? "").trim();
 	if (apiKey === "") {
-		console.error("e2b-template: E2B_API_KEY is not set, so nothing was built. With --print this prints the template and needs no key.");
+		console.error(
+			"e2b-template: E2B_API_KEY is not set, so nothing was built. With --print this prints the template and needs no key.",
+		);
 		return 2;
 	}
-	const built = await buildSandboxTemplate(context ?? ".", { image: harness ? image : undefined, apiKey, name, shots, cpuCount, memoryMB }).catch((error: unknown) => {
+	const built = await buildSandboxTemplate(context ?? ".", {
+		image: harness ? image : undefined,
+		apiKey,
+		name,
+		shots,
+		cpuCount,
+		memoryMB,
+	}).catch((error: unknown) => {
 		const said = error instanceof Error ? error.message : String(error);
 		throw new Error(refusesSize(said) ? planRefusal(size, said) : said);
 	});
-	console.log(`# Built: template "${built.name}" (id ${built.templateId}, build ${built.buildId}), ${built.cpuCount} vCPU and ${built.memoryMB} MiB per sandbox.`);
+	console.log(
+		`# Built: template "${built.name}" (id ${built.templateId}, build ${built.buildId}), ${built.cpuCount} vCPU and ${built.memoryMB} MiB per sandbox.`,
+	);
 	if (harness) return 0;
 	const variable = templateVariables(size)[shots ? "shotsTemplate" : "template"];
-	console.log(`# A server finds it by its name: WLP_SANDBOX=e2b ${variable}=${name}${size === "small" ? "" : `, and offers the size once WLP_E2B_SIZES lists ${size}`}. Next: scripts/e2b-check.ts (docs/operating.md, "E2B").`);
+	console.log(
+		`# A server finds it by its name: WLP_SANDBOX=e2b ${variable}=${name}${size === "small" ? "" : `, and offers the size once WLP_E2B_SIZES lists ${size}`}. Next: scripts/e2b-check.ts (docs/operating.md, "E2B").`,
+	);
 	return 0;
 }
 
 main().then(
-	(code) => process.exit(code),
+	code => process.exit(code),
 	(error: unknown) => {
 		// The SDK's errors name the build and the reason, never the key.
 		console.error(`e2b-template: ${error instanceof Error ? error.message : String(error)}`);

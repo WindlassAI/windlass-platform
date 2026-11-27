@@ -15,7 +15,14 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
-import { type GetOptions, type PutOptions, type ObjectStore, ObjectStoreError, type SignedLink, checkKey } from "./store.js";
+import {
+	type GetOptions,
+	type PutOptions,
+	type ObjectStore,
+	ObjectStoreError,
+	type SignedLink,
+	checkKey,
+} from "./store.js";
 
 export interface S3Settings {
 	/** The store's S3 endpoint, without the bucket: `https://<account>.r2.cloudflarestorage.com`, `https://s3.eu-central-1.amazonaws.com`. */
@@ -39,7 +46,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const hmac = (key: Buffer | string, text: string) => createHmac("sha256", key).update(text).digest();
 /** RFC 3986: everything but letters, digits, `-`, `.`, `_` and `~` is percent-encoded, as the signature's rules want it. */
-const encode = (text: string) => encodeURIComponent(text).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+const encode = (text: string) =>
+	encodeURIComponent(text).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 
 export class S3ObjectStore implements ObjectStore {
 	readonly #settings: S3Settings;
@@ -52,7 +60,8 @@ export class S3ObjectStore implements ObjectStore {
 
 	constructor(settings: S3Settings, options: { now?: () => number; fetch?: typeof fetch } = {}) {
 		for (const name of ["endpoint", "region", "bucket", "accessKeyId", "secretAccessKey"] as const) {
-			if (typeof settings[name] !== "string" || settings[name].trim() === "") throw new Error(`the S3 object store needs ${name}`);
+			if (typeof settings[name] !== "string" || settings[name].trim() === "")
+				throw new Error(`the S3 object store needs ${name}`);
 		}
 		let url: URL;
 		try {
@@ -61,8 +70,10 @@ export class S3ObjectStore implements ObjectStore {
 			// The value is not repeated: an endpoint may carry an account's id.
 			throw new Error("the S3 endpoint is not a URL");
 		}
-		if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("the S3 endpoint must be an http or https URL");
-		if (url.username !== "" || url.password !== "" || url.search !== "") throw new Error("the S3 endpoint must be an address only: no user, password or query");
+		if (url.protocol !== "https:" && url.protocol !== "http:")
+			throw new Error("the S3 endpoint must be an http or https URL");
+		if (url.username !== "" || url.password !== "" || url.search !== "")
+			throw new Error("the S3 endpoint must be an address only: no user, password or query");
 		this.#settings = { ...settings };
 		// A dashboard may show the endpoint with the bucket behind it; the bucket is named by its own setting.
 		let path = url.pathname.replace(/\/+$/, "");
@@ -77,7 +88,10 @@ export class S3ObjectStore implements ObjectStore {
 
 	async linkToPut(key: string, options: PutOptions): Promise<SignedLink> {
 		if (!Number.isSafeInteger(options.size) || options.size < 0) throw new ObjectStoreError("invalid upload size");
-		return this.presign("PUT", key, options.ttlMs, { "content-length": String(options.size), ...(options.contentType ? { "content-type": options.contentType } : {}) });
+		return this.presign("PUT", key, options.ttlMs, {
+			"content-length": String(options.size),
+			...(options.contentType ? { "content-type": options.contentType } : {}),
+		});
 	}
 
 	async linkToGet(key: string, options: GetOptions): Promise<SignedLink> {
@@ -117,7 +131,8 @@ export class S3ObjectStore implements ObjectStore {
 		if (response.status === 404) return null;
 		if (!response.ok) throw await this.refused("HEAD", response);
 		const length = Number(response.headers.get("content-length") ?? NaN);
-		if (!Number.isSafeInteger(length) || length < 0) throw new ObjectStoreError("the bucket answered HEAD without the object's size", response.status);
+		if (!Number.isSafeInteger(length) || length < 0)
+			throw new ObjectStoreError("the bucket answered HEAD without the object's size", response.status);
 		return length;
 	}
 
@@ -139,12 +154,21 @@ export class S3ObjectStore implements ObjectStore {
 
 	/** `20261115T101500Z` and its date. */
 	private stamp(): { amzDate: string; date: string } {
-		const amzDate = new Date(this.#now()).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+		const amzDate = new Date(this.#now())
+			.toISOString()
+			.replace(/[-:]/g, "")
+			.replace(/\.\d{3}Z$/, "Z");
 		return { amzDate, date: amzDate.slice(0, 8) };
 	}
 
 	/** A URL with the signature in its query. `headers` are signed beside the host: whoever uses the link has to send them as they are. */
-	private presign(method: "GET" | "PUT", key: string, ttlMs: number, headers: Record<string, string>, overrides: Record<string, string> = {}): SignedLink {
+	private presign(
+		method: "GET" | "PUT",
+		key: string,
+		ttlMs: number,
+		headers: Record<string, string>,
+		overrides: Record<string, string> = {},
+	): SignedLink {
 		const seconds = Math.min(MAX_LINK_SECONDS, Math.max(1, Math.round(ttlMs / 1000)));
 		const { amzDate, date } = this.stamp();
 		const scope = `${date}/${this.#settings.region}/s3/aws4_request`;
@@ -162,24 +186,59 @@ export class S3ObjectStore implements ObjectStore {
 			.sort()
 			.join("&");
 		const path = this.path(key);
-		const canonical = [method, path, query, names.map((name) => `${name}:${signed[name]}\n`).join(""), names.join(";"), "UNSIGNED-PAYLOAD"].join("\n");
-		const signature = hmac(this.signingKey(date), [ALGORITHM, amzDate, scope, sha256(canonical)].join("\n")).toString("hex");
-		return { url: `${this.#origin}${path}?${query}&X-Amz-Signature=${signature}`, expiresAt: this.#now() + seconds * 1000 };
+		const canonical = [
+			method,
+			path,
+			query,
+			names.map(name => `${name}:${signed[name]}\n`).join(""),
+			names.join(";"),
+			"UNSIGNED-PAYLOAD",
+		].join("\n");
+		const signature = hmac(this.signingKey(date), [ALGORITHM, amzDate, scope, sha256(canonical)].join("\n")).toString(
+			"hex",
+		);
+		return {
+			url: `${this.#origin}${path}?${query}&X-Amz-Signature=${signature}`,
+			expiresAt: this.#now() + seconds * 1000,
+		};
 	}
 
 	/** A request of the server's own, with the signature in its `Authorization` header and no body. */
-	private async request(method: "HEAD" | "DELETE" | "GET", key: string, extra: Record<string, string> = {}): Promise<Response> {
+	private async request(
+		method: "HEAD" | "DELETE" | "GET",
+		key: string,
+		extra: Record<string, string> = {},
+	): Promise<Response> {
 		const { amzDate, date } = this.stamp();
 		const scope = `${date}/${this.#settings.region}/s3/aws4_request`;
 		const path = this.path(key);
-		const headers: Record<string, string> = { ...extra, host: this.#host, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate };
+		const headers: Record<string, string> = {
+			...extra,
+			host: this.#host,
+			"x-amz-content-sha256": EMPTY_SHA256,
+			"x-amz-date": amzDate,
+		};
 		const names = Object.keys(headers).sort();
-		const canonical = [method, path, "", names.map((name) => `${name}:${headers[name]}\n`).join(""), names.join(";"), EMPTY_SHA256].join("\n");
-		const signature = hmac(this.signingKey(date), [ALGORITHM, amzDate, scope, sha256(canonical)].join("\n")).toString("hex");
+		const canonical = [
+			method,
+			path,
+			"",
+			names.map(name => `${name}:${headers[name]}\n`).join(""),
+			names.join(";"),
+			EMPTY_SHA256,
+		].join("\n");
+		const signature = hmac(this.signingKey(date), [ALGORITHM, amzDate, scope, sha256(canonical)].join("\n")).toString(
+			"hex",
+		);
 		try {
 			return await this.#fetch(`${this.#origin}${path}`, {
 				method,
-				headers: { ...extra, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amzDate, authorization: `${ALGORITHM} Credential=${this.#settings.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}` },
+				headers: {
+					...extra,
+					"x-amz-content-sha256": EMPTY_SHA256,
+					"x-amz-date": amzDate,
+					authorization: `${ALGORITHM} Credential=${this.#settings.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}`,
+				},
 				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 				redirect: "error",
 			});
@@ -196,13 +255,17 @@ export class S3ObjectStore implements ObjectStore {
 	private async refused(method: string, response: Response): Promise<ObjectStoreError> {
 		const body = method === "HEAD" ? "" : await response.text().catch(() => "");
 		const code = /<Code>([A-Za-z0-9]{1,64})<\/Code>/.exec(body)?.[1];
-		return new ObjectStoreError(`the bucket answered ${response.status}${code === undefined ? "" : ` (${code})`} to ${method}`, response.status);
+		return new ObjectStoreError(
+			`the bucket answered ${response.status}${code === undefined ? "" : ` (${code})`} to ${method}`,
+			response.status,
+		);
 	}
 }
 
 /** The kind of a network failure, never its text: Node's message for one names the host. */
 function networkReason(error: unknown): string {
-	if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "no answer in time";
+	if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
+		return "no answer in time";
 	const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
 	return typeof cause?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(cause.code) ? cause.code : "network error";
 }

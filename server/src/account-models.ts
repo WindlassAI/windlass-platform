@@ -41,7 +41,13 @@ export interface ListedModels {
 const RESPONSES_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function responsesModels(listed: ListedModels): ListedModels {
-	return { ...listed, models: listed.models.map(model => ({ ...model, efforts: model.efforts.filter(effort => RESPONSES_EFFORTS.has(effort)) })) };
+	return {
+		...listed,
+		models: listed.models.map(model => ({
+			...model,
+			efforts: model.efforts.filter(effort => RESPONSES_EFFORTS.has(effort)),
+		})),
+	};
 }
 
 /** The efforts the stand-in's models are offered with: the ones `windlass --effort` knows (Windlass's user guide, "Models and effort"). */
@@ -53,10 +59,19 @@ const STAND_IN_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
  * user without a ChatGPT sign-in; and while a plan's list could not be read and none is kept. It is
  * not a list of record: a plan may lack a model named here, and Windlass says so when a turn starts.
  */
-export const STAND_IN_MODELS: readonly ModelChoice[] = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].map((id) => ({ id, name: null, efforts: STAND_IN_EFFORTS }));
+export const STAND_IN_MODELS: readonly ModelChoice[] = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].map(id => ({
+	id,
+	name: null,
+	efforts: STAND_IN_EFFORTS,
+}));
 
 export function standInModels(source: Exclude<ModelList["source"], "account" | "harness">): ModelList {
-	return { source, models: STAND_IN_MODELS.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: STAND_IN_MODELS[0]!.id, fetchedAt: null };
+	return {
+		source,
+		models: STAND_IN_MODELS.map(model => ({ ...model, efforts: [...model.efforts] })),
+		defaultModel: STAND_IN_MODELS[0]!.id,
+		fetchedAt: null,
+	};
 }
 
 /** How long a plan's list is served before Windlass is asked again. */
@@ -78,7 +93,10 @@ export const MODELS_TABLE = `
 
 /** The part of the actor's database this uses. */
 export interface ModelsDb {
-	execute<Row extends Record<string, unknown> = Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]>;
+	execute<Row extends Record<string, unknown> = Record<string, unknown>>(
+		query: string,
+		...args: unknown[]
+	): Promise<Row[]>;
 }
 
 /** What a request for the list brings with it: the action that asks has them, and a listing uses those of the request that started it. */
@@ -119,7 +137,7 @@ export class AccountModels {
 	private failed: { generation: number; at: number } | null = null;
 
 	constructor(private readonly options: AccountModelsOptions) {
-		this.log = options.log ?? ((line) => console.log(line));
+		this.log = options.log ?? (line => console.log(line));
 		this.freshMs = options.freshMs ?? MODELS_FRESH_MS;
 		this.waitMs = options.waitMs ?? MODELS_WAIT_MS;
 		this.retryMs = options.retryMs ?? MODELS_RETRY_MS;
@@ -139,7 +157,8 @@ export class AccountModels {
 		const now = Date.now();
 		if (kept !== null && kept.fetchedAt !== null && now - kept.fetchedAt < this.freshMs) return kept;
 		const fallback = kept ?? standInModels("unavailable");
-		if (this.failed !== null && this.failed.generation === generation && now - this.failed.at < this.retryMs) return fallback;
+		if (this.failed !== null && this.failed.generation === generation && now - this.failed.at < this.retryMs)
+			return fallback;
 		if (this.flight === null || this.flight.generation !== generation) {
 			const listed = this.fetch(source, generation).finally(() => {
 				if (this.flight?.generation === generation) this.flight = null;
@@ -160,7 +179,10 @@ export class AccountModels {
 	}
 
 	private async read(db: ModelsDb, generation: number): Promise<ModelList | null> {
-		const [row] = await db.execute<{ list: string; fetched_at: number }>("SELECT list, fetched_at FROM model_list WHERE id = 1 AND generation = ?", generation);
+		const [row] = await db.execute<{ list: string; fetched_at: number }>(
+			"SELECT list, fetched_at FROM model_list WHERE id = 1 AND generation = ?",
+			generation,
+		);
 		if (!row) return null;
 		try {
 			const listed = responsesModels(JSON.parse(row.list) as ListedModels);
@@ -176,7 +198,12 @@ export class AccountModels {
 			const listed = responsesModels(await source.list());
 			// The sign-in was replaced or forgotten while Windlass was asked: this is nobody's list.
 			if ((await source.generation()) !== generation) return null;
-			const list: ModelList = { source: "account", models: listed.models, defaultModel: listed.defaultModel, fetchedAt: Date.now() };
+			const list: ModelList = {
+				source: "account",
+				models: listed.models,
+				defaultModel: listed.defaultModel,
+				fetchedAt: Date.now(),
+			};
 			// One statement that reads nothing first. A row of a later sign-in is never replaced by one of an earlier.
 			await source.db.execute(
 				"INSERT INTO model_list (id, generation, list, fetched_at) VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET generation = excluded.generation, list = excluded.list, fetched_at = excluded.fetched_at WHERE model_list.generation <= excluded.generation",
@@ -186,11 +213,15 @@ export class AccountModels {
 			);
 			if (this.kept === null || this.kept.generation <= generation) this.kept = { generation, list };
 			if (this.failed?.generation === generation) this.failed = null;
-			this.log(`[wlp] models.listed uid=${this.options.uid}: ${list.models.length} models, the default ${list.defaultModel}`);
+			this.log(
+				`[wlp] models.listed uid=${this.options.uid}: ${list.models.length} models, the default ${list.defaultModel}`,
+			);
 			return list;
 		} catch (error) {
 			this.failed = { generation, at: Date.now() };
-			this.log(`[wlp] models.list_failed uid=${this.options.uid}: ${errorText(error)}; the ${this.kept?.generation === generation ? "list kept from before" : "stand-in"} is served, and Windlass is asked again in ${Math.round(this.retryMs / 1000)} s at the earliest`);
+			this.log(
+				`[wlp] models.list_failed uid=${this.options.uid}: ${errorText(error)}; the ${this.kept?.generation === generation ? "list kept from before" : "stand-in"} is served, and Windlass is asked again in ${Math.round(this.retryMs / 1000)} s at the earliest`,
+			);
 			return null;
 		}
 	}
@@ -198,9 +229,9 @@ export class AccountModels {
 
 /** `work`'s answer, or null when it takes longer than `ms`. `work` must not reject. */
 function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
-	return new Promise((resolve) => {
+	return new Promise(resolve => {
 		const timer = setTimeout(() => resolve(null), ms);
-		void work.then((value) => {
+		void work.then(value => {
 			clearTimeout(timer);
 			resolve(value);
 		});
@@ -224,11 +255,14 @@ export class ModelProblem extends Error {
 
 /** Why a model that was named cannot be used, in a sentence that says whose list it is not in; null when the list has it. */
 export function modelRefusal(list: ModelList, named: unknown): string | null {
-	if (typeof named === "string" && list.models.some((model) => model.id === named)) return null;
+	if (typeof named === "string" && list.models.some(model => model.id === named)) return null;
 	const provider = typeof named === "string" && windlassProvider(named);
-	if (provider && list.source !== "harness") return `That model is not in your checked ${provider} models. Add or check the ${provider} key in Settings.`;
-	const names = list.models.map((model) => model.id).join(", ");
-	return list.source === "account" ? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}` : `That model is not offered. Choose one of: ${names}`;
+	if (provider && list.source !== "harness")
+		return `That model is not in your checked ${provider} models. Add or check the ${provider} key in Settings.`;
+	const names = list.models.map(model => model.id).join(", ");
+	return list.source === "account"
+		? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}`
+		: `That model is not offered. Choose one of: ${names}`;
 }
 
 /** The model a session is made with or a turn switches to: the one that was asked for when the list has it, the list's default when none was. */
@@ -245,19 +279,30 @@ export function chosenModel(list: ModelList, asked: unknown): string {
  * for one of its models is taken; the turn says so where the model then runs at its default instead.
  */
 export function checkItemEffort(list: ModelList, model: string, effort: unknown, harness: boolean): void {
-	const listed = list.models.find((candidate) => candidate.id === model)?.efforts ?? [];
+	const listed = list.models.find(candidate => candidate.id === model)?.efforts ?? [];
 	if (harness && listed.length === 0 && model !== list.defaultModel) {
-		const any = [...new Set(list.models.flatMap((candidate) => candidate.efforts))];
+		const any = [...new Set(list.models.flatMap(candidate => candidate.efforts))];
 		if (typeof effort === "string" && any.includes(effort)) return;
-		throw new ModelProblem("bad_effort", any.length === 0 ? `${model} takes no reasoning effort. Leave the effort at its default.` : `The effort must be one of: ${any.join(", ")}`);
+		throw new ModelProblem(
+			"bad_effort",
+			any.length === 0
+				? `${model} takes no reasoning effort. Leave the effort at its default.`
+				: `The effort must be one of: ${any.join(", ")}`,
+		);
 	}
-	if (listed.length === 0) throw new ModelProblem("bad_effort", `${model} takes no reasoning effort. Leave the effort at its default.`);
+	if (listed.length === 0)
+		throw new ModelProblem("bad_effort", `${model} takes no reasoning effort. Leave the effort at its default.`);
 	checkEffort(list, model, effort);
 }
 
 /** Holds an effort against the ones `model` accepts. A model the list does not have is Windlass's to refuse: the list says nothing of it. */
 export function checkEffort(list: ModelList, model: string, effort: unknown): void {
-	const efforts = list.models.find((candidate) => candidate.id === model)?.efforts;
+	const efforts = list.models.find(candidate => candidate.id === model)?.efforts;
 	if (typeof effort === "string" && (efforts === undefined || efforts.includes(effort))) return;
-	throw new ModelProblem("bad_effort", efforts === undefined || efforts.length === 0 ? `${model} takes no reasoning effort. Leave the effort at its default.` : `The effort for ${model} must be one of: ${efforts.join(", ")}`);
+	throw new ModelProblem(
+		"bad_effort",
+		efforts === undefined || efforts.length === 0
+			? `${model} takes no reasoning effort. Leave the effort at its default.`
+			: `The effort for ${model} must be one of: ${efforts.join(", ")}`,
+	);
 }

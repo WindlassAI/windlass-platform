@@ -22,19 +22,23 @@ const listOf = (feed: ItemFeed): ItemSummary[] => [...feed.open, ...feed.ended];
 export function useItems(enabled = true): ItemsState {
 	// Read once for the whole app, so it is also called where no one is signed in: it asks nothing then.
 	const { client, explain, auth } = useApp();
-	const [state, setState] = useState<{ list: ItemSummary[] | null; feed: ItemFeed | null; error: string | null }>({ list: null, feed: null, error: null });
+	const [state, setState] = useState<{ list: ItemSummary[] | null; feed: ItemFeed | null; error: string | null }>({
+		list: null,
+		feed: null,
+		error: null,
+	});
 	const asked = useRef(0);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
 		if (!auth) return;
-		setState((now) => ({ ...now, error: null }));
+		setState(now => ({ ...now, error: null }));
 		client
 			.user(auth)
 			.itemFeed()
 			.then(
-				(feed) => mine === asked.current && setState({ list: listOf(feed), feed, error: null }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ ...now, error: explain(failure) })),
+				feed => mine === asked.current && setState({ list: listOf(feed), feed, error: null }),
+				(failure: unknown) => mine === asked.current && setState(now => ({ ...now, error: explain(failure) })),
 			);
 	}, [client, auth, explain]);
 
@@ -45,11 +49,11 @@ export function useItems(enabled = true): ItemsState {
 		let connected = false;
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
-			onItems: (feed) => {
+			onItems: feed => {
 				asked.current += 1;
 				setState({ list: listOf(feed), feed, error: null });
 			},
-			onConnection: (connection) => {
+			onConnection: connection => {
 				if (connection !== "connected") return;
 				// What the actor sent while the feed was down is lost: the list is read again when it is back.
 				if (connected) reload();

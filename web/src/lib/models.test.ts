@@ -7,7 +7,10 @@ import { createMockClient, mockStandInModels } from "../api/mock";
 import { cleanModelName, credentialWords, effortsOf, modelIds, modelWords, modelsNote, sourceOf } from "./models";
 import { sessionModelWords } from "./acp";
 
-const ada = { token: "mock:user:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
+const ada = {
+	token: "mock:user:u_models:ada@example.com",
+	profile: { uid: "u_models", email: "ada@example.com", demo: false },
+};
 const SOURCES = ["demo", "signed-out", "unavailable"] as const;
 
 async function refusal(call: Promise<unknown>): Promise<PlatformError> {
@@ -31,7 +34,15 @@ function serverRefusal(step: () => unknown): { code: string; message: string } {
 }
 
 describe("the user's models", () => {
-	const plan: ModelList = { source: "account", models: [{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "high"] }, { id: "gpt-6-brisk", name: null, efforts: [] }], defaultModel: "gpt-6.1-sol", fetchedAt: Date.UTC(2026, 10, 18, 9, 30) };
+	const plan: ModelList = {
+		source: "account",
+		models: [
+			{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "high"] },
+			{ id: "gpt-6-brisk", name: null, efforts: [] },
+		],
+		defaultModel: "gpt-6.1-sol",
+		fetchedAt: Date.UTC(2026, 10, 18, 9, 30),
+	};
 
 	it("offers each model with its own efforts, and none for a model the list does not have", () => {
 		expect(modelIds(plan)).toEqual(["gpt-6.1-sol", "gpt-6-brisk"]);
@@ -67,8 +78,8 @@ describe("the mock's models", () => {
 		const list = await mock.user(ada).models();
 		expect(list.source).toBe("account");
 		expect(typeof list.fetchedAt).toBe("number");
-		expect(list.models.map((model) => model.id)).toContain(list.defaultModel);
-		expect(new Set(list.models.map((model) => model.efforts.join(" "))).size).toBeGreaterThan(1);
+		expect(list.models.map(model => model.id)).toContain(list.defaultModel);
+		expect(new Set(list.models.map(model => model.efforts.join(" "))).size).toBeGreaterThan(1);
 		const demo = await mock.login.demo();
 		expect(await mock.user(demo).models()).toEqual(mockStandInModels("demo"));
 		mock.dispose();
@@ -83,18 +94,24 @@ describe("the mock's models", () => {
 		const user = mock.user(ada);
 		await connectPlan(mock);
 		const list = await user.models();
-		const none = list.models.find((model) => model.efforts.length === 0)!;
-		const some = list.models.find((model) => model.efforts.length > 0 && !model.efforts.includes("max"))!;
+		const none = list.models.find(model => model.efforts.length === 0)!;
+		const some = list.models.find(model => model.efforts.length > 0 && !model.efforts.includes("max"))!;
 		const unknown = await refusal(user.createSession({ profile: "docker-windlass-sandbox", model: "gpt-nope" }));
-		expect({ code: unknown.reason, message: unknown.message }).toEqual(serverRefusal(() => chosenModel(list, "gpt-nope")));
+		expect({ code: unknown.reason, message: unknown.message }).toEqual(
+			serverRefusal(() => chosenModel(list, "gpt-nope")),
+		);
 		const session = await user.createSession({ profile: "docker-windlass-sandbox", model: some.id });
 		expect(session.model).toBe(some.id);
 		expect((await user.createSession({ profile: "docker-windlass-sandbox" })).model).toBe(list.defaultModel);
 		const api = mock.session(ada, session.id);
 		const tooMuch = await refusal(api.prompt({ text: "hello", effort: "max" }));
-		expect({ code: tooMuch.reason, message: tooMuch.message }).toEqual(serverRefusal(() => checkEffort(list, some.id, "max")));
+		expect({ code: tooMuch.reason, message: tooMuch.message }).toEqual(
+			serverRefusal(() => checkEffort(list, some.id, "max")),
+		);
 		const noEffort = await refusal(api.prompt({ text: "hello", model: none.id, effort: "low" }));
-		expect({ code: noEffort.reason, message: noEffort.message }).toEqual(serverRefusal(() => checkEffort(list, none.id, "low")));
+		expect({ code: noEffort.reason, message: noEffort.message }).toEqual(
+			serverRefusal(() => checkEffort(list, none.id, "low")),
+		);
 		const other = await refusal(api.prompt({ text: "hello", model: "gpt-nope" }));
 		expect(other.reason).toBe("bad_model");
 		mock.dispose();
@@ -114,7 +131,9 @@ describe("sessionModelWords", () => {
 
 	it("names a Claude Code session's model as Claude Code does, not by its id", () => {
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "fable" })).toBe("Fable 5.2");
-		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe("Default (recommended)");
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe(
+			"Default (recommended)",
+		);
 		// A model the list does not know, or no list yet: format the id.
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "opus" })).toBe("Opus");
 		expect(sessionModelWords({ harness: "claude", harnessModels: null, model: "fable" })).toBe("Fable");
@@ -137,7 +156,9 @@ describe("the picker's model names and credentials", () => {
 
 	it("distinguishes a paid OpenCode Zen login from its free models", () => {
 		const entry = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
-		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["opencode"] }, "nas")).toBe("OpenCode Zen login · nas");
+		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["opencode"] }, "nas")).toBe(
+			"OpenCode Zen login · nas",
+		);
 		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["free"] }, "nas")).toBe("free");
 	});
 
@@ -151,11 +172,27 @@ describe("the picker's model names and credentials", () => {
 	});
 
 	it("says whose credential serves a provider: the machine's sign-in first, the key where chosen, keys when hosted", () => {
-		const claude = { id: "claude" as const, adapter: "", image: "", signIn: "token" as const, machineSignIns: ["anthropic" as const] };
+		const claude = {
+			id: "claude" as const,
+			adapter: "",
+			image: "",
+			signIn: "token" as const,
+			machineSignIns: ["anthropic" as const],
+		};
 		expect(credentialWords("claude", "anthropic", claude, "mac-mini")).toBe("Claude subscription · mac-mini");
-		expect(credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"], source: "key" }, "mac-mini")).toBe("Anthropic key");
+		expect(
+			credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"], source: "key" }, "mac-mini"),
+		).toBe("Anthropic key");
 		expect(credentialWords("claude", "anthropic", null, null)).toBe("Anthropic key");
-		const opencode = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const, machineProviders: ["chatgpt"], machineSignIns: ["openai" as const], platformKeys: ["google" as const] };
+		const opencode = {
+			id: "opencode" as const,
+			adapter: "",
+			image: "",
+			signIn: "token" as const,
+			machineProviders: ["chatgpt"],
+			machineSignIns: ["openai" as const],
+			platformKeys: ["google" as const],
+		};
 		const legacy = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
 		expect(credentialWords("opencode", "openai", legacy, "nas")).toBe("login on nas");
 		expect(credentialWords("opencode", "openai", opencode, "nas")).toBe("ChatGPT plan · nas");

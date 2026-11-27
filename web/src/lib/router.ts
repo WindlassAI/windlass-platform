@@ -52,12 +52,22 @@ export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as cons
 export type RepositoryPaneView = (typeof REPOSITORY_VIEWS)[number];
 
 /** The sections of a repository's settings a link can open at, in the order the page has them. */
-export const REPOSITORY_SECTIONS = ["defaults", "screenshots", "autonomy", "setup", "checks", "network", "secrets", "servers", "forget"] as const;
+export const REPOSITORY_SECTIONS = [
+	"defaults",
+	"screenshots",
+	"autonomy",
+	"setup",
+	"checks",
+	"network",
+	"secrets",
+	"servers",
+	"forget",
+] as const;
 export type RepositorySection = (typeof REPOSITORY_SECTIONS)[number];
 
 /** The section the address's fragment names, on a repository's settings; null when it names none. */
 export function sectionOf(hash: string): RepositorySection | null {
-	return REPOSITORY_SECTIONS.find((section) => `#${section}` === hash) ?? null;
+	return REPOSITORY_SECTIONS.find(section => `#${section}` === hash) ?? null;
 }
 
 /** The address's query (`location.search`) is read for the Factory page's filters only. */
@@ -67,7 +77,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/factory") {
 		const query = new URLSearchParams(search);
 		const repository = githubId(query.get("repository") ?? "");
-		const from = ITEM_SOURCES.find((source) => source === query.get("from"));
+		const from = ITEM_SOURCES.find(source => source === query.get("from"));
 		return { name: "factory", ...(repository !== null ? { repository } : {}), ...(from ? { from } : {}) };
 	}
 	if (path === "/new") return { name: "new" };
@@ -82,13 +92,14 @@ export function parseRoute(pathname: string, search = ""): Route {
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
 	if (docs?.[1]) return { name: "docs", slug: docs[1] };
 	if (path === "/repositories/none") return { name: "home", scope: "none" };
-	const repository = /^\/repositories\/([1-9][0-9]{0,18})(\/new|\/agents|\/items|\/pulls|\/settings|\/settings\/new)?$/.exec(path);
+	const repository =
+		/^\/repositories\/([1-9][0-9]{0,18})(\/new|\/agents|\/items|\/pulls|\/settings|\/settings\/new)?$/.exec(path);
 	if (repository?.[1]) {
 		const id = githubId(repository[1]);
 		if (id === null) return { name: "notfound" };
 		if (repository[2] === "/new") return { name: "new", repository: id };
 		if (repository[2] === "/settings/new") return { name: "new", repository: id, over: "settings" };
-		const view = REPOSITORY_VIEWS.find((one) => `/${one}` === repository[2]);
+		const view = REPOSITORY_VIEWS.find(one => `/${one}` === repository[2]);
 		return view ? { name: "repository", id, view } : { name: "repository", id };
 	}
 	const session = /^\/agents\/([^/]+)$/.exec(path);
@@ -103,7 +114,9 @@ function pathOf(route: Route): string {
 		case "home":
 			return route.scope === "none" ? "/repositories/none" : "/";
 		case "new":
-			return route.repository === undefined ? "/new" : `/repositories/${route.repository}${route.over === "settings" ? "/settings" : ""}/new`;
+			return route.repository === undefined
+				? "/new"
+				: `/repositories/${route.repository}${route.over === "settings" ? "/settings" : ""}/new`;
 		case "repository":
 			return `/repositories/${route.id}${route.section ? "/settings" : route.view ? `/${route.view}` : ""}`;
 		case "usage":
@@ -137,7 +150,10 @@ export function href(route: Route): string {
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
 	if (mock !== null) query.set("mock", mock);
-	const fragment = (route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section ? `#${route.section}` : "";
+	const fragment =
+		(route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section
+			? `#${route.section}`
+			: "";
 	const search = query.toString();
 	return pathOf(route) + (search ? `?${search}` : "") + fragment;
 }
@@ -217,7 +233,10 @@ export function navigate(route: Route, options: { replace?: boolean } = {}): voi
 	if (options.replace) history.replaceState({ from: entryState().from }, "", target);
 	else {
 		history.replaceState({ ...entryState(), scroll: window.scrollY }, "", current);
-		const from: PageFrom = { href: current, label: labels.get(current) ?? routeLabel(parseRoute(location.pathname, location.search)) };
+		const from: PageFrom = {
+			href: current,
+			label: labels.get(current) ?? routeLabel(parseRoute(location.pathname, location.search)),
+		};
 		history.pushState({ from, fromPage: parseRoute(location.pathname).name }, "", target);
 		window.scrollTo?.(0, 0);
 	}
@@ -225,7 +244,8 @@ export function navigate(route: Route, options: { replace?: boolean } = {}): voi
 }
 
 /** A click the app handles: not one that opens a new tab or window. */
-const plainClick = (event: React.MouseEvent) => !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+const plainClick = (event: React.MouseEvent) =>
+	!event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 
 /** Where the entry you are on was opened from, when an app link opened it. */
 export function pageFrom(): PageFrom | null {
@@ -238,14 +258,16 @@ export function pageFrom(): PageFrom | null {
  * the scroll stay right), or on a direct visit, a reload in a new tab or a page opened by a filter's
  * change, to `fallback`, the trail's parent. Null where neither is.
  */
-export function useBack(fallback: { route: Route; label: string } | null): { label: string; href: string; onClick(event: React.MouseEvent<HTMLAnchorElement>): void } | null {
+export function useBack(
+	fallback: { route: Route; label: string } | null,
+): { label: string; href: string; onClick(event: React.MouseEvent<HTMLAnchorElement>): void } | null {
 	useRoute();
 	const from = pageFrom();
 	if (from) {
 		return {
 			label: from.label,
 			href: from.href,
-			onClick: (event) => {
+			onClick: event => {
 				if (!plainClick(event)) return;
 				event.preventDefault();
 				history.back();
@@ -297,7 +319,9 @@ function restoreScroll(top: unknown): void {
 export function keepScroll(): void {
 	if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 	window.addEventListener("popstate", () => restoreScroll(entryState().scroll));
-	window.addEventListener("pagehide", () => history.replaceState({ ...entryState(), scroll: window.scrollY }, "", here()));
+	window.addEventListener("pagehide", () =>
+		history.replaceState({ ...entryState(), scroll: window.scrollY }, "", here()),
+	);
 	// A user's own scroll stops a restore still waiting for the page to grow.
 	window.addEventListener("wheel", () => restoring++, { passive: true });
 	window.addEventListener("touchmove", () => restoring++, { passive: true });
@@ -336,10 +360,13 @@ export function useHash(): string {
  * Props for an anchor that navigates without a page load, and still opens in a new tab on a modified click.
  * `replace`: a link that changes what the page shows (a filter), not the page, replaces the entry you are on.
  */
-export function linkProps(route: Route, options: { replace?: boolean } = {}): { href: string; onClick: (event: React.MouseEvent<HTMLAnchorElement>) => void } {
+export function linkProps(
+	route: Route,
+	options: { replace?: boolean } = {},
+): { href: string; onClick: (event: React.MouseEvent<HTMLAnchorElement>) => void } {
 	return {
 		href: href(route),
-		onClick: (event) => {
+		onClick: event => {
 			if (!plainClick(event)) return;
 			event.preventDefault();
 			navigate(route, options);

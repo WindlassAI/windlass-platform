@@ -8,7 +8,14 @@
  * sets them, and whether its own file can replace them depends on the Windlass in a sandbox. The
  * list is saved whole, by one control.
  */
-import { type GithubId, MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHECK_TIMEOUT_SECONDS, MAX_SETUP_COMMAND_CHARS, type RepositoryCheck } from "@contract";
+import {
+	type GithubId,
+	MAX_CHECKS_PER_REPOSITORY,
+	MAX_CHECK_NAME_CHARS,
+	MAX_CHECK_TIMEOUT_SECONDS,
+	MAX_SETUP_COMMAND_CHARS,
+	type RepositoryCheck,
+} from "@contract";
 import { useEffect, useId, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PlusIcon, TrashIcon, WarnIcon } from "./Icons";
@@ -27,18 +34,25 @@ export interface CheckDraft {
 let nextKey = 1;
 
 export function draftOf(check: RepositoryCheck): CheckDraft {
-	return { key: nextKey++, name: check.name, command: check.command, when: (check.when ?? []).join(", "), seconds: check.timeoutSeconds === undefined ? "" : String(check.timeoutSeconds), showOutput: check.showOutput === true };
+	return {
+		key: nextKey++,
+		name: check.name,
+		command: check.command,
+		when: (check.when ?? []).join(", "),
+		seconds: check.timeoutSeconds === undefined ? "" : String(check.timeoutSeconds),
+		showOutput: check.showOutput === true,
+	};
 }
 
 /** The rows as the list that is sent: what a field says, with nothing around it. A row with neither a name nor a command is no check. */
 export function checksOf(drafts: readonly CheckDraft[]): RepositoryCheck[] {
 	return drafts
-		.filter((draft) => draft.name.trim() !== "" || draft.command.trim() !== "")
-		.map((draft) => {
+		.filter(draft => draft.name.trim() !== "" || draft.command.trim() !== "")
+		.map(draft => {
 			const when = draft.when
 				.split(/[,\n]/)
-				.map((pattern) => pattern.trim())
-				.filter((pattern) => pattern !== "");
+				.map(pattern => pattern.trim())
+				.filter(pattern => pattern !== "");
 			const seconds = draft.seconds.trim();
 			return {
 				name: draft.name.trim(),
@@ -51,14 +65,23 @@ export function checksOf(drafts: readonly CheckDraft[]): RepositoryCheck[] {
 }
 
 /** What it is and whose it is: the same wherever the list is shown. */
-export const CHECKS_ABOUT =
-	"Checks run before each turn ends. Failed checks go back to the agent up to three times.";
+export const CHECKS_ABOUT = "Checks run before each turn ends. Failed checks go back to the agent up to three times.";
 
 /**
  * The checks of one repository, read and changed in place. `labelledBy` is the heading it stands
  * under; `onSaved` hears of a save.
  */
-export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repositoryId: GithubId; name: string; labelledBy: string; onSaved?(): void }) {
+export function ChecksEditor({
+	repositoryId,
+	name,
+	labelledBy,
+	onSaved,
+}: {
+	repositoryId: GithubId;
+	name: string;
+	labelledBy: string;
+	onSaved?(): void;
+}) {
 	const { client, explain, platform } = useApp();
 	// Said only where the deployment offers work items, as every other word of them is.
 	const items = Boolean(platform.info?.items);
@@ -79,7 +102,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 			.user(auth)
 			.repositoryChecks(repositoryId)
 			.then(
-				(found) => {
+				found => {
 					if (!current) return;
 					setSaved(found.checks);
 					setDrafts(found.checks.map(draftOf));
@@ -96,7 +119,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 	const list = checksOf(drafts);
 	const changed = saved !== null && JSON.stringify(list) !== JSON.stringify(saved);
 	const change = (key: number, fields: Partial<CheckDraft>) => {
-		setDrafts((now) => now.map((draft) => (draft.key === key ? { ...draft, ...fields } : draft)));
+		setDrafts(now => now.map(draft => (draft.key === key ? { ...draft, ...fields } : draft)));
 		setDone(false);
 	};
 
@@ -131,7 +154,11 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 
 	return (
 		<>
-			{drafts.length === 0 ? <p className="usage-empty">No checks saved for {name}.{items && " Work items use CI."}</p> : null}
+			{drafts.length === 0 ? (
+				<p className="usage-empty">
+					No checks saved for {name}.{items && " Work items use CI."}
+				</p>
+			) : null}
 			<ul className="verify-list" aria-labelledby={labelledBy} aria-describedby={note}>
 				{drafts.map((draft, index) => (
 					<li key={draft.key} className="verify-check">
@@ -146,7 +173,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 								autoComplete="off"
 								maxLength={MAX_CHECK_NAME_CHARS}
 								value={draft.name}
-								onChange={(event) => change(draft.key, { name: event.target.value })}
+								onChange={event => change(draft.key, { name: event.target.value })}
 								disabled={saving}
 							/>
 							<input
@@ -159,7 +186,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 								autoComplete="off"
 								maxLength={MAX_SETUP_COMMAND_CHARS}
 								value={draft.command}
-								onChange={(event) => change(draft.key, { command: event.target.value })}
+								onChange={event => change(draft.key, { command: event.target.value })}
 								disabled={saving}
 							/>
 							<button
@@ -168,7 +195,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 								aria-label={`Remove the check ${draft.name.trim() || index + 1}`}
 								title="Remove"
 								onClick={() => {
-									setDrafts((now) => now.filter((other) => other.key !== draft.key));
+									setDrafts(now => now.filter(other => other.key !== draft.key));
 									setDone(false);
 								}}
 								disabled={saving}
@@ -187,7 +214,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 									autoCorrect="off"
 									autoComplete="off"
 									value={draft.when}
-									onChange={(event) => change(draft.key, { when: event.target.value })}
+									onChange={event => change(draft.key, { when: event.target.value })}
 									disabled={saving}
 								/>
 							</label>
@@ -199,11 +226,16 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 									placeholder="120"
 									maxLength={String(MAX_CHECK_TIMEOUT_SECONDS).length}
 									value={draft.seconds}
-									onChange={(event) => change(draft.key, { seconds: event.target.value.replace(/[^0-9]/g, "") })}
+									onChange={event => change(draft.key, { seconds: event.target.value.replace(/[^0-9]/g, "") })}
 									disabled={saving}
 								/>
 							</label>
-							<Check className="verify-shows" checked={draft.showOutput} disabled={saving} onChange={(on) => change(draft.key, { showOutput: on })}>
+							<Check
+								className="verify-shows"
+								checked={draft.showOutput}
+								disabled={saving}
+								onChange={on => change(draft.key, { showOutput: on })}
+							>
 								<span className="check-means">show its output in a pull request also when it passes</span>
 							</Check>
 						</div>
@@ -215,14 +247,22 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 					type="button"
 					className="button button-outline button-small"
 					onClick={() => {
-						setDrafts((now) => [...now, { key: nextKey++, name: "", command: "", when: "", seconds: "", showOutput: false }]);
+						setDrafts(now => [
+							...now,
+							{ key: nextKey++, name: "", command: "", when: "", seconds: "", showOutput: false },
+						]);
 						setDone(false);
 					}}
 					disabled={saving || drafts.length >= MAX_CHECKS_PER_REPOSITORY}
 				>
 					<PlusIcon size={12} /> Add a check
 				</button>
-				<button type="button" className="button button-outline button-small" onClick={save} disabled={!changed || saving}>
+				<button
+					type="button"
+					className="button button-outline button-small"
+					onClick={save}
+					disabled={!changed || saving}
+				>
 					{saving ? "Saving…" : "Save"}
 				</button>
 				{done && !changed ? (

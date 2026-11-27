@@ -1,6 +1,19 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
 import type { Verified } from "@contract";
-import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+	createContext,
+	memo,
+	useCallback,
+	useContext,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+	type RefObject,
+} from "react";
 import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
 import { SecretNotice } from "./SecretAsk";
 import { createPortal } from "react-dom";
@@ -9,15 +22,61 @@ import { absoluteTime, count, duration, percent, plural, spelledDuration } from 
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
 import { contextWords, costWords } from "../lib/acp";
-import { asksAbout, shownBlocks, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type NetworkBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import {
+	asksAbout,
+	shownBlocks,
+	toolBlocks,
+	ZERO_USAGE,
+	type Block,
+	type ChecksBlock,
+	type NetworkBlock,
+	type ErrorBlock,
+	type NoteBlock,
+	type NoticeBlock,
+	type PlanBlock,
+	type PlatformBlock,
+	type ReasoningBlock,
+	type SetupBlock,
+	type SubagentRun,
+	type TextBlock,
+	type ToolBlock,
+	type ToolState,
+	type TurnView,
+	type UserBlock,
+} from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
-import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
+import {
+	checkLine,
+	gateWord,
+	overruledLine,
+	ranEarlier,
+	unneededLine,
+	unresolvedLine,
+	unrunLine,
+} from "../lib/verified";
 import { useNow } from "../state/hooks";
 import { linkProps } from "../lib/router";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
-import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, PauseIcon, RefusedIcon, ResumeIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
+import {
+	AskIcon,
+	CheckIcon,
+	ChevronIcon,
+	CrossIcon,
+	DotIcon,
+	InfoIcon,
+	Mark,
+	PauseIcon,
+	RefusedIcon,
+	ResumeIcon,
+	RingIcon,
+	SandboxedIcon,
+	SteerIcon,
+	StopIcon,
+	ThoughtIcon,
+	WarnIcon,
+} from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
 import { AllowHost, BlockedList, blockedHeadline } from "./BlockedNetwork";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
@@ -26,13 +85,27 @@ import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
 // Prose
 // ---------------------------------------------------------------------------------------------
 
-export function Markdown({ text, streaming = false, className = "", copyCode = false }: { text: string; streaming?: boolean; className?: string; copyCode?: boolean }) {
+export function Markdown({
+	text,
+	streaming = false,
+	className = "",
+	copyCode = false,
+}: {
+	text: string;
+	streaming?: boolean;
+	className?: string;
+	copyCode?: boolean;
+}) {
 	const html = useMemo(() => renderMarkdown(text), [text]);
 	const root = useRef<HTMLDivElement>(null);
 	// The HTML is sanitised by DOMPurify in renderMarkdown.
 	return (
 		<>
-			<div ref={root} className={`prose${streaming ? " prose-streaming" : ""}${className ? ` ${className}` : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
+			<div
+				ref={root}
+				className={`prose${streaming ? " prose-streaming" : ""}${className ? ` ${className}` : ""}`}
+				dangerouslySetInnerHTML={{ __html: html }}
+			/>
 			{/* Not while the text streams in: the HTML is replaced with every chunk, and the last block may be half written. */}
 			{copyCode && !streaming ? <CodeCopies root={root} html={html} /> : null}
 		</>
@@ -57,7 +130,7 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
 	useLayoutEffect(() => {
 		const prose = root.current;
 		if (!prose) return;
-		const found = Array.from(prose.querySelectorAll("pre"), (pre) => {
+		const found = Array.from(prose.querySelectorAll("pre"), pre => {
 			let box = pre.parentElement;
 			if (!box?.classList.contains("code-block")) {
 				box = document.createElement("div");
@@ -109,11 +182,17 @@ export const PlatformPrompts = createContext<"builder" | "reviewer" | null>(null
  * A prompt's model as the rest of the page names it (lib/acp.ts, `sessionModelWords`): another agent's by the
  * name it gave the model ("6.2 Sol"), Windlass's by its id. Set by the conversation; the id as it is without it.
  */
-export const ModelLabel = createContext<(id: string) => string>((id) => id);
+export const ModelLabel = createContext<(id: string) => string>(id => id);
 
 /** The line a prompt of the platform's stands as, by the role of the agent it is to. `first`: the one that starts its timeline. */
 export const platformPromptLabel = (first: boolean, role: "builder" | "reviewer" = "reviewer") =>
-	role === "builder" ? (first ? "The factory's brief" : "The factory's word to the agent") : first ? "The platform's brief for this review" : "The platform's word to the reviewer";
+	role === "builder"
+		? first
+			? "The factory's brief"
+			: "The factory's word to the agent"
+		: first
+			? "The platform's brief for this review"
+			: "The platform's word to the reviewer";
 
 function PlatformPrompt({ block, first, role }: { block: UserBlock; first: boolean; role: "builder" | "reviewer" }) {
 	const text = block.text.trim();
@@ -147,7 +226,9 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 	return (
 		<div className={`user${steer ? " user-steer" : ""}`}>
 			<p className="user-text">
-				<span className="visually-hidden">{held ? "You, while the turn was paused: " : steer ? "You, while it worked: " : "You: "}</span>
+				<span className="visually-hidden">
+					{held ? "You, while the turn was paused: " : steer ? "You, while it worked: " : "You: "}
+				</span>
 				{block.text}
 			</p>
 			<div className="user-foot">
@@ -156,7 +237,10 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 						You
 					</span>
 					{held ? (
-						<span className="user-held-word" title="Sent while the turn was paused: the agent reads it when the turn resumes.">
+						<span
+							className="user-held-word"
+							title="Sent while the turn was paused: the agent reads it when the turn resumes."
+						>
 							<PauseIcon size={12} />
 							held
 						</span>
@@ -167,7 +251,9 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 						</span>
 					) : (
 						<>
-							<span title={modelLabel(block.model) === block.model ? undefined : block.model}>{modelLabel(block.model)}</span>
+							<span title={modelLabel(block.model) === block.model ? undefined : block.model}>
+								{modelLabel(block.model)}
+							</span>
 							{block.effort ? <span>effort {block.effort}</span> : null}
 						</>
 					)}
@@ -195,7 +281,7 @@ function Reasoning({ block }: { block: ReasoningBlock }) {
 	const title = reasoningTitle(block.text);
 	return (
 		<div className={`reasoning${block.streaming ? " reasoning-streaming" : ""}`}>
-			<button type="button" className="line-button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+			<button type="button" className="line-button" aria-expanded={open} onClick={() => setOpen(value => !value)}>
 				<span className="line-glyph tone-dim">
 					<ThoughtIcon size={13} />
 				</span>
@@ -231,20 +317,38 @@ function ToolGlyph({ block }: { block: ToolBlock }) {
 		case "asking":
 			return <AskIcon size={14} className="tone-needs" />;
 		case "running":
-			return block.stopRequested ? <StopIcon size={14} className="tone-warn pulse" /> : <Mark size={15} turning className="tone-accent" />;
+			return block.stopRequested ? (
+				<StopIcon size={14} className="tone-warn pulse" />
+			) : (
+				<Mark size={15} turning className="tone-accent" />
+			);
 		case "done":
 			return <CheckIcon size={14} className="tone-accent settle" />;
 		case "refused":
 			return <RefusedIcon size={14} className="tone-warn settle" />;
 		case "failed":
-			return block.interrupted ? <StopIcon size={14} className="tone-warn settle" /> : <CrossIcon size={14} className="tone-bad settle" />;
+			return block.interrupted ? (
+				<StopIcon size={14} className="tone-warn settle" />
+			) : (
+				<CrossIcon size={14} className="tone-bad settle" />
+			);
 	}
 }
 
 const OUTPUT_LINES = 24;
 
 /** Monospace output, capped: the first lines of a finished output, or the last lines of one still arriving. */
-export function Output({ text, tail = false, limit = OUTPUT_LINES, label }: { text: string; tail?: boolean; limit?: number; label: string }) {
+export function Output({
+	text,
+	tail = false,
+	limit = OUTPUT_LINES,
+	label,
+}: {
+	text: string;
+	tail?: boolean;
+	limit?: number;
+	label: string;
+}) {
 	const [all, setAll] = useState(false);
 	const id = useId();
 	const lines = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
@@ -252,11 +356,20 @@ export function Output({ text, tail = false, limit = OUTPUT_LINES, label }: { te
 	const shown = all || hidden === 0 ? lines : tail ? lines.slice(-limit) : lines.slice(0, limit);
 	return (
 		<div className="output">
-			{tail && hidden > 0 && !all ? <p className="output-more output-more-top">{plural(hidden, "earlier line")} above</p> : null}
+			{tail && hidden > 0 && !all ? (
+				<p className="output-more output-more-top">{plural(hidden, "earlier line")} above</p>
+			) : null}
 			<pre id={id} className="output-text" tabIndex={0} aria-label={label}>
 				{shown.join("\n")}
 			</pre>
-			{hidden > 0 ? <FoldToggle open={all} controls={id} label={FOLD_WORDS.more(hidden, hidden === 1 ? "more line" : "more lines")} onToggle={() => setAll((value) => !value)} /> : null}
+			{hidden > 0 ? (
+				<FoldToggle
+					open={all}
+					controls={id}
+					label={FOLD_WORDS.more(hidden, hidden === 1 ? "more line" : "more lines")}
+					onToggle={() => setAll(value => !value)}
+				/>
+			) : null}
 		</div>
 	);
 }
@@ -277,24 +390,40 @@ function ToolBody({ block }: { block: ToolBlock }) {
 					<h4 className="tool-part-title">input</h4>
 					{input.trim() !== "" ? <CopyButton text={copyInput} label={labels.input} /> : null}
 				</div>
-				{input.trim() === "" ? <p className="tool-part-empty">no arguments</p> : <Output text={input} label={`Input of ${block.name}`} limit={16} />}
+				{input.trim() === "" ? (
+					<p className="tool-part-empty">no arguments</p>
+				) : (
+					<Output text={input} label={`Input of ${block.name}`} limit={16} />
+				)}
 			</section>
 			<section className="tool-part" aria-label="Output">
 				<div className="tool-part-head">
 					<h4 className="tool-part-title">
 						{block.output === null ? (block.state === "running" ? "output so far" : "output") : "output"}
-						{block.truncated ? <span className="tool-part-note">capped by Windlass: {count(block.truncated.originalLines)} lines in total</span> : null}
+						{block.truncated ? (
+							<span className="tool-part-note">
+								capped by Windlass: {count(block.truncated.originalLines)} lines in total
+							</span>
+						) : null}
 					</h4>
-					{diff.length > 0 || (output !== null && output !== "") ? <CopyButton text={copyOutput} label={labels.output} /> : null}
+					{diff.length > 0 || (output !== null && output !== "") ? (
+						<CopyButton text={copyOutput} label={labels.output} />
+					) : null}
 				</div>
 				{diff.length > 0 ? (
 					<div className="tool-diff">
-						{diff.map((file) => (
+						{diff.map(file => (
 							<DiffHunks key={file.path} file={file} />
 						))}
 					</div>
 				) : output === null || output === "" ? (
-					<p className="tool-part-empty">{block.state === "running" ? "nothing yet" : block.state === "input" || block.state === "queued" || block.state === "asking" ? "not run yet" : "no output"}</p>
+					<p className="tool-part-empty">
+						{block.state === "running"
+							? "nothing yet"
+							: block.state === "input" || block.state === "queued" || block.state === "asking"
+								? "not run yet"
+								: "no output"}
+					</p>
 				) : (
 					<Output text={output} tail={block.output === null} label={`Output of ${block.name}`} />
 				)}
@@ -307,7 +436,13 @@ function ToolBody({ block }: { block: ToolBlock }) {
 const PREVIEW_LINES = 5;
 
 /** "Stop this call": an icon button beside a running call's row. */
-function StopCallButton({ block, stop }: { block: ToolBlock; stop: (block: ToolBlock) => Promise<{ stopped: boolean; message: string | null }> }) {
+function StopCallButton({
+	block,
+	stop,
+}: {
+	block: ToolBlock;
+	stop: (block: ToolBlock) => Promise<{ stopped: boolean; message: string | null }>;
+}) {
 	const [asking, setAsking] = useState(false);
 	const [refusal, setRefusal] = useState<string | null>(null);
 	const target = summarizeTool(block).target;
@@ -333,7 +468,14 @@ function StopCallButton({ block, stop }: { block: ToolBlock; stop: (block: ToolB
 
 	return (
 		<>
-			<button type="button" className="icon-button icon-button-small tool-stop" onClick={onClick} disabled={asking || block.stopRequested} aria-label={`Stop this call: ${block.name}${target ? ` ${target}` : ""}`} title="Stop this call">
+			<button
+				type="button"
+				className="icon-button icon-button-small tool-stop"
+				onClick={onClick}
+				disabled={asking || block.stopRequested}
+				aria-label={`Stop this call: ${block.name}${target ? ` ${target}` : ""}`}
+				title="Stop this call"
+			>
 				<StopIcon size={12} />
 				<span className="tool-stop-label" aria-hidden="true">
 					Stop this call
@@ -357,7 +499,8 @@ function toolStateWord(block: ToolBlock, exitCode: number | null): string | null
 			if (block.interrupted) return "stopped";
 			return exitCode !== null ? null : "failed";
 		case "refused":
-			if (block.answer && !block.answer.approve) return block.answer.by === "platform" ? "declined, no answer" : "declined";
+			if (block.answer && !block.answer.approve)
+				return block.answer.by === "platform" ? "declined, no answer" : "declined";
 			return TOOL_STATE_WORD.refused;
 		case "running":
 			return block.stopRequested ? "stopping" : TOOL_STATE_WORD.running;
@@ -390,14 +533,21 @@ const ToolRow = memo(function ToolRow({ block: given, nested = false }: { block:
 	const previewLines = preview
 		? preview
 				.split("\n")
-				.filter((line) => line.trim() !== "")
+				.filter(line => line.trim() !== "")
 				.slice(-PREVIEW_LINES)
 		: [];
 
 	return (
-		<div className={`tool tool-${block.state}${block.interrupted ? " tool-interrupted" : ""}${stopCall ? " tool-stoppable" : ""}`}>
+		<div
+			className={`tool tool-${block.state}${block.interrupted ? " tool-interrupted" : ""}${stopCall ? " tool-stoppable" : ""}`}
+		>
 			<div className="tool-head">
-				<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+				<button
+					type="button"
+					className="line-button tool-row"
+					aria-expanded={open}
+					onClick={() => setOpen(value => !value)}
+				>
 					<span className="line-glyph">
 						<ToolGlyph block={block} />
 					</span>
@@ -412,14 +562,21 @@ const ToolRow = memo(function ToolRow({ block: given, nested = false }: { block:
 					<span className="tool-facts">
 						{summary.facts
 							// A call the user stopped ends with a signal's exit code, which says nothing they do not know.
-							.filter((fact) => !(block.stoppedByUser && fact.startsWith("exit ")))
-							.map((fact) => (
-								<span key={fact} className={fact.startsWith("exit ") && summary.exitCode !== 0 ? "tone-bad" : undefined}>
+							.filter(fact => !(block.stoppedByUser && fact.startsWith("exit ")))
+							.map(fact => (
+								<span
+									key={fact}
+									className={fact.startsWith("exit ") && summary.exitCode !== 0 ? "tone-bad" : undefined}
+								>
 									{fact}
 								</span>
 							))}
 						{stateWord ? <span className={`tool-state tool-state-${block.state}`}>{stateWord}</span> : null}
-						{elapsed !== null ? <span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span> : block.durationMs !== null ? <span>{duration(block.durationMs)}</span> : null}
+						{elapsed !== null ? (
+							<span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span>
+						) : block.durationMs !== null ? (
+							<span>{duration(block.durationMs)}</span>
+						) : null}
 					</span>
 					<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
 				</button>
@@ -427,7 +584,7 @@ const ToolRow = memo(function ToolRow({ block: given, nested = false }: { block:
 			</div>
 			{block.refusal ? <p className="tool-refusal">{block.refusal.text}</p> : null}
 			{asked && interactive ? (
-<InlineQuestion question={asked} flow={interactive.flow} underItsCall />
+				<InlineQuestion question={asked} flow={interactive.flow} underItsCall />
 			) : block.state === "asking" ? (
 				<AskedLine block={block} />
 			) : (
@@ -447,16 +604,22 @@ const ToolRow = memo(function ToolRow({ block: given, nested = false }: { block:
 // A harness's plan
 // ---------------------------------------------------------------------------------------------
 
-const PLAN_WORD: Record<PlanBlock["entries"][number]["status"], string> = { pending: "to do", in_progress: "in progress", completed: "done" };
+const PLAN_WORD: Record<PlanBlock["entries"][number]["status"], string> = {
+	pending: "to do",
+	in_progress: "in progress",
+	completed: "done",
+};
 
 /** The plan a harness keeps for its turn: its steps as a short checklist, which each update of the plan redraws in place. */
 function Plan({ block }: { block: PlanBlock }) {
-	const done = block.entries.filter((entry) => entry.status === "completed").length;
+	const done = block.entries.filter(entry => entry.status === "completed").length;
 	const all = block.entries.length > 0 && done === block.entries.length;
 	return (
 		<div className="plan">
 			<p className="plan-head">
-				<span className="line-glyph">{all ? <CheckIcon size={14} className="tone-accent" /> : <RingIcon size={14} className="tone-faint" />}</span>
+				<span className="line-glyph">
+					{all ? <CheckIcon size={14} className="tone-accent" /> : <RingIcon size={14} className="tone-faint" />}
+				</span>
 				<span className="plan-word">plan</span>
 				<span className="plan-count">
 					{done} of {block.entries.length} done
@@ -465,7 +628,15 @@ function Plan({ block }: { block: PlanBlock }) {
 			<ol className="plan-steps">
 				{block.entries.map((entry, index) => (
 					<li key={index} className={`plan-step plan-step-${entry.status}`}>
-						<span className="line-glyph">{entry.status === "completed" ? <CheckIcon size={12} className="tone-accent" /> : entry.status === "in_progress" ? <DotIcon size={12} className="tone-accent" /> : <RingIcon size={12} className="tone-faint" />}</span>
+						<span className="line-glyph">
+							{entry.status === "completed" ? (
+								<CheckIcon size={12} className="tone-accent" />
+							) : entry.status === "in_progress" ? (
+								<DotIcon size={12} className="tone-accent" />
+							) : (
+								<RingIcon size={12} className="tone-faint" />
+							)}
+						</span>
 						<span className="plan-text">{entry.content}</span>
 						<span className="visually-hidden">, {PLAN_WORD[entry.status]}</span>
 					</li>
@@ -480,11 +651,15 @@ function Plan({ block }: { block: PlanBlock }) {
 // ---------------------------------------------------------------------------------------------
 
 /** The subagent's own state, in the words and classes of a call's. */
-function subagentLook(block: ToolBlock, run: SubagentRun): { look: "running" | "done" | "failed"; halted: boolean; word: string | null; asking?: boolean } {
+function subagentLook(
+	block: ToolBlock,
+	run: SubagentRun,
+): { look: "running" | "done" | "failed"; halted: boolean; word: string | null; asking?: boolean } {
 	switch (run.state) {
 		case "running":
 			// One of its calls waits on a question of the user's, which is put at the end of the turn.
-			if (run.work.turns[0]?.blocks.some((child) => child.kind === "tool" && child.state === "asking")) return { look: "running", halted: false, word: TOOL_STATE_WORD.asking, asking: true };
+			if (run.work.turns[0]?.blocks.some(child => child.kind === "tool" && child.state === "asking"))
+				return { look: "running", halted: false, word: TOOL_STATE_WORD.asking, asking: true };
 			return { look: "running", halted: false, word: block.stopRequested ? "stopping" : TOOL_STATE_WORD.running };
 		case "completed":
 			return { look: "done", halted: false, word: null };
@@ -507,7 +682,17 @@ function subagentSaid(block: ToolBlock, run: SubagentRun): string | null {
 	return run.detail;
 }
 
-const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+const EMPTY_TURN: TurnView = {
+	turn: 1,
+	blocks: [],
+	steps: 0,
+	stepOpen: false,
+	interruptRequested: false,
+	changedFiles: null,
+	usage: ZERO_USAGE,
+	end: null,
+	platformAnswer: null,
+};
 
 /**
  * A call of the `subagent` tool once its subagent started: a row like any call's, whose state is the
@@ -534,9 +719,22 @@ const SubagentRow = memo(function SubagentRow({ block, run }: { block: ToolBlock
 	return (
 		<div className={`tool tool-${look}${halted ? " tool-interrupted" : ""}${stopCall ? " tool-stoppable" : ""}`}>
 			<div className="tool-head">
-				<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+				<button
+					type="button"
+					className="line-button tool-row"
+					aria-expanded={open}
+					onClick={() => setOpen(value => !value)}
+				>
 					<span className="line-glyph">
-						{running ? <Mark size={15} turning className="tone-accent" /> : look === "done" ? <CheckIcon size={14} className="tone-accent settle" /> : halted ? <StopIcon size={14} className="tone-warn settle" /> : <CrossIcon size={14} className="tone-bad settle" />}
+						{running ? (
+							<Mark size={15} turning className="tone-accent" />
+						) : look === "done" ? (
+							<CheckIcon size={14} className="tone-accent settle" />
+						) : halted ? (
+							<StopIcon size={14} className="tone-warn settle" />
+						) : (
+							<CrossIcon size={14} className="tone-bad settle" />
+						)}
 					</span>
 					<span className="tool-name">subagent</span>
 					<span className="tool-target">{target}</span>
@@ -544,7 +742,11 @@ const SubagentRow = memo(function SubagentRow({ block, run }: { block: ToolBlock
 						{run.background ? <span>background</span> : null}
 						{calls.length > 0 ? <span>{plural(calls.length, "tool call")}</span> : null}
 						{word ? <span className={`tool-state tool-state-${asking ? "asking" : look}`}>{word}</span> : null}
-						{elapsed !== null ? <span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span> : run.durationMs !== null ? <span>{duration(run.durationMs)}</span> : null}
+						{elapsed !== null ? (
+							<span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span>
+						) : run.durationMs !== null ? (
+							<span>{duration(run.durationMs)}</span>
+						) : null}
 					</span>
 					<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
 				</button>
@@ -565,8 +767,11 @@ function SubagentBody({ block, run, work }: { block: ToolBlock; run: SubagentRun
 	const input = parseInput(block.inputText);
 	const task = typeof input?.task === "string" ? input.task.trim() : formatInput(block);
 	// Its last words are its answer once it finished; what came before is what it did.
-	const answer = run.state === "completed" ? (work.blocks.findLast((candidate): candidate is TextBlock => candidate.kind === "text") ?? null) : null;
-	const did = work.blocks.filter((candidate) => candidate !== answer);
+	const answer =
+		run.state === "completed"
+			? (work.blocks.findLast((candidate): candidate is TextBlock => candidate.kind === "text") ?? null)
+			: null;
+	const did = work.blocks.filter(candidate => candidate !== answer);
 	return (
 		<div className="tool-body">
 			<section className="tool-part" aria-label="Task">
@@ -581,7 +786,7 @@ function SubagentBody({ block, run, work }: { block: ToolBlock; run: SubagentRun
 				{did.length === 0 ? (
 					<p className="tool-part-empty">{run.state === "running" ? "nothing yet" : "nothing recorded"}</p>
 				) : (
-					did.map((child) => (
+					did.map(child => (
 						<div key={child.id} className={blockClass(child)}>
 							{renderBlock(child, true)}
 						</div>
@@ -640,22 +845,59 @@ const SetupRow = memo(function SetupRow({ block }: { block: SetupBlock }) {
 	const copyOutput = useCallback(() => setupOutput(latest()), [latest]);
 	const ended = block.state === "succeeded" ? "done" : running ? "running" : "failed";
 	const halted = block.state === "timed_out" || block.state === "stopped" || block.state === "cut_off";
-	const word = running ? "running" : block.state === "failed" ? (block.exitCode === null ? "failed" : null) : block.state === "timed_out" ? "time limit" : block.state === "stopped" ? "stopped" : block.state === "cut_off" ? "cut off" : null;
+	const word = running
+		? "running"
+		: block.state === "failed"
+			? block.exitCode === null
+				? "failed"
+				: null
+			: block.state === "timed_out"
+				? "time limit"
+				: block.state === "stopped"
+					? "stopped"
+					: block.state === "cut_off"
+						? "cut off"
+						: null;
 	const said = setupSaid(block);
 	// Under the row, without opening it: output as it arrives, and the end of what a run that did not succeed printed.
-	const preview = open || block.state === "succeeded" ? [] : output.split("\n").filter((line) => line.trim() !== "").slice(-PREVIEW_LINES);
+	const preview =
+		open || block.state === "succeeded"
+			? []
+			: output
+					.split("\n")
+					.filter(line => line.trim() !== "")
+					.slice(-PREVIEW_LINES);
 	return (
 		<div className={`tool tool-${ended}${halted ? " tool-interrupted" : ""}`}>
-			<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+			<button
+				type="button"
+				className="line-button tool-row"
+				aria-expanded={open}
+				onClick={() => setOpen(value => !value)}
+			>
 				<span className="line-glyph">
-					{running ? <Mark size={15} turning className="tone-accent" /> : block.state === "succeeded" ? <CheckIcon size={14} className="tone-accent settle" /> : halted ? <StopIcon size={14} className="tone-warn settle" /> : <CrossIcon size={14} className="tone-bad settle" />}
+					{running ? (
+						<Mark size={15} turning className="tone-accent" />
+					) : block.state === "succeeded" ? (
+						<CheckIcon size={14} className="tone-accent settle" />
+					) : halted ? (
+						<StopIcon size={14} className="tone-warn settle" />
+					) : (
+						<CrossIcon size={14} className="tone-bad settle" />
+					)}
 				</span>
 				<span className="tool-name">setup</span>
 				<span className="tool-target">{block.command.split("\n", 1)[0]}</span>
 				<span className="tool-facts">
-					{block.state === "failed" && block.exitCode !== null ? <span className="tone-bad">exit {block.exitCode}</span> : null}
+					{block.state === "failed" && block.exitCode !== null ? (
+						<span className="tone-bad">exit {block.exitCode}</span>
+					) : null}
 					{word ? <span className={`tool-state tool-state-${ended}`}>{word}</span> : null}
-					{elapsed !== null ? <span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span> : block.durationMs !== null ? <span>{duration(block.durationMs)}</span> : null}
+					{elapsed !== null ? (
+						<span>{duration(Math.max(1000, Math.floor(elapsed / 1000) * 1000))}</span>
+					) : block.durationMs !== null ? (
+						<span>{duration(block.durationMs)}</span>
+					) : null}
 				</span>
 				<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
 			</button>
@@ -682,7 +924,11 @@ const SetupRow = memo(function SetupRow({ block }: { block: SetupBlock }) {
 							</h4>
 							{output !== "" ? <CopyButton text={copyOutput} label="Copy the setup command's output" /> : null}
 						</div>
-						{output === "" ? <p className="tool-part-empty">{running ? "nothing yet" : "no output"}</p> : <Output text={output} tail label="Output of the setup command" />}
+						{output === "" ? (
+							<p className="tool-part-empty">{running ? "nothing yet" : "no output"}</p>
+						) : (
+							<Output text={output} tail label="Output of the setup command" />
+						)}
 					</section>
 				</div>
 			) : null}
@@ -697,15 +943,22 @@ const SetupRow = memo(function SetupRow({ block }: { block: SetupBlock }) {
 function Checks({ block }: { block: ChecksBlock }) {
 	const [open, setOpen] = useState(false);
 	// A check whose command could not be run at all has no exit code: it did not fail, it was not started.
-	const unstarted = block.results.filter((result) => result.status === "could_not_start" && result.exitCode === null).map((result) => result.name);
-	const failing = block.results.filter((result) => result.status !== "passed" && !unstarted.includes(result.name)).map((result) => result.name);
+	const unstarted = block.results
+		.filter(result => result.status === "could_not_start" && result.exitCode === null)
+		.map(result => result.name);
+	const failing = block.results
+		.filter(result => result.status !== "passed" && !unstarted.includes(result.name))
+		.map(result => result.name);
 	const words =
 		block.state === "running"
 			? "running"
 			: block.state === "passed"
 				? `${plural(block.results.length, "check")} passed`
 				: block.state === "failed"
-					? [...(failing.length > 0 ? [`${failing.join(", ")} failed`] : []), ...(unstarted.length > 0 ? [`${unstarted.join(", ")} not started`] : [])].join(", ")
+					? [
+							...(failing.length > 0 ? [`${failing.join(", ")} failed`] : []),
+							...(unstarted.length > 0 ? [`${unstarted.join(", ")} not started`] : []),
+						].join(", ")
 					: (block.message ?? "did not finish");
 	const expandable = block.results.length > 0 || block.report !== null;
 	// A run in which nothing failed and a check was not started is marked as a warning, like one that did not finish: nothing in it speaks against the code.
@@ -713,12 +966,26 @@ function Checks({ block }: { block: ChecksBlock }) {
 	const row = (
 		<>
 			<span className="line-glyph">
-				{block.state === "running" ? <Mark size={15} turning className="tone-accent" /> : block.state === "passed" ? <CheckIcon size={14} className="tone-accent settle" /> : failed ? <CrossIcon size={14} className="tone-bad settle" /> : <WarnIcon size={14} className="tone-warn settle" />}
+				{block.state === "running" ? (
+					<Mark size={15} turning className="tone-accent" />
+				) : block.state === "passed" ? (
+					<CheckIcon size={14} className="tone-accent settle" />
+				) : failed ? (
+					<CrossIcon size={14} className="tone-bad settle" />
+				) : (
+					<WarnIcon size={14} className="tone-warn settle" />
+				)}
 			</span>
 			<span className="tool-name">checks</span>
 			<span className="tool-target">{block.names.join(", ")}</span>
 			<span className="tool-facts">
-				<span className={failed ? "tone-bad" : block.state === "passed" || block.state === "running" ? undefined : "tone-warn"}>{words}</span>
+				<span
+					className={
+						failed ? "tone-bad" : block.state === "passed" || block.state === "running" ? undefined : "tone-warn"
+					}
+				>
+					{words}
+				</span>
 				<span>run {block.run}</span>
 			</span>
 		</>
@@ -726,7 +993,12 @@ function Checks({ block }: { block: ChecksBlock }) {
 	return (
 		<div className={`tool tool-checks tool-checks-${block.state}`}>
 			{expandable ? (
-				<button type="button" className="line-button tool-row" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+				<button
+					type="button"
+					className="line-button tool-row"
+					aria-expanded={open}
+					onClick={() => setOpen(value => !value)}
+				>
 					{row}
 					<ChevronIcon size={12} className={`line-chevron${open ? " line-chevron-open" : ""}`} />
 				</button>
@@ -739,9 +1011,13 @@ function Checks({ block }: { block: ChecksBlock }) {
 						<section className="tool-part" aria-label="Results">
 							<h4 className="tool-part-title">the project's checks</h4>
 							<ul className="check-list">
-								{block.results.map((result) => (
+								{block.results.map(result => (
 									<li key={result.name}>
-										{result.status === "passed" ? <CheckIcon size={13} className="tone-accent" /> : <CrossIcon size={13} className="tone-bad" />}
+										{result.status === "passed" ? (
+											<CheckIcon size={13} className="tone-accent" />
+										) : (
+											<CrossIcon size={13} className="tone-bad" />
+										)}
 										<span className="check-name">{result.name}</span>
 										<code>{result.command}</code>
 										<span className={result.status === "passed" ? "tone-dim" : "tone-bad"}>
@@ -765,7 +1041,17 @@ function Checks({ block }: { block: ChecksBlock }) {
 	);
 }
 
-function Callout({ tone, title, children, detail }: { tone: "warn" | "bad" | "info"; title: string; children: ReactNode; detail?: string | null }) {
+function Callout({
+	tone,
+	title,
+	children,
+	detail,
+}: {
+	tone: "warn" | "bad" | "info";
+	title: string;
+	children: ReactNode;
+	detail?: string | null;
+}) {
 	return (
 		<div className={`callout callout-${tone} callout-block`} role={tone === "bad" ? "alert" : "note"}>
 			{tone === "info" ? <InfoIcon /> : <WarnIcon />}
@@ -802,7 +1088,7 @@ function Notice({ block }: { block: NoticeBlock }) {
 					<pre className="callout-more" id={id} hidden={!open}>
 						{more}
 					</pre>
-					<FoldToggle open={open} controls={id} label={FOLD_WORDS.all} onToggle={() => setOpen((value) => !value)} />
+					<FoldToggle open={open} controls={id} label={FOLD_WORDS.all} onToggle={() => setOpen(value => !value)} />
 				</>
 			) : null}
 		</Callout>
@@ -834,7 +1120,14 @@ function withLinks(text: string): ReactNode {
 }
 
 function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
-	const tone = block.kind === "platform" ? (block.level === "error" ? "bad" : block.level === "warn" ? "warn" : "dim") : block.tone;
+	const tone =
+		block.kind === "platform"
+			? block.level === "error"
+				? "bad"
+				: block.level === "warn"
+					? "warn"
+					: "dim"
+			: block.tone;
 	// The turn paused, or resumed after a pause: a line of its own kind, so the gap in the turn reads as one.
 	if (block.kind === "platform" && block.resume) {
 		return (
@@ -881,7 +1174,14 @@ function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret
 	const [shown, setShown] = useState(false);
 	const id = useId();
 	const name = <code className="secret-ask-name">{secret.name}</code>;
-	const words = secret.answer === "saved" ? <>{name} saved</> : secret.answer === "without" ? <>Continued without {name}</> : <>Asked for a secret: {name}</>;
+	const words =
+		secret.answer === "saved" ? (
+			<>{name} saved</>
+		) : secret.answer === "without" ? (
+			<>Continued without {name}</>
+		) : (
+			<>Asked for a secret: {name}</>
+		);
 	const where = open ? (
 		"answer it below"
 	) : secret.answer === undefined && itemId ? (
@@ -890,7 +1190,10 @@ function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret
 		</a>
 	) : null;
 	return (
-		<section className={`system-secret${open ? " system-secret-open" : ""}`} aria-label={`The agent's request for the secret ${secret.name}`}>
+		<section
+			className={`system-secret${open ? " system-secret-open" : ""}`}
+			aria-label={`The agent's request for the secret ${secret.name}`}
+		>
 			<p className="system tone-dim">
 				<span className="system-rule" aria-hidden="true" />
 				<span className="system-source">platform</span>
@@ -899,7 +1202,15 @@ function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret
 					{words}
 					{where ? <> · {where}</> : null}
 				</span>
-				{open ? null : <FoldToggle open={shown} controls={id} label="Show the request" onToggle={() => setShown((now) => !now)} className="system-secret-toggle" />}
+				{open ? null : (
+					<FoldToggle
+						open={shown}
+						controls={id}
+						label="Show the request"
+						onToggle={() => setShown(now => !now)}
+						className="system-secret-toggle"
+					/>
+				)}
 			</p>
 			{open ? null : (
 				<div className="system-secret-body" id={id} hidden={!shown}>
@@ -932,7 +1243,8 @@ function BlockedHost({ host, repository }: { host: string; repository: boolean }
 }
 
 /** "16:15", the time of day a destination was last refused. */
-const lastSeen = (at: number) => `last ${new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+const lastSeen = (at: number) =>
+	`last ${new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
 /**
  * A turn's blocked network requests (`network.blocked`): one quiet line that counts them, then each
@@ -948,11 +1260,15 @@ const NetworkRow = memo(function NetworkRow({ block }: { block: NetworkBlock }) 
 			<p className="system tone-dim">
 				<span className="system-rule" aria-hidden="true" />
 				<span className="system-source">network</span>
-				<span className="system-text">
-					Blocked network requests: {blockedHeadline(block)}
-				</span>
+				<span className="system-text">Blocked network requests: {blockedHeadline(block)}</span>
 			</p>
-			<BlockedList hosts={block.hosts} overflow={block.overflow} context={context} when={lastSeen} label="Blocked destinations" />
+			<BlockedList
+				hosts={block.hosts}
+				overflow={block.overflow}
+				context={context}
+				when={lastSeen}
+				label="Blocked destinations"
+			/>
 		</section>
 	);
 });
@@ -986,7 +1302,7 @@ function VerifiedLines({ verified }: { verified: Verified }) {
 			{verified.putBack ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>did not pass earlier in this turn, before the agent changed the files back</span>
-					{verified.putBack.map((check) => (
+					{verified.putBack.map(check => (
 						<span key={check.name}>
 							<code>{check.name}</code> {checkLine(check)}
 						</span>
@@ -996,8 +1312,13 @@ function VerifiedLines({ verified }: { verified: Verified }) {
 			{checks.length > 0 ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>checks{earlier ? `, ${earlier}` : ""}</span>
-					{checks.map((check) => (
-						<span key={check.name} className={check.status === "passed" ? undefined : check.startError !== undefined ? "tone-warn" : "tone-bad"}>
+					{checks.map(check => (
+						<span
+							key={check.name}
+							className={
+								check.status === "passed" ? undefined : check.startError !== undefined ? "tone-warn" : "tone-bad"
+							}
+						>
 							<code>{check.name}</code> {checkLine(check)}
 						</span>
 					))}
@@ -1037,7 +1358,8 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 	const gate = end.verified && gateWord(end.verified);
 	const steps = end.steps ?? (turn.steps > 0 ? turn.steps : null);
 	const usage = end.usage;
-	const share = end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
+	const share =
+		end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
 	const files = turn.changedFiles;
 	// The token counts are folded behind a toggle at the end of the outcome line: the side panel has them too.
 	const tokenLine = usage ? (
@@ -1049,7 +1371,9 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 			<span>{count(usage.outputTokens)} out</span>
 		</p>
 	) : null;
-	const tokenSummary = usage ? `${count(usage.inputTokens)} in · ${count(usage.cachedInputTokens)} cached (${percent(share)}) · ${count(usage.outputTokens)} out` : undefined;
+	const tokenSummary = usage
+		? `${count(usage.inputTokens)} in · ${count(usage.cachedInputTokens)} cached (${percent(share)}) · ${count(usage.outputTokens)} out`
+		: undefined;
 	return (
 		<div className={`turn-end turn-end-${tone}`}>
 			<p className="turn-end-line">
@@ -1064,7 +1388,14 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 				{end.exitCode !== null && end.exitCode !== 0 ? <span>exit {end.exitCode}</span> : null}
 				{tokenLine ? (
 					<span>
-						<button type="button" className="turn-end-fold" aria-expanded={tokensOpen} aria-controls={tokensOpen ? foldId : undefined} title={tokenSummary} onClick={() => setTokensOpen((open) => !open)}>
+						<button
+							type="button"
+							className="turn-end-fold"
+							aria-expanded={tokensOpen}
+							aria-controls={tokensOpen ? foldId : undefined}
+							title={tokenSummary}
+							onClick={() => setTokensOpen(open => !open)}
+						>
 							tokens
 							<ChevronIcon size={10} className={`turn-end-fold-chevron${tokensOpen ? " turn-end-fold-open" : ""}`} />
 						</button>
@@ -1118,7 +1449,11 @@ function renderBlock(block: Block, nested = false, first = false): ReactNode {
 		case "reasoning":
 			return <Reasoning block={block} />;
 		case "tool":
-			return block.subagent ? <SubagentRow block={block} run={block.subagent} /> : <ToolRow block={block} nested={nested} />;
+			return block.subagent ? (
+				<SubagentRow block={block} run={block.subagent} />
+			) : (
+				<ToolRow block={block} nested={nested} />
+			);
 		case "checks":
 			return <Checks block={block} />;
 		case "setup":
@@ -1151,8 +1486,20 @@ const WorkRow = memo(function WorkRow({ blocks }: { blocks: WorkBlock[] }) {
 	const summary = summarizeWork(blocks);
 	return (
 		<div className={`work${open ? " work-open" : ""}${summary.failed > 0 ? " work-failed" : ""}`}>
-			<button type="button" className="line-button work-row" aria-expanded={open} aria-controls={body} onClick={() => setOpen((value) => !value)}>
-				<span className="line-glyph">{summary.failed > 0 ? <CrossIcon size={13} className="tone-bad" /> : <CheckIcon size={13} className="tone-dim" />}</span>
+			<button
+				type="button"
+				className="line-button work-row"
+				aria-expanded={open}
+				aria-controls={body}
+				onClick={() => setOpen(value => !value)}
+			>
+				<span className="line-glyph">
+					{summary.failed > 0 ? (
+						<CrossIcon size={13} className="tone-bad" />
+					) : (
+						<CheckIcon size={13} className="tone-dim" />
+					)}
+				</span>
 				<span className="work-text">{summary.text}</span>
 				<span className="tool-facts work-facts">
 					{summary.failed > 0 ? <span className="tone-bad">{summary.failed} failed</span> : null}
@@ -1162,7 +1509,7 @@ const WorkRow = memo(function WorkRow({ blocks }: { blocks: WorkBlock[] }) {
 			</button>
 			{open ? (
 				<div className="work-body" id={body}>
-					{blocks.map((block) => (
+					{blocks.map(block => (
 						<div key={block.id} className={blockClass(block)}>
 							{renderBlock(block)}
 						</div>
@@ -1178,11 +1525,19 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const interactive = useInteractive();
 	const question = interactive?.flow.question ?? null;
 	// A question about a call this timeline does not show (a subagent's own call) goes at the end of its turn.
-	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && asksAbout(block, question)) ? question : null;
-	const rows = useMemo(() => turnRows(shownBlocks(turn.blocks), question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
+	const loose =
+		question !== null &&
+		question.turn === turn.turn &&
+		!turn.blocks.some(block => block.kind === "tool" && asksAbout(block, question))
+			? question
+			: null;
+	const rows = useMemo(
+		() => turnRows(shownBlocks(turn.blocks), question ? block => asksAbout(block, question) : null),
+		[turn.blocks, question],
+	);
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
-			{rows.map((row) =>
+			{rows.map(row =>
 				row.kind === "work" ? (
 					<div key={row.id} className="block block-work">
 						<WorkRow blocks={row.blocks} />

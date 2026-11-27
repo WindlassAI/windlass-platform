@@ -35,17 +35,24 @@ const PACKAGE_MANAGER: readonly RegExp[] = [
 	/github\.com\/nodejs\/corepack#troubleshooting/,
 	/Cannot find matching keyid/,
 ];
-const NETWORK_REFUSAL = /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH)\b|getaddrinfo|Temporary failure in name resolution|Could not resolve host|Network is unreachable/;
+const NETWORK_REFUSAL =
+	/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH)\b|getaddrinfo|Temporary failure in name resolution|Could not resolve host|Network is unreachable/;
 /** What fetches a tool: corepack, or a package registry. */
-const TOOL_FETCH = /corepack|registry\.npmjs\.org|registry\.yarnpkg\.com|ERR_PNPM_META_FETCH_FAIL|pypi\.org|files\.pythonhosted\.org|proxy\.golang\.org|crates\.io/i;
-const REGISTRY_OUTAGE = /\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|E50[234]|ERR_PNPM_FETCH_50[234])\b/i;
+const TOOL_FETCH =
+	/corepack|registry\.npmjs\.org|registry\.yarnpkg\.com|ERR_PNPM_META_FETCH_FAIL|pypi\.org|files\.pythonhosted\.org|proxy\.golang\.org|crates\.io/i;
+const REGISTRY_OUTAGE =
+	/\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|E50[234]|ERR_PNPM_FETCH_50[234])\b/i;
 const NOT_FOUND = /command not found|: not found|No such file or directory/;
 
 // eslint-disable-next-line no-control-regex
 const CONTROL = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f]/g;
 
 function lines(output: string): string[] {
-	return output.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(CONTROL, "").trim()).filter(Boolean);
+	return output
+		.replace(/\r\n?/g, "\n")
+		.split("\n")
+		.map(line => line.replace(CONTROL, "").trim())
+		.filter(Boolean);
 }
 
 const cut = (line: string) => (line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS - 1)}…` : line);
@@ -54,17 +61,22 @@ const cut = (line: string) => (line.length > LINE_CHARS ? `${line.slice(0, LINE_
  * Why `check` failed for its environment, or null when it did not (passed, failed for its code, timed out, was
  * stopped, or was never started: a check with `startError` is not started, which is told apart already).
  */
-export function environmentFailure(check: Pick<VerifiedCheck, "status" | "exitCode" | "output" | "startError">): EnvironmentFailure | null {
+export function environmentFailure(
+	check: Pick<VerifiedCheck, "status" | "exitCode" | "output" | "startError">,
+): EnvironmentFailure | null {
 	if (check.startError !== undefined) return null;
 	if (check.status !== "failed" && check.status !== "could_not_start") return null;
 	const out = lines(check.output ?? "");
-	if (out.some((line) => TOOL_FETCH.test(line))) {
-		const refused = out.find((line) => NETWORK_REFUSAL.test(line) || (TOOL_FETCH.test(line) && REGISTRY_OUTAGE.test(line)));
+	if (out.some(line => TOOL_FETCH.test(line))) {
+		const refused = out.find(
+			line => NETWORK_REFUSAL.test(line) || (TOOL_FETCH.test(line) && REGISTRY_OUTAGE.test(line)),
+		);
 		if (refused !== undefined) return { kind: "network", line: cut(refused) };
 	}
-	const refused = out.find((line) => PACKAGE_MANAGER.some((pattern) => pattern.test(line)));
+	const refused = out.find(line => PACKAGE_MANAGER.some(pattern => pattern.test(line)));
 	if (refused !== undefined) return { kind: "package_manager", line: cut(refused) };
-	if (check.exitCode === 127) return { kind: "not_found", line: cut(out.find((line) => NOT_FOUND.test(line)) ?? out[0] ?? "") };
+	if (check.exitCode === 127)
+		return { kind: "not_found", line: cut(out.find(line => NOT_FOUND.test(line)) ?? out[0] ?? "") };
 	return null;
 }
 
@@ -74,6 +86,12 @@ const EXCERPT_CHARS = 2_000;
 
 /** The end of what the check printed, for the person: at most EXCERPT_LINES lines and EXCERPT_CHARS characters. */
 export function outputExcerpt(output: string | undefined): string {
-	const kept = (output ?? "").replace(/\r\n?/g, "\n").replace(CONTROL, "").trimEnd().split("\n").slice(-EXCERPT_LINES).join("\n");
+	const kept = (output ?? "")
+		.replace(/\r\n?/g, "\n")
+		.replace(CONTROL, "")
+		.trimEnd()
+		.split("\n")
+		.slice(-EXCERPT_LINES)
+		.join("\n");
 	return kept.length > EXCERPT_CHARS ? kept.slice(-EXCERPT_CHARS) : kept;
 }

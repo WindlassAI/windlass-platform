@@ -148,7 +148,8 @@ export class ActorSignInDirectory implements SignInDirectory {
 		} catch (error) {
 			throw new Error(`the answer to the request for the user's access token does not open: ${errorText(error)}`);
 		}
-		if (typeof token.accessToken !== "string" || typeof token.expiresAt !== "number") throw new Error("the answer to the request for the user's access token holds no token");
+		if (typeof token.accessToken !== "string" || typeof token.expiresAt !== "number")
+			throw new Error("the answer to the request for the user's access token holds no token");
 		return { accessToken: token.accessToken, expiresAt: token.expiresAt };
 	}
 }
@@ -192,7 +193,7 @@ export class MemorySignInDirectory implements SignInDirectory {
 						const row = rows.get(uid);
 						return row === undefined ? null : { ...row };
 					},
-					save: async (row) => {
+					save: async row => {
 						rows.set(uid, { ...row });
 					},
 				},
@@ -229,7 +230,11 @@ export class MemorySignInDirectory implements SignInDirectory {
 	 */
 	put(uid: string, material: SignInMaterial): void {
 		const row = this.rows.get(uid);
-		this.rows.set(uid, { sealed: this.options.sealer.seal("user", uid, JSON.stringify(signInOnly(material))), generation: (row?.generation ?? 0) + 1, shortNoted: false });
+		this.rows.set(uid, {
+			sealed: this.options.sealer.seal("user", uid, JSON.stringify(signInOnly(material))),
+			generation: (row?.generation ?? 0) + 1,
+			shortNoted: false,
+		});
 	}
 
 	/** The key this directory's blobs are sealed with, for checks that look into one. */

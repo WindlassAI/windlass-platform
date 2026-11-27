@@ -5,7 +5,21 @@ import { describeError } from "../../auth.js";
 import { config } from "../../config.js";
 import { type HostedSize, HOSTED_SIZE_NAMES } from "../../contract.js";
 import { observeSandbox } from "../../sandbox/api.js";
-import { stoppedBy, stretchSeconds, hostedLimitsApply, USAGE_UNAVAILABLE, allowanceRefusal, sandboxRefusal, holdDeadline, turnStoppedNote, idleSuspendedNote, UNCHECKED_TURN_NOTE, UNCHECKED_IDLE_NOTE, closingReports, foundStoppedAt } from "../../usage.js";
+import {
+	stoppedBy,
+	stretchSeconds,
+	hostedLimitsApply,
+	USAGE_UNAVAILABLE,
+	allowanceRefusal,
+	sandboxRefusal,
+	holdDeadline,
+	turnStoppedNote,
+	idleSuspendedNote,
+	UNCHECKED_TURN_NOTE,
+	UNCHECKED_IDLE_NOTE,
+	closingReports,
+	foundStoppedAt,
+} from "../../usage.js";
 import { type ReserveAnswer, userActor } from "../internal.js";
 import { persist, note } from "./timeline.js";
 import { abortTurn, duration } from "./questions.js";
@@ -15,9 +29,16 @@ import { publish } from "./summary.js";
 import { busy, takeSandbox, sandboxChanged } from "./common.js";
 import { dropWorkspace } from "./workspace.js";
 
-export function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], use: string | null = useOf(meta), pausedAt?: number): void {
+export function noteSandbox(
+	c: Ctx,
+	meta: SessionMeta,
+	state: SessionMeta["sandbox"],
+	use: string | null = useOf(meta),
+	pausedAt?: number,
+): void {
 	// Close only the metered use the state read observed. A new hold may have arrived meanwhile.
-	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", use, pausedAt);
+	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting)
+		void closeMeter(c, meta, "found", use, pausedAt);
 	if (meta.sandbox === state) return;
 	meta.sandbox = state;
 	publish(c);
@@ -25,7 +46,11 @@ export function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandb
 }
 
 /** Apply the account's size decision once, even if both the hold and the place claim observe the downgrade. */
-export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: HostedSize | undefined, notify: (text: string) => void): boolean {
+export function applySandboxClamp(
+	meta: Pick<SessionMeta, "hostedSize">,
+	size: HostedSize | undefined,
+	notify: (text: string) => void,
+): boolean {
 	if (!size || meta.hostedSize === size) return false;
 	meta.hostedSize = size;
 	notify(`This agent's next sandbox is ${HOSTED_SIZE_NAMES[size]}: Large sandboxes are part of Pro.`);
@@ -65,7 +90,10 @@ export function metered<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 /** `promise`, or a rejection when it takes longer than `ms`. */
 function inTime<T>(promise: Promise<T>, ms: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms)))]).finally(() => clearTimeout(timer));
+	return Promise.race([
+		promise,
+		new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms))),
+	]).finally(() => clearTimeout(timer));
 }
 
 // A carried hold is valid only while its use and sandbox generation still match.
@@ -75,7 +103,12 @@ export function carriedOver(c: Ctx, meta: SessionMeta): boolean {
 }
 
 // Write the request ID before reserving time. Reuse it if the response is lost. Call only from inside `metered`.
-export async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<ReserveAnswer | null> {
+export async function takeHold(
+	c: Ctx,
+	meta: SessionMeta,
+	fresh: boolean,
+	observedUntil?: number,
+): Promise<ReserveAnswer | null> {
 	// Reports the book has not had go first: one for a hold it still has open would be counted in full once another is taken.
 	if (meta.unsettled?.length) await sendUnsettled(c, meta);
 	const open = meta.meter ?? null;
@@ -93,11 +126,22 @@ export async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observ
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until), observedUntil } : undefined }),
+			userActor(c, meta.uid).internalReserve({
+				id: asked.id,
+				sessionId: meta.sessionId,
+				hostedSize: meta.hostedSize ?? "small",
+				keep: !meta.sandboxId,
+				fresh,
+				settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until), observedUntil } : undefined,
+			}),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
-		c.log.warn({ msg: "the user's sandbox time could not be asked for", session: meta.sessionId, error: describeError(error) });
+		c.log.warn({
+			msg: "the user's sandbox time could not be asked for",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 		// With nothing running, nothing was started on it: a hold the book may have opened is reported at 0 s before the next is asked for.
 		if (!meta.meter && meta.meterAsked === asked) {
 			meta.unsettled = [...(meta.unsettled ?? []), { hold: asked.id, seconds: 0 }].slice(-MAX_UNSETTLED);
@@ -112,7 +156,13 @@ export async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observ
 		applySandboxClamp(meta, answer.clampedSize, text => note(c, c.vars.turn?.number ?? 0, "info", text));
 		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
 		const use = !fresh && open ? open.use : answer.hold.id;
-		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };
+		meta.meter = {
+			hold: answer.hold.id,
+			since: now,
+			seconds: answer.hold.seconds,
+			use,
+			...(open?.seen ? { seen: open.seen } : {}),
+		};
 		void persist(c);
 	}
 	return answer;
@@ -127,8 +177,10 @@ export function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean, observedU
 		armMeter(c, meta);
 		if (answer === null) throw new UserError(USAGE_UNAVAILABLE, { code: "usage_unavailable" });
 		if (answer.ok) return;
-		if (answer.reason === "allowance") throw new UserError(allowanceRefusal(answer.numbers), { code: "allowance_used" });
-		if (answer.reason === "sandboxes") throw new UserError(sandboxRefusal(answer.numbers), { code: "too_many_sandboxes" });
+		if (answer.reason === "allowance")
+			throw new UserError(allowanceRefusal(answer.numbers), { code: "allowance_used" });
+		if (answer.reason === "sandboxes")
+			throw new UserError(sandboxRefusal(answer.numbers), { code: "too_many_sandboxes" });
 		throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 	});
 }
@@ -142,7 +194,13 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	let at = open.since + open.seconds * 1000;
 	const idleStopMs = c.vars.idleStopMs;
 	if (idleStopMs !== null && !c.vars.turn) {
-		at = Math.min(at, Math.max(Math.max(open.since, meta.lastUsedAt) + idleStopMs + IDLE_STOP_MARGIN_MS, (open.seen ?? 0) + METER_RETRY_MS));
+		at = Math.min(
+			at,
+			Math.max(
+				Math.max(open.since, meta.lastUsedAt) + idleStopMs + IDLE_STOP_MARGIN_MS,
+				(open.seen ?? 0) + METER_RETRY_MS,
+			),
+		);
 	}
 	c.vars.meterTimer = setTimeout(
 		() => {
@@ -190,9 +248,12 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		const answer = await takeHold(c, meta, false);
 		// Without an answer the sandbox goes on, still counted by the book, until shortly before the hold runs out there; then it stops.
 		const deadline = holdDeadline(open.since, open.seconds);
-		if (answer !== null && !answer.ok && answer.reason === "allowance") outOfTime(c, meta, turnStoppedNote(answer.numbers), idleSuspendedNote(answer.numbers));
+		if (answer !== null && !answer.ok && answer.reason === "allowance")
+			outOfTime(c, meta, turnStoppedNote(answer.numbers), idleSuspendedNote(answer.numbers));
 		else if (answer === null && Date.now() >= deadline) {
-			console.log(`[wlp] usage.unchecked_stop session=${meta.sessionId}: its sandbox time could not be checked before its hold ran out`);
+			console.log(
+				`[wlp] usage.unchecked_stop session=${meta.sessionId}: its sandbox time could not be checked before its hold ran out`,
+			);
 			outOfTime(c, meta, UNCHECKED_TURN_NOTE, UNCHECKED_IDLE_NOTE);
 		} else armMeter(c, meta, answer?.ok ? 0 : Math.min(Date.now() + METER_RETRY_MS, deadline));
 	});
@@ -238,7 +299,11 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 	try {
 		await work;
 	} catch (error) {
-		c.log.error({ msg: "could not suspend the sandbox when its user's sandbox time was used up", sandbox: id, error: describeError(error) });
+		c.log.error({
+			msg: "could not suspend the sandbox when its user's sandbox time was used up",
+			sandbox: id,
+			error: describeError(error),
+		});
 		armMeter(c, meta, Date.now() + METER_RETRY_MS);
 	} finally {
 		c.vars.idling = null;
@@ -249,14 +314,23 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 
 // Keep the settlement until the user's meter acknowledges its idempotent receipt.
 // Call only from inside `metered`: it does not take the queue itself.
-async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null, observedUntil?: number): Promise<void> {
+async function settleStretch(
+	c: Ctx,
+	meta: SessionMeta,
+	until: number,
+	use: string | null,
+	observedUntil?: number,
+): Promise<void> {
 	const open = meta.meter;
 	if (!open || useOf(meta) !== use) return;
 	meta.meter = null;
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
 	// A renewal whose answer never came ends with the stretch it was to continue.
-	meta.unsettled = [...(meta.unsettled ?? []), ...closingReports(open, meta.meterAsked ?? null, until, observedUntil)].slice(-MAX_UNSETTLED);
+	meta.unsettled = [
+		...(meta.unsettled ?? []),
+		...closingReports(open, meta.meterAsked ?? null, until, observedUntil),
+	].slice(-MAX_UNSETTLED);
 	meta.meterAsked = null;
 	void persist(c);
 	await sendUnsettled(c, meta);
@@ -268,25 +342,39 @@ async function sendUnsettled(c: Ctx, meta: SessionMeta): Promise<void> {
 		try {
 			await inTime(userActor(c, meta.uid).internalSettle({ sessionId: meta.sessionId, ...report }), METER_WAIT_MS);
 		} catch (error) {
-			c.log.warn({ msg: "could not report the sandbox's time to its user; it is reported again when the session is next awake", session: meta.sessionId, hold: report.hold, error: describeError(error) });
+			c.log.warn({
+				msg: "could not report the sandbox's time to its user; it is reported again when the session is next awake",
+				session: meta.sessionId,
+				hold: report.hold,
+				error: describeError(error),
+			});
 			return;
 		}
-		meta.unsettled = (meta.unsettled ?? []).filter((other) => other !== report);
+		meta.unsettled = (meta.unsettled ?? []).filter(other => other !== report);
 		void persist(c);
 	}
 }
 
 // A provider-observed stop can precede the actor's own clock.
-export function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string | null, pausedAt?: number): Promise<void> {
+export function closeMeter(
+	c: Ctx,
+	meta: SessionMeta,
+	how: "now" | "found",
+	use: string | null,
+	pausedAt?: number,
+): Promise<void> {
 	const at = Date.now();
 	if (use === null) return Promise.resolve();
 	return metered(c, async () => {
 		const open = meta.meter;
 		if (!open || useOf(meta) !== use) return;
 		// The provider's timeout is asked of this session's layer every time: a server that has not asked yet must not count to now.
-		const until = how === "now" ? at : foundStoppedAt(open, meta.lastUsedAt, (await layerOf(c, meta)).sandboxes.idleStopMs, at, pausedAt);
+		const until =
+			how === "now"
+				? at
+				: foundStoppedAt(open, meta.lastUsedAt, (await layerOf(c, meta)).sandboxes.idleStopMs, at, pausedAt);
 		await settleStretch(c, meta, until, use, pausedAt);
-	}).catch((error) => {
+	}).catch(error => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
 	});
 }
@@ -294,8 +382,12 @@ export function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use:
 /** The session has no sandbox any more: its place among the sandboxes its user keeps is free. Never throws; a place that is not given back is found when the count is held against the provider's list. */
 export async function releasePlace(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (!hostedLimitsApply(meta.place)) return;
-	await inTime(userActor(c, meta.uid).internalRelease(meta.sessionId), METER_WAIT_MS).catch((error) => {
-		c.log.warn({ msg: "could not give the sandbox's place back to its user", session: meta.sessionId, error: describeError(error) });
+	await inTime(userActor(c, meta.uid).internalRelease(meta.sessionId), METER_WAIT_MS).catch(error => {
+		c.log.warn({
+			msg: "could not give the sandbox's place back to its user",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 	});
 }
 
@@ -312,7 +404,11 @@ export async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTu
 			armMeter(c, meta);
 		}
 	} catch (error) {
-		c.log.warn({ msg: "could not look after the sandbox's time when the turn ended", session: meta.sessionId, error: describeError(error) });
+		c.log.warn({
+			msg: "could not look after the sandbox's time when the turn ended",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 	}
 }
 
@@ -329,11 +425,16 @@ export async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): 
 		else if (running && !busy(c)) {
 			const answer = await metered(c, () => takeHold(c, meta, false));
 			armMeter(c, meta);
-			if (answer !== null && !answer.ok && answer.reason === "allowance") await suspendOutOfTime(c, meta, idleSuspendedNote(answer.numbers));
+			if (answer !== null && !answer.ok && answer.reason === "allowance")
+				await suspendOutOfTime(c, meta, idleSuspendedNote(answer.numbers));
 		}
 		await metered(c, () => sendUnsettled(c, meta));
 	} catch (error) {
-		c.log.warn({ msg: "could not take up the sandbox's time again", session: meta.sessionId, error: describeError(error) });
+		c.log.warn({
+			msg: "could not take up the sandbox's time again",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 	}
 }
 
@@ -417,7 +518,7 @@ export function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void>
 		await persist(c);
 		if (current) await c.schedule.cancel(current.id).catch(() => false);
 	});
-	c.vars.arming = run.catch((error) => {
+	c.vars.arming = run.catch(error => {
 		c.log.warn({ msg: "could not schedule the idle check of the sandbox", error: describeError(error) });
 	});
 	return c.vars.arming;
@@ -442,8 +543,9 @@ export async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	const now = Date.now();
 	const remove = id !== null && removedWhenIdle(meta) && now >= since + config.idleDestroyMs;
 	const pauseNow = meta.pauseNow === true;
-delete meta.pauseNow;
-const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNow || now >= since + config.idleSuspendMs);
+	delete meta.pauseNow;
+	const suspend =
+		id !== null && !remove && meta.sandbox === "running" && (pauseNow || now >= since + config.idleSuspendMs);
 	let retry = 0;
 	if (id && (remove || suspend)) {
 		// Set in the same step as the checks above: from here a prompt waits for it.
@@ -451,7 +553,12 @@ const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNo
 		const work = (async () => {
 			const { sandboxes } = await layerOf(c, meta);
 			if (remove) {
-				await removeSandbox(c, meta, id, `Removed the sandbox and its files after ${duration(config.idleDestroyMs)} without use; the next prompt starts a new one.`);
+				await removeSandbox(
+					c,
+					meta,
+					id,
+					`Removed the sandbox and its files after ${duration(config.idleDestroyMs)} without use; the next prompt starts a new one.`,
+				);
 				console.log(`[wlp] sandbox.idle_removed id=${id} session=${meta.sessionId}`);
 			} else {
 				const state = await sandboxes.state(id);
@@ -461,7 +568,14 @@ const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNo
 					console.log(`[wlp] sandbox.idle_suspended id=${id} session=${meta.sessionId}`);
 					meta.sandbox = "paused";
 					const use = useOf(meta);
-					note(c, meta.turns, "info", pauseNow ? "Paused the sandbox: its turn ended on a question nobody answered. The next prompt resumes it." : `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
+					note(
+						c,
+						meta.turns,
+						"info",
+						pauseNow
+							? "Paused the sandbox: its turn ended on a question nobody answered. The next prompt resumes it."
+							: `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`,
+					);
 					await closeMeter(c, meta, "now", use);
 				} else {
 					// Paused by a sleep, or gone: nothing to suspend, and nothing to say.
@@ -476,7 +590,11 @@ const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNo
 		try {
 			await work;
 		} catch (error) {
-			c.log.error({ msg: remove ? "could not remove the idle sandbox" : "could not suspend the idle sandbox", sandbox: id, error: describeError(error) });
+			c.log.error({
+				msg: remove ? "could not remove the idle sandbox" : "could not suspend the idle sandbox",
+				sandbox: id,
+				error: describeError(error),
+			});
 			retry = Date.now() + IDLE_RETRY_MS;
 		} finally {
 			c.vars.idling = null;

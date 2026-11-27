@@ -7,8 +7,28 @@
  * The API key is passed with every call and never put into the environment, a log line or an error.
  */
 
-import { CommandExitError, GuestUnresponsiveError, NotFoundError, RateLimitError, Sandbox, SandboxError, type SandboxInfo, ServiceBusyError, Template } from "e2b";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo } from "./client.js";
+import {
+	CommandExitError,
+	GuestUnresponsiveError,
+	NotFoundError,
+	RateLimitError,
+	Sandbox,
+	SandboxError,
+	type SandboxInfo,
+	ServiceBusyError,
+	Template,
+} from "e2b";
+import {
+	E2bBusyError,
+	type E2bClient,
+	type E2bCommand,
+	type E2bCommandOptions,
+	type E2bConnection,
+	E2bLimitError,
+	type E2bSandboxInfo,
+	E2bSnapshotModeError,
+	type E2bSnapshotInfo,
+} from "./client.js";
 
 /** The user of the template (sandbox/e2b/template.ts), named with every call so that a template built otherwise cannot make commands run as another. */
 const USER = "agent";
@@ -58,7 +78,7 @@ function connection(sandbox: Sandbox): E2bConnection {
 			});
 			return {
 				pid: handle.pid,
-				sendStdin: (data) => handle.sendStdin(data, { requestTimeoutMs: REQUEST_TIMEOUT_MS }),
+				sendStdin: data => handle.sendStdin(data, { requestTimeoutMs: REQUEST_TIMEOUT_MS }),
 				closeStdin: () => handle.closeStdin({ requestTimeoutMs: REQUEST_TIMEOUT_MS }),
 				wait: async () => {
 					try {
@@ -76,7 +96,7 @@ function connection(sandbox: Sandbox): E2bConnection {
 				},
 			};
 		},
-		readFile: (path) => sandbox.files.read(path, { user: USER, requestTimeoutMs: 60_000 }),
+		readFile: path => sandbox.files.read(path, { user: USER, requestTimeoutMs: 60_000 }),
 		writeFile: async (path, content) => {
 			await sandbox.files.write(path, content, { user: USER, requestTimeoutMs: 60_000 });
 		},
@@ -89,19 +109,35 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 		async create(input) {
 			try {
 				// `autoResume: false`: a paused sandbox is started by `connect` and by nothing else, so the limit on running sandboxes is this layer's to keep.
-				return connection(await Sandbox.create(input.template, { ...api, timeoutMs: input.timeoutMs, metadata: input.metadata, envs: input.envs, lifecycle: { onTimeout: input.onTimeout, autoResume: false }, ...(input.network ? { network: { ...input.network } } : {}) }));
+				return connection(
+					await Sandbox.create(input.template, {
+						...api,
+						timeoutMs: input.timeoutMs,
+						metadata: input.metadata,
+						envs: input.envs,
+						lifecycle: { onTimeout: input.onTimeout, autoResume: false },
+						...(input.network ? { network: { ...input.network } } : {}),
+					}),
+				);
 			} catch (error) {
 				throw translated(error);
 			}
 		},
 		async connect(sandboxId, timeoutMs, options = {}) {
 			try {
-				return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs, ...(options.reboot ? { onResume: "reboot" as const } : {}) }));
+				return connection(
+					await Sandbox.connect(sandboxId, {
+						...api,
+						timeoutMs,
+						...(options.reboot ? { onResume: "reboot" as const } : {}),
+					}),
+				);
 			} catch (error) {
 				if (error instanceof NotFoundError) return undefined;
 				// Its snapshot was taken while the sandbox was hung: E2B will not restore that memory. Booted from its disk the
 				// files are there and no process is, which is all a session needs between turns.
-				if (error instanceof GuestUnresponsiveError) return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs, onResume: "reboot" }));
+				if (error instanceof GuestUnresponsiveError)
+					return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs, onResume: "reboot" }));
 				throw translated(error);
 			}
 		},
@@ -114,7 +150,10 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 			}
 		},
 		async list(query) {
-			const paginator = Sandbox.list({ ...api, query: { metadata: query.metadata, ...(query.state === undefined ? {} : { state: query.state }) } });
+			const paginator = Sandbox.list({
+				...api,
+				query: { metadata: query.metadata, ...(query.state === undefined ? {} : { state: query.state }) },
+			});
 			const found: E2bSandboxInfo[] = [];
 			try {
 				while (paginator.hasNext) for (const info of await paginator.nextItems()) found.push(infoOf(info));
@@ -157,11 +196,17 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 		async createSnapshot(sandboxId, name) {
 			try {
 				// Filesystem only, never memory: a memory image would hold what setup's processes had in memory.
-				const made = await Sandbox.createSnapshot(sandboxId, { ...api, requestTimeoutMs: 10 * 60_000, name, mode: "filesystem" });
+				const made = await Sandbox.createSnapshot(sandboxId, {
+					...api,
+					requestTimeoutMs: 10 * 60_000,
+					name,
+					mode: "filesystem",
+				});
 				return { snapshotId: made.snapshotId, names: made.names };
 			} catch (error) {
 				// 400 snapshot_filesystem_only_disabled, 409 snapshot_filesystem_only_unsupported_node: the SDK keeps only the status.
-				if (error instanceof SandboxError && (error.statusCode === 400 || error.statusCode === 409)) throw new E2bSnapshotModeError(error.message);
+				if (error instanceof SandboxError && (error.statusCode === 400 || error.statusCode === 409))
+					throw new E2bSnapshotModeError(error.message);
 				throw translated(error);
 			}
 		},
@@ -169,7 +214,9 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 			const paginator = Sandbox.listSnapshots({ ...api, limit: 100 });
 			const found: E2bSnapshotInfo[] = [];
 			try {
-				for (let page = 0; paginator.hasNext && page < SNAPSHOT_PAGES; page += 1) for (const item of await paginator.nextItems()) found.push({ snapshotId: item.snapshotId, names: item.names ?? [] });
+				for (let page = 0; paginator.hasNext && page < SNAPSHOT_PAGES; page += 1)
+					for (const item of await paginator.nextItems())
+						found.push({ snapshotId: item.snapshotId, names: item.names ?? [] });
 			} catch (error) {
 				throw translated(error);
 			}
@@ -186,7 +233,7 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 		async metrics(sandboxId, sinceMs) {
 			try {
 				const samples = await Sandbox.getMetrics(sandboxId, { ...api, start: new Date(sinceMs) });
-				return samples.map((one) => ({ at: one.timestamp.getTime(), memUsed: one.memUsed, memTotal: one.memTotal }));
+				return samples.map(one => ({ at: one.timestamp.getTime(), memUsed: one.memUsed, memTotal: one.memTotal }));
 			} catch (error) {
 				if (error instanceof NotFoundError) return [];
 				throw translated(error);
@@ -196,7 +243,7 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 			const [name, tag = "default"] = template.split(":");
 			try {
 				const tags = await Template.getTags(name, api);
-				return tags.find((found) => found.tag === tag)?.buildId ?? null;
+				return tags.find(found => found.tag === tag)?.buildId ?? null;
 			} catch (error) {
 				// An unknown template is a TemplateError with status 404 (SDK 2.63.0), not a NotFoundError.
 				if (error instanceof NotFoundError || (error as { statusCode?: unknown }).statusCode === 404) return null;

@@ -22,7 +22,19 @@ function repoName(url: string): string {
 }
 
 /** `grouped`: the row stands under its repository's name, so it says the branch and not the repository again. */
-function AgentRow({ session, profileName, now, grouped, onDelete }: { session: SessionSummary; profileName: string; now: number; grouped: boolean; onDelete(session: SessionSummary): void }) {
+function AgentRow({
+	session,
+	profileName,
+	now,
+	grouped,
+	onDelete,
+}: {
+	session: SessionSummary;
+	profileName: string;
+	now: number;
+	grouped: boolean;
+	onDelete(session: SessionSummary): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [renaming, setRenaming] = useState(false);
@@ -63,7 +75,10 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 	// Finished with: its pull request was merged or closed. The row steps back a shade.
 	const settled = !active && (pull?.state === "merged" || pull?.state === "closed");
 	return (
-		<li className={`agent-row agent-row-session${working ? " agent-row-active" : ""}${settled ? " agent-row-settled" : ""}`} data-status={session.status}>
+		<li
+			className={`agent-row agent-row-session${working ? " agent-row-active" : ""}${settled ? " agent-row-settled" : ""}`}
+			data-status={session.status}
+		>
 			<span className="agent-glyph">
 				<RowGlyph session={session} />
 			</span>
@@ -79,8 +94,8 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 							className="input"
 							value={title}
 							maxLength={MAX_TITLE_CHARS}
-							onChange={(event) => setTitle(event.target.value)}
-							onKeyDown={(event) => {
+							onChange={event => setTitle(event.target.value)}
+							onKeyDown={event => {
 								if (event.key === "Escape") {
 									event.preventDefault();
 									setTitle(session.title);
@@ -89,7 +104,11 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 							}}
 							disabled={saving}
 						/>
-						<button type="submit" className="button button-primary button-small" disabled={saving || title.trim() === ""}>
+						<button
+							type="submit"
+							className="button button-primary button-small"
+							disabled={saving || title.trim() === ""}
+						>
 							{saving ? "Saving…" : "Save"}
 						</button>
 						<button
@@ -122,12 +141,22 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 						<span className="agent-model"> · {sessionModelWords(session)}</span>
 					</span>
 					<span>{session.place.kind === "machine" ? "your machine" : "hosted"}</span>
-					{grouped && session.repository ? <span className="agent-repo">{session.repository.branch}</span> : session.repoUrl ? <span className="agent-repo">{repoName(session.repoUrl)}</span> : null}
+					{grouped && session.repository ? (
+						<span className="agent-repo">{session.repository.branch}</span>
+					) : session.repoUrl ? (
+						<span className="agent-repo">{repoName(session.repoUrl)}</span>
+					) : null}
 					<span>{session.turns === 0 ? "no turns" : plural(session.turns, "turn")}</span>
 				</p>
 			</div>
 			<div className="agent-state">
-				{waiting ? <span className="agent-chip agent-chip-needs">needs you</span> : active ? <span className={`agent-chip agent-chip-live agent-chip-${session.status}`}>{STATUS_WORD[session.status]}</span> : null}
+				{waiting ? (
+					<span className="agent-chip agent-chip-needs">needs you</span>
+				) : active ? (
+					<span className={`agent-chip agent-chip-live agent-chip-${session.status}`}>
+						{STATUS_WORD[session.status]}
+					</span>
+				) : null}
 				{pull ? <PullChip pull={pull} /> : null}
 				{/* A turn that ended well says so with its glyph; any other ending says it in words. */}
 				{active || session.lastOutcome === "succeeded" ? null : <OutcomeChip outcome={session.lastOutcome} />}
@@ -154,7 +183,13 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 				>
 					<PencilIcon />
 				</button>
-				<button type="button" className="icon-button icon-button-danger" aria-label={`Delete ${session.title}`} title="Delete" onClick={() => onDelete(session)}>
+				<button
+					type="button"
+					className="icon-button icon-button-danger"
+					aria-label={`Delete ${session.title}`}
+					title="Delete"
+					onClick={() => onDelete(session)}
+				>
 					<TrashIcon />
 				</button>
 			</div>
@@ -169,26 +204,45 @@ function RowGlyph({ session }: { session: SessionSummary }) {
 	if (session.status !== "idle") return <StatusGlyph status={session.status} size={16} />;
 	const outcome = session.lastOutcome;
 	if (outcome === null) return <RingIcon size={16} className="status-glyph status-idle" />;
-	if (outcome === "succeeded") return <DoneGlyph open={session.pullRequest?.state === "open" || session.pullRequest?.state === "draft"} />;
+	if (outcome === "succeeded")
+		return <DoneGlyph open={session.pullRequest?.state === "open" || session.pullRequest?.state === "draft"} />;
 	return <OutcomeGlyph outcome={outcome} size={15} />;
 }
 
 /** A turn that ended well: a check in a ring, in the good hue while its pull request is open, quiet once that is settled. */
 function DoneGlyph({ open }: { open: boolean }) {
 	return (
-		<svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" className={open ? "agent-done agent-done-open" : "agent-done"}>
+		<svg
+			width={17}
+			height={17}
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={1.5}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+			focusable="false"
+			className={open ? "agent-done agent-done-open" : "agent-done"}
+		>
 			<circle cx="8" cy="8" r="6.2" />
 			<path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
 		</svg>
 	);
 }
 
-const PULL_WORD: Record<PullRequestInfo["state"], string> = { open: "open", draft: "draft", merged: "merged", closed: "closed" };
+const PULL_WORD: Record<PullRequestInfo["state"], string> = {
+	open: "open",
+	draft: "draft",
+	merged: "merged",
+	closed: "closed",
+};
 
 function PullChip({ pull }: { pull: PullRequestInfo }) {
 	return (
 		<span className={`agent-chip agent-chip-pull agent-chip-pull-${pull.state}`} title={pull.title}>
-			{pull.state === "merged" ? <MergedIcon size={12} /> : <PullRequestIcon size={12} />}#{pull.number} {PULL_WORD[pull.state]}
+			{pull.state === "merged" ? <MergedIcon size={12} /> : <PullRequestIcon size={12} />}#{pull.number}{" "}
+			{PULL_WORD[pull.state]}
 		</span>
 	);
 }
@@ -212,7 +266,11 @@ function RowTime({ session, now, working }: { session: SessionSummary; now: numb
 		const start = session.turnStartedAt ?? session.updatedAt;
 		const clock = clockDuration(Math.max(1000, tick - start));
 		return (
-			<time className="agent-time agent-time-live" dateTime={new Date(start).toISOString()} title={`Working since ${absoluteTime(start)}`}>
+			<time
+				className="agent-time agent-time-live"
+				dateTime={new Date(start).toISOString()}
+				title={`Working since ${absoluteTime(start)}`}
+			>
 				<span className="visually-hidden">working for </span>
 				{clock}
 			</time>
@@ -261,9 +319,12 @@ function DeleteDialog({ session, onClose }: { session: SessionSummary; onClose()
 			}
 		>
 			<p>
-				<strong>{session.title}</strong> will be removed with its conversation and its sandbox, including every file in the workspace. This cannot be undone.
+				<strong>{session.title}</strong> will be removed with its conversation and its sandbox, including every file in
+				the workspace. This cannot be undone.
 			</p>
-			{session.status !== "idle" ? <p className="tone-warn">It is working right now; deleting it stops the turn.</p> : null}
+			{session.status !== "idle" ? (
+				<p className="tone-warn">It is working right now; deleting it stops the turn.</p>
+			) : null}
 			{error ? (
 				<p className="callout callout-bad" role="alert">
 					<WarnIcon />
@@ -300,7 +361,7 @@ export function AgentList({
 	const listId = useId();
 	const folded = foldGroup(sessions, limit);
 	const shown = open ? sessions : folded.shown;
-	const profileName = (id: string) => platform.info?.profiles.find((profile) => profile.id === id)?.name ?? id;
+	const profileName = (id: string) => platform.info?.profiles.find(profile => profile.id === id)?.name ?? id;
 	const toggle = () => {
 		if (open) unfolded.delete(foldKey);
 		else unfolded.add(foldKey);
@@ -310,13 +371,25 @@ export function AgentList({
 	return (
 		<>
 			<ul className="agents" aria-label={label} id={listId}>
-				{shown.map((session) => (
-					<AgentRow key={session.id} session={session} profileName={profileName(session.profile)} now={now} grouped={grouped} onDelete={setDeleting} />
+				{shown.map(session => (
+					<AgentRow
+						key={session.id}
+						session={session}
+						profileName={profileName(session.profile)}
+						now={now}
+						grouped={grouped}
+						onDelete={setDeleting}
+					/>
 				))}
 			</ul>
 			{folded.hidden > 0 ? (
 				<p className="agents-fold">
-					<FoldToggle open={open} controls={listId} label={FOLD_WORDS.more(folded.hidden, folded.hidden === 1 ? "more agent" : "more agents")} onToggle={toggle} />
+					<FoldToggle
+						open={open}
+						controls={listId}
+						label={FOLD_WORDS.more(folded.hidden, folded.hidden === 1 ? "more agent" : "more agents")}
+						onToggle={toggle}
+					/>
 					{open ? null : <span>used before the ones above; none of them is working</span>}
 				</p>
 			) : null}

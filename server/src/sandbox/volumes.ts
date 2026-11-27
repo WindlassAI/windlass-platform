@@ -1,7 +1,17 @@
 /** The user volume holds Windlass session data. Older servers also put token files there. */
 
 import { assertName } from "../signin/material.js";
-import { DATA_DIR, LABEL, MACHINE_LABEL, createVolume, docker, helperFlags, runHelper, tmpName, volumeExists } from "./docker.js";
+import {
+	DATA_DIR,
+	LABEL,
+	MACHINE_LABEL,
+	createVolume,
+	docker,
+	helperFlags,
+	runHelper,
+	tmpName,
+	volumeExists,
+} from "./docker.js";
 import { SANDBOX_VOLUME_LABEL, removeRunningTokenFiles } from "./sandboxes.js";
 import { TOKEN_FILE_PREFIX } from "./token-file.js";
 
@@ -21,7 +31,10 @@ export async function ensureDataVolume(name: string, labels: Record<string, stri
 	if (await volumeExists(name)) return;
 	await createVolume(name, labels);
 	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${name}:${DATA_DIR}`], helper, ["true"], { timeoutMs: 60_000, image });
+	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${name}:${DATA_DIR}`], helper, ["true"], {
+		timeoutMs: 60_000,
+		image,
+	});
 	if (result.code !== 0) throw new Error(`could not initialise volume ${name}: ${result.stderr.trim()}`);
 }
 
@@ -41,8 +54,17 @@ async function sessionVolumeThere(name: string, uid: string, sandbox: string): P
 	const result = await docker(["volume", "inspect", "--format", "{{json .Labels}}", name]);
 	if (result.code !== 0) return false;
 	let labels: Record<string, string> | null = null;
-	try { labels = JSON.parse(result.stdout.trim()); } catch { /* refused below */ }
-	if (labels?.[LABEL] !== "1" || labels[`${LABEL}.uid`] !== uid || labels[SANDBOX_VOLUME_LABEL] !== sandbox || labels[MACHINE_LABEL] !== undefined)
+	try {
+		labels = JSON.parse(result.stdout.trim());
+	} catch {
+		/* refused below */
+	}
+	if (
+		labels?.[LABEL] !== "1" ||
+		labels[`${LABEL}.uid`] !== uid ||
+		labels[SANDBOX_VOLUME_LABEL] !== sandbox ||
+		labels[MACHINE_LABEL] !== undefined
+	)
 		throw new Error(`the volume ${name} is not this sandbox's data volume`);
 	return true;
 }
@@ -54,7 +76,8 @@ async function sessionVolumeThere(name: string, uid: string, sandbox: string): P
  */
 export async function ensureSessionVolume(uid: string, sandbox: string): Promise<string> {
 	const name = sessionVolume(uid, sandbox);
-	if (!(await sessionVolumeThere(name, uid, sandbox))) await createVolume(name, { [`${LABEL}.uid`]: uid, [SANDBOX_VOLUME_LABEL]: sandbox });
+	if (!(await sessionVolumeThere(name, uid, sandbox)))
+		await createVolume(name, { [`${LABEL}.uid`]: uid, [SANDBOX_VOLUME_LABEL]: sandbox });
 	return name;
 }
 
@@ -78,6 +101,12 @@ export async function removeTokenFiles(uid: string, image?: string): Promise<voi
 	const sessions = userVolume(uid);
 	if (!(await volumeExists(sessions))) return;
 	const helper = tmpName();
-	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${sessions}:${DATA_DIR}`], helper, ["sh", "-c", `rm -f -- ${DATA_DIR}/${TOKEN_FILE_PREFIX}*`], { timeoutMs: 60_000, image });
-	if (result.code !== 0) throw new Error(`could not remove the access tokens handed to running turns: ${result.stderr.trim()}`);
+	const result = await runHelper(
+		[...helperFlags(helper, "none"), "-v", `${sessions}:${DATA_DIR}`],
+		helper,
+		["sh", "-c", `rm -f -- ${DATA_DIR}/${TOKEN_FILE_PREFIX}*`],
+		{ timeoutMs: 60_000, image },
+	);
+	if (result.code !== 0)
+		throw new Error(`could not remove the access tokens handed to running turns: ${result.stderr.trim()}`);
 }

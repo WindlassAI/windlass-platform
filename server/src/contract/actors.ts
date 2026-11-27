@@ -1,12 +1,73 @@
 /** The user and agentSession actors' actions, events and snapshot shapes. */
 
-import type { ChatgptStatus, CreateSessionInput, HarnessId, HarnessOptions, IdempotencyKey, LinkedLogin, LoginProvider, LoginStart, ModelList, SandboxProfile, SandboxProfileId, SessionSummary, UserProfile } from "../contract.js";
-import type { AccountDefaults, AccountDefaultsPatch, AccountSecrets, AccountSettings, ApiToken, ApiTokenScope, ModelProvider, ModelProviderCheck, ModelProviderStatus, RepositoryDefaultsPatch } from "./account.js";
-import type { GithubBranchList, GithubId, GithubRepository, GithubRepositoryList, GithubStatus, LinearStatus, LinearTeamList, PublishMessage, PublishResult, PublishState } from "./github.js";
-import type { CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView, SecretRequest, SetRequestedSecretInput } from "./items.js";
+import type {
+	ChatgptStatus,
+	CreateSessionInput,
+	HarnessId,
+	HarnessOptions,
+	IdempotencyKey,
+	LinkedLogin,
+	LoginProvider,
+	LoginStart,
+	ModelList,
+	SandboxProfile,
+	SandboxProfileId,
+	SessionSummary,
+	UserProfile,
+} from "../contract.js";
+import type {
+	AccountDefaults,
+	AccountDefaultsPatch,
+	AccountSecrets,
+	AccountSettings,
+	ApiToken,
+	ApiTokenScope,
+	ModelProvider,
+	ModelProviderCheck,
+	ModelProviderStatus,
+	RepositoryDefaultsPatch,
+} from "./account.js";
+import type {
+	GithubBranchList,
+	GithubId,
+	GithubRepository,
+	GithubRepositoryList,
+	GithubStatus,
+	LinearStatus,
+	LinearTeamList,
+	PublishMessage,
+	PublishResult,
+	PublishState,
+} from "./github.js";
+import type {
+	CreateItemInput,
+	FactoryLimits,
+	ItemAction,
+	ItemFeed,
+	ItemListPage,
+	ItemSummary,
+	ItemView,
+	SecretRequest,
+	SetRequestedSecretInput,
+} from "./items.js";
 import type { CredentialSource, MachineClaim, MachineDetails, MachineHostUpdate, MachineSummary } from "./machines.js";
 import type { PendingQuestion, SessionServers } from "./questions.js";
-import type { EnvironmentPlace, EnvironmentSchedule, HostAllowed, NetworkScan, RepositoryCheck, RepositoryChecks, RepositoryDefaults, RepositoryEnvironments, RepositoryNetwork, RepositorySecrets, RepositorySetup, RepositoryView, SavedRepository, SecretScope } from "./repository.js";
+import type {
+	EnvironmentPlace,
+	EnvironmentSchedule,
+	HostAllowed,
+	NetworkScan,
+	RepositoryCheck,
+	RepositoryChecks,
+	RepositoryDefaults,
+	RepositoryEnvironments,
+	RepositoryNetwork,
+	RepositorySecrets,
+	RepositorySetup,
+	RepositoryView,
+	SavedRepository,
+	SecretScope,
+} from "./repository.js";
 import type { LiveDelta, NetworkBlockedItem, TimelineItem } from "./timeline.js";
 import type { BillingPeriod, BillingView, UsageNumbers, UsageView } from "./usage.js";
 
@@ -75,7 +136,10 @@ export interface UserActions {
 	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
 	repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments>;
 	rebuildEnvironment(input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments>;
-	saveEnvironmentSchedule(input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments>;
+	saveEnvironmentSchedule(input: {
+		repositoryId: GithubId;
+		schedule: EnvironmentSchedule;
+	}): Promise<RepositoryEnvironments>;
 	/** The repository's network list, with the requests its sessions filed and what the deployment allows anyway. Asks GitHub nothing. */
 	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
 	/**
@@ -98,16 +162,30 @@ export interface UserActions {
 	 * code `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
 	 * MAX_SECRETS_PER_REPOSITORY, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
+	saveRepositorySecret(input: {
+		repositoryId: GithubId;
+		profile: SandboxProfileId;
+		name: string;
+		value?: string;
+		scope: SecretScope;
+	}): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
-	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
+	deleteRepositorySecret(input: {
+		repositoryId: GithubId;
+		profile: SandboxProfileId;
+		name: string;
+	}): Promise<RepositorySecrets>;
 	/** Local settings survive loss of GitHub access. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	setGuideCheck(repositoryId: GithubId, enabled: boolean): Promise<RepositoryView>;
 	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
 	addSetupNotes(repositoryId: GithubId, files: import("../repo-setup/types.js").NoteInput[]): Promise<RepositoryView>;
 	deleteSetupNote(repositoryId: GithubId, id: string): Promise<RepositoryView>;
-	runReadiness(repositoryId: GithubId, noteIds?: string[], answers?: Record<string, "keep" | "drop">): Promise<RepositoryView>;
+	runReadiness(
+		repositoryId: GithubId,
+		noteIds?: string[],
+		answers?: Record<string, "keep" | "drop">,
+	): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now, when the user's connection covers it and the connected user
 	 * may read it: what a new session can be launched on. Throws a UserError that says what is in the
@@ -135,7 +213,12 @@ export interface UserActions {
 	 * names the key), `server_exists` for a new one whose name is taken, `server_not_found` for a
 	 * change of one that is not saved, and `too_many_servers` at `AccountSettings.limits.servers`.
 	 */
-	savePersonalServer(input: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings>;
+	savePersonalServer(input: {
+		name: string;
+		definition: unknown;
+		unasked?: boolean;
+		existing?: boolean;
+	}): Promise<AccountSettings>;
 	/** Deletes one of the user's own MCP servers. A turn that is running keeps it until it ends. */
 	deletePersonalServer(name: string): Promise<AccountSettings>;
 	modelProviders(): Promise<ModelProviderStatus[]>;
@@ -151,7 +234,12 @@ export interface UserActions {
 	 * `bad_secret` for a name or value that cannot be saved, `too_many_secrets` at
 	 * `AccountSettings.limits.secrets`, and `secret_not_found` for a scope change of a name that is not saved.
 	 */
-	saveAccountSecret(input: { profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<AccountSecrets>;
+	saveAccountSecret(input: {
+		profile: SandboxProfileId;
+		name: string;
+		value?: string;
+		scope: SecretScope;
+	}): Promise<AccountSecrets>;
 	deleteAccountSecret(input: { profile: SandboxProfileId; name: string }): Promise<AccountSecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
@@ -174,7 +262,11 @@ export interface UserActions {
 	freeSandbox(sessionId: string): Promise<UsageView>;
 	/** Pairing order. Machine actions refuse with machines_off when disabled. */
 	machines(): Promise<MachineSummary[]>;
-	machineCatalog(input: { machineId: string; id: "claude" | "opencode" | "codex"; digest: string }): Promise<HarnessOptions | null>;
+	machineCatalog(input: {
+		machineId: string;
+		id: "claude" | "opencode" | "codex";
+		digest: string;
+	}): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -202,7 +294,11 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	setCredentialSource(input: { machineId: string; harness: Exclude<HarnessId, "windlass">; source: CredentialSource }): Promise<MachineSummary[]>;
+	setCredentialSource(input: {
+		machineId: string;
+		harness: Exclude<HarnessId, "windlass">;
+		source: CredentialSource;
+	}): Promise<MachineSummary[]>;
 	/** Unpaged calls return every item, newest first. A short page is the last one. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */

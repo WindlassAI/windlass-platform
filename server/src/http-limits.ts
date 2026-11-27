@@ -11,12 +11,14 @@ export function clientAddress(request: Request): string | null {
 	const ip = request.headers.get(name);
 	if (!ip || ip.includes("%")) return "";
 	switch (isIP(ip)) {
-		case 4: return ip;
+		case 4:
+			return ip;
 		case 6: {
 			const canonical = new SocketAddress({ address: ip, family: "ipv6" }).address;
 			return canonical.replace(/^::ffff:(?=\d+\.)/, "");
 		}
-		default: return "";
+		default:
+			return "";
 	}
 }
 
@@ -98,8 +100,11 @@ export class AddressBudget {
 }
 
 export function rateLimited(seconds: number, message: string, code = "rate_limited"): Response {
-	return Response.json({ code, message }, {
-		status: 429,
-		headers: { "cache-control": "no-store", "retry-after": String(seconds) },
-	});
+	return Response.json(
+		{ code, message },
+		{
+			status: 429,
+			headers: { "cache-control": "no-store", "retry-after": String(seconds) },
+		},
+	);
 }

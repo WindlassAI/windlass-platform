@@ -36,8 +36,17 @@ function Nested({ layers, depth, compact }: { layers: string[]; depth: number; c
 	);
 }
 
-export function Layers({ profile, compact = false }: { profile: Pick<SandboxProfile, "layers" | "name">; compact?: boolean }) {
-	const sentence = profile.layers.length === 0 ? "No isolation layers are listed." : `Isolation, outermost first: ${profile.layers.join("; then ")}.`;
+export function Layers({
+	profile,
+	compact = false,
+}: {
+	profile: Pick<SandboxProfile, "layers" | "name">;
+	compact?: boolean;
+}) {
+	const sentence =
+		profile.layers.length === 0
+			? "No isolation layers are listed."
+			: `Isolation, outermost first: ${profile.layers.join("; then ")}.`;
 	return (
 		<div className={`layers${compact ? " layers-compact" : ""}`} role="img" aria-label={sentence}>
 			<Nested layers={profile.layers} depth={0} compact={compact} />
@@ -57,12 +66,16 @@ export interface ClaudeFacts {
 }
 
 export function commandNetworkFact(profile: SandboxProfile, claude: ClaudeFacts | null) {
-	if (claude?.codex && !profile.commandNetwork && profile.available) return "commands can reach this session’s Codex model relay";
+	if (claude?.codex && !profile.commandNetwork && profile.available)
+		return "commands can reach this session’s Codex model relay";
 	if (claude?.opencode && !profile.commandNetwork && profile.available)
 		return "commands can reach this session’s OpenCode model relay";
 	if (claude && profile.claudeRelay && !profile.commandNetwork && profile.available)
 		return "commands can reach only this session’s Claude model relay";
-	return profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network");
+	return (
+		profile.commandNetworkText ??
+		(profile.commandNetwork ? "commands can reach the network" : "commands have no network")
+	);
 }
 
 /** The relay's caps per turn, as the server's summaries say them (server/src/sandbox/profiles.ts `relayPlaceholderSentences`). */
@@ -72,17 +85,26 @@ export function accessTokenFact(profile: SandboxProfile): string {
 	// With Windlass's model relay the token file holds only a placeholder for the turn; the token stays outside.
 	if (profile.modelRelay) {
 		const where = profile.id === "daytona" ? "VM" : profile.id.startsWith("e2b") ? "microVM" : "container";
-		const reader = profile.commandsCanReadAccessToken ? "Commands" : "The agent's commands cannot read the turn's token file. Approved local MCP servers and processes left from setup";
+		const reader = profile.commandsCanReadAccessToken
+			? "Commands"
+			: "The agent's commands cannot read the turn's token file. Approved local MCP servers and processes left from setup";
 		return `${reader} can read only a placeholder for this turn. With it they can make model requests on your ChatGPT plan through the relay while the turn runs (${RELAY_CAPS}). The access token never enters the ${where}.`;
 	}
-	const commands = !profile.commandsCanReadAccessToken ? "The agent's commands cannot read the session's access token."
-		: profile.id === "e2b" ? "A command you allow outside the Windlass sandbox can read the session's access token and its replacements."
-		: "Unsandboxed commands can read the session's access token and its replacements during the turn.";
-	return commands + " Setup finishes before handoff. Approved local MCP servers can read each token. Each token lasts about an hour from issue.";
+	const commands = !profile.commandsCanReadAccessToken
+		? "The agent's commands cannot read the session's access token."
+		: profile.id === "e2b"
+			? "A command you allow outside the Windlass sandbox can read the session's access token and its replacements."
+			: "Unsandboxed commands can read the session's access token and its replacements during the turn.";
+	return (
+		commands +
+		" Setup finishes before handoff. Approved local MCP servers can read each token. Each token lasts about an hour from issue."
+	);
 }
 
 export function claudeLoginFact(profile: SandboxProfile) {
-	return profile.claudeRelay ? "The machine’s relay holds the setup token." : "Runners without a credential relay also expose the setup token.";
+	return profile.claudeRelay
+		? "The machine’s relay holds the setup token."
+		: "Runners without a credential relay also expose the setup token.";
 }
 
 /** One line of what a sandbox means for the user: `kept` when it is something held back from the agent's commands. */
@@ -105,9 +127,16 @@ export function isolationOutcomes(profile: SandboxProfile, claude: ClaudeFacts |
 			? { text: "Commands run in a locked-down sandbox", kept: true }
 			: { text: "Commands run freely, without asking", kept: false };
 	const network: Outcome = profile.commandNetworkText
-		? { text: profile.commandNetwork ? "Commands reach only allowed hosts" : "Commands reach only the model", kept: true }
+		? {
+				text: profile.commandNetwork ? "Commands reach only allowed hosts" : "Commands reach only the model",
+				kept: true,
+			}
 		: profile.commandNetwork
-			? { text: egress === "open" ? "Commands can reach the internet and your network" : "Commands can reach the internet", kept: false }
+			? {
+					text:
+						egress === "open" ? "Commands can reach the internet and your network" : "Commands can reach the internet",
+					kept: false,
+				}
 			: { text: "No internet from commands", kept: true };
 	const signIn: Outcome = claude
 		? claude.hosted
@@ -126,9 +155,13 @@ export function isolationOutcomes(profile: SandboxProfile, claude: ClaudeFacts |
 export function IsolationOutcomes({ outcomes }: { outcomes: Outcome[] }) {
 	return (
 		<ul className="outcomes" aria-label="What this means">
-			{outcomes.map((outcome) => (
+			{outcomes.map(outcome => (
 				<li key={outcome.text} className={outcome.kept ? "outcome-kept" : "outcome-open"}>
-					{outcome.kept ? <CheckIcon size={13} className="outcome-mark" /> : <span className="outcome-mark outcome-dot" aria-hidden="true" />}
+					{outcome.kept ? (
+						<CheckIcon size={13} className="outcome-mark" />
+					) : (
+						<span className="outcome-mark outcome-dot" aria-hidden="true" />
+					)}
 					{outcome.text}
 				</li>
 			))}
@@ -154,7 +187,11 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 				) : (
 					<span className="fact-value">
 						<strong>{profile.approval}</strong>
-						<span className="fact-gloss">{profile.approval === "auto" ? "runs what the sandbox contains, refuses the rest" : "runs every call without asking"}</span>
+						<span className="fact-gloss">
+							{profile.approval === "auto"
+								? "runs what the sandbox contains, refuses the rest"
+								: "runs every call without asking"}
+						</span>
 					</span>
 				)}
 			</li>
@@ -165,13 +202,21 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			<li>
 				<span className="fact-key">sign-in</span>
 				{claude ? (
-					<span className="fact-value">{claude.hosted ? "Commands can use the turn’s relay placeholder. Your Settings key stays on the platform." : claude.codex ? "Commands can use the Codex model relay. OpenAI credentials stay on the machine." : claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>}</span>
+					<span className="fact-value">
+						{claude.hosted ? (
+							"Commands can use the turn’s relay placeholder. Your Settings key stays on the platform."
+						) : claude.codex ? (
+							"Commands can use the Codex model relay. OpenAI credentials stay on the machine."
+						) : claude.opencode ? (
+							"Commands can use the OpenCode model relay. Provider credentials stay on the machine."
+						) : (
+							<>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>
+						)}
+					</span>
 				) : (
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox
-						<span className="fact-gloss">
-							{accessTokenFact(profile)}
-						</span>
+						<span className="fact-gloss">{accessTokenFact(profile)}</span>
 					</span>
 				)}
 			</li>

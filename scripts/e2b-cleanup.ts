@@ -29,7 +29,9 @@ const named = args.indexOf("--deployment");
 async function main(): Promise<number> {
 	const apiKey = (process.env.E2B_API_KEY ?? "").trim();
 	if (apiKey === "") {
-		console.error("e2b-cleanup: E2B_API_KEY is not set. It needs the API key of the E2B account the deployment runs on.");
+		console.error(
+			"e2b-cleanup: E2B_API_KEY is not set. It needs the API key of the E2B account the deployment runs on.",
+		);
 		return 2;
 	}
 	const settings = readE2bSettings();
@@ -45,20 +47,32 @@ async function main(): Promise<number> {
 	for (const line of report.lines) console.log(line);
 	const { E2bSnapshots } = await import("../server/src/sandbox/e2b/snapshots.js");
 	const { DEFAULT_SNAPSHOT_LIMITS } = await import("../server/src/sandbox/hosted-settings.js");
-	const store = new E2bSnapshots(client, { ...settings, deployment, snapshots: settings.snapshots ?? DEFAULT_SNAPSHOT_LIMITS }, () => undefined, Date.now);
+	const store = new E2bSnapshots(
+		client,
+		{ ...settings, deployment, snapshots: settings.snapshots ?? DEFAULT_SNAPSHOT_LIMITS },
+		() => undefined,
+		Date.now,
+	);
 	const snapshots = await store.rows();
 	let failed = report.failed.length;
 	for (const row of snapshots) {
 		let outcome = kill ? "deleted" : "would be deleted";
-		if (kill && !(await client.deleteSnapshot(row.id).catch(() => false))) { outcome = "could not be deleted"; failed += 1; }
+		if (kill && !(await client.deleteSnapshot(row.id).catch(() => false))) {
+			outcome = "could not be deleted";
+			failed += 1;
+		}
 		console.log(`${row.id}  snapshot made ${new Date(row.created).toISOString()}: ${outcome}`);
 	}
-	console.log(snapshots.length === 0 ? `The deployment "${deployment}" has no setup snapshots at E2B.` : `${snapshots.length} setup snapshots of the deployment "${deployment}"${kill ? "" : ". A dry run: run again with --kill to delete them"}.`);
+	console.log(
+		snapshots.length === 0
+			? `The deployment "${deployment}" has no setup snapshots at E2B.`
+			: `${snapshots.length} setup snapshots of the deployment "${deployment}"${kill ? "" : ". A dry run: run again with --kill to delete them"}.`,
+	);
 	return failed === 0 ? 0 : 1;
 }
 
 main().then(
-	(code) => process.exit(code),
+	code => process.exit(code),
 	(error: unknown) => {
 		console.error(`e2b-cleanup: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(1);

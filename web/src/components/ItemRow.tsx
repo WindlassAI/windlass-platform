@@ -26,7 +26,13 @@ export function VerdictWord({ verdict }: { verdict: NonNullable<ItemSummary["ver
  * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
  * A merged item has nothing left to review: its glyph and track say done, and no word stands there.
  */
-export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict" | "state">; reviewer?: boolean }) {
+export function ItemStanding({
+	item,
+	reviewer = true,
+}: {
+	item: Pick<ItemSummary, "review" | "verdict" | "state">;
+	reviewer?: boolean;
+}) {
 	if (item.state === "done") return null;
 	if (reviewer && inSecondReview(item)) return <ReviewWord item={item} />;
 	return (
@@ -52,7 +58,11 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 		case "working":
 			return <Mark size={18} turning className="status-glyph status-running" />;
 		case "waiting":
-			return item.question ? <AskIcon size={16} className="status-glyph status-waiting" /> : <span className="item-glyph-waiting" aria-hidden="true" />;
+			return item.question ? (
+				<AskIcon size={16} className="status-glyph status-waiting" />
+			) : (
+				<span className="item-glyph-waiting" aria-hidden="true" />
+			);
 		case "queued":
 			return <span className="item-glyph-waiting" aria-hidden="true" />;
 		case "review":
@@ -69,7 +79,17 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider", children: "subtasks", capacity: "for a turn", machine: "machine", ci: "CI", person: "for you", budget: "budget", integration: "testing", sandboxes: "sandbox" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = {
+	provider: "provider",
+	children: "subtasks",
+	capacity: "for a turn",
+	machine: "machine",
+	ci: "CI",
+	person: "for you",
+	budget: "budget",
+	integration: "testing",
+	sandboxes: "sandbox",
+};
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -77,8 +97,12 @@ const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { 
  * at, whether it moves there now, and a word. Null for a draft and for an item that ended without
  * reaching you.
  */
-export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">, reviewer = true): { stages: string[]; at: number; now: boolean; word: string; tone: "work" | "wait" | "yours" | "done" } | null {
-	const handover = item.state === "review" && item.review?.recommendation === "changes_requested" ? "changes requested" : "yours";
+export function itemTrack(
+	item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">,
+	reviewer = true,
+): { stages: string[]; at: number; now: boolean; word: string; tone: "work" | "wait" | "yours" | "done" } | null {
+	const handover =
+		item.state === "review" && item.review?.recommendation === "changes_requested" ? "changes requested" : "yours";
 	const stages = reviewer ? ["built", "pushed", "CI", "review", handover] : ["built", "pushed", "CI", handover];
 	const pushed = item.pullRequest !== null;
 	switch (item.state) {
@@ -105,7 +129,10 @@ export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullReques
  * A feature's part has its own short way: it is built, its checks run, and it is merged into the feature
  * branch. CI, review and the hand-over belong to the feature, so a part's page never shows them as its own.
  */
-export function partTrack(item: Pick<ItemSummary, "state" | "wait">, step: StepKind | null): { stages: string[]; at: number; now: boolean; word: string } | null {
+export function partTrack(
+	item: Pick<ItemSummary, "state" | "wait">,
+	step: StepKind | null,
+): { stages: string[]; at: number; now: boolean; word: string } | null {
 	const stages = ["built", "checked", "in the feature"];
 	switch (item.state) {
 		case "queued":
@@ -113,7 +140,8 @@ export function partTrack(item: Pick<ItemSummary, "state" | "wait">, step: StepK
 		case "working":
 		case "waiting": {
 			const checking = step === "run_checks" || step === "gate";
-			const word = item.state === "waiting" && item.wait ? WAIT_DOING[item.wait.reason] : checking ? "checking" : "building";
+			const word =
+				item.state === "waiting" && item.wait ? WAIT_DOING[item.wait.reason] : checking ? "checking" : "building";
 			return { stages, at: checking ? 2 : 1, now: item.state === "working", word };
 		}
 		case "review":
@@ -124,17 +152,30 @@ export function partTrack(item: Pick<ItemSummary, "state" | "wait">, step: StepK
 	}
 }
 
-export function PartStages({ item, step = null }: { item: Pick<ItemSummary, "state" | "wait">; step?: StepKind | null }) {
+export function PartStages({
+	item,
+	step = null,
+}: {
+	item: Pick<ItemSummary, "state" | "wait">;
+	step?: StepKind | null;
+}) {
 	const track = partTrack(item, step);
 	if (track === null) return null;
 	const done = track.at === track.stages.length && !track.now;
 	return (
-		<ol className={`item-stages item-stages-${done ? "done" : track.now ? "work" : "wait"}`} aria-label="Where this part is on its way into the feature">
+		<ol
+			className={`item-stages item-stages-${done ? "done" : track.now ? "work" : "wait"}`}
+			aria-label="Where this part is on its way into the feature"
+		>
 			{track.stages.map((stage, index) => {
 				const at = index === track.at - 1;
 				const isDone = index < track.at - 1 || (at && done);
 				return (
-					<li key={stage} className={`item-stage${isDone ? " item-stage-done" : ""}${at && track.now ? " item-stage-now" : at && !isDone ? " item-stage-at" : ""}`} aria-current={at ? "step" : undefined}>
+					<li
+						key={stage}
+						className={`item-stage${isDone ? " item-stage-done" : ""}${at && track.now ? " item-stage-now" : at && !isDone ? " item-stage-at" : ""}`}
+						aria-current={at ? "step" : undefined}
+					>
 						<span className="item-stage-bar" aria-hidden="true" />
 						<span className="item-stage-name">{at && !isDone ? track.word : stage}</span>
 					</li>
@@ -173,15 +214,38 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 }
 
 /** The track beside a row: one bar a stage, the one it is at lit, and its word. Named for assistive technology in one phrase. */
-export function ItemTrack({ item, reviewer = true }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">; reviewer?: boolean }) {
+export function ItemTrack({
+	item,
+	reviewer = true,
+}: {
+	item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">;
+	reviewer?: boolean;
+}) {
 	const track = itemTrack(item, reviewer);
 	if (track === null) return <span className="item-track item-track-none" aria-hidden="true" />;
-	const label = track.at === 0 ? `Not built yet: ${track.word}` : `${track.stages[Math.min(track.at, track.stages.length) - 1]}, ${Math.min(track.at, track.stages.length)} of ${track.stages.length}: ${track.word}`;
+	const label =
+		track.at === 0
+			? `Not built yet: ${track.word}`
+			: `${track.stages[Math.min(track.at, track.stages.length) - 1]}, ${Math.min(track.at, track.stages.length)} of ${track.stages.length}: ${track.word}`;
 	return (
-		<span className={`item-track item-track-${track.tone}`} role="img" aria-label={label} title={track.stages.join(" → ")}>
+		<span
+			className={`item-track item-track-${track.tone}`}
+			role="img"
+			aria-label={label}
+			title={track.stages.join(" → ")}
+		>
 			<span className="item-track-bars" aria-hidden="true">
 				{track.stages.map((stage, index) => (
-					<i key={stage} className={index < track.at - 1 || (index === track.at - 1 && !track.now) ? "f" : index === track.at - 1 ? "now" : undefined} />
+					<i
+						key={stage}
+						className={
+							index < track.at - 1 || (index === track.at - 1 && !track.now)
+								? "f"
+								: index === track.at - 1
+									? "now"
+									: undefined
+						}
+					/>
 				))}
 			</span>
 			<span className="item-track-word" aria-hidden="true">
@@ -197,15 +261,35 @@ export function ItemTrack({ item, reviewer = true }: { item: Pick<ItemSummary, "
  */
 /** What an item does in a step, as the stage it stands at says it. */
 const STEP_DOING: Record<StepKind, string> = {
-	refine: "planning", plan_review: "plan in review", subtasks: "parts running", implement: "building", run_checks: "checking", gate: "checking",
-	publish: "pushing", conflict: "resolving conflicts", summary: "writing the summary", ci: "CI running", ci_fix: "fixing CI", integration: "testing",
-	review: "in review", review_fix: "fixing the review", handoff: "handing over", merged: "merged",
+	refine: "planning",
+	plan_review: "plan in review",
+	subtasks: "parts running",
+	implement: "building",
+	run_checks: "checking",
+	gate: "checking",
+	publish: "pushing",
+	conflict: "resolving conflicts",
+	summary: "writing the summary",
+	ci: "CI running",
+	ci_fix: "fixing CI",
+	integration: "testing",
+	review: "in review",
+	review_fix: "fixing the review",
+	handoff: "handing over",
+	merged: "merged",
 };
 
 /** What an item waits for, as the stage it stands at says it. */
 const WAIT_DOING: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = {
-	provider: "waiting for the provider", children: "parts running", capacity: "waiting for a turn", machine: "waiting for a machine", ci: "waiting for CI",
-	person: "waiting for you", budget: "out of budget", integration: "testing", sandboxes: "waiting for a sandbox",
+	provider: "waiting for the provider",
+	children: "parts running",
+	capacity: "waiting for a turn",
+	machine: "waiting for a machine",
+	ci: "waiting for CI",
+	person: "waiting for you",
+	budget: "out of budget",
+	integration: "testing",
+	sandboxes: "waiting for a sandbox",
 };
 
 /**
@@ -220,13 +304,26 @@ export function standingWord(item: Pick<ItemSummary, "state" | "wait" | "questio
 	return step ? STEP_DOING[step] : "building";
 }
 
-export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review" | "question">; reviewer?: boolean; step?: StepKind | null }) {
+export function ItemStages({
+	item,
+	reviewer = true,
+	step = null,
+}: {
+	item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review" | "question">;
+	reviewer?: boolean;
+	step?: StepKind | null;
+}) {
 	const summary = itemTrack(item, reviewer);
 	if (summary === null) return null;
 	// The page knows the step the run is at, which the summary does not: a working or waiting item stands at that step's stage.
 	// A feature waits for its whole-feature CI while still in its subtasks step: that wait is the CI stage.
 	const featureCi = step === "subtasks" && item.wait?.reason === "ci";
-	const at = step !== null && (item.state === "working" || item.state === "waiting") ? (featureCi ? 3 : stageOfStep(step, summary.stages.length, reviewer)) : null;
+	const at =
+		step !== null && (item.state === "working" || item.state === "waiting")
+			? featureCi
+				? 3
+				: stageOfStep(step, summary.stages.length, reviewer)
+			: null;
 	const track = at === null ? summary : { ...summary, at };
 	return (
 		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
@@ -236,9 +333,15 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 				const done = index < track.at - 1 || (index === track.at - 1 && !track.now && !standing);
 				const now = index === track.at - 1 && track.now;
 				return (
-					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
+					<li
+						key={stage}
+						className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`}
+						aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}
+					>
 						<span className="item-stage-bar" aria-hidden="true" />
-						<span className="item-stage-name">{now || standing ? standingWord(item, at === null ? null : step) : stage}</span>
+						<span className="item-stage-name">
+							{now || standing ? standingWord(item, at === null ? null : step) : stage}
+						</span>
 					</li>
 				);
 			})}
@@ -293,12 +396,33 @@ export function dayWord(word: string, at: number, now: number): string {
 
 /** `filed`: the row says when the item was filed, not when it last changed (an ended list, in filing order). */
 /** `subtasks`: the feed's open subtasks; a feature's row counts its own and lists the active ones in place of the wait sentence. */
-export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false, subtasks }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean; subtasks?: readonly ItemSummary[] }) {
+export function ItemRow({
+	item,
+	now,
+	repository = false,
+	why,
+	ci = false,
+	reviewer = true,
+	filed = false,
+	subtasks,
+}: {
+	item: ItemSummary;
+	now: number;
+	repository?: boolean;
+	why?: ReactNode;
+	ci?: boolean;
+	reviewer?: boolean;
+	filed?: boolean;
+	subtasks?: readonly ItemSummary[];
+}) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
-	const running = !asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
+	const running =
+		!asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
-		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}>
+		<li
+			className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}
+		>
 			<span className="agent-glyph">
 				<ItemGlyph item={item} />
 			</span>
@@ -332,7 +456,17 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{item.origin ? (
 						<span>
-							<a className="item-pull" href={originIssue(item.origin).url} target="_blank" rel="noreferrer" aria-label={item.origin.issue ? `Issue #${item.origin.issue.number} on GitHub` : `Issue ${item.origin.linear.identifier} on Linear`}>
+							<a
+								className="item-pull"
+								href={originIssue(item.origin).url}
+								target="_blank"
+								rel="noreferrer"
+								aria-label={
+									item.origin.issue
+										? `Issue #${item.origin.issue.number} on GitHub`
+										: `Issue ${item.origin.linear.identifier} on Linear`
+								}
+							>
 								{originIssue(item.origin).label}
 								<ExternalIcon size={10} />
 							</a>
@@ -346,10 +480,17 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 							{HARNESS_NAMES[item.agent.harness]}
 						</span>
 					) : null}
-					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
+					{ci && item.verdict ? (
+						<span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span>
+					) : null}
 					{item.state === "draft" || item.awaitingPlace ? null : (
 						<span>
-							<a className="item-pull" {...linkProps({ name: "session", id: item.sessionId })} title="What its agent did, turn by turn" aria-label={`The agent of ${item.title}`}>
+							<a
+								className="item-pull"
+								{...linkProps({ name: "session", id: item.sessionId })}
+								title="What its agent did, turn by turn"
+								aria-label={`The agent of ${item.title}`}
+							>
 								its agent
 							</a>
 						</span>
@@ -363,7 +504,10 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 			<ItemTrack item={item} reviewer={reviewer} />
 			{filed ? (
 				<span className="agent-time item-row-dates">
-					<time dateTime={new Date(item.createdAt).toISOString()} title={`Filed ${absoluteTime(item.createdAt)}; last changed ${absoluteTime(item.updatedAt)}`}>
+					<time
+						dateTime={new Date(item.createdAt).toISOString()}
+						title={`Filed ${absoluteTime(item.createdAt)}; last changed ${absoluteTime(item.updatedAt)}`}
+					>
 						{filedDay(item.createdAt, now)}
 					</time>
 					{item.endedAt !== undefined ? (
@@ -373,7 +517,11 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 				</span>
 			) : (
-				<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
+				<time
+					className="agent-time"
+					dateTime={new Date(item.updatedAt).toISOString()}
+					title={absoluteTime(item.updatedAt)}
+				>
 					{relativeTime(item.updatedAt, now)}
 				</time>
 			)}

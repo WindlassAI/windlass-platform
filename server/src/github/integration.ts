@@ -36,15 +36,20 @@ export function integrationWorkflowRefusal(source: string): string | null {
 		const parsed = parse(source, { maxAliasCount: 50 });
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "it is not a workflow";
 		doc = parsed as Record<string, unknown>;
-	} catch { return "it is not valid YAML"; }
+	} catch {
+		return "it is not valid YAML";
+	}
 	// YAML 1.1 readers take a bare `on` key for true.
 	const on = "on" in doc ? doc.on : doc["true"];
-	const triggers = typeof on === "string" ? [on] : Array.isArray(on) ? on : on && typeof on === "object" ? Object.keys(on) : [];
+	const triggers =
+		typeof on === "string" ? [on] : Array.isArray(on) ? on : on && typeof on === "object" ? Object.keys(on) : [];
 	if (!triggers.length) return "it names no trigger: it must run on workflow_dispatch only";
-	if (triggers.includes("pull_request_target")) return "it runs on pull_request_target: it must run on workflow_dispatch only";
+	if (triggers.includes("pull_request_target"))
+		return "it runs on pull_request_target: it must run on workflow_dispatch only";
 	const others = triggers.filter(t => t !== "workflow_dispatch");
 	if (others.length) return `it runs on ${others.map(String).join(", ")}: it must run on workflow_dispatch only`;
-	if (/\bsecrets\s*[.[]/.test(source) || /\bsecrets\s*:\s*inherit\b/.test(source)) return "it references secrets: the combined run must hold none";
+	if (/\bsecrets\s*[.[]/.test(source) || /\bsecrets\s*:\s*inherit\b/.test(source))
+		return "it references secrets: the combined run must hold none";
 	if (!("permissions" in doc)) return "it sets no top-level permissions: give it permissions: contents: read";
 	const top = permissionsRefusal(doc.permissions);
 	if (top) return "its top-level permissions " + top;
@@ -77,10 +82,20 @@ function permissionsRefusal(value: unknown): string | null {
  * pass `integrationWorkflowRefusal` there. Checked at approval on the base, and again on the exact
  * commit of every dispatch.
  */
-export async function integrationWorkflowProblem(app: GithubApp, token: string, owner: string, repo: string, ref: string): Promise<string | null> {
+export async function integrationWorkflowProblem(
+	app: GithubApp,
+	token: string,
+	owner: string,
+	repo: string,
+	ref: string,
+): Promise<string | null> {
 	const missing = `the combined run needs ${INTEGRATION_PATH}, enabled, on ${ref}`;
 	try {
-		const { body } = await app.call({ path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}`, auth: { bearer: token }, what: "look for the integration workflow" });
+		const { body } = await app.call({
+			path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}`,
+			auth: { bearer: token },
+			what: "look for the integration workflow",
+		});
 		if (record(body).state !== "active") return missing;
 		const sha = /^[0-9a-f]{40}$/.test(ref) ? ref : await refHead(app, token, owner, repo, ref);
 		const source = await app.fileAt(token, owner, repo, INTEGRATION_PATH, sha);
@@ -105,18 +120,50 @@ export interface IntegrationInput {
 }
 
 export type RunState = "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out";
-export interface RunReading { runId: string; url: string | null; state: RunState; said: string | null; seconds?: number }
+export interface RunReading {
+	runId: string;
+	url: string | null;
+	state: RunState;
+	said: string | null;
+	seconds?: number;
+}
 
 function readingOf(value: unknown): RunReading {
 	const run = record(value);
 	const runId = String(run.id ?? "");
 	const url = typeof run.html_url === "string" ? run.html_url : null;
-	if (run.status !== "completed") return { runId, url, state: run.status === "queued" || run.status === "waiting" || run.status === "requested" || run.status === "pending" ? "queued" : "running", said: null };
-	const started = Date.parse(String(run.run_started_at ?? run.created_at ?? "")), ended = Date.parse(String(run.updated_at ?? ""));
-	const seconds = Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? Math.ceil((ended - started) / 1000) : undefined;
+	if (run.status !== "completed")
+		return {
+			runId,
+			url,
+			state:
+				run.status === "queued" || run.status === "waiting" || run.status === "requested" || run.status === "pending"
+					? "queued"
+					: "running",
+			said: null,
+		};
+	const started = Date.parse(String(run.run_started_at ?? run.created_at ?? "")),
+		ended = Date.parse(String(run.updated_at ?? ""));
+	const seconds =
+		Number.isFinite(started) && Number.isFinite(ended) && ended >= started
+			? Math.ceil((ended - started) / 1000)
+			: undefined;
 	const conclusion = String(run.conclusion ?? "");
-	const state: RunState = conclusion === "success" ? "passed" : conclusion === "cancelled" ? "cancelled" : conclusion === "timed_out" ? "timed_out" : "failed";
-	return { runId, url, state, said: state === "failed" ? `the run ended ${conclusion || "without a conclusion"}` : null, ...(seconds !== undefined && { seconds }) };
+	const state: RunState =
+		conclusion === "success"
+			? "passed"
+			: conclusion === "cancelled"
+				? "cancelled"
+				: conclusion === "timed_out"
+					? "timed_out"
+					: "failed";
+	return {
+		runId,
+		url,
+		state,
+		said: state === "failed" ? `the run ended ${conclusion || "without a conclusion"}` : null,
+		...(seconds !== undefined && { seconds }),
+	};
 }
 
 /**
@@ -124,17 +171,41 @@ function readingOf(value: unknown): RunReading {
  * workflow file it ran, the commit it ran on, and who triggered it (the App's bot). A run anyone else
  * started, or one of another workflow named the same, is never taken for the platform's.
  */
-export function ownRun(app: Pick<GithubApp, "settings">, value: unknown, expect: { name?: string; headSha: string }): boolean {
-	const run = record(value), actor = record(run.triggering_actor);
+export function ownRun(
+	app: Pick<GithubApp, "settings">,
+	value: unknown,
+	expect: { name?: string; headSha: string },
+): boolean {
+	const run = record(value),
+		actor = record(run.triggering_actor);
 	if (expect.name !== undefined && run.display_title !== expect.name && run.name !== expect.name) return false;
 	const path = typeof run.path === "string" ? run.path.replace(/@.*$/, "") : null;
-	return path === INTEGRATION_PATH && run.head_sha === expect.headSha
-		&& typeof actor.login === "string" && actor.login.toLowerCase() === `${app.settings.slug}[bot]`.toLowerCase() && actor.type === "Bot";
+	return (
+		path === INTEGRATION_PATH &&
+		run.head_sha === expect.headSha &&
+		typeof actor.login === "string" &&
+		actor.login.toLowerCase() === `${app.settings.slug}[bot]`.toLowerCase() &&
+		actor.type === "Bot"
+	);
 }
 
 /** The platform's run of this attempt on `headSha` (the `runFrom` repository's head), if GitHub lists one: a dispatch whose answer was lost is found here. */
-export async function findIntegrationRun(app: GithubApp, token: string, owner: string, repo: string, ref: string, item: string, attempt: number, headSha: string): Promise<RunReading | null> {
-	const { body } = await app.call({ path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}/runs`, query: { event: "workflow_dispatch", branch: ref, per_page: 30 }, auth: { bearer: token }, what: "look for the combined run" });
+export async function findIntegrationRun(
+	app: GithubApp,
+	token: string,
+	owner: string,
+	repo: string,
+	ref: string,
+	item: string,
+	attempt: number,
+	headSha: string,
+): Promise<RunReading | null> {
+	const { body } = await app.call({
+		path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}/runs`,
+		query: { event: "workflow_dispatch", branch: ref, per_page: 30 },
+		auth: { bearer: token },
+		what: "look for the combined run",
+	});
 	const runs = record(body).workflow_runs;
 	const name = runName(item, attempt);
 	const found = Array.isArray(runs) ? runs.find(r => ownRun(app, r, { name, headSha })) : undefined;
@@ -142,18 +213,34 @@ export async function findIntegrationRun(app: GithubApp, token: string, owner: s
 }
 
 /** Starts the run, or finds the one started for this attempt already. */
-export async function dispatchIntegration(app: GithubApp, token: string, owner: string, repo: string, input: IntegrationInput): Promise<RunReading | null> {
+export async function dispatchIntegration(
+	app: GithubApp,
+	token: string,
+	owner: string,
+	repo: string,
+	input: IntegrationInput,
+): Promise<RunReading | null> {
 	const headSha = input.heads[input.runFrom]?.sha;
 	if (!headSha) throw new Error("The combined run has no head for " + input.runFrom + ".");
 	const before = await findIntegrationRun(app, token, owner, repo, input.ref, input.item, input.attempt, headSha);
 	if (before) return before;
-	await app.call({ method: "POST", path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}/dispatches`, auth: { bearer: token }, what: "start the combined run", body: {
-		ref: input.ref,
-		inputs: {
-			feature: input.item, attempt: String(input.attempt), run_from: input.runFrom, command: input.command,
-			heads: JSON.stringify(input.heads), timeout_minutes: String(Math.ceil(input.timeoutSeconds / 60)),
+	await app.call({
+		method: "POST",
+		path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}/dispatches`,
+		auth: { bearer: token },
+		what: "start the combined run",
+		body: {
+			ref: input.ref,
+			inputs: {
+				feature: input.item,
+				attempt: String(input.attempt),
+				run_from: input.runFrom,
+				command: input.command,
+				heads: JSON.stringify(input.heads),
+				timeout_minutes: String(Math.ceil(input.timeoutSeconds / 60)),
+			},
 		},
-	} });
+	});
 	// GitHub lists a dispatched run a moment later: the first poll finds it.
 	return findIntegrationRun(app, token, owner, repo, input.ref, input.item, input.attempt, headSha);
 }
@@ -162,9 +249,21 @@ export async function dispatchIntegration(app: GithubApp, token: string, owner: 
 export class ForeignRun extends Error {}
 
 /** The run `runId`, which must still be the platform's own on `headSha`. */
-export async function readIntegrationRun(app: GithubApp, token: string, owner: string, repo: string, runId: string, headSha: string): Promise<RunReading> {
+export async function readIntegrationRun(
+	app: GithubApp,
+	token: string,
+	owner: string,
+	repo: string,
+	runId: string,
+	headSha: string,
+): Promise<RunReading> {
 	if (!/^\d+$/.test(runId)) throw new Error("Invalid workflow run id.");
-	const { body } = await app.call({ path: `/repos/${owner}/${repo}/actions/runs/${runId}`, auth: { bearer: token }, what: "read the combined run" });
-	if (!ownRun(app, body, { headSha })) throw new ForeignRun(`Run ${runId} is not the platform's run of ${INTEGRATION_PATH} on ${headSha.slice(0, 7)}.`);
+	const { body } = await app.call({
+		path: `/repos/${owner}/${repo}/actions/runs/${runId}`,
+		auth: { bearer: token },
+		what: "read the combined run",
+	});
+	if (!ownRun(app, body, { headSha }))
+		throw new ForeignRun(`Run ${runId} is not the platform's run of ${INTEGRATION_PATH} on ${headSha.slice(0, 7)}.`);
 	return readingOf(body);
 }

@@ -39,18 +39,25 @@ const EXAMPLE = `{
   "env": { "TRACKER_TOKEN": "\${TRACKER_TOKEN}" }
 }`;
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** What the field holds, read as JSON: the definition, or why it is none yet. Null for an empty field. */
-export function readDefinition(text: string): { definition: Record<string, unknown>; problem: null } | { definition: null; problem: string } | null {
+export function readDefinition(
+	text: string,
+): { definition: Record<string, unknown>; problem: null } | { definition: null; problem: string } | null {
 	if (text.trim() === "") return null;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		return { definition: null, problem: "This is not JSON yet: a definition is an object in braces, with its keys and texts in double quotes." };
+		return {
+			definition: null,
+			problem: "This is not JSON yet: a definition is an object in braces, with its keys and texts in double quotes.",
+		};
 	}
-	if (!isObject(parsed)) return { definition: null, problem: "A definition is an object: a command to start, or a url to reach." };
+	if (!isObject(parsed))
+		return { definition: null, problem: "A definition is an object: a command to start, or a url to reach." };
 	return { definition: parsed, problem: null };
 }
 
@@ -65,7 +72,13 @@ export function writtenOut(definition: Record<string, unknown>): string[] {
 		const values = definition[key];
 		if (!isObject(values)) continue;
 		for (const [name, value] of Object.entries(values)) {
-			if (typeof value === "string" && value.trim() !== "" && !value.includes("${") && /TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|COOKIE|CREDENTIAL/i.test(name)) found.push(`${key}.${name}`);
+			if (
+				typeof value === "string" &&
+				value.trim() !== "" &&
+				!value.includes("${") &&
+				/TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|COOKIE|CREDENTIAL/i.test(name)
+			)
+				found.push(`${key}.${name}`);
 		}
 	}
 	// A user name and password in an address.
@@ -97,13 +110,21 @@ export function pastedServers(text: string): PastedServer[] | null {
 		return null;
 	}
 	if (!isObject(parsed) || typeof parsed.command === "string" || typeof parsed.url === "string") return null;
-	const named = (servers: Record<string, unknown>): PastedServer[] => Object.entries(servers).flatMap(([name, definition]) => (isObject(definition) ? [{ name, definition }] : []));
+	const named = (servers: Record<string, unknown>): PastedServer[] =>
+		Object.entries(servers).flatMap(([name, definition]) => (isObject(definition) ? [{ name, definition }] : []));
 	if (isObject(parsed.mcpServers)) return named(parsed.mcpServers);
 	if (isObject(parsed.mcp) && isObject(parsed.mcp.servers)) return named(parsed.mcp.servers);
 	if (isObject(parsed.servers)) return named(parsed.servers);
 	// A name around a definition: every entry is something started or reached.
 	const entries = Object.entries(parsed);
-	const bare = entries.length > 0 && entries.every(([name, value]) => !OBJECT_KEYS.includes(name) && isObject(value) && (typeof value.command === "string" || typeof value.url === "string"));
+	const bare =
+		entries.length > 0 &&
+		entries.every(
+			([name, value]) =>
+				!OBJECT_KEYS.includes(name) &&
+				isObject(value) &&
+				(typeof value.command === "string" || typeof value.url === "string"),
+		);
 	return bare ? named(parsed) : null;
 }
 
@@ -146,7 +167,12 @@ function addressProblem(form: AddressForm): { url: string | null; header: string
 	}
 	return {
 		url: url === "" || reachable ? null : "An http or https address, in full: https://docs.example.com/mcp",
-		header: (form.header.trim() === "") === (form.value === "") ? null : form.header.trim() === "" ? "The header needs a name, such as Authorization." : "The header needs a value, such as Bearer ${DOCS_TOKEN}.",
+		header:
+			(form.header.trim() === "") === (form.value === "")
+				? null
+				: form.header.trim() === ""
+					? "The header needs a name, such as Authorization."
+					: "The header needs a value, such as Bearer ${DOCS_TOKEN}.",
 	};
 }
 
@@ -158,13 +184,13 @@ const UNASKED_KEEPS =
 
 /** What a server of the user's own gets where it runs: one sentence where every sandbox says the same, otherwise one for each. */
 function Reach({ reach, remote }: { reach: AccountSettings["serverReach"]; remote: boolean }) {
-	const said = reach.map((one) => ({ name: one.name, text: remote ? one.address : one.command }));
-	const same = said.every((one) => one.text === said[0]?.text);
+	const said = reach.map(one => ({ name: one.name, text: remote ? one.address : one.command }));
+	const same = said.every(one => one.text === said[0]?.text);
 	if (said.length === 0) return null;
 	if (same) return <p>{said[0]?.text}</p>;
 	return (
 		<>
-			{said.map((one) => (
+			{said.map(one => (
 				<p key={one.name}>
 					<span className="server-ask-key">In {one.name}:</span> {one.text}
 				</p>
@@ -173,15 +199,41 @@ function Reach({ reach, remote }: { reach: AccountSettings["serverReach"]; remot
 	);
 }
 
-function ServerDialog({ settings, editing, onSaved, onClose }: { settings: AccountSettings; editing: PersonalServer | null; onSaved(next: AccountSettings): void; onClose(): void }) {
+function ServerDialog({
+	settings,
+	editing,
+	onSaved,
+	onClose,
+}: {
+	settings: AccountSettings;
+	editing: PersonalServer | null;
+	onSaved(next: AccountSettings): void;
+	onClose(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const ids = { name: useId(), nameNote: useId(), way: useId(), definition: useId(), definitionNote: useId(), url: useId(), urlNote: useId(), header: useId(), value: useId(), headerNote: useId(), gets: useId() };
+	const ids = {
+		name: useId(),
+		nameNote: useId(),
+		way: useId(),
+		definition: useId(),
+		definitionNote: useId(),
+		url: useId(),
+		urlNote: useId(),
+		header: useId(),
+		value: useId(),
+		headerNote: useId(),
+		gets: useId(),
+	};
 	const [name, setName] = useState("");
 	const [text, setText] = useState(() => (editing ? JSON.stringify(editing.definition, null, 2) : ""));
 	// A server that is an address and one header opens in the form; anything else, and a new one, as JSON.
-	const [form, setForm] = useState<AddressForm>(() => (editing ? (addressForm(editing.definition) ?? NO_ADDRESS) : NO_ADDRESS));
-	const [way, setWay] = useState<"json" | "address">(() => (editing && addressForm(editing.definition) !== null ? "address" : "json"));
+	const [form, setForm] = useState<AddressForm>(() =>
+		editing ? (addressForm(editing.definition) ?? NO_ADDRESS) : NO_ADDRESS,
+	);
+	const [way, setWay] = useState<"json" | "address">(() =>
+		editing && addressForm(editing.definition) !== null ? "address" : "json",
+	);
 	const [unasked, setUnasked] = useState(editing?.unasked ?? false);
 	/** The server the definition was last taken from, where a snippet named it. */
 	const [taken, setTaken] = useState<string | null>(null);
@@ -194,13 +246,22 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 	const several = found !== null;
 	const read = way === "json" && !several ? readDefinition(text) : null;
 	const wrong = way === "address" ? addressProblem(form) : { url: null, header: null };
-	const definition = way === "address" ? (wrong.url === null && wrong.header === null ? addressDefinition(form) : null) : (read?.definition ?? null);
-	const nameProblem = name === "" || /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) ? null : "Letters, digits, '_', '.' and '-' only, starting with a letter or a digit.";
-	const nameTaken = !editing && settings.servers.some((server) => server.name === name);
+	const definition =
+		way === "address"
+			? wrong.url === null && wrong.header === null
+				? addressDefinition(form)
+				: null
+			: (read?.definition ?? null);
+	const nameProblem =
+		name === "" || /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)
+			? null
+			: "Letters, digits, '_', '.' and '-' only, starting with a letter or a digit.";
+	const nameTaken = !editing && settings.servers.some(server => server.name === name);
 	const full = !editing && settings.servers.length >= settings.limits.servers;
 	const bytes = new TextEncoder().encode(definition ? JSON.stringify(definition) : way === "json" ? text : "").length;
 	const tooLong = bytes > settings.limits.definitionBytes;
-	const ready = definition !== null && !tooLong && (editing ? true : name !== "" && nameProblem === null && !nameTaken && !full);
+	const ready =
+		definition !== null && !tooLong && (editing ? true : name !== "" && nameProblem === null && !nameTaken && !full);
 	const remote = definition !== null && typeof definition.url === "string";
 	const spelled = definition === null ? [] : writtenOut(definition);
 	// The form can show what the field holds when that is nothing, or an address and one header.
@@ -238,7 +299,11 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 		setBusy("saving");
 		setError(null);
 		try {
-			onSaved(await client.user(auth).savePersonalServer({ name: editing ? editing.name : name, definition, unasked, existing: editing !== null }));
+			onSaved(
+				await client
+					.user(auth)
+					.savePersonalServer({ name: editing ? editing.name : name, definition, unasked, existing: editing !== null }),
+			);
 			onClose();
 		} catch (failure) {
 			setError(explain(failure));
@@ -259,7 +324,13 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 		}
 	};
 
-	const plain = { spellCheck: false, autoCapitalize: "off", autoCorrect: "off", autoComplete: "off", disabled: busy !== null };
+	const plain = {
+		spellCheck: false,
+		autoCapitalize: "off",
+		autoCorrect: "off",
+		autoComplete: "off",
+		disabled: busy !== null,
+	};
 	return (
 		<Dialog
 			title={editing ? `Change ${editing.name}` : "Add an MCP server"}
@@ -269,8 +340,15 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 			footer={
 				confirming && editing ? (
 					<>
-						<span className="dialog-error secret-confirm">Delete {editing.name}? Agents stop starting it from their next turn.</span>
-						<button type="button" className="button button-quiet" onClick={() => setConfirming(false)} disabled={busy !== null}>
+						<span className="dialog-error secret-confirm">
+							Delete {editing.name}? Agents stop starting it from their next turn.
+						</span>
+						<button
+							type="button"
+							className="button button-quiet"
+							onClick={() => setConfirming(false)}
+							disabled={busy !== null}
+						>
 							Keep it
 						</button>
 						<button type="button" className="button button-danger" onClick={remove} disabled={busy !== null}>
@@ -280,14 +358,25 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 				) : (
 					<>
 						{editing ? (
-							<button type="button" className="button button-quiet secret-delete" onClick={() => setConfirming(true)} disabled={busy !== null}>
+							<button
+								type="button"
+								className="button button-quiet secret-delete"
+								onClick={() => setConfirming(true)}
+								disabled={busy !== null}
+							>
 								Delete…
 							</button>
 						) : null}
 						<button type="button" className="button button-quiet" onClick={onClose} disabled={busy !== null}>
 							Cancel
 						</button>
-						<button type="button" className="button button-primary" onClick={save} disabled={!ready || busy !== null} aria-describedby={ids.gets}>
+						<button
+							type="button"
+							className="button button-primary"
+							onClick={save}
+							disabled={!ready || busy !== null}
+							aria-describedby={ids.gets}
+						>
 							{busy === "saving" ? "Saving…" : editing ? "Save" : "Add server"}
 						</button>
 					</>
@@ -309,12 +398,15 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 							placeholder="tracker"
 							data-autofocus
 							value={name}
-							onChange={(event) => setName(event.target.value)}
+							onChange={event => setName(event.target.value)}
 							aria-describedby={ids.nameNote}
 							aria-invalid={nameProblem !== null || nameTaken}
 						/>
 						<p className={`field-note${nameProblem || nameTaken ? " tone-warn" : ""}`} id={ids.nameNote}>
-							{nameProblem ?? (nameTaken ? `A server named ${name} is saved already. Change that one, or give this one another name.` : "What the agent calls it by, with its tools after it: tracker/create_issue.")}
+							{nameProblem ??
+								(nameTaken
+									? `A server named ${name} is saved already. Change that one, or give this one another name.`
+									: "What the agent calls it by, with its tools after it: tracker/create_issue.")}
 						</p>
 					</div>
 				)}
@@ -326,8 +418,19 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 							["address", "At an address"],
 						] as const
 					).map(([value, label]) => (
-						<label key={value} className={`server-way${way === value ? " server-way-chosen" : ""}${value === "address" && fits === null && way === "json" ? " server-way-off" : ""}`}>
-							<input className="secret-radio" type="radio" name={ids.way} value={value} checked={way === value} onChange={() => choose(value)} disabled={busy !== null || (value === "address" && fits === null && way === "json")} />
+						<label
+							key={value}
+							className={`server-way${way === value ? " server-way-chosen" : ""}${value === "address" && fits === null && way === "json" ? " server-way-off" : ""}`}
+						>
+							<input
+								className="secret-radio"
+								type="radio"
+								name={ids.way}
+								value={value}
+								checked={way === value}
+								onChange={() => choose(value)}
+								disabled={busy !== null || (value === "address" && fits === null && way === "json")}
+							/>
 							{label}
 						</label>
 					))}
@@ -346,12 +449,13 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 								inputMode="url"
 								placeholder="https://docs.example.com/mcp"
 								value={form.url}
-								onChange={(event) => setForm({ ...form, url: event.target.value })}
+								onChange={event => setForm({ ...form, url: event.target.value })}
 								aria-describedby={ids.urlNote}
 								aria-invalid={wrong.url !== null}
 							/>
 							<p className={`field-note${wrong.url ? " tone-warn" : ""}`} id={ids.urlNote}>
-								{wrong.url ?? "Where Windlass reaches the server. Nothing is started. A server that is started by a command, or needs more than this, is written as JSON."}
+								{wrong.url ??
+									"Where Windlass reaches the server. Nothing is started. A server that is started by a command, or needs more than this, is written as JSON."}
 							</p>
 						</div>
 						<div className="field">
@@ -367,7 +471,7 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 									placeholder="Authorization"
 									aria-label="The header's name"
 									value={form.header}
-									onChange={(event) => setForm({ ...form, header: event.target.value })}
+									onChange={event => setForm({ ...form, header: event.target.value })}
 									aria-describedby={ids.headerNote}
 								/>
 								<input
@@ -378,12 +482,13 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 									placeholder={"Bearer ${DOCS_TOKEN}"}
 									aria-label="The header's value"
 									value={form.value}
-									onChange={(event) => setForm({ ...form, value: event.target.value })}
+									onChange={event => setForm({ ...form, value: event.target.value })}
 									aria-describedby={ids.headerNote}
 								/>
 							</div>
 							<p className={`field-note${wrong.header ? " tone-warn" : ""}`} id={ids.headerNote}>
-								{wrong.header ?? "Sent with every request to the address. ${NAME} in its value reads a secret of your account: save the secret under Secrets, and write its name here."}
+								{wrong.header ??
+									"Sent with every request to the address. ${NAME} in its value reads a secret of your account: save the secret under Secrets, and write its name here."}
 							</p>
 						</div>
 					</>
@@ -399,7 +504,7 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 							rows={6}
 							placeholder={EXAMPLE}
 							value={text}
-							onChange={(event) => write(event.target.value)}
+							onChange={event => write(event.target.value)}
 							aria-describedby={ids.definitionNote}
 							aria-invalid={Boolean(read?.problem) || tooLong}
 						/>
@@ -440,24 +545,37 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 						) : null}
 					</div>
 				)}
-				<Check checked={unasked} disabled={busy !== null} onChange={(on) => setUnasked(on)}>
+				<Check checked={unasked} disabled={busy !== null} onChange={on => setUnasked(on)}>
 					<span className="check-name">Run this server's tools without asking</span>
 					<span className="check-means">{UNASKED_MEANS}</span>
 					<span className="check-means">{UNASKED_KEEPS}</span>
 				</Check>
 				<div className="server-ask-details" id={ids.gets}>
 					<p className="label">What it gets</p>
-					<p>Windlass starts it without asking, in every agent of yours, from each agent's next turn. No question is put first, as one is put for a server a repository names.</p>
+					<p>
+						Windlass starts it without asking, in every agent of yours, from each agent's next turn. No question is put
+						first, as one is put for a server a repository names.
+					</p>
 					<Reach reach={settings.serverReach} remote={remote} />
-					<p>Write no credential into the definition: it is stored and shown as it is written, here and in an agent's panel. Save it under Secrets below and read it as {"${NAME}"}.</p>
+					<p>
+						Write no credential into the definition: it is stored and shown as it is written, here and in an agent's
+						panel. Save it under Secrets below and read it as {"${NAME}"}.
+					</p>
 					{spelled.length > 0 ? (
 						<p className="tone-warn" role="status">
-							{spelled.length === 1 ? `${spelled[0]} looks` : `${spelled.slice(0, -1).join(", ")} and ${spelled[spelled.length - 1]} look`} written out here. If {spelled.length === 1 ? "it is" : "they are"} a credential, save {spelled.length === 1 ? "it" : "each"} as a secret and write{" "}
-							{"${NAME}"} in its place.
+							{spelled.length === 1
+								? `${spelled[0]} looks`
+								: `${spelled.slice(0, -1).join(", ")} and ${spelled[spelled.length - 1]} look`}{" "}
+							written out here. If {spelled.length === 1 ? "it is" : "they are"} a credential, save{" "}
+							{spelled.length === 1 ? "it" : "each"} as a secret and write {"${NAME}"} in its place.
 						</p>
 					) : null}
 				</div>
-				{full ? <p className="secret-about tone-warn">Your account keeps {settings.limits.servers} MCP servers, which is the most it can. Delete one first.</p> : null}
+				{full ? (
+					<p className="secret-about tone-warn">
+						Your account keeps {settings.limits.servers} MCP servers, which is the most it can. Delete one first.
+					</p>
+				) : null}
 				{error ? (
 					<p className="callout callout-bad" role="alert">
 						<WarnIcon />
@@ -470,20 +588,30 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 }
 
 function Server({ server, onChange }: { server: PersonalServer; onChange(): void }) {
-	const unset = server.reads.filter((read) => !read.saved).map((read) => read.name);
+	const unset = server.reads.filter(read => !read.saved).map(read => read.name);
 	return (
 		<li className="server">
 			<p className="server-head">
 				<span className="server-name">{server.name}</span>
-				<span className={`server-state${server.enabled ? "" : " server-state-off"}`}>{server.enabled ? (server.remote ? "URL" : "command") : "off"}</span>
+				<span className={`server-state${server.enabled ? "" : " server-state-off"}`}>
+					{server.enabled ? (server.remote ? "URL" : "command") : "off"}
+				</span>
 			</p>
 			<p className="server-foot">
 				{server.enabled && unset.length > 0 && (
-					<span role="status"><span className="tone-warn">Needs {unset.join(", ")}</span>{" "}
-						<a className="link" href="#settings-secrets">Add secret</a>
+					<span role="status">
+						<span className="tone-warn">Needs {unset.join(", ")}</span>{" "}
+						<a className="link" href="#settings-secrets">
+							Add secret
+						</a>
 					</span>
 				)}
-				<button type="button" className="link server-forget" onClick={onChange} aria-label={`Change the MCP server ${server.name}`}>
+				<button
+					type="button"
+					className="link server-forget"
+					onClick={onChange}
+					aria-label={`Change the MCP server ${server.name}`}
+				>
 					Change…
 				</button>
 			</p>
@@ -492,16 +620,29 @@ function Server({ server, onChange }: { server: PersonalServer; onChange(): void
 }
 
 /** The section of the settings page: `onChanged` is handed the settings as a save or a delete left them. */
-export function PersonalServers({ settings, onChanged }: { settings: AccountSettings; onChanged(next: AccountSettings): void }) {
+export function PersonalServers({
+	settings,
+	onChanged,
+}: {
+	settings: AccountSettings;
+	onChanged(next: AccountSettings): void;
+}) {
 	const [open, setOpen] = useState<"add" | { name: string } | null>(null);
 	const { servers } = settings;
-	const editing = open !== null && open !== "add" ? (servers.find((server) => server.name === open.name) ?? null) : null;
+	const editing = open !== null && open !== "add" ? (servers.find(server => server.name === open.name) ?? null) : null;
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-servers">
 			<h3 className="usage-title" id="settings-servers">
 				MCP servers
-				<span className="usage-count">{servers.length} of {settings.limits.servers}</span>
-				<button type="button" className="link secret-add" onClick={() => setOpen("add")} aria-label="Add an MCP server of your own">
+				<span className="usage-count">
+					{servers.length} of {settings.limits.servers}
+				</span>
+				<button
+					type="button"
+					className="link secret-add"
+					onClick={() => setOpen("add")}
+					aria-label="Add an MCP server of your own"
+				>
 					Add…
 				</button>
 			</h3>
@@ -510,12 +651,17 @@ export function PersonalServers({ settings, onChanged }: { settings: AccountSett
 				<p className="usage-empty">No servers saved.</p>
 			) : (
 				<ul className="servers repo-approvals" aria-label="Your own MCP servers">
-					{servers.map((server) => (
+					{servers.map(server => (
 						<Server key={server.name} server={server} onChange={() => setOpen({ name: server.name })} />
 					))}
 				</ul>
 			)}
-			{open !== null && (open === "add" || editing !== null) ? createPortal(<ServerDialog settings={settings} editing={editing} onSaved={onChanged} onClose={() => setOpen(null)} />, document.body) : null}
+			{open !== null && (open === "add" || editing !== null)
+				? createPortal(
+						<ServerDialog settings={settings} editing={editing} onSaved={onChanged} onClose={() => setOpen(null)} />,
+						document.body,
+					)
+				: null}
 		</section>
 	);
 }

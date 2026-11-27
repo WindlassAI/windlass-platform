@@ -19,7 +19,7 @@ interface Props {
 export function ItemSpend({ spent, budget, fields, agent }: Props) {
 	return (
 		<dl className="usage-facts item-facts item-cost">
-			{fields.map((field) => {
+			{fields.map(field => {
 				const words = field.key === "tokens" ? agentTokens(agent) : null;
 				if (words !== null) {
 					return (
@@ -36,11 +36,18 @@ export function ItemSpend({ spent, budget, fields, agent }: Props) {
 					<div key={field.key}>
 						<dt>{field.label}</dt>
 						<dd className="usage-number">
-							{field.spelled(used)} <span className="tone-faint">of {field.spelled(cap)}{field.key === "tokens" && " budget"}</span>
+							{field.spelled(used)}{" "}
+							<span className="tone-faint">
+								of {field.spelled(cap)}
+								{field.key === "tokens" && " budget"}
+							</span>
 						</dd>
 						<dd className="item-cost-meter">
 							<span className="usage-meter" aria-hidden="true">
-								<span className={`usage-meter-used${reached ? " item-meter-reached" : ""}`} style={{ width: `${cap > 0 ? Math.min(100, (used / cap) * 100) : 0}%` }} />
+								<span
+									className={`usage-meter-used${reached ? " item-meter-reached" : ""}`}
+									style={{ width: `${cap > 0 ? Math.min(100, (used / cap) * 100) : 0}%` }}
+								/>
 							</span>
 							{reached ? <span className="tone-dim">reached</span> : null}
 						</dd>

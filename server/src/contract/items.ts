@@ -63,7 +63,16 @@ export interface ItemFeed {
 export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | "done" | "failed" | "cancelled";
 
 /** Person and budget waits require an answer. Resource and CI waits can end on their own. */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "ci" | "person" | "budget" | "integration" | "sandboxes";
+export type WaitReason =
+	| "provider"
+	| "children"
+	| "capacity"
+	| "machine"
+	| "ci"
+	| "person"
+	| "budget"
+	| "integration"
+	| "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -82,7 +91,23 @@ export interface Waiting extends Wait {
 }
 
 /** Factory step names are persisted and appear on the item timeline. */
-export type StepKind = "plan_review" | "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
+export type StepKind =
+	| "plan_review"
+	| "subtasks"
+	| "integration"
+	| "summary"
+	| "refine"
+	| "implement"
+	| "gate"
+	| "publish"
+	| "ci"
+	| "ci_fix"
+	| "run_checks"
+	| "conflict"
+	| "review"
+	| "review_fix"
+	| "handoff"
+	| "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -160,10 +185,66 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "branch_push" | "run_place" | "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind =
+	| "branch_push"
+	| "run_place"
+	| "push_ci"
+	| "feature_update"
+	| "sandboxes"
+	| "integration"
+	| "feedback_feature"
+	| "feedback_more"
+	| "placement_refused"
+	| "single_suggested"
+	| "replan_approval"
+	| "plan_approval"
+	| "rounds"
+	| "budget"
+	| "no_change"
+	| "publish_refused"
+	| "ci_timeout"
+	| "turn_refused"
+	| "machine_removed"
+	| "review_question"
+	| "agent_ask"
+	| "secret_needed"
+	| "check_environment"
+	| "sandbox_failed"
+	| "out_of_memory"
+	| "machine_away";
 
 /** Stored response IDs. Retry starts a new run. Again retries the failed step. */
-export type ChoiceId = "use_machine_payer" | "use_hosted" | "use_windlass" | "use_claude" | "use_opencode" | "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
+export type ChoiceId =
+	| "use_machine_payer"
+	| "use_hosted"
+	| "use_windlass"
+	| "use_claude"
+	| "use_opencode"
+	| "send_back"
+	| "dismiss"
+	| "send"
+	| "leave"
+	| "run_single"
+	| "orchestrate_anyway"
+	| "approve"
+	| "revise"
+	| "raise"
+	| "retry"
+	| "again"
+	| "wait"
+	| "hand_over"
+	| "give_up"
+	| "fix"
+	| "add_secret"
+	| "without_secret"
+	| "reply"
+	| "run_anyway"
+	| "fresh_sandbox"
+	| "larger_sandbox"
+	| "run_checks"
+	| "ci_alone"
+	| "update_from_base"
+	| "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
@@ -201,7 +282,14 @@ export interface ItemQuestion {
 	/** Untrusted builder text. Quote as plain text, separate from platform wording, and never post externally. */
 	asked?: { text: string; options: string[] };
 	/** Show the check's diagnostic and output tail as plain command output. */
-	check?: { name: string; command: string; exitCode: number | null; kind: "package_manager" | "network" | "not_found"; line: string; excerpt: string };
+	check?: {
+		name: string;
+		command: string;
+		exitCode: number | null;
+		kind: "package_manager" | "network" | "not_found";
+		line: string;
+		excerpt: string;
+	};
 	/** An `out_of_memory` question's next hosted size: what "Go on in a larger sandbox" makes. */
 	largerSize?: HostedSize;
 }
@@ -257,7 +345,20 @@ export interface Verdict {
 	 * says so), so nothing is claimed of what was not read. "none" only when GitHub was read and
 	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped or neutral). "cancelled" includes stale checks.
 	 */
-	ci: { state: "passed" | "failed" | "none" | "skipped" | "cancelled" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
+	ci: {
+		state:
+			| "passed"
+			| "failed"
+			| "none"
+			| "skipped"
+			| "cancelled"
+			| "not_run"
+			| "timed_out"
+			| "not_permitted"
+			| "unread";
+		runs: VerdictRun[];
+		said: string | null;
+	};
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;
@@ -342,7 +443,10 @@ export interface ItemSummary {
 	/** The latest verdict's result and flags; null before the first. */
 	verdict: { result: Verdict["result"]; flags: VerifiedFlag[]; ci: Verdict["ci"]["state"] } | null;
 	/** The second review for this run, or null before one is due. */
-	review: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
+	review: {
+		state: "waiting" | "running" | "filed" | "none" | "off";
+		recommendation: ReviewRecommendation | null;
+	} | null;
 	budget: ItemBudget;
 	spent: ItemSpend;
 	/** The item's agent session, among the user's sessions. */
@@ -421,7 +525,12 @@ export interface ItemView extends ItemSummary {
 	/** Union by host and port across all turns of the builder and reviewer. Absent on older servers. */
 	blockedNetwork?: BlockedNetwork;
 	feedback: { batches: FeedbackBatch[]; notTaken: number };
-	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
+	verifiedCheck: {
+		sha: string;
+		state: "in_progress" | "completed" | "not_posted";
+		conclusion: CheckConclusion | null;
+		said: string;
+	} | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	/** Remaining unattended subtask keys that each require confirmation at approval. */
@@ -434,7 +543,14 @@ export interface ItemView extends ItemSummary {
 	replanWhy?: string;
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
-	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
+	subtasks?: {
+		id: string;
+		key: string;
+		state: ItemState;
+		dispatchedAt: number | null;
+		startedAt: number | null;
+		wait: string | null;
+	}[];
 	/** A feature's: the screenshots its parts filed, a set for each report or review that has any, the newest set first. */
 	partScreenshots?: PartScreenshots[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
@@ -495,7 +611,12 @@ export interface ChildPlacement {
 export interface PlanSubtask {
 	review?: {
 		inherited: import("../factory/resolve-run.js").ResolvedRun;
-		places: { place: SandboxPlace; name: string; sendSecrets: boolean | null; payer: import("../factory/resolve-run.js").ResolvedRun["payer"] }[];
+		places: {
+			place: SandboxPlace;
+			name: string;
+			sendSecrets: boolean | null;
+			payer: import("../factory/resolve-run.js").ResolvedRun["payer"];
+		}[];
 		hosted?: { saved: HostedSize; size: HostedSize; rate: number; usdPerHour: number | null };
 	};
 	placementProblem?: string;
@@ -557,7 +678,15 @@ export interface FeaturePlanEdit {
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
 	/** Optional why supplies background shown separately from the question. */
-	questions: { id: string; text: string; options?: string[]; why?: string; recommended?: string; answer?: string; answeredBy?: "critic" }[];
+	questions: {
+		id: string;
+		text: string;
+		options?: string[];
+		why?: string;
+		recommended?: string;
+		answer?: string;
+		answeredBy?: "critic";
+	}[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
 	singleSuggested: string | null;
@@ -666,4 +795,11 @@ export type ItemAction =
 	/** A note to the builder: into its running turn, or with its next turn. */
 	| { kind: "note"; note: string }
 	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
-	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] };
+	| {
+			kind: "answer";
+			question: string;
+			choice: ChoiceId;
+			note?: string;
+			budget?: Partial<ItemBudget>;
+			agents?: string[];
+	  };

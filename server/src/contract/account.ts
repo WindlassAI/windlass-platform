@@ -7,7 +7,9 @@ import type { RepositoryAutonomy, RepositoryDefaults, SecretReach, SecretScope }
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots">;
 
 export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt" | "previousStartPlace">>;
-export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds" | "previousStartPlace">> & { offer?: import("../factory/readiness-track.js").Offer };
+export type RepositoryDefaultsPatch = Partial<
+	Omit<RepositoryDefaults, "updatedAt" | "mergeKinds" | "previousStartPlace">
+> & { offer?: import("../factory/readiness-track.js").Offer };
 
 /** User-owned MCP definition supplied to every session independent of repository configuration. */
 export interface PersonalServer {
@@ -66,7 +68,7 @@ export interface AccountSecret {
 
 export const MODEL_CHECKS_PER_MINUTE = 12;
 export const MODEL_PROVIDERS = ["openai", "anthropic", "google", "openrouter"] as const;
-export type ModelProvider = typeof MODEL_PROVIDERS[number];
+export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
 
 export function isModelProvider(value: unknown): value is ModelProvider {
 	return (MODEL_PROVIDERS as readonly unknown[]).includes(value);

@@ -14,7 +14,10 @@ import { localListeners } from "./check-listeners.js";
 import { GithubStandin } from "./github-standin.js";
 import { FakeRunner, post } from "./runner-fake.js";
 
-const { engine, http: [primaryPort, peerPort] } = await localListeners(2);
+const {
+	engine,
+	http: [primaryPort, peerPort],
+} = await localListeners(2);
 const endpoint = `http://127.0.0.1:${engine}`;
 const primary = `http://127.0.0.1:${primaryPort}`;
 const peer = `http://127.0.0.1:${peerPort}`;
@@ -33,20 +36,41 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 	const secret = randomBytes(32).toString("hex");
 	const github = new GithubStandin({ callbackUrl: primary + "/github/callback" });
 	await github.start();
-	t.after(async () => { await github.stop(); await rm(dir, { recursive: true, force: true }); });
+	t.after(async () => {
+		await github.stop();
+		await rm(dir, { recursive: true, force: true });
+	});
 	const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|PORT$)/.test(key)));
 	const logs: string[] = [];
 	const nodes: ReturnType<typeof spawn>[] = [];
 	async function start(second: boolean) {
 		const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-			cwd: fileURLToPath(new URL("../server/", import.meta.url)), stdio: ["ignore", "pipe", "pipe"],
-			env: { ...clean, ...github.env(), WLP_GITHUB_WEBHOOK_SECRET: secret, WLP_DEMO: "1", WLP_SANDBOX: "fake",
-				WLP_SECRET: secret, WLP_ITEMS: "1", WLP_MACHINES: "1", WLP_PUBLIC_URL: primary,
-				WLP_HTTP_PORT: String(second ? peerPort : primaryPort), RIVET_RUN_ENGINE_PORT: String(engine),
-				RIVETKIT_STORAGE_PATH: second ? join(dir, "peer") : dir, RIVET_LOG_LEVEL: "silent",
-				WLP_API_ADDRESS_PER_MINUTE: "5", WLP_API_FAILURES_PER_MINUTE: "2", WLP_API_TOKEN_PER_MINUTE: "3",
-				WLP_WEBHOOK_REFUSALS_PER_MINUTE: "2", WLP_RUNNER_POLLS_PER_MINUTE: "2", WLP_RUNNER_CONNECTIONS_PER_MINUTE: "2",
-				...(second ? { RIVET_ENDPOINT: endpoint, RIVET_TOKEN: "default", NODE_ENV: "production" } : { WLP_CLIENT_IP_HEADER: "x-ingress-ip" }) },
+			cwd: fileURLToPath(new URL("../server/", import.meta.url)),
+			stdio: ["ignore", "pipe", "pipe"],
+			env: {
+				...clean,
+				...github.env(),
+				WLP_GITHUB_WEBHOOK_SECRET: secret,
+				WLP_DEMO: "1",
+				WLP_SANDBOX: "fake",
+				WLP_SECRET: secret,
+				WLP_ITEMS: "1",
+				WLP_MACHINES: "1",
+				WLP_PUBLIC_URL: primary,
+				WLP_HTTP_PORT: String(second ? peerPort : primaryPort),
+				RIVET_RUN_ENGINE_PORT: String(engine),
+				RIVETKIT_STORAGE_PATH: second ? join(dir, "peer") : dir,
+				RIVET_LOG_LEVEL: "silent",
+				WLP_API_ADDRESS_PER_MINUTE: "5",
+				WLP_API_FAILURES_PER_MINUTE: "2",
+				WLP_API_TOKEN_PER_MINUTE: "3",
+				WLP_WEBHOOK_REFUSALS_PER_MINUTE: "2",
+				WLP_RUNNER_POLLS_PER_MINUTE: "2",
+				WLP_RUNNER_CONNECTIONS_PER_MINUTE: "2",
+				...(second
+					? { RIVET_ENDPOINT: endpoint, RIVET_TOKEN: "default", NODE_ENV: "production" }
+					: { WLP_CLIENT_IP_HEADER: "x-ingress-ip" }),
+			},
 		});
 		nodes.push(child);
 		child.stdout.on("data", b => logs.push(b.toString()));
@@ -71,30 +95,52 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 		await user.githubComplete(back.headers.get("location")!.split("#github=")[1]!);
 		const task = { repository: { id: repo.id }, title: "Rate limit check", body: "File a work item.", start: false };
 		const item = await user.createItem(task);
-		const token = async () => (await user.createApiToken({ name: "check", scopes: ["items:create", "items:read"] })).secret;
-		const api = (bearer: string, ip: string, host = primary, create = false) => fetch(host + (create ? "/api/items" : "/api/items/" + item.id), {
-			method: create ? "POST" : "GET", body: create ? JSON.stringify(task) : undefined,
-			headers: { authorization: "Bearer " + bearer, "x-ingress-ip": ip, "x-forwarded-for": ip },
-		});
-		const hook = async (ip: string, valid: boolean, host = primary) => fetch(host + "/github/webhook", {
-			method: "POST", body: "{}", headers: { "x-ingress-ip": ip, "x-github-delivery": randomUUID(), "x-github-event": "ping",
-				"x-github-hook-installation-target-id": github.appId,
-				"x-hub-signature-256": "sha256=" + createHmac("sha256", valid ? secret : "fixture").update("{}").digest("hex") },
-		});
-		await t.test("webhook refuses the third bad signature, another address and a valid delivery still pass", async () => {
-			const statuses = [];
-			for (let i = 0; i < 4; i++) statuses.push(await hook("192.0.2.1", false));
-			assert.equal((await hook("192.0.2.2", false)).status, 401);
-			assert.equal((await hook("192.0.2.1", true)).status, 202);
-			assert.deepEqual(statuses.map(r => r.status), [401, 401, 429, 429]);
-			await limited(statuses[2]!);
-		});
+		const token = async () =>
+			(await user.createApiToken({ name: "check", scopes: ["items:create", "items:read"] })).secret;
+		const api = (bearer: string, ip: string, host = primary, create = false) =>
+			fetch(host + (create ? "/api/items" : "/api/items/" + item.id), {
+				method: create ? "POST" : "GET",
+				body: create ? JSON.stringify(task) : undefined,
+				headers: { authorization: "Bearer " + bearer, "x-ingress-ip": ip, "x-forwarded-for": ip },
+			});
+		const hook = async (ip: string, valid: boolean, host = primary) =>
+			fetch(host + "/github/webhook", {
+				method: "POST",
+				body: "{}",
+				headers: {
+					"x-ingress-ip": ip,
+					"x-github-delivery": randomUUID(),
+					"x-github-event": "ping",
+					"x-github-hook-installation-target-id": github.appId,
+					"x-hub-signature-256":
+						"sha256=" +
+						createHmac("sha256", valid ? secret : "fixture")
+							.update("{}")
+							.digest("hex"),
+				},
+			});
+		await t.test(
+			"webhook refuses the third bad signature, another address and a valid delivery still pass",
+			async () => {
+				const statuses = [];
+				for (let i = 0; i < 4; i++) statuses.push(await hook("192.0.2.1", false));
+				assert.equal((await hook("192.0.2.2", false)).status, 401);
+				assert.equal((await hook("192.0.2.1", true)).status, 202);
+				assert.deepEqual(
+					statuses.map(r => r.status),
+					[401, 401, 429, 429],
+				);
+				await limited(statuses[2]!);
+			},
+		);
 		await t.test("one token shares GET and POST across nodes; another token of the same user still works", async () => {
 			// Keep the concurrent reads in one UTC minute.
-			if (Date.now() % 60_000 > 50_000) await wait(60_000 - Date.now() % 60_000);
+			if (Date.now() % 60_000 > 50_000) await wait(60_000 - (Date.now() % 60_000));
 			const key = await token();
 			assert.equal((await api(key, "192.0.2.3", primary, true)).status, 201);
-			const responses = await Promise.all([primary, peer, primary].map((host, i) => api(key, "192.0.2." + (4 + i), host)));
+			const responses = await Promise.all(
+				[primary, peer, primary].map((host, i) => api(key, "192.0.2." + (4 + i), host)),
+			);
 			assert.deepEqual(responses.map(r => r.status).sort(), [200, 200, 429]);
 			await limited(responses.find(r => r.status === 429)!, "token_rate_limited");
 			assert.equal((await api(await token(), "192.0.2.3")).status, 200);
@@ -106,16 +152,22 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			await limited(await api(fresh, "2001:0db8:0:0:0:0:0:1", primary, true));
 			assert.equal((await api(fresh, "2001:db8::2", primary, true)).status, 201);
 		});
-		await t.test("concurrent misses reserve lookup slots; other addresses and successful lookups keep working", async () => {
-			const fake = (uid: string) => "wlp_" + uid + "." + "x".repeat(43);
-			const ip = "192.0.2.8";
-			const results = await Promise.all([auth.profile.uid, "missing", "unused"].map(uid => api(fake(uid), ip)));
-			assert.deepEqual(results.map(r => r.status).sort(), [401, 401, 429]);
-			await limited(await api(fake("another"), ip));
-			const valid = await token();
-			const reads = await Promise.all(Array.from({ length: 3 }, () => api(valid, "192.0.2.9")));
-			assert.deepEqual(reads.map(r => r.status), [200, 200, 200]);
-		});
+		await t.test(
+			"concurrent misses reserve lookup slots; other addresses and successful lookups keep working",
+			async () => {
+				const fake = (uid: string) => "wlp_" + uid + "." + "x".repeat(43);
+				const ip = "192.0.2.8";
+				const results = await Promise.all([auth.profile.uid, "missing", "unused"].map(uid => api(fake(uid), ip)));
+				assert.deepEqual(results.map(r => r.status).sort(), [401, 401, 429]);
+				await limited(await api(fake("another"), ip));
+				const valid = await token();
+				const reads = await Promise.all(Array.from({ length: 3 }, () => api(valid, "192.0.2.9")));
+				assert.deepEqual(
+					reads.map(r => r.status),
+					[200, 200, 200],
+				);
+			},
+		);
 		await t.test("without a trusted header, the failure limit only refuses invalid tokens", async () => {
 			assert.equal((await api("malformed", "192.0.2.10", peer)).status, 401);
 			const wrongSecret = "wlp_" + auth.profile.uid + "." + "x".repeat(43);
@@ -142,8 +194,11 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			for (let i = 0; i < 2; i++) assert.deepEqual(await runner.poll(primary, pair), { state: "waiting" });
 			await limited(await post(primary, "/runner/pair/poll", { pairing: pair.pairing, pollSecret: pair.pollSecret }));
 			for (let i = 0; i < 3; i++) assert.deepEqual(await runner.poll(peer, pair), { state: "waiting" });
-			const other = await fetch(primary + "/runner/pair/poll", { method: "POST", headers: { "x-ingress-ip": "192.0.2.15" },
-				body: JSON.stringify({ pairing: pair.pairing, pollSecret: pair.pollSecret }) });
+			const other = await fetch(primary + "/runner/pair/poll", {
+				method: "POST",
+				headers: { "x-ingress-ip": "192.0.2.15" },
+				body: JSON.stringify({ pairing: pair.pairing, pollSecret: pair.pollSecret }),
+			});
 			assert.equal(other.status, 200);
 			assert.deepEqual(await other.json(), { state: "waiting" });
 		});
@@ -156,7 +211,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 		});
 		await t.test("without a trusted header, only a verified signature spends the machine allowance", async () => {
 			// The two signed connections must land in the same machine UTC minute.
-			if (Date.now() % 60_000 > 50_000) await wait(60_000 - Date.now() % 60_000);
+			if (Date.now() % 60_000 > 50_000) await wait(60_000 - (Date.now() % 60_000));
 			const other = new FakeRunner();
 			assert.equal((await other.connection(peer, id)).status, 403);
 			assert.equal((await post(peer, "/runner/connection", {})).status, 400);
@@ -189,11 +244,17 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
 			child.kill("SIGTERM");
 			const guard = setTimeout(() => child.kill("SIGKILL"), 15_000);
-			try { await exited; } finally { clearTimeout(guard); }
+			try {
+				await exited;
+			} finally {
+				clearTimeout(guard);
+			}
 		}
 		try {
 			const { pid } = JSON.parse(await readFile(join(dir, ".rivetkit/var/engine/runtime.json"), "utf8"));
 			if (Number.isSafeInteger(pid) && pid > 1) process.kill(pid, "SIGTERM");
-		} catch { /* The engine already exited. */ }
+		} catch {
+			/* The engine already exited. */
+		}
 	}
 });

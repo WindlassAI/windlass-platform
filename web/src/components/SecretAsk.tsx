@@ -49,14 +49,34 @@ export interface SecretAskProps {
  * Text the platform wrote, so not quoted as the agent's; still shown as text, one line each. `account`: the value would
  * be saved for the whole account, the case that reaches furthest, which is marked as a warning.
  */
-export function SecretNotice({ notice, account = false, className, id }: { notice: string; account?: boolean; className?: string; id?: string }) {
-	const lines = notice.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+export function SecretNotice({
+	notice,
+	account = false,
+	className,
+	id,
+}: {
+	notice: string;
+	account?: boolean;
+	className?: string;
+	id?: string;
+}) {
+	const lines = notice
+		.split("\n")
+		.map(line => line.trim())
+		.filter(line => line !== "");
 	if (lines.length === 0) return null;
 	return (
-		<div className={`secret-notice${account ? " secret-notice-account" : ""}${className ? ` ${className}` : ""}`} id={id} role="note" aria-label="From the platform">
+		<div
+			className={`secret-notice${account ? " secret-notice-account" : ""}${className ? ` ${className}` : ""}`}
+			id={id}
+			role="note"
+			aria-label="From the platform"
+		>
 			{account ? <WarnIcon size={14} /> : <InfoIcon size={14} />}
 			<div className="secret-notice-body">
-				<p className="secret-notice-who">{account ? <strong>From the platform: for your whole account</strong> : "From the platform"}</p>
+				<p className="secret-notice-who">
+					{account ? <strong>From the platform: for your whole account</strong> : "From the platform"}
+				</p>
 				{lines.map((line, index) => (
 					<p key={index} className="secret-notice-line">
 						{line}
@@ -72,12 +92,27 @@ export function SecretNotice({ notice, account = false, className, id }: { notic
  * refused without being saved, and is left alone: it would match ordinary words of the message ("short" in "shorter").
  */
 export function withoutValue(message: string, value: string): string {
-	return value.length >= MIN_SECRET_VALUE_CHARS && message.includes(value) ? message.split(value).join("[the value]") : message;
+	return value.length >= MIN_SECRET_VALUE_CHARS && message.includes(value)
+		? message.split(value).join("[the value]")
+		: message;
 }
 
-const messageOf = (failure: unknown) => (failure instanceof Error && failure.message ? failure.message : "That did not go through. Try again.");
+const messageOf = (failure: unknown) =>
+	failure instanceof Error && failure.message ? failure.message : "That did not go through. Try again.";
 
-export function SecretAsk({ request, repository, shared = false, onAdd, onWithout, onGiveUp, head, compact = false, offline = false, className, failure = null }: SecretAskProps) {
+export function SecretAsk({
+	request,
+	repository,
+	shared = false,
+	onAdd,
+	onWithout,
+	onGiveUp,
+	head,
+	compact = false,
+	offline = false,
+	className,
+	failure = null,
+}: SecretAskProps) {
 	const ids = { title: useId(), why: useId(), value: useId(), note: useId() };
 	const field = useRef<HTMLInputElement>(null);
 	// Only whether the field has something in it, never what.
@@ -137,7 +172,10 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 	}
 
 	return (
-		<section className={`secret-ask${compact ? " secret-ask-compact" : ""}${className ? ` ${className}` : ""}`} aria-labelledby={ids.title}>
+		<section
+			className={`secret-ask${compact ? " secret-ask-compact" : ""}${className ? ` ${className}` : ""}`}
+			aria-labelledby={ids.title}
+		>
 			{head}
 			<p className="secret-ask-title" id={ids.title}>
 				<LockIcon size={13} className="secret-ask-lock" />
@@ -146,19 +184,34 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 				</span>
 			</p>
 			<figure className="item-asked secret-ask-why" id={ids.why}>
-				<figcaption className="item-asked-who">Its reason, in the agent's own words. It may be wrong, or written to get a value out of you.</figcaption>
+				<figcaption className="item-asked-who">
+					Its reason, in the agent's own words. It may be wrong, or written to get a value out of you.
+				</figcaption>
 				<LongText lines={compact ? 2 : 3} as="blockquote" className="item-asked-text">
 					{request.why}
 				</LongText>
 			</figure>
-			{request.notice ? <SecretNotice notice={request.notice} account={repository === null} id={repository === null ? ids.note : undefined} /> : null}
-			<form className={`secret-ask-form${warnAccount ? " secret-ask-form-account" : ""}`} onSubmit={add} method="post" autoComplete="off" noValidate>
+			{request.notice ? (
+				<SecretNotice
+					notice={request.notice}
+					account={repository === null}
+					id={repository === null ? ids.note : undefined}
+				/>
+			) : null}
+			<form
+				className={`secret-ask-form${warnAccount ? " secret-ask-form-account" : ""}`}
+				onSubmit={add}
+				method="post"
+				autoComplete="off"
+				noValidate
+			>
 				{/* For the account, read before the value is typed: the furthest a value reaches. The notice says it when there is one. */}
 				{!warnAccount ? null : (
 					<p className="callout callout-warn secret-ask-note secret-ask-account" id={ids.note}>
 						<WarnIcon size={14} />
 						<span>
-							<strong>Saved for your account, not one repository.</strong> Every agent of yours can read it in its commands{shared ? ", this session too" : ""}. It is not shown again.
+							<strong>Saved for your account, not one repository.</strong> Every agent of yours can read it in its
+							commands{shared ? ", this session too" : ""}. It is not shown again.
 						</span>
 					</p>
 				)}
@@ -180,30 +233,49 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 						data-bwignore
 						disabled={disabled}
 						aria-describedby={`${ids.note} ${ids.why}`}
-						onChange={(event) => setFilled(event.currentTarget.value !== "")}
+						onChange={event => setFilled(event.currentTarget.value !== "")}
 					/>
-					<button type="button" className="button button-quiet button-small secret-ask-toggle" aria-pressed={shown} aria-controls={ids.value} onClick={() => setShown((now) => !now)} disabled={disabled}>
+					<button
+						type="button"
+						className="button button-quiet button-small secret-ask-toggle"
+						aria-pressed={shown}
+						aria-controls={ids.value}
+						onClick={() => setShown(now => !now)}
+						disabled={disabled}
+					>
 						{shown ? "Hide" : "Show"}
 					</button>
 				</div>
 				{repository ? (
 					<p className="field-note secret-ask-note" id={ids.note}>
-						Saved for repository <span className="secret-ask-where">{repository}</span>, as a secret the agent's commands read{shared ? "; this session may use it too" : ""}. It is not shown again.
+						Saved for repository <span className="secret-ask-where">{repository}</span>, as a secret the agent's
+						commands read{shared ? "; this session may use it too" : ""}. It is not shown again.
 					</p>
 				) : warnAccount ? null : (
 					<p className="field-note secret-ask-note" id={ids.note}>
-						Saved for your account, as a secret every agent of yours can read in its commands{shared ? ", this session too" : ""}. It is not shown again.
+						Saved for your account, as a secret every agent of yours can read in its commands
+						{shared ? ", this session too" : ""}. It is not shown again.
 					</p>
 				)}
 				<div className="item-choices secret-ask-choices">
 					<button type="submit" className="button button-primary" disabled={disabled || !filled}>
 						{busy === "add" ? "Saving…" : "Add it and continue"}
 					</button>
-					<button type="button" className="button button-outline" disabled={disabled} onClick={() => void choose("without", onWithout)}>
+					<button
+						type="button"
+						className="button button-outline"
+						disabled={disabled}
+						onClick={() => void choose("without", onWithout)}
+					>
 						{busy === "without" ? "Sending…" : "Continue without it"}
 					</button>
 					{onGiveUp ? (
-						<button type="button" className="button button-quiet" disabled={disabled} onClick={() => void choose("give_up", onGiveUp)}>
+						<button
+							type="button"
+							className="button button-quiet"
+							disabled={disabled}
+							onClick={() => void choose("give_up", onGiveUp)}
+						>
 							{busy === "give_up" ? "Sending…" : "Give up"}
 						</button>
 					) : null}

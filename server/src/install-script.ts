@@ -76,11 +76,16 @@ say "  $*"
 `;
 }
 
-const headers = { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" };
+const headers = {
+	"content-type": "text/plain; charset=utf-8",
+	"cache-control": "no-store",
+	"x-content-type-options": "nosniff",
+};
 
 /** The script, or a script that says why there is none; 404 where this platform takes no machines. */
 export function installScriptResponse(request: Request): Response {
-	if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed\n", { status: 405, headers: { ...headers, allow: "GET, HEAD" } });
+	if (request.method !== "GET" && request.method !== "HEAD")
+		return new Response("Method not allowed\n", { status: 405, headers: { ...headers, allow: "GET, HEAD" } });
 	const machines = config.machines;
 	if (!machines) return new Response("Not found\n", { status: 404, headers });
 	const body = machines.runnerImage

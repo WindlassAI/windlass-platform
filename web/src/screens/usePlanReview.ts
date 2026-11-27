@@ -36,22 +36,32 @@ function usePlanDraft(plan: FeaturePlan | null) {
 	};
 
 	return {
-		...draft, answers, confirmed, reset, clearConfirmations: () => setConfirmed([]),
+		...draft,
+		answers,
+		confirmed,
+		reset,
+		clearConfirmations: () => setConfirmed([]),
 		setBudget: (key: string, text: string) => setDraft(now => ({ ...now, budgets: { ...now.budgets, [key]: text } })),
-		setPlace: (key: string, place: PlaceDraft) => setDraft(now => ({ ...now, places: { ...now.places, [key]: place } })),
-		setAgent: (key: string, agent: SubtaskAgent | null) => setDraft(now => ({ ...now, agents: { ...now.agents, [key]: agent } })),
+		setPlace: (key: string, place: PlaceDraft) =>
+			setDraft(now => ({ ...now, places: { ...now.places, [key]: place } })),
+		setAgent: (key: string, agent: SubtaskAgent | null) =>
+			setDraft(now => ({ ...now, agents: { ...now.agents, [key]: agent } })),
 		setOverflow: (overflow: boolean) => setDraft(now => ({ ...now, overflow })),
 		setAnswer: (id: string, text: string) => setAnswers(now => ({ ...now, [id]: text })),
-		setConfirmed: (key: string, on: boolean) => setConfirmed(now => on ? [...new Set([...now, key])] : now.filter(one => one !== key)),
+		setConfirmed: (key: string, on: boolean) =>
+			setConfirmed(now => (on ? [...new Set([...now, key])] : now.filter(one => one !== key))),
 	};
 }
 
 export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const plan = view?.plan ?? null;
-	const open = view?.mode === "orchestrate" && plan?.status === "proposed" && PLAN_QUESTIONS.has(view.question?.kind ?? "");
+	const open =
+		view?.mode === "orchestrate" && plan?.status === "proposed" && PLAN_QUESTIONS.has(view.question?.kind ?? "");
 	const draft = usePlanDraft(plan);
 	const { platform } = useApp();
-	const machines = useMachines(platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded").list;
+	const machines = useMachines(
+		platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded",
+	).list;
 	const accountModels = useModels().list;
 	const hostedKeys = useHostedProviders();
 	const keyProfile = platform.info?.profiles.some(p => p.available && p.platformKeys) === true;
@@ -77,7 +87,8 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		const edited = agentEdited ? withAgent(placed, draft.agents[task.key]) : placed;
 		return { task, edited, routeEdited: moved || agentEdited, budgetEdited: tokens !== task.budget.tokens };
 	});
-	const edits = !!plan && (draft.overflow !== (plan.overflow ?? false) || rows.some(row => row.routeEdited || row.budgetEdited));
+	const edits =
+		!!plan && (draft.overflow !== (plan.overflow ?? false) || rows.some(row => row.routeEdited || row.budgetEdited));
 	const answersOnly = !edits && Object.values(draft.answers).some(answer => answer.trim() !== "");
 	const unattended = plan && !plan.singleSuggested ? (view?.unattended ?? []) : [];
 	const confirmed = unattended.filter(key => draft.confirmed.includes(key));
@@ -87,20 +98,42 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 			const answer = draft.answers[question.id]?.trim();
 			return answer ? { ...question, answer } : question;
 		});
-		return acting.act({ kind: "edit_plan", version: plan.version, plan: { ...plan, questions, subtasks: rows.map(row => row.edited), overflow: draft.overflow } });
+		return acting.act({
+			kind: "edit_plan",
+			version: plan.version,
+			plan: { ...plan, questions, subtasks: rows.map(row => row.edited), overflow: draft.overflow },
+		});
 	};
 	const approve = async (single?: Extract<ItemAction, { kind: "run_single" | "answer" }>) => {
 		if (!plan) return false;
 		if (single && answersOnly && !(await save())) return false;
 		// Saving answers closes the old question. Start the single run on the new version.
 		if (single) return acting.act(answersOnly ? { kind: "run_single" } : single);
-		return acting.act({ kind: "approve_plan", version: plan.version, ...(unattended.length > 0 && { agents: confirmed }) });
+		return acting.act({
+			kind: "approve_plan",
+			version: plan.version,
+			...(unattended.length > 0 && { agents: confirmed }),
+		});
 	};
 
-	const problems: Pick<ReturnType<typeof budgetProblems>, "fields" | "any"> = plan ? budgetProblems(plan.compare.singleBudget, budgets) : { fields: {}, any: false };
+	const problems: Pick<ReturnType<typeof budgetProblems>, "fields" | "any"> = plan
+		? budgetProblems(plan.compare.singleBudget, budgets)
+		: { fields: {}, any: false };
 	return {
-		...draft, plan, open, edits, answersOnly, rows, save, approve,
-		machines, catalogs, hostedKeys, keyProfile, accountModels, unattended,
+		...draft,
+		plan,
+		open,
+		edits,
+		answersOnly,
+		rows,
+		save,
+		approve,
+		machines,
+		catalogs,
+		hostedKeys,
+		keyProfile,
+		accountModels,
+		unattended,
 		refusal: acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null,
 		unconfirmed: unattended.length - confirmed.length,
 		unansweredLeft: plan?.questions.filter(q => !q.answer && !draft.answers[q.id]?.trim()).length ?? 0,

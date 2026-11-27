@@ -22,7 +22,6 @@ export function clockDuration(ms: number): string {
 	return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
-
 /** 45879 → "45,879". */
 /** A length of time in words, for a sentence: "10 minutes", "45 seconds", "1 hour". */
 export function spelledDuration(ms: number): string {
@@ -75,11 +74,19 @@ export function relativeTime(at: number, now: number): string {
 export function clockTime(at: number, now: number): string {
 	const date = new Date(at);
 	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-	return date.toDateString() === new Date(now).toDateString() ? time : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
+	return date.toDateString() === new Date(now).toDateString()
+		? time
+		: `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
 }
 
 export function absoluteTime(at: number): string {
-	return new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+	return new Date(at).toLocaleString("en-GB", {
+		day: "numeric",
+		month: "short",
+		year: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+	});
 }
 
 /** A day without its time: "16 Dec 2026". */
@@ -132,7 +139,12 @@ export function localTime(at: number): string {
 
 /** A UTC day ("2026-11-17") as a row's label: "Tue 17 Nov". */
 export function utcDay(day: string): string {
-	return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+	return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", {
+		weekday: "short",
+		day: "numeric",
+		month: "short",
+		timeZone: "UTC",
+	});
 }
 
 /** A size in bytes as people read it, in units of 1,024: "2 MB", "1 GB", "512 KB", "1.5 GB". */
@@ -144,6 +156,11 @@ export function byteSize(bytes: number): string {
 		value /= 1024;
 		unit += 1;
 	}
-	const shown = unit === 0 ? String(Math.round(value)) : value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
+	const shown =
+		unit === 0
+			? String(Math.round(value))
+			: value >= 10
+				? String(Math.round(value))
+				: value.toFixed(1).replace(/\.0$/, "");
 	return `${shown} ${units[unit]}`;
 }

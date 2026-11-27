@@ -142,7 +142,7 @@ async function deviceCredential(m: MachineDocker, pin: string, signal: AbortSign
 				file.code === 0 &&
 				Number.isSafeInteger(expires) &&
 				[t.access_token, t.refresh_token, t.account_id].every(
-					(s) => typeof s === "string" && s.length && s.length < 32768,
+					s => typeof s === "string" && s.length && s.length < 32768,
 				)
 			)
 				return {

@@ -70,7 +70,11 @@ function platformCall(block: ToolBlock): { target: string | null; facts: string[
 		const pull = /Pull request #(\d+) shows it/.exec(output);
 		return {
 			target: pushed[1] ?? null,
-			facts: [...(pushed[2] ? [pushed[2]] : []), ...(output.includes("It replaced what the platform had pushed") ? ["replaced the last push"] : []), ...(pull ? [`pull request #${pull[1]}`] : [])],
+			facts: [
+				...(pushed[2] ? [pushed[2]] : []),
+				...(output.includes("It replaced what the platform had pushed") ? ["replaced the last push"] : []),
+				...(pull ? [`pull request #${pull[1]}`] : []),
+			],
 		};
 	}
 	if (output.startsWith("Not fetched.")) return { target: null, facts: ["not fetched"] };
@@ -125,7 +129,8 @@ export function summarizeTool(block: ToolBlock): ToolSummary {
 	const display = block.display ?? {};
 	let exitCode: number | null = null;
 	if (typeof display.lines === "number") facts.push(`${display.lines} ${display.lines === 1 ? "line" : "lines"}`);
-	if (typeof display.matches === "number") facts.push(`${display.matches} ${display.matches === 1 ? "match" : "matches"}`);
+	if (typeof display.matches === "number")
+		facts.push(`${display.matches} ${display.matches === 1 ? "match" : "matches"}`);
 	if (typeof display.files === "number") facts.push(`${display.files} ${display.files === 1 ? "file" : "files"}`);
 	if (typeof display.diff === "string") {
 		const { added, removed } = diffStat(display.diff);
@@ -148,7 +153,7 @@ export function formatInput(block: ToolBlock): string {
 	// A single command or path reads better bare than as JSON.
 	if (keys.length === 1 && keys[0] !== undefined && typeof input[keys[0]] === "string") return input[keys[0]] as string;
 	return keys
-		.map((key) => {
+		.map(key => {
 			const value = input[key];
 			const text = typeof value === "string" ? value.replace(/\n$/, "") : JSON.stringify(value, null, 2);
 			return text.includes("\n") ? `${key}:\n${text.replace(/^/gm, "  ")}` : `${key}: ${text}`;

@@ -35,7 +35,7 @@ import type { Keyring } from "../keyring.js";
 import { signInKeys } from "../config.js";
 
 const PURPOSES = ["user", "attempt", "transit", "secret", "model-key"] as const;
-export type SealPurpose = typeof PURPOSES[number];
+export type SealPurpose = (typeof PURPOSES)[number];
 
 const VERSION = "wlps1";
 const LABEL = "windlass-platform sign-in v1";
@@ -61,10 +61,12 @@ export interface Sealer {
 	open(purpose: SealPurpose, subject: string, blob: string): string;
 }
 
-const derive = (secret: Buffer, info: string, length: number) => Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(0), `${LABEL} ${info}`, length));
+const derive = (secret: Buffer, info: string, length: number) =>
+	Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(0), `${LABEL} ${info}`, length));
 
 /** What is authenticated beside the ciphertext: this format, the purpose, and whose it is. */
-const bound = (purpose: SealPurpose, subject: string) => Buffer.from(JSON.stringify([VERSION, purpose, subject]), "utf8");
+const bound = (purpose: SealPurpose, subject: string) =>
+	Buffer.from(JSON.stringify([VERSION, purpose, subject]), "utf8");
 
 export function createSealer(source: Buffer | string | Keyring): Sealer {
 	const singleton = typeof source === "string" ? Buffer.from(source) : source;
@@ -90,13 +92,23 @@ export function createSealer(source: Buffer | string | Keyring): Sealer {
 			const cipher = createCipheriv("aes-256-gcm", byId.get(current)!.get(purpose)!, nonce);
 			cipher.setAAD(bound(purpose, subject));
 			const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-			return [VERSION, current, nonce.toString("base64url"), ciphertext.toString("base64url"), cipher.getAuthTag().toString("base64url")].join(".");
+			return [
+				VERSION,
+				current,
+				nonce.toString("base64url"),
+				ciphertext.toString("base64url"),
+				cipher.getAuthTag().toString("base64url"),
+			].join(".");
 		},
 		open(purpose, subject, blob) {
 			const parts = typeof blob === "string" ? blob.split(".") : [];
 			if (parts.length !== 5 || parts[0] !== VERSION) throw new SealError("format", "this is not a sealed sign-in");
 			const keys = byId.get(parts[1]!);
-			if (!keys) throw new SealError("key", "it was sealed with another secret; its key id is absent from this server's sealing keyring");
+			if (!keys)
+				throw new SealError(
+					"key",
+					"it was sealed with another secret; its key id is absent from this server's sealing keyring",
+				);
 			const [nonce, ciphertext, tag] = parts.slice(2).map(part => Buffer.from(part, "base64url"));
 			if (nonce!.length !== 12 || tag!.length !== 16) throw new SealError("format", "this is not a sealed sign-in");
 			try {
@@ -105,7 +117,10 @@ export function createSealer(source: Buffer | string | Keyring): Sealer {
 				decipher.setAuthTag(tag!);
 				return Buffer.concat([decipher.update(ciphertext!), decipher.final()]).toString("utf8");
 			} catch {
-				throw new SealError("tampered", "it does not open: it was changed, or it was sealed for someone or something else");
+				throw new SealError(
+					"tampered",
+					"it does not open: it was changed, or it was sealed for someone or something else",
+				);
 			}
 		},
 	};

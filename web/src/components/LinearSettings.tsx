@@ -36,10 +36,18 @@ export function LinearSettings() {
 		history.replaceState(null, "", location.pathname + location.search);
 		const [, kind, value] = back;
 		if (kind === "linear-error") {
-			setError(ERRORS[value === "denied" ? "access_denied" : value!] ?? `Linear could not be connected (${value}). Try again.`);
+			setError(
+				ERRORS[value === "denied" ? "access_denied" : value!] ?? `Linear could not be connected (${value}). Try again.`,
+			);
 			return;
 		}
-		void client.user(auth).linearComplete(value!).then(() => setConnected(true), failure => setError(explain(failure)));
+		void client
+			.user(auth)
+			.linearComplete(value!)
+			.then(
+				() => setConnected(true),
+				failure => setError(explain(failure)),
+			);
 	}, [client, auth, explain]);
 
 	useEffect(() => {
@@ -55,7 +63,12 @@ export function LinearSettings() {
 				if (!live) return;
 				setTeams(list.teams);
 				// A GitHub problem leaves the connection and its teams on show: only choosing a repository needs GitHub.
-				const repos = platform.info?.github ? await api.githubRepositories("").then((found) => found.repositories).catch((failure: unknown) => explain(failure)) : [];
+				const repos = platform.info?.github
+					? await api
+							.githubRepositories("")
+							.then(found => found.repositories)
+							.catch((failure: unknown) => explain(failure))
+					: [];
 				if (!live) return;
 				if (typeof repos === "string") setRepositoryProblem(repos);
 				else setRepositories(repos);
@@ -92,18 +105,24 @@ export function LinearSettings() {
 			setRepositoryId("");
 		});
 	const disconnect = () => {
-		if (!confirm("Disconnect Linear? Its team mappings are removed and nothing more is filed from Linear. Items already filed stay.")) return;
+		if (
+			!confirm(
+				"Disconnect Linear? Its team mappings are removed and nothing more is filed from Linear. Items already filed stay.",
+			)
+		)
+			return;
 		void run(async () => {
 			setStatus(await client.user(auth).disconnectLinear());
 			setConnected(false);
 			setTeams(null);
 		});
 	};
-	const remove = (team: LinearTeam) => run(async () => setTeams((await client.user(auth).removeLinearMapping(team.id)).teams));
+	const remove = (team: LinearTeam) =>
+		run(async () => setTeams((await client.user(auth).removeLinearMapping(team.id)).teams));
 
 	if (status?.state === "off") return null;
 	const ready = teamId !== "" && repositoryId !== "";
-	const unmapped = teams?.filter((team) => !team.mapping) ?? [];
+	const unmapped = teams?.filter(team => !team.mapping) ?? [];
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-linear" data-testid="linear-settings">
 			<h3 className="usage-title" id="settings-linear">
@@ -121,7 +140,11 @@ export function LinearSettings() {
 			<p className="usage-lede">
 				File work items from Linear issues labelled <code>windlass</code>.
 			</p>
-			{connected && status?.state === "connected" ? <p className="callout" role="status">Linear is connected. Choose a repository for a team below.</p> : null}
+			{connected && status?.state === "connected" ? (
+				<p className="callout" role="status">
+					Linear is connected. Choose a repository for a team below.
+				</p>
+			) : null}
 			{failed ? (
 				<p className="callout callout-warn" role="alert">
 					<WarnIcon />
@@ -135,10 +158,12 @@ export function LinearSettings() {
 				<>
 					<details className="field-note">
 						<summary>Details</summary>
-						Label an issue <code>windlass</code> or assign it to Windlass. Use <code>windlass-quick</code> or <code>windlass:quick</code> for Quick mode.
+						Label an issue <code>windlass</code> or assign it to Windlass. Use <code>windlass-quick</code> or{" "}
+						<code>windlass:quick</code> for Quick mode.
 					</details>
 					<p className="field-note" data-testid="linear-workspace">
-						Connected to {status.connection.workspace.name} as {status.connection.user.name}. Review and start filed drafts in Windlass.
+						Connected to {status.connection.workspace.name} as {status.connection.user.name}. Review and start filed
+						drafts in Windlass.
 					</p>
 					{teams === null ? (
 						<div className="usage-loading" aria-busy="true" aria-label="Loading teams">
@@ -146,17 +171,29 @@ export function LinearSettings() {
 						</div>
 					) : (
 						<ul className="settings-list" aria-label="Teams">
-							{teams.map((team) => (
+							{teams.map(team => (
 								<li key={team.id} className="usage-kept-row" data-testid={`linear-team-${team.key}`}>
 									<div className="usage-kept-main">
 										<span className="usage-kept-title">{team.name}</span>
 										<p className="agent-meta">
-											{team.key} {team.mapping ? <>→ {team.mapping.repository.owner}/{team.mapping.repository.name}</> : "· not mapped, its issues are ignored"}
+											{team.key}{" "}
+											{team.mapping ? (
+												<>
+													→ {team.mapping.repository.owner}/{team.mapping.repository.name}
+												</>
+											) : (
+												"· not mapped, its issues are ignored"
+											)}
 										</p>
 									</div>
 									<span />
 									{team.mapping ? (
-										<button type="button" className="button button-outline button-small" onClick={() => void remove(team)} disabled={busy}>
+										<button
+											type="button"
+											className="button button-outline button-small"
+											onClick={() => void remove(team)}
+											disabled={busy}
+										>
 											Remove<span className="visually-hidden"> the mapping of {team.name}</span>
 										</button>
 									) : (
@@ -171,24 +208,63 @@ export function LinearSettings() {
 					) : teams !== null && repositories !== null && unmapped.length > 0 ? (
 						<>
 							<div className="linear-map">
-								<label className="visually-hidden" htmlFor={ids.team}>Team</label>
-								<select id={ids.team} className="select" value={teamId} onChange={(event) => setTeamId(event.target.value)} disabled={busy}>
+								<label className="visually-hidden" htmlFor={ids.team}>
+									Team
+								</label>
+								<select
+									id={ids.team}
+									className="select"
+									value={teamId}
+									onChange={event => setTeamId(event.target.value)}
+									disabled={busy}
+								>
 									<option value="">Choose a team</option>
-									{unmapped.map((team) => <option key={team.id} value={team.id}>{team.name} ({team.key})</option>)}
+									{unmapped.map(team => (
+										<option key={team.id} value={team.id}>
+											{team.name} ({team.key})
+										</option>
+									))}
 								</select>
-								<label className="visually-hidden" htmlFor={ids.repository}>Repository</label>
-								<select id={ids.repository} className="select" value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} disabled={busy}>
+								<label className="visually-hidden" htmlFor={ids.repository}>
+									Repository
+								</label>
+								<select
+									id={ids.repository}
+									className="select"
+									value={repositoryId}
+									onChange={event => setRepositoryId(event.target.value)}
+									disabled={busy}
+								>
 									<option value="">Choose a repository</option>
-									{repositories.map((repository) => <option key={repository.id} value={String(repository.id)}>{repository.owner}/{repository.name}</option>)}
+									{repositories.map(repository => (
+										<option key={repository.id} value={String(repository.id)}>
+											{repository.owner}/{repository.name}
+										</option>
+									))}
 								</select>
-								<button type="button" className="button button-outline" onClick={() => void save()} disabled={!ready || busy}>Map team</button>
+								<button
+									type="button"
+									className="button button-outline"
+									onClick={() => void save()}
+									disabled={!ready || busy}
+								>
+									Map team
+								</button>
 							</div>
-							<p className="field-note">A team files to one repository of your GitHub connection. Removing a mapping, or unlabelling or unassigning an issue, does not change items already filed.</p>
+							<p className="field-note">
+								A team files to one repository of your GitHub connection. Removing a mapping, or unlabelling or
+								unassigning an issue, does not change items already filed.
+							</p>
 						</>
 					) : null}
 				</>
 			) : null}
-			{error ? <p className="callout callout-bad" role="alert"><WarnIcon /><span>{error}</span></p> : null}
+			{error ? (
+				<p className="callout callout-bad" role="alert">
+					<WarnIcon />
+					<span>{error}</span>
+				</p>
+			) : null}
 		</section>
 	);
 }

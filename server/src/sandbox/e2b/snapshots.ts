@@ -70,7 +70,15 @@
  */
 
 import type { SnapshotLimits } from "../hosted-settings.js";
-import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotRequest, type SnapshotSelection, type SnapshotSource } from "../snapshot-key.js";
+import {
+	DEFERRED_INPUTS,
+	digest,
+	HASH,
+	SHA,
+	type SnapshotRequest,
+	type SnapshotSelection,
+	type SnapshotSource,
+} from "../snapshot-key.js";
 import type { E2bClient, E2bSnapshotInfo } from "./client.js";
 import { type E2bSettings, templateFor } from "./config.js";
 import type { HostedSize } from "../../contract.js";
@@ -127,7 +135,7 @@ export interface SnapshotRecord {
 export const AUDIT_SCRIPT = [
 	"set -u",
 	"export PATH=/usr/sbin:/usr/bin:/sbin:/bin",
-	'data=$1',
+	"data=$1",
 	"rm -rf -- /tmp/wlp-* /tmp/.wlp-* 2>/dev/null",
 	'for f in /tmp/wlp-* /tmp/.wlp-*; do if [ -e "$f" ] || [ -L "$f" ]; then echo "refused staging"; exit 0; fi; done',
 	'if [ -e "$data" ] && [ -n "$(find "$data" -mindepth 1 ! -type d -print -quit 2>/dev/null)" ]; then echo "refused data"; exit 0; fi',
@@ -179,11 +187,19 @@ export class E2bSnapshots {
 		this.limits = settings.snapshots;
 	}
 
-	private get namespace() { return digest(["e2b-snapshots", this.settings.deployment]).slice(0, 8); }
-	userTag(uid: string) { return digest([this.settings.deployment, uid]).slice(0, 10); }
-	repoTag(uid: string, repo: string) { return digest([this.settings.deployment, uid, repo]).slice(0, 10); }
+	private get namespace() {
+		return digest(["e2b-snapshots", this.settings.deployment]).slice(0, 8);
+	}
+	userTag(uid: string) {
+		return digest([this.settings.deployment, uid]).slice(0, 10);
+	}
+	repoTag(uid: string, repo: string) {
+		return digest([this.settings.deployment, uid, repo]).slice(0, 10);
+	}
 	/** A size's template: a snapshot is of one template's sandbox and starts only sandboxes of that size, so the template is in its key. */
-	templateOf(screenshots: boolean, size: HostedSize = "small") { return templateFor(this.settings, size, screenshots); }
+	templateOf(screenshots: boolean, size: HostedSize = "small") {
+		return templateFor(this.settings, size, screenshots);
+	}
 
 	/** The build the template's tag points at now, asked of E2B at most every five minutes. Null: unknown, and no snapshot is used or saved. */
 	async build(template: string): Promise<string | null> {
@@ -195,13 +211,41 @@ export class E2bSnapshots {
 		return safe;
 	}
 
-	key(request: Pick<SnapshotRequest, "repo" | "generation" | "inputs">, uid: string, profile: string, screenshots: boolean, build: string, size: HostedSize = "small") {
+	key(
+		request: Pick<SnapshotRequest, "repo" | "generation" | "inputs">,
+		uid: string,
+		profile: string,
+		screenshots: boolean,
+		build: string,
+		size: HostedSize = "small",
+	) {
 		const network = this.settings.network;
-		return digest(["e2b", this.settings.deployment, uid, request.repo, request.generation, request.inputs, this.templateOf(screenshots, size), build, profile, screenshots, network.mode, [...network.hosts].sort()]);
+		return digest([
+			"e2b",
+			this.settings.deployment,
+			uid,
+			request.repo,
+			request.generation,
+			request.inputs,
+			this.templateOf(screenshots, size),
+			build,
+			profile,
+			screenshots,
+			network.mode,
+			[...network.hosts].sort(),
+		]);
 	}
 
 	coldKey(request: Pick<SnapshotRequest, "repo" | "generation" | "attempt">, uid: string, profile: string) {
-		return digest(["e2b-cold", this.settings.deployment, uid, profile, request.repo, request.generation, request.attempt]);
+		return digest([
+			"e2b-cold",
+			this.settings.deployment,
+			uid,
+			profile,
+			request.repo,
+			request.generation,
+			request.attempt,
+		]);
 	}
 
 	nameFor(uid: string, repo: string, generation: string, key: string, at: number) {
@@ -211,7 +255,7 @@ export class E2bSnapshots {
 	/** The deployment's snapshots, by E2B's listing and their names; another's (or no name of this scheme) is never one. */
 	async rows(): Promise<SnapshotRow[]> {
 		const found = await this.client.listSnapshots();
-		return found.flatMap((info) => {
+		return found.flatMap(info => {
 			const row = this.parse(info);
 			return row === null ? [] : [row];
 		});
@@ -224,58 +268,132 @@ export class E2bSnapshots {
 			if (match === null || match[1] !== this.namespace) continue;
 			const created = parseInt(match[6], 36);
 			if (!Number.isSafeInteger(created)) continue;
-			return { id: info.snapshotId, name, user: match[2], repo: match[3], generation: match[4], key: match[5], created };
+			return {
+				id: info.snapshotId,
+				name,
+				user: match[2],
+				repo: match[3],
+				generation: match[4],
+				key: match[5],
+				created,
+			};
 		}
 		return null;
 	}
 
-	private fresh(row: SnapshotRow) { return this.now() - row.created < this.limits.ttlMs; }
+	private fresh(row: SnapshotRow) {
+		return this.now() - row.created < this.limits.ttlMs;
+	}
 
 	async has(uid: string, repo: string): Promise<boolean> {
-		const user = this.userTag(uid), tag = this.repoTag(uid, repo);
-		return (await this.rows()).some((row) => row.user === user && row.repo === tag && this.fresh(row));
+		const user = this.userTag(uid),
+			tag = this.repoTag(uid, repo);
+		return (await this.rows()).some(row => row.user === user && row.repo === tag && this.fresh(row));
 	}
 
 	/**
 	 * What a new sandbox is made from. Never throws for E2B's sake: a listing or a build that cannot be had
 	 * is a cold start. Snapshots of the user and repository from an earlier settings generation are removed.
 	 */
-	async select(request: SnapshotSelection, uid: string, profile: string, screenshots: boolean, size: HostedSize = "small"): Promise<Selected> {
+	async select(
+		request: SnapshotSelection,
+		uid: string,
+		profile: string,
+		screenshots: boolean,
+		size: HostedSize = "small",
+	): Promise<Selected> {
 		const template = this.templateOf(screenshots, size);
 		const base = { [SNAP_META.attempt]: request.attempt, [SNAP_META.variant]: screenshots ? "shots" : "base" };
-		const cold = (candidate: string, build: string | null): Selected => ({ hit: false, template, metadata: { ...base, [SNAP_META.candidate]: request.writer ? candidate : "", [SNAP_META.build]: build ?? "" } });
-		if (!REPO.test(request.repo) || !HASH.test(request.generation) || !ATTEMPT.test(request.attempt)) return cold("", null);
+		const cold = (candidate: string, build: string | null): Selected => ({
+			hit: false,
+			template,
+			metadata: { ...base, [SNAP_META.candidate]: request.writer ? candidate : "", [SNAP_META.build]: build ?? "" },
+		});
+		if (!REPO.test(request.repo) || !HASH.test(request.generation) || !ATTEMPT.test(request.attempt))
+			return cold("", null);
 		const build = await this.build(template);
 		if (build === null) return cold("", null);
 		if (request.inputs === DEFERRED_INPUTS) return cold(this.coldKey(request, uid, profile), build);
 		if (!HASH.test(request.inputs)) return cold("", null);
 		const key = this.key(request, uid, profile, screenshots, build, size);
 		let rows: SnapshotRow[];
-		try { rows = await this.rows(); }
-		catch { return cold(key, build); }
-		const user = this.userTag(uid), tag = this.repoTag(uid, request.repo);
-		const mine = rows.filter((row) => row.user === user && row.repo === tag);
-		for (const row of mine.filter((row) => row.generation !== request.generation.slice(0, 8))) await this.remove(row, "its setup or GitHub connection changed");
-		const found = mine.filter((row) => row.generation === request.generation.slice(0, 8) && row.key === key.slice(0, 12) && this.fresh(row)).sort((a, b) => b.created - a.created)[0];
+		try {
+			rows = await this.rows();
+		} catch {
+			return cold(key, build);
+		}
+		const user = this.userTag(uid),
+			tag = this.repoTag(uid, request.repo);
+		const mine = rows.filter(row => row.user === user && row.repo === tag);
+		for (const row of mine.filter(row => row.generation !== request.generation.slice(0, 8)))
+			await this.remove(row, "its setup or GitHub connection changed");
+		const found = mine
+			.filter(
+				row => row.generation === request.generation.slice(0, 8) && row.key === key.slice(0, 12) && this.fresh(row),
+			)
+			.sort((a, b) => b.created - a.created)[0];
 		if (found === undefined) return cold(key, build);
-		return { hit: true, template: found.id, name: found.name, key, metadata: { ...base, [SNAP_META.candidate]: "", [SNAP_META.build]: build, [SNAP_META.from]: found.name } };
+		return {
+			hit: true,
+			template: found.id,
+			name: found.name,
+			key,
+			metadata: { ...base, [SNAP_META.candidate]: "", [SNAP_META.build]: build, [SNAP_META.from]: found.name },
+		};
 	}
 
 	/** Whether a record read from a sandbox made from `name` is that snapshot's, for this user and request. */
-	recordFits(record: unknown, name: string, uid: string, request?: Pick<SnapshotRequest, "repo" | "generation" | "inputs">, key?: string): record is SnapshotRecord {
+	recordFits(
+		record: unknown,
+		name: string,
+		uid: string,
+		request?: Pick<SnapshotRequest, "repo" | "generation" | "inputs">,
+		key?: string,
+	): record is SnapshotRecord {
 		const r = record as Partial<SnapshotRecord> | null;
-		if (r === null || typeof r !== "object" || r.v !== 1 || r.deployment !== this.settings.deployment || r.uid !== uid) return false;
-		if (typeof r.repo !== "string" || !REPO.test(r.repo) || typeof r.key !== "string" || !HASH.test(r.key) || typeof r.inputs !== "string" || !HASH.test(r.inputs)) return false;
-		if (typeof r.generation !== "string" || !HASH.test(r.generation) || typeof r.commit !== "string" || !SHA.test(r.commit) || !Number.isSafeInteger(r.created)) return false;
+		if (r === null || typeof r !== "object" || r.v !== 1 || r.deployment !== this.settings.deployment || r.uid !== uid)
+			return false;
+		if (
+			typeof r.repo !== "string" ||
+			!REPO.test(r.repo) ||
+			typeof r.key !== "string" ||
+			!HASH.test(r.key) ||
+			typeof r.inputs !== "string" ||
+			!HASH.test(r.inputs)
+		)
+			return false;
+		if (
+			typeof r.generation !== "string" ||
+			!HASH.test(r.generation) ||
+			typeof r.commit !== "string" ||
+			!SHA.test(r.commit) ||
+			!Number.isSafeInteger(r.created)
+		)
+			return false;
 		const match = NAME.exec(name);
-		if (match === null || match[2] !== this.userTag(uid) || match[3] !== this.repoTag(uid, r.repo) || match[5] !== r.key.slice(0, 12) || match[4] !== r.generation.slice(0, 8)) return false;
-		if (request && (request.repo !== r.repo || request.generation !== r.generation || request.inputs !== r.inputs)) return false;
+		if (
+			match === null ||
+			match[2] !== this.userTag(uid) ||
+			match[3] !== this.repoTag(uid, r.repo) ||
+			match[5] !== r.key.slice(0, 12) ||
+			match[4] !== r.generation.slice(0, 8)
+		)
+			return false;
+		if (request && (request.repo !== r.repo || request.generation !== r.generation || request.inputs !== r.inputs))
+			return false;
 		return key === undefined || key === r.key;
 	}
 
 	/** The source a session's restore compares with its plan, from the record and the sandbox's own attempt. */
 	sourceOf(record: SnapshotRecord, attempt: string): SnapshotSource {
-		return { attempt, repo: record.repo, inputs: record.inputs, generation: record.generation, commit: record.commit, created: record.created };
+		return {
+			attempt,
+			repo: record.repo,
+			inputs: record.inputs,
+			generation: record.generation,
+			commit: record.commit,
+			created: record.created,
+		};
 	}
 
 	async remove(row: SnapshotRow, why: string): Promise<void> {
@@ -292,31 +410,47 @@ export class E2bSnapshots {
 	 * deployment over WLP_E2B_SNAPSHOT_MAX. `only` narrows it to one user's.
 	 */
 	async prune(keep?: string, only?: (row: SnapshotRow) => boolean): Promise<SnapshotRow[]> {
-		const rows = (await this.rows()).sort((a, b) => b.created - a.created || (a.name === keep ? -1 : b.name === keep ? 1 : 0));
+		const rows = (await this.rows()).sort(
+			(a, b) => b.created - a.created || (a.name === keep ? -1 : b.name === keep ? 1 : 0),
+		);
 		const kept: SnapshotRow[] = [];
 		const owners = new Set<string>();
 		const users = new Map<string, number>();
 		for (const row of rows) {
 			const mayRemove = only === undefined || only(row);
-			if (!mayRemove) { kept.push(row); continue; }
+			if (!mayRemove) {
+				kept.push(row);
+				continue;
+			}
 			const owner = row.user + row.repo;
 			const count = users.get(row.user) ?? 0;
 			if (!this.fresh(row)) await this.remove(row, `older than ${this.limits.ttlMs / 86_400_000} days`);
-			else if (owners.has(owner)) await this.remove(row, "a newer snapshot of the same user and repository replaced it");
-			else if (count >= this.limits.maxPerUser) await this.remove(row, `the user has ${this.limits.maxPerUser} newer ones (WLP_E2B_SNAPSHOT_USER_MAX)`);
-			else { kept.push(row); owners.add(owner); users.set(row.user, count + 1); continue; }
+			else if (owners.has(owner))
+				await this.remove(row, "a newer snapshot of the same user and repository replaced it");
+			else if (count >= this.limits.maxPerUser)
+				await this.remove(row, `the user has ${this.limits.maxPerUser} newer ones (WLP_E2B_SNAPSHOT_USER_MAX)`);
+			else {
+				kept.push(row);
+				owners.add(owner);
+				users.set(row.user, count + 1);
+				continue;
+			}
 			owners.add(owner);
 		}
 		const left: SnapshotRow[] = [];
 		for (const [index, row] of kept.entries()) {
-			if (index >= this.limits.maxTotal && (only === undefined || only(row)) && row.name !== keep) await this.remove(row, `the deployment has ${this.limits.maxTotal} newer ones (WLP_E2B_SNAPSHOT_MAX)`);
+			if (index >= this.limits.maxTotal && (only === undefined || only(row)) && row.name !== keep)
+				await this.remove(row, `the deployment has ${this.limits.maxTotal} newer ones (WLP_E2B_SNAPSHOT_MAX)`);
 			else left.push(row);
 		}
 		return left;
 	}
 
 	async drop(uid: string, repo?: string): Promise<void> {
-		const user = this.userTag(uid), tag = repo === undefined ? undefined : this.repoTag(uid, repo);
-		for (const row of await this.rows()) if (row.user === user && (tag === undefined || row.repo === tag)) await this.remove(row, repo === undefined ? "the user is gone" : "the repository's snapshot was dropped");
+		const user = this.userTag(uid),
+			tag = repo === undefined ? undefined : this.repoTag(uid, repo);
+		for (const row of await this.rows())
+			if (row.user === user && (tag === undefined || row.repo === tag))
+				await this.remove(row, repo === undefined ? "the user is gone" : "the repository's snapshot was dropped");
 	}
 }

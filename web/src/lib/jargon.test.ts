@@ -13,12 +13,20 @@ import { join, relative } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import type { SandboxProfile } from "@contract";
-import { e2bOpenProfile, e2bProfile, offeredProfiles, PROFILES, profilesFor, windlassModes } from "../../../server/src/sandbox/profiles";
+import {
+	e2bOpenProfile,
+	e2bProfile,
+	offeredProfiles,
+	PROFILES,
+	profilesFor,
+	windlassModes,
+} from "../../../server/src/sandbox/profiles";
 import { machineProfiles } from "../../../server/src/machines/profiles";
 import { createMockClient } from "../api/mock";
 
 /** Provider and technology names, and the old profile names: never in a label, a lede or a menu line. */
-const BANNED = /\b(E2B|Firecracker|microVMs?|KVM|Daytona|agentOS|Rivet|bubblewrap|bwrap|seccomp|AppArmor)\b|Docker \+ Windlass|Docker, hardened|Hardened Docker|hardened container|E2B \+ Windlass/;
+const BANNED =
+	/\b(E2B|Firecracker|microVMs?|KVM|Daytona|agentOS|Rivet|bubblewrap|bwrap|seccomp|AppArmor)\b|Docker \+ Windlass|Docker, hardened|Hardened Docker|hardened container|E2B \+ Windlass/;
 
 const offeredEverywhere = (): SandboxProfile[] => [
 	...profilesFor("docker"),
@@ -44,7 +52,8 @@ describe("sandbox profile labels", () => {
 	});
 
 	it("words the modes by outcome", () => {
-		for (const mode of [...windlassModes("auto"), ...windlassModes("full")]) expect(mode.description).not.toMatch(/sandbox machine|command sandbox|Windlass’s/);
+		for (const mode of [...windlassModes("auto"), ...windlassModes("full")])
+			expect(mode.description).not.toMatch(/sandbox machine|command sandbox|Windlass’s/);
 	});
 });
 
@@ -53,10 +62,15 @@ describe("profiles sent to clients", () => {
 		for (const list of [profilesFor("docker"), profilesFor("e2b", { windlassSandbox: true, openProfile: false })]) {
 			const offered = offeredProfiles(list);
 			expect(offered.length).toBeGreaterThan(0);
-			expect(offered.every((profile) => profile.available && profile.unavailableReason === undefined)).toBe(true);
+			expect(offered.every(profile => profile.available && profile.unavailableReason === undefined)).toBe(true);
 		}
-		expect(offeredProfiles(profilesFor("docker")).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
-		expect(offeredProfiles(profilesFor("e2b", { windlassSandbox: true, openProfile: true })).map((profile) => profile.id)).toEqual(["e2b", "e2b-open"]);
+		expect(offeredProfiles(profilesFor("docker")).map(profile => profile.id)).toEqual([
+			"docker-windlass-sandbox",
+			"docker-hardened",
+		]);
+		expect(
+			offeredProfiles(profilesFor("e2b", { windlassSandbox: true, openProfile: true })).map(profile => profile.id),
+		).toEqual(["e2b", "e2b-open"]);
 	});
 
 	it("is what the mock serves too", async () => {
@@ -64,8 +78,8 @@ describe("profiles sent to clients", () => {
 			const client = createMockClient({ pace: 0, origin: "http://localhost:5173", ...(sandbox && { sandbox }) });
 			const info = await client.info();
 			expect(info.profiles.length).toBeGreaterThan(0);
-			expect(info.profiles.every((profile) => profile.available)).toBe(true);
-			expect(new Set(info.profiles.map((profile) => profile.name)).size).toBe(info.profiles.length);
+			expect(info.profiles.every(profile => profile.available)).toBe(true);
+			expect(new Set(info.profiles.map(profile => profile.name)).size).toBe(info.profiles.length);
 			client.dispose();
 		}
 	});
@@ -76,7 +90,7 @@ const FOLDS = ["Layers.tsx"];
 
 /** Every .ts and .tsx file under `dir` that ships user-facing words. */
 function sources(dir: string): string[] {
-	return readdirSync(dir).flatMap((name) => {
+	return readdirSync(dir).flatMap(name => {
 		const path = join(dir, name);
 		if (statSync(path).isDirectory()) return name === "docs" || name === "api" ? [] : sources(path);
 		return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) && !FOLDS.includes(name) ? [path] : [];
@@ -86,21 +100,38 @@ function sources(dir: string): string[] {
 /** The user-facing words in one file that say a banned name, as "file:line text". */
 function offences(path: string): string[] {
 	const text = readFileSync(path, "utf8");
-	const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+	const file = ts.createSourceFile(
+		path,
+		text,
+		ts.ScriptTarget.Latest,
+		true,
+		path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+	);
 	const lines = text.split("\n");
 	const found: string[] = [];
 	const inCode = (node: ts.Node): boolean => {
 		for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
-			if (ts.isJsxElement(at) && ["code", "Command", "pre", "kbd"].includes(at.openingElement.tagName.getText(file))) return true;
+			if (ts.isJsxElement(at) && ["code", "Command", "pre", "kbd"].includes(at.openingElement.tagName.getText(file)))
+				return true;
 			if (ts.isImportDeclaration(at) || ts.isExportDeclaration(at)) return true;
 		}
 		return false;
 	};
 	const visit = (node: ts.Node) => {
-		const words = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) ? node.text : ts.isJsxText(node) ? node.getText(file) : null;
+		const words =
+			ts.isStringLiteral(node) ||
+			ts.isNoSubstitutionTemplateLiteral(node) ||
+			ts.isTemplateHead(node) ||
+			ts.isTemplateMiddle(node) ||
+			ts.isTemplateTail(node)
+				? node.text
+				: ts.isJsxText(node)
+					? node.getText(file)
+					: null;
 		if (words !== null && BANNED.test(words) && !inCode(node)) {
 			const line = file.getLineAndCharacterOfPosition(node.getStart(file)).line;
-			if (!/jargon-ok:/.test(lines[line] ?? "") && !/jargon-ok:/.test(lines[line - 1] ?? "")) found.push(`${relative(join(__dirname, ".."), path)}:${line + 1} ${words.trim().slice(0, 80)}`);
+			if (!/jargon-ok:/.test(lines[line] ?? "") && !/jargon-ok:/.test(lines[line - 1] ?? ""))
+				found.push(`${relative(join(__dirname, ".."), path)}:${line + 1} ${words.trim().slice(0, 80)}`);
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -111,13 +142,21 @@ function offences(path: string): string[] {
 describe("user-facing words of the web app", () => {
 	it("name no provider or technology outside code, comments and the isolation fold", () => {
 		const root = join(__dirname, "..");
-		const files = ["screens", "components", "lib", "site"].flatMap((dir) => sources(join(root, dir)));
+		const files = ["screens", "components", "lib", "site"].flatMap(dir => sources(join(root, dir)));
 		expect(files.flatMap(offences)).toEqual([]);
 	});
 });
 
 it("keeps the retired levels and percentage rule out of repo setup", () => {
-	for (const path of ["../components/RepositorySetupChecks.tsx", "../docs/content/factory.md", "../../../server/src/factory/readiness.ts", "../../../server/src/github/setup-checks.ts", "../../../server/src/actors/user-readiness.ts"]) {
-		expect(readFileSync(join(__dirname, path), "utf8"), path).not.toMatch(/\b(?:functional|documented|standardized|optimized|autonomous)\b|readiness[ -]reports?\b|80[%]/i);
+	for (const path of [
+		"../components/RepositorySetupChecks.tsx",
+		"../docs/content/factory.md",
+		"../../../server/src/factory/readiness.ts",
+		"../../../server/src/github/setup-checks.ts",
+		"../../../server/src/actors/user-readiness.ts",
+	]) {
+		expect(readFileSync(join(__dirname, path), "utf8"), path).not.toMatch(
+			/\b(?:functional|documented|standardized|optimized|autonomous)\b|readiness[ -]reports?\b|80[%]/i,
+		);
 	}
 });

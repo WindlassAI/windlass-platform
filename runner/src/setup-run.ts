@@ -21,18 +21,43 @@ import { LinePrompter } from "./setup-lines.js";
 import { TuiPrompter } from "./setup-tui.js";
 import { SECTIONS, runWizard, type Mode, type PairEvent, type Section, type WizardEffects } from "./setup-wizard.js";
 import { localSizing } from "./sizing.js";
-import { directory, loadPair, origin, pairingEgress, pairingProfiles, read, releaseLock, RunnerError, save, tryLock, VERSION } from "./state.js";
+import {
+	directory,
+	loadPair,
+	origin,
+	pairingEgress,
+	pairingProfiles,
+	read,
+	releaseLock,
+	RunnerError,
+	save,
+	tryLock,
+	VERSION,
+} from "./state.js";
 
 type Values = Record<string, string | boolean | string[] | undefined>;
 const SERVICE = "windlass-runner";
 const ONLINE_WAIT_MS = 180_000;
 
-export async function signInForSetup(machine: Executor, agent: MachineHarness, signal: AbortSignal, importFile?: string) {
+export async function signInForSetup(
+	machine: Executor,
+	agent: MachineHarness,
+	signal: AbortSignal,
+	importFile?: string,
+) {
 	if (agent === "codex") return changeCodexLogin(machine, true, signal);
 	if (agent === "claude") return changeClaudeLogin(machine, true, signal);
 	const login = (provider?: string) => changeProviderLogin(machine, true, signal, provider);
-	if (importFile && await importOpenCode(importFile, q => terminalQuestion(q, signal),
-		(provider, key) => storeProvider(machine, { provider, key }), login)) return;
+	if (
+		importFile &&
+		(await importOpenCode(
+			importFile,
+			q => terminalQuestion(q, signal),
+			(provider, key) => storeProvider(machine, { provider, key }),
+			login,
+		))
+	)
+		return;
 	await login();
 }
 
@@ -60,22 +85,39 @@ function savedChoices(): { saved: boolean; choices: SetupChoices } {
 	if (!paired?.key) return { saved: false, choices: {} };
 	const id = paired.current.machineId;
 	const egress = read(`egress-${id}.json`) === undefined ? undefined : pairingEgress(id);
-	return { saved: false, choices: {
-		windlassSandbox: pairingProfiles(id).includes("docker-windlass-sandbox"),
-		...(egress && { network: { mode: egress.mode, ...(egress.allow.length && { allow: egress.allow }), ...(egress.domains && { domains: egress.domains }) } }),
-	} };
+	return {
+		saved: false,
+		choices: {
+			windlassSandbox: pairingProfiles(id).includes("docker-windlass-sandbox"),
+			...(egress && {
+				network: {
+					mode: egress.mode,
+					...(egress.allow.length && { allow: egress.allow }),
+					...(egress.domains && { domains: egress.domains }),
+				},
+			}),
+		},
+	};
 }
 
 export async function setupWizard(sections: string[], values: Values): Promise<void> {
 	if (sections.length > 1 || (sections[0] !== undefined && !(SECTIONS as readonly string[]).includes(sections[0])))
 		throw new RunnerError(`Use setup, setup --quick, or setup with one of: ${SECTIONS.join(", ")}.`);
 	if (sections.length && values.quick) throw new RunnerError("Use --quick with setup alone.");
-	const mode: Mode = sections.length ? { kind: "section", section: sections[0] as Section } : values.quick ? { kind: "quick" } : { kind: "full" };
+	const mode: Mode = sections.length
+		? { kind: "section", section: sections[0] as Section }
+		: values.quick
+			? { kind: "quick" }
+			: { kind: "full" };
 	const launch = await setupImageAndMounts();
 	const platform = typeof values.platform === "string" ? origin(values.platform) : undefined;
 	const loaded = savedChoices();
 	const choices = { saved: loaded.saved, choices: fromFlags(values, loaded.choices) };
-	const sizing = Object.fromEntries((["slot-cpus", "slot-memory", "sandbox-memory"] as const).flatMap(k => values[k] === undefined ? [] : [[k, values[k] as string]]));
+	const sizing = Object.fromEntries(
+		(["slot-cpus", "slot-memory", "sandbox-memory"] as const).flatMap(k =>
+			values[k] === undefined ? [] : [[k, values[k] as string]],
+		),
+	);
 	const machine = () => {
 		const paired = loadPair();
 		if (!paired?.key) throw new RunnerError("Pair this machine first: run setup.");
@@ -85,32 +127,63 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 	const fx: WizardEffects = {
 		version: VERSION,
 		offered: HARNESSES.filter(id => harnessImage(id)),
-		pairing() { const p = loadPair(); return p?.key ? { machineId: p.current.machineId, platform: p.platform } : undefined; },
+		pairing() {
+			const p = loadPair();
+			return p?.key ? { machineId: p.current.machineId, platform: p.platform } : undefined;
+		},
 		savedName() {
-			const given = values.name as string | undefined, saved = read("name.json");
+			const given = values.name as string | undefined,
+				saved = read("name.json");
 			return given ?? (validMachineName(saved) ? saved : undefined);
 		},
 		defaultName: () => resolveMachineName(),
-		async saveName(name) { await resolveMachineName(name); },
-		checkName: name => validMachineName(name.trim()) ? undefined : "Give a printable name of 1 to 64 characters.",
-		checkPlatform(address) { try { origin(address); } catch (error) { return (error as Error).message; } },
+		async saveName(name) {
+			await resolveMachineName(name);
+		},
+		checkName: name => (validMachineName(name.trim()) ? undefined : "Give a printable name of 1 to 64 characters."),
+		checkPlatform(address) {
+			try {
+				origin(address);
+			} catch (error) {
+				return (error as Error).message;
+			}
+		},
 		choices: () => choices,
-		saveChoices(c) { save("setup.json", c); },
+		saveChoices(c) {
+			save("setup.json", c);
+		},
 		slotsDefault: () => localSizing(sizing).max,
-		checkSlots(slots) { try { localSizing({ ...sizing, slots: String(slots) }); } catch (error) { return (error as Error).message.replaceAll("--slots (or --max-turns)", "the slots"); } },
+		checkSlots(slots) {
+			try {
+				localSizing({ ...sizing, slots: String(slots) });
+			} catch (error) {
+				return (error as Error).message.replaceAll("--slots (or --max-turns)", "the slots");
+			}
+		},
 		checkSize(value, free) {
 			const bytes = parseStoreSize(value);
-			if (bytes === null || (!free && bytes === 0)) return `Give a size such as 20GB or 512MB${free ? " (0GB keeps nothing free)" : ""}.`;
+			if (bytes === null || (!free && bytes === 0))
+				return `Give a size such as 20GB or 512MB${free ? " (0GB keeps nothing free)" : ""}.`;
 		},
-		checkDomains(list) { try { domainList(list); } catch (error) { return (error as Error).message.replace(/^Use --egress-domains with restricted and/, "Give"); } },
+		checkDomains(list) {
+			try {
+				domainList(list);
+			} catch (error) {
+				return (error as Error).message.replace(/^Use --egress-domains with restricted and/, "Give");
+			}
+		},
 		async service() {
 			const found = await docker(["container", "inspect", "--format", "{{.State.Running}}", SERVICE]);
 			return found.code !== 0 ? "absent" : found.stdout.trim() === "true" ? "running" : "stopped";
 		},
 		holdState: () => tryLock(),
 		releaseState: releaseLock,
-		async stopService() { await docker(["stop", SERVICE], { check: true }); },
-		async restartService() { await docker(["start", SERVICE], { check: true }); },
+		async stopService() {
+			await docker(["stop", SERVICE], { check: true });
+		},
+		async restartService() {
+			await docker(["start", SERVICE], { check: true });
+		},
 		async pair(address, name, show, signal) {
 			const prior = loadPair();
 			const result = await pair(address, signal, line => show(pairEvent(line)), name, undefined, true);
@@ -126,22 +199,30 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 				pending += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
 				const lines = pending.split(/\r?\n/);
 				pending = lines.pop()!;
-				const last = lines.map(l => l.trim()).filter(Boolean).at(-1);
+				const last = lines
+					.map(l => l.trim())
+					.filter(Boolean)
+					.at(-1);
 				if (last) update(last.slice(0, 100));
 				return true;
 			}) as typeof process.stderr.write;
-			try { await prepareImages(agents, !!choices.choices.screenshots, "setup"); }
-			finally { process.stderr.write = write; }
+			try {
+				await prepareImages(agents, !!choices.choices.screenshots, "setup");
+			} finally {
+				process.stderr.write = write;
+			}
 		},
 		async signInState(agent) {
 			try {
 				const m = machine();
 				if (agent === "codex") return codexLogin(m) ? "signed-in" : "signed-out";
-				if (agent === "opencode") return await installedProvider(m) ? "signed-in" : "signed-out";
+				if (agent === "opencode") return (await installedProvider(m)) ? "signed-in" : "signed-out";
 				// Docker Desktop cannot stat the file in a stopped container, so setup also runs the check.
 				const state = await claudeSignIn(m, { start: true });
 				return state === "token" ? "signed-in" : state === "none" ? "signed-out" : "unknown";
-			} catch { return "unknown"; }
+			} catch {
+				return "unknown";
+			}
 		},
 		async signIn(agent: MachineHarness) {
 			const m = machine();
@@ -154,15 +235,34 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			} catch (error) {
 				if (abort.signal.aborted) return "stopped";
 				// Only the runner's own messages are shown: another error's text could hold a credential-bearing URL.
-				return { ok: false as const, reason: error instanceof RunnerError ? error.message : "the sign-in did not finish." };
-			} finally { process.off("SIGINT", stop); }
+				return {
+					ok: false as const,
+					reason: error instanceof RunnerError ? error.message : "the sign-in did not finish.",
+				};
+			} finally {
+				process.off("SIGINT", stop);
+			}
 		},
 		laterLogin,
 		startCommand(flags) {
 			// One option to a line, as the Machines page shows a command.
 			const words = [...launch.command, "run", ...flags];
 			const image = launch.command.length - 1;
-			return words.map((word, i) => (i > 0 && (word === "-v" || word === "-e" || i === image || (i > image + 1 && /^--/.test(word)) || (word === "--log-driver" && i < image)) ? " \\\n  " : i ? " " : "") + shellCommand([word])).join("");
+			return words
+				.map(
+					(word, i) =>
+						(i > 0 &&
+						(word === "-v" ||
+							word === "-e" ||
+							i === image ||
+							(i > image + 1 && /^--/.test(word)) ||
+							(word === "--log-driver" && i < image))
+							? " \\\n  "
+							: i
+								? " "
+								: "") + shellCommand([word]),
+				)
+				.join("");
 		},
 		async start(flags, replace) {
 			if (replace) await docker(["rm", "-f", SERVICE], { check: true });
@@ -171,20 +271,31 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			if (started.code !== 0) throw new RunnerError(started.stderr.trim().split("\n").at(-1) || "docker run failed.");
 		},
 		async waitOnline(signal, update) {
-			const since = Date.now() - 2000, file = join(directory, "status.json");
-			let last = "Starting", checks = 0;
+			const since = Date.now() - 2000,
+				file = join(directory, "status.json");
+			let last = "Starting",
+				checks = 0;
 			while (!signal.aborted && Date.now() - since < ONLINE_WAIT_MS) {
 				await wait(1000, undefined, { signal }).catch(() => {});
 				let connection: string | undefined;
 				try {
-					if (statSync(file).mtimeMs >= since) connection = (read("status.json") as { connection?: unknown } | undefined)?.connection as string | undefined;
+					if (statSync(file).mtimeMs >= since)
+						connection = (read("status.json") as { connection?: unknown } | undefined)?.connection as
+							| string
+							| undefined;
 				} catch {}
-				if (typeof connection === "string" && connection !== last) { last = connection; if (last !== "Online") update(connection.slice(0, 160)); }
+				if (typeof connection === "string" && connection !== last) {
+					last = connection;
+					if (last !== "Online") update(connection.slice(0, 160));
+				}
 				if (last === "Online") return { ok: true, message: "Online" };
-				if (++checks % 3 === 0 && await fx.service() !== "running")
+				if (++checks % 3 === 0 && (await fx.service()) !== "running")
 					return { ok: false, message: "The runner stopped. Read why with: docker logs windlass-runner" };
 			}
-			return { ok: false, message: `The runner is not online after ${ONLINE_WAIT_MS / 60_000} minutes (last: ${last}). Follow it with: docker logs -f windlass-runner` };
+			return {
+				ok: false,
+				message: `The runner is not online after ${ONLINE_WAIT_MS / 60_000} minutes (last: ${last}). Follow it with: docker logs -f windlass-runner`,
+			};
 		},
 		reportLogin: () => requestLoginReport(true),
 	};

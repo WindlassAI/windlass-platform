@@ -52,7 +52,10 @@ const NOT_JSON_KEPT = 20;
 
 export class AcpConnection {
 	private nextId = 1;
-	private readonly incoming = new Map<number | string, { controller: AbortController; method: string; params: Record<string, unknown> }>();
+	private readonly incoming = new Map<
+		number | string,
+		{ controller: AbortController; method: string; params: Record<string, unknown> }
+	>();
 	private readonly waiting = new Map<number, Waiting>();
 	private ended: string | null = null;
 	/** Lines that were not protocol messages, the latest ones. */
@@ -69,7 +72,7 @@ export class AcpConnection {
 		 * `params`, and a response's `result` and `error`. The turn takes the repository's saved secrets
 		 * out there (repo-secrets.ts). A message's `method` and `id` are never passed through it.
 		 */
-		private readonly clean: <T>(value: T) => T = (value) => value,
+		private readonly clean: <T>(value: T) => T = value => value,
 	) {}
 
 	get closed(): boolean {
@@ -77,12 +80,18 @@ export class AcpConnection {
 	}
 
 	/** Sends a request and resolves with its result. Rejects with an AcpError: the agent's refusal, a time limit, or the connection's end. */
-	request<T>(method: string, params: Record<string, unknown>, options: { timeoutMs?: number; onResult?: (value: T) => void } = {}): Promise<T> {
+	request<T>(
+		method: string,
+		params: Record<string, unknown>,
+		options: { timeoutMs?: number; onResult?: (value: T) => void } = {},
+	): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
 			if (this.ended !== null) return reject(new AcpError(this.ended, 0, "closed"));
 			const id = this.nextId++;
 			const entry: Waiting = {
-				method, reject, timer: undefined,
+				method,
+				reject,
+				timer: undefined,
 				resolve(value) {
 					try {
 						// Observe the reply before receive() dispatches the next line from the same chunk.
@@ -95,7 +104,10 @@ export class AcpConnection {
 			};
 			if (options.timeoutMs !== undefined) {
 				entry.timer = setTimeout(() => {
-					if (this.waiting.delete(id)) reject(new AcpError(`${method} was not answered within ${formatSeconds(options.timeoutMs!)}`, 0, "timeout"));
+					if (this.waiting.delete(id))
+						reject(
+							new AcpError(`${method} was not answered within ${formatSeconds(options.timeoutMs!)}`, 0, "timeout"),
+						);
 				}, options.timeoutMs);
 			}
 			this.waiting.set(id, entry);
@@ -116,7 +128,11 @@ export class AcpConnection {
 	 * What a connection taken up again on a restarted server needs (`restore`): the next id, the agent's
 	 * requests not answered yet, and the requests of ours still waiting. The params are as `clean` left them.
 	 */
-	state(): { nextId: number; incoming: Array<[number | string, string, Record<string, unknown>]>; waiting: Array<[number, string]> } {
+	state(): {
+		nextId: number;
+		incoming: Array<[number | string, string, Record<string, unknown>]>;
+		waiting: Array<[number, string]>;
+	} {
 		return {
 			nextId: this.nextId,
 			incoming: [...this.incoming].map(([id, { method, params }]) => [id, method, params]),
@@ -133,7 +149,7 @@ export class AcpConnection {
 	expect<T>(id: number, method: string): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
 			if (this.ended !== null) return reject(new AcpError(this.ended, 0, "closed"));
-			this.waiting.set(id, { method, reject, timer: undefined, resolve: (value) => resolve(value as T) });
+			this.waiting.set(id, { method, reject, timer: undefined, resolve: value => resolve(value as T) });
 		});
 	}
 
@@ -161,7 +177,8 @@ export class AcpConnection {
 		if (method === "$/cancel_request" && id == null) {
 			// Correlate using the wire id, including its type, before redacting payload strings.
 			const requestId = (message as { params?: { requestId?: unknown } }).params?.requestId;
-			if (typeof requestId === "number" || typeof requestId === "string") this.incoming.get(requestId)?.controller.abort();
+			if (typeof requestId === "number" || typeof requestId === "string")
+				this.incoming.get(requestId)?.controller.abort();
 			return;
 		}
 		const { params, result, error } = this.clean(message as { params?: unknown; result?: unknown; error?: unknown });
@@ -230,14 +247,40 @@ export class AcpConnection {
 	}
 
 	private errorOf(raw: unknown, method: string): AcpError {
-		const error = (typeof raw === "object" && raw !== null ? raw : {}) as { code?: unknown; message?: unknown; data?: unknown };
+		const error = (typeof raw === "object" && raw !== null ? raw : {}) as {
+			code?: unknown;
+			message?: unknown;
+			data?: unknown;
+		};
 		const code = typeof error.code === "number" ? error.code : 0;
-		const data = typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>)[this.namespace] : undefined;
-		const named = (typeof data === "object" && data !== null ? data : {}) as { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown };
+		const data =
+			typeof error.data === "object" && error.data !== null
+				? (error.data as Record<string, unknown>)[this.namespace]
+				: undefined;
+		const named = (typeof data === "object" && data !== null ? data : {}) as {
+			reason?: unknown;
+			message?: unknown;
+			holderPid?: unknown;
+			code?: unknown;
+		};
 		// The engine's own sentence when it gave one; the protocol's message otherwise.
-		const message = typeof named.message === "string" && named.message !== "" ? named.message : typeof error.message === "string" && error.message !== "" ? error.message : `${method} failed`;
-		return new AcpError(message, code, typeof named.reason === "string" ? named.reason : null, typeof named.holderPid === "number" ? named.holderPid : null, typeof named.code === "string" && named.code !== "" ? named.code : null, limitError(error.data),
-			typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>).codexErrorInfo : undefined);
+		const message =
+			typeof named.message === "string" && named.message !== ""
+				? named.message
+				: typeof error.message === "string" && error.message !== ""
+					? error.message
+					: `${method} failed`;
+		return new AcpError(
+			message,
+			code,
+			typeof named.reason === "string" ? named.reason : null,
+			typeof named.holderPid === "number" ? named.holderPid : null,
+			typeof named.code === "string" && named.code !== "" ? named.code : null,
+			limitError(error.data),
+			typeof error.data === "object" && error.data !== null
+				? (error.data as Record<string, unknown>).codexErrorInfo
+				: undefined,
+		);
 	}
 }
 

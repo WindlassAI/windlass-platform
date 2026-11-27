@@ -21,15 +21,23 @@ async function withBack<T>(left: boolean, prompt: () => Promise<T | symbol>): Pr
 		const key = args[1] as Key | undefined;
 		if (event === "keypress" && !back && ((left && key?.name === "left") || (key?.name === "tab" && key.shift))) {
 			back = true;
-			return emit.call(this, "keypress", "\x1b", { name: "escape", sequence: "\x1b", ctrl: false, meta: false, shift: false });
+			return emit.call(this, "keypress", "\x1b", {
+				name: "escape",
+				sequence: "\x1b",
+				ctrl: false,
+				meta: false,
+				shift: false,
+			});
 		}
 		return emit.call(this, event, ...args);
 	};
 	try {
 		const value = await prompt();
 		if (back) return BACK;
-		return clack.isCancel(value) ? CANCEL : value as T;
-	} finally { stdin.emit = emit; }
+		return clack.isCancel(value) ? CANCEL : (value as T);
+	} finally {
+		stdin.emit = emit;
+	}
 }
 
 /** A hint under a question, inside the prompt's guide line. */
@@ -58,30 +66,65 @@ export class TuiPrompter implements Prompter {
 		active.s = clack.spinner();
 		active.s.start(active.message);
 	}
-	intro(title: string) { clack.intro(styleText(["bgCyan", "black"], ` ${title} `)); }
-	outro(message: string) { clack.outro(message); }
+	intro(title: string) {
+		clack.intro(styleText(["bgCyan", "black"], ` ${title} `));
+	}
+	outro(message: string) {
+		clack.outro(message);
+	}
 	note(title: string, lines: string[], strong: string[] = []) {
 		let text = lines.join("\n");
 		for (const part of strong) text = text.replaceAll(part, styleText(["bold", "cyan"], part));
 		this.print(() => clack.note(text, title));
 	}
-	log(kind: "info" | "success" | "warn" | "error" | "step", message: string) { this.print(() => clack.log[kind](message)); }
+	log(kind: "info" | "success" | "warn" | "error" | "step", message: string) {
+		this.print(() => clack.log[kind](message));
+	}
 	select<T>(q: { message: string; options: { value: T; label: string; hint?: string }[]; initial?: T }) {
-		return withBack<T>(true, () => clack.select<T>({ message: q.message, initialValue: q.initial,
-			options: q.options.map(o => ({ value: o.value, label: o.label, ...(o.hint && { hint: o.hint }) })) as clack.Option<T>[] }));
+		return withBack<T>(true, () =>
+			clack.select<T>({
+				message: q.message,
+				initialValue: q.initial,
+				options: q.options.map(o => ({
+					value: o.value,
+					label: o.label,
+					...(o.hint && { hint: o.hint }),
+				})) as clack.Option<T>[],
+			}),
+		);
 	}
 	multiselect<T>(q: { message: string; options: { value: T; label: string; hint?: string }[]; initial: T[] }) {
-		return withBack<T[]>(true, () => clack.multiselect<T>({ message: q.message, initialValues: q.initial, required: false,
-			options: q.options.map(o => ({ value: o.value, label: o.label, ...(o.hint && { hint: o.hint }) })) as clack.Option<T>[] }));
+		return withBack<T[]>(true, () =>
+			clack.multiselect<T>({
+				message: q.message,
+				initialValues: q.initial,
+				required: false,
+				options: q.options.map(o => ({
+					value: o.value,
+					label: o.label,
+					...(o.hint && { hint: o.hint }),
+				})) as clack.Option<T>[],
+			}),
+		);
 	}
 	text(q: { message: string; initial: string; hint?: string; validate?: (value: string) => string | undefined }) {
-		return withBack<string>(false, () => clack.text({ message: hinted(q.message, q.hint), initialValue: q.initial,
-			validate: value => q.validate?.(value ?? "") }));
+		return withBack<string>(false, () =>
+			clack.text({
+				message: hinted(q.message, q.hint),
+				initialValue: q.initial,
+				validate: value => q.validate?.(value ?? ""),
+			}),
+		);
 	}
-	async wait<T>(message: string, work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>): Promise<Answer<T>> {
+	async wait<T>(
+		message: string,
+		work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>,
+	): Promise<Answer<T>> {
 		const abort = new AbortController();
 		const stdin = process.stdin;
-		const onKey = (_: string, key?: Key) => { if (key?.name === "escape" || (key?.ctrl && key.name === "c")) abort.abort(); };
+		const onKey = (_: string, key?: Key) => {
+			if (key?.name === "escape" || (key?.ctrl && key.name === "c")) abort.abort();
+		};
 		emitKeypressEvents(stdin);
 		if (stdin.isTTY) stdin.setRawMode(true);
 		stdin.on("keypress", onKey);

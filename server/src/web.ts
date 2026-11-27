@@ -40,7 +40,10 @@ interface Found {
  * A handler for the files under `directory`: a response for a GET or HEAD that names one of them or a
  * page of the app, and null for everything else, which the caller answers itself.
  */
-export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?: string | null; publicUrl?: string } = {}): (request: Request) => Promise<Response | null> {
+export function webFiles(
+	directory: string,
+	{ endpoint, publicUrl }: { endpoint?: string | null; publicUrl?: string } = {},
+): (request: Request) => Promise<Response | null> {
 	const root = resolve(directory);
 	const connect = ["'self'"];
 	if (endpoint) {
@@ -50,9 +53,14 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 		connect.push(engine.origin);
 	}
 	const csp = [
-		"default-src 'self'", "script-src 'self'", "connect-src " + connect.join(" "),
-		"img-src 'self' data: https:", "style-src 'self' 'unsafe-inline'",
-		"frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'",
+		"default-src 'self'",
+		"script-src 'self'",
+		"connect-src " + connect.join(" "),
+		"img-src 'self' data: https:",
+		"style-src 'self' 'unsafe-inline'",
+		"frame-ancestors 'none'",
+		"base-uri 'none'",
+		"object-src 'none'",
 	].join("; ");
 	const https = publicUrl && URL.canParse(publicUrl) && new URL(publicUrl).protocol === "https:";
 	// The files of an image never change while it runs, so each is read once. A path that names no file
@@ -71,14 +79,14 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 				}
 			})();
 			read.set(path, found);
-			void found.then((result) => {
+			void found.then(result => {
 				if (result === null) read.delete(path);
 			});
 		}
 		return found;
 	};
 
-	return async (request) => {
+	return async request => {
 		if (request.method !== "GET" && request.method !== "HEAD") return null;
 		let pathname: string;
 		try {
@@ -94,7 +102,10 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 		let found = path === root ? null : await file(path);
 		let page = false;
 		if (found === null && extname(pathname) === "") {
-			found = (await file(resolve(path, "index.html"))) ?? (await file(resolve(root, "app.html"))) ?? (await file(resolve(root, "index.html")));
+			found =
+				(await file(resolve(path, "index.html"))) ??
+				(await file(resolve(root, "app.html"))) ??
+				(await file(resolve(root, "index.html")));
 			page = true;
 		}
 		if (found === null) return null;
@@ -105,7 +116,8 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 			headers: {
 				"content-type": found.type,
 				"content-length": String(found.body.length),
-				"cache-control": pathname === "/signin" ? "no-store" : immutable ? "public, max-age=31536000, immutable" : "no-cache",
+				"cache-control":
+					pathname === "/signin" ? "no-store" : immutable ? "public, max-age=31536000, immutable" : "no-cache",
 				"x-content-type-options": "nosniff",
 				"referrer-policy": "no-referrer",
 				"content-security-policy": csp,

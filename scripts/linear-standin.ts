@@ -135,7 +135,7 @@ export class LinearStandin {
 	static async start(options: StandinOptions = {}): Promise<LinearStandin> {
 		const standin = new LinearStandin(options);
 		standin.server = createServer((request, response) => void standin.route(request, response));
-		await new Promise<void>((resolve) => standin.server!.listen(0, "127.0.0.1", resolve));
+		await new Promise<void>(resolve => standin.server!.listen(0, "127.0.0.1", resolve));
 		(standin as { redirectUri: string }).redirectUri = `http://localhost:${standin.port}/linear/callback`;
 		return standin;
 	}
@@ -151,7 +151,7 @@ export class LinearStandin {
 
 	async close(): Promise<void> {
 		this.server?.closeAllConnections();
-		await new Promise<void>((resolve) => this.server?.close(() => resolve()));
+		await new Promise<void>(resolve => this.server?.close(() => resolve()));
 	}
 
 	// ---- the workspace -----------------------------------------------------------------------
@@ -177,11 +177,11 @@ export class LinearStandin {
 	// ---- issues, and the deliveries Linear makes of them -------------------------------------
 
 	private person(id: string | null): StandinPerson | null {
-		return [this.appUser, this.human, this.stranger].find((person) => person.id === id) ?? null;
+		return [this.appUser, this.human, this.stranger].find(person => person.id === id) ?? null;
 	}
 
 	private data(issue: StandinIssue): Record<string, unknown> {
-		const team = this.teams.find((entry) => entry.id === issue.teamId)!;
+		const team = this.teams.find(entry => entry.id === issue.teamId)!;
 		return {
 			id: issue.id,
 			identifier: issue.identifier,
@@ -194,7 +194,7 @@ export class LinearStandin {
 			assigneeId: issue.assigneeId,
 			assignee: issue.assigneeId ? { id: issue.assigneeId, name: this.person(issue.assigneeId)?.name } : undefined,
 			labelIds: [...issue.labelIds],
-			labels: issue.labelIds.map((id) => ({ id, name: this.labels.get(id)!.name, color: "#888888" })),
+			labels: issue.labelIds.map(id => ({ id, name: this.labels.get(id)!.name, color: "#888888" })),
 			url: this.issueUrl(issue),
 			updatedAt: new Date().toISOString(),
 		};
@@ -204,7 +204,12 @@ export class LinearStandin {
 		return `${this.url}/${this.workspace.urlKey}/issue/${issue.identifier}/title`;
 	}
 
-	private envelope(action: "create" | "update" | "remove", issue: StandinIssue, actor: StandinPerson, updatedFrom?: Record<string, unknown>): Record<string, unknown> {
+	private envelope(
+		action: "create" | "update" | "remove",
+		issue: StandinIssue,
+		actor: StandinPerson,
+		updatedFrom?: Record<string, unknown>,
+	): Record<string, unknown> {
 		return {
 			action,
 			type: "Issue",
@@ -219,7 +224,15 @@ export class LinearStandin {
 		};
 	}
 
-	createIssue(input: { team: StandinTeam; title?: string; description?: string; labels?: string[]; assignee?: StandinPerson | null; creator?: StandinPerson; actor?: StandinPerson }): { issue: StandinIssue; payload: Record<string, unknown> } {
+	createIssue(input: {
+		team: StandinTeam;
+		title?: string;
+		description?: string;
+		labels?: string[];
+		assignee?: StandinPerson | null;
+		creator?: StandinPerson;
+		actor?: StandinPerson;
+	}): { issue: StandinIssue; payload: Record<string, unknown> } {
 		this.counter += 1;
 		const issue: StandinIssue = {
 			id: UUID_HEX(),
@@ -230,7 +243,7 @@ export class LinearStandin {
 			teamId: input.team.id,
 			creatorId: (input.creator ?? this.human).id,
 			assigneeId: input.assignee?.id ?? null,
-			labelIds: (input.labels ?? []).map((name) => this.label(name).id),
+			labelIds: (input.labels ?? []).map(name => this.label(name).id),
 			stateType: "unstarted",
 			archived: false,
 		};
@@ -239,7 +252,19 @@ export class LinearStandin {
 	}
 
 	/** Changes an issue and answers the `update` delivery Linear would make: `updatedFrom` holds the previous value of what changed. */
-	updateIssue(issue: StandinIssue, patch: { title?: string; description?: string; assignee?: StandinPerson | null; addLabels?: string[]; removeLabels?: string[]; team?: StandinTeam; stateType?: string }, actor: StandinPerson = this.human): Record<string, unknown> {
+	updateIssue(
+		issue: StandinIssue,
+		patch: {
+			title?: string;
+			description?: string;
+			assignee?: StandinPerson | null;
+			addLabels?: string[];
+			removeLabels?: string[];
+			team?: StandinTeam;
+			stateType?: string;
+		},
+		actor: StandinPerson = this.human,
+	): Record<string, unknown> {
 		const before: Record<string, unknown> = { updatedAt: new Date(Date.now() - 1000).toISOString() };
 		if (patch.title !== undefined && patch.title !== issue.title) {
 			before.title = issue.title;
@@ -257,7 +282,7 @@ export class LinearStandin {
 			const next = new Set(issue.labelIds);
 			for (const name of patch.addLabels ?? []) next.add(this.label(name).id);
 			for (const name of patch.removeLabels ?? []) next.delete(this.label(name).id);
-			if (next.size !== issue.labelIds.length || [...next].some((id) => !issue.labelIds.includes(id))) {
+			if (next.size !== issue.labelIds.length || [...next].some(id => !issue.labelIds.includes(id))) {
 				before.labelIds = [...issue.labelIds];
 				issue.labelIds = [...next];
 			}
@@ -281,20 +306,35 @@ export class LinearStandin {
 	}
 
 	/** POSTs a delivery to the platform as Linear does. `payload` may be a body (bytes) of its own. */
-	async deliver(target: string, payload: Record<string, unknown> | string, options: DeliveryOptions = {}): Promise<{ status: number; body: string; deliveryId: string; bytes: Buffer }> {
-		const body = typeof payload === "string" ? payload : { ...payload, ...(options.timestamp === undefined ? {} : { webhookTimestamp: options.timestamp }) };
+	async deliver(
+		target: string,
+		payload: Record<string, unknown> | string,
+		options: DeliveryOptions = {},
+	): Promise<{ status: number; body: string; deliveryId: string; bytes: Buffer }> {
+		const body =
+			typeof payload === "string"
+				? payload
+				: { ...payload, ...(options.timestamp === undefined ? {} : { webhookTimestamp: options.timestamp }) };
 		const signed = Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
 		const deliveryId = options.deliveryId ?? randomUUID();
 		const headers: Record<string, string> = {
 			"content-type": "application/json; charset=utf-8",
 			"linear-delivery": deliveryId,
 			"linear-event": options.event ?? "Issue",
-			"linear-signature": options.signature ?? createHmac("sha256", options.secret ?? this.signingSecret).update(signed).digest("hex"),
+			"linear-signature":
+				options.signature ??
+				createHmac("sha256", options.secret ?? this.signingSecret)
+					.update(signed)
+					.digest("hex"),
 			"user-agent": "Linear-Webhook",
 		};
 		for (const name of options.omit ?? []) delete headers[name];
 		const sent = options.bytes ? Buffer.from(options.bytes) : signed;
-		const response = await fetch(target, { method: options.method ?? "POST", headers, body: options.method === "GET" ? undefined : sent });
+		const response = await fetch(target, {
+			method: options.method ?? "POST",
+			headers,
+			body: options.method === "GET" ? undefined : sent,
+		});
 		const answer = await response.text();
 		this.deliveries.push({ deliveryId, status: response.status, body: answer });
 		return { status: response.status, body: answer, deliveryId, bytes: sent };
@@ -372,7 +412,14 @@ export class LinearStandin {
 			const actor = this.consent.actor ?? (q.get("actor") === "app" ? "app" : "user");
 			const challenge = q.get("code_challenge");
 			if (challenge && q.get("code_challenge_method") !== "S256") return bad("only S256");
-			this.grants.set(code, { clientId: this.clientId, redirectUri, challenge, scopes: this.options.grantScopes ? this.options.grantScopes(asked) : asked, actor, used: false });
+			this.grants.set(code, {
+				clientId: this.clientId,
+				redirectUri,
+				challenge,
+				scopes: this.options.grantScopes ? this.options.grantScopes(asked) : asked,
+				actor,
+				used: false,
+			});
 			back.searchParams.set("code", code);
 		}
 		response.writeHead(302, { location: back.toString() });
@@ -381,21 +428,32 @@ export class LinearStandin {
 
 	private tokenEndpoint(raw: string, request: IncomingMessage, send: (status: number, body: unknown) => void): void {
 		this.calls.push("POST /oauth/token");
-		if (!String(request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded")) return send(400, { error: "invalid_request" });
+		if (!String(request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded"))
+			return send(400, { error: "invalid_request" });
 		const form = new URLSearchParams(raw);
-		if (form.get("client_id") !== this.clientId || form.get("client_secret") !== this.clientSecret) return send(401, { error: "invalid_client", error_description: "client credentials are not valid" });
+		if (form.get("client_id") !== this.clientId || form.get("client_secret") !== this.clientSecret)
+			return send(401, { error: "invalid_client", error_description: "client credentials are not valid" });
 		let actor: "app" | "user", scopes: string[];
 		if (form.get("grant_type") === "authorization_code") {
 			const grant = this.grants.get(form.get("code") ?? "");
-			if (!grant || grant.used) return send(400, { error: "invalid_grant", error_description: "the code is not valid" });
+			if (!grant || grant.used)
+				return send(400, { error: "invalid_grant", error_description: "the code is not valid" });
 			grant.used = true;
-			if (form.get("redirect_uri") !== grant.redirectUri) return send(400, { error: "invalid_grant", error_description: "redirect_uri does not match" });
-			if (grant.challenge && createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") !== grant.challenge) return send(400, { error: "invalid_grant", error_description: "code_verifier does not match" });
+			if (form.get("redirect_uri") !== grant.redirectUri)
+				return send(400, { error: "invalid_grant", error_description: "redirect_uri does not match" });
+			if (
+				grant.challenge &&
+				createHash("sha256")
+					.update(form.get("code_verifier") ?? "")
+					.digest("base64url") !== grant.challenge
+			)
+				return send(400, { error: "invalid_grant", error_description: "code_verifier does not match" });
 			({ actor, scopes } = grant);
 		} else if (form.get("grant_type") === "refresh_token") {
 			const old = this.refreshes.get(form.get("refresh_token") ?? "");
 			const session = old ? this.sessions.get(old) : undefined;
-			if (!old || !session) return send(400, { error: "invalid_grant", error_description: "the refresh token is not valid" });
+			if (!old || !session)
+				return send(400, { error: "invalid_grant", error_description: "the refresh token is not valid" });
 			this.refreshes.delete(session.refresh);
 			this.sessions.delete(old);
 			({ actor, scopes } = session);
@@ -404,10 +462,20 @@ export class LinearStandin {
 		const refresh = "lin_refresh_" + randomBytes(20).toString("hex");
 		this.sessions.set(accessToken, { actor, expiresAt: Date.now() + 86_399_000, refresh, scopes });
 		this.refreshes.set(refresh, accessToken);
-		send(200, { access_token: accessToken, token_type: "Bearer", expires_in: 86_399, scope: scopes.join(","), refresh_token: refresh });
+		send(200, {
+			access_token: accessToken,
+			token_type: "Bearer",
+			expires_in: 86_399,
+			scope: scopes.join(","),
+			refresh_token: refresh,
+		});
 	}
 
-	private graphql(raw: string, request: IncomingMessage, send: (status: number, body: unknown, headers?: Record<string, string>) => void): void {
+	private graphql(
+		raw: string,
+		request: IncomingMessage,
+		send: (status: number, body: unknown, headers?: Record<string, string>) => void,
+	): void {
 		const bearer = /^Bearer (.+)$/.exec(String(request.headers.authorization ?? ""))?.[1] ?? "";
 		const session = this.sessions.get(bearer);
 		let parsed: { query?: string; variables?: Record<string, unknown> };
@@ -417,10 +485,23 @@ export class LinearStandin {
 			return send(400, { errors: [{ message: "invalid JSON" }] });
 		}
 		const query = String(parsed.query ?? "");
-		this.calls.push(`POST /graphql ${/^\s*mutation\b/.test(query) ? "mutation" : /\bviewer\b/.test(query) ? "viewer" : /\bteams\s*\(/.test(query) ? "teams" : /\bissue\s*\(/.test(query) ? "issue" : /\bcomment\(/.test(query) ? "comment" : "other"}`);
-		if (!session || session.expiresAt <= Date.now()) return send(401, { errors: [{ message: "Authentication required, not authenticated", extensions: { type: "AuthenticationError" } }] });
-		if (this.graphqlFailure === "RATELIMITED") return send(400, { errors: [{ message: "private rate limit details", extensions: { type: "usage", code: "RATELIMITED" } }] }, { "retry-after": "30" });
-		if (this.graphqlFailure) return send(this.graphqlFailure, { errors: [{ message: "private Linear outage details" }] });
+		this.calls.push(
+			`POST /graphql ${/^\s*mutation\b/.test(query) ? "mutation" : /\bviewer\b/.test(query) ? "viewer" : /\bteams\s*\(/.test(query) ? "teams" : /\bissue\s*\(/.test(query) ? "issue" : /\bcomment\(/.test(query) ? "comment" : "other"}`,
+		);
+		if (!session || session.expiresAt <= Date.now())
+			return send(401, {
+				errors: [
+					{ message: "Authentication required, not authenticated", extensions: { type: "AuthenticationError" } },
+				],
+			});
+		if (this.graphqlFailure === "RATELIMITED")
+			return send(
+				400,
+				{ errors: [{ message: "private rate limit details", extensions: { type: "usage", code: "RATELIMITED" } }] },
+				{ "retry-after": "30" },
+			);
+		if (this.graphqlFailure)
+			return send(this.graphqlFailure, { errors: [{ message: "private Linear outage details" }] });
 		const variables = parsed.variables ?? {};
 		if (/^\s*mutation\b/.test(query)) {
 			const operation = /\b(commentCreate|attachmentCreate|issueUpdate)\(/.exec(query)?.[1] ?? "unknown";
@@ -450,20 +531,42 @@ export class LinearStandin {
 		}
 		if (/\bviewer\b/.test(query)) {
 			const viewer = session.actor === "app" ? this.appUser : this.human;
-			return send(200, { data: { viewer: { id: viewer.id, name: viewer.name, app: viewer.app }, organization: this.workspace } });
+			return send(200, {
+				data: { viewer: { id: viewer.id, name: viewer.name, app: viewer.app }, organization: this.workspace },
+			});
 		}
 		if (/\bteams\s*\(/.test(query)) {
 			const size = Math.min(Number(this.options.pageSize ?? 100), 100);
 			const start = variables.after ? Number(String(variables.after).replace("cursor-", "")) : 0;
 			const nodes = this.teams.slice(start, start + size);
 			const end = start + nodes.length;
-			return send(200, { data: { teams: { nodes, pageInfo: { hasNextPage: end < this.teams.length, endCursor: end < this.teams.length ? `cursor-${end}` : null } } } });
+			return send(200, {
+				data: {
+					teams: {
+						nodes,
+						pageInfo: {
+							hasNextPage: end < this.teams.length,
+							endCursor: end < this.teams.length ? `cursor-${end}` : null,
+						},
+					},
+				},
+			});
 		}
 		if (/\bissue\s*\(/.test(query)) {
 			const issue = this.issues.get(String(variables.id));
-			if (!issue) return send(200, { data: null, errors: [{ message: "Entity not found: Issue - Could not find referenced Issue.", extensions: { type: "invalid input" } }] });
-			const team = this.teams.find((entry) => entry.id === issue.teamId)!;
-			const creator = this.person(issue.creatorId), assignee = this.person(issue.assigneeId);
+			if (!issue)
+				return send(200, {
+					data: null,
+					errors: [
+						{
+							message: "Entity not found: Issue - Could not find referenced Issue.",
+							extensions: { type: "invalid input" },
+						},
+					],
+				});
+			const team = this.teams.find(entry => entry.id === issue.teamId)!;
+			const creator = this.person(issue.creatorId),
+				assignee = this.person(issue.assigneeId);
 			const workflow = this.workflowStates.get(team.id)!;
 			const filter = variables.filter as { type: { eq: string }; name?: { eq: string } } | undefined;
 			const matches = workflow.filter(s => s.type === filter?.type.eq && (!filter.name || s.name === filter.name.eq));
@@ -479,10 +582,18 @@ export class LinearStandin {
 						url: this.issueUrl(issue),
 						archivedAt: issue.archived ? new Date().toISOString() : null,
 						trashed: false,
-						team: { id: team.id, ...(filter && { states: { nodes: matches.slice(start, end), pageInfo: { hasNextPage: end < matches.length, endCursor: String(end) } } }) },
+						team: {
+							id: team.id,
+							...(filter && {
+								states: {
+									nodes: matches.slice(start, end),
+									pageInfo: { hasNextPage: end < matches.length, endCursor: String(end) },
+								},
+							}),
+						},
 						creator: creator ? { id: creator.id, name: creator.name } : null,
 						assignee: assignee ? { id: assignee.id } : null,
-						labels: { nodes: issue.labelIds.map((id) => ({ id, name: this.labels.get(id)!.name })) },
+						labels: { nodes: issue.labelIds.map(id => ({ id, name: this.labels.get(id)!.name })) },
 						state: { ...workflow.find(s => s.id === issue.stateId), type: issue.stateType },
 					},
 				},

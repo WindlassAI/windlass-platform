@@ -16,7 +16,16 @@
  * waits for it; when a screen changes, a step that no longer finds what it waits for fails by name.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,7 +38,10 @@ const DESKTOP = { width: 1280, height: 800 };
 const PHONE = { width: 390, height: 844, mobile: true };
 
 /** The mock's ChatGPT user (web/src/api/mock.ts): seeded agents, work items and a GitHub connection. */
-const MOCK_AUTH = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const MOCK_AUTH = {
+	token: "mock:user:u_ada:ada@example.com",
+	profile: { uid: "u_ada", email: "ada@example.com", demo: false },
+};
 
 // Helpers that run in the page. `text(s)`: the page shows s. `button(name)`: a button by its label.
 const PAGE_HELPERS = `
@@ -117,13 +129,22 @@ function options() {
 		},
 	});
 	if (values.help) {
-		console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").match(/\/\*\*([\s\S]*?)\*\//)[1].replace(/^\s*\* ?/gm, ""));
+		console.log(
+			readFileSync(fileURLToPath(import.meta.url), "utf8")
+				.match(/\/\*\*([\s\S]*?)\*\//)[1]
+				.replace(/^\s*\* ?/gm, ""),
+		);
 		process.exit(0);
 	}
 	if (values.theme !== "dark" && values.theme !== "light") throw new Error("--theme needs dark or light");
-	const names = values.only?.split(",").map((s) => s.trim()).filter(Boolean);
-	for (const name of names ?? []) if (!SHOTS.some((s) => s.name === name)) throw new Error(`no shot named ${name}; there are ${SHOTS.map((s) => s.name).join(", ")}`);
-	return { ...values, out: resolve(values.out), shots: names ? SHOTS.filter((s) => names.includes(s.name)) : SHOTS };
+	const names = values.only
+		?.split(",")
+		.map(s => s.trim())
+		.filter(Boolean);
+	for (const name of names ?? [])
+		if (!SHOTS.some(s => s.name === name))
+			throw new Error(`no shot named ${name}; there are ${SHOTS.map(s => s.name).join(", ")}`);
+	return { ...values, out: resolve(values.out), shots: names ? SHOTS.filter(s => names.includes(s.name)) : SHOTS };
 }
 
 function findChrome(given) {
@@ -132,23 +153,38 @@ function findChrome(given) {
 		const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
 		if (found) candidates.push(found);
 	}
-	candidates.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium");
-	const cache = join(homedir(), process.platform === "darwin" ? "Library/Caches/ms-playwright" : ".cache/ms-playwright");
+	candidates.push(
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	);
+	const cache = join(
+		homedir(),
+		process.platform === "darwin" ? "Library/Caches/ms-playwright" : ".cache/ms-playwright",
+	);
 	if (existsSync(cache)) {
-		for (const dir of readdirSync(cache).filter((d) => d.startsWith("chromium")).sort().reverse()) {
-			for (const sub of ["chrome-linux/chrome", "chrome-linux64/chrome", "chrome-linux/headless_shell", "chrome-headless-shell-linux64/chrome-headless-shell"]) candidates.push(join(cache, dir, sub));
+		for (const dir of readdirSync(cache)
+			.filter(d => d.startsWith("chromium"))
+			.sort()
+			.reverse()) {
+			for (const sub of [
+				"chrome-linux/chrome",
+				"chrome-linux64/chrome",
+				"chrome-linux/headless_shell",
+				"chrome-headless-shell-linux64/chrome-headless-shell",
+			])
+				candidates.push(join(cache, dir, sub));
 		}
 	}
-	const chrome = candidates.find((c) => c && existsSync(c));
+	const chrome = candidates.find(c => c && existsSync(c));
 	if (!chrome) throw new Error("no Chrome or Chromium found: pass --chrome <path> or set CHROME_PATH");
 	return chrome;
 }
 
 async function freePort() {
 	const server = createServer();
-	await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+	await new Promise(ok => server.listen(0, "127.0.0.1", ok));
 	const { port } = server.address();
-	await new Promise((ok) => server.close(ok));
+	await new Promise(ok => server.close(ok));
 	return port;
 }
 
@@ -174,8 +210,8 @@ async function startMock() {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	let log = "";
-	child.stdout.on("data", (d) => (log += d));
-	child.stderr.on("data", (d) => (log += d));
+	child.stdout.on("data", d => (log += d));
+	child.stderr.on("data", d => (log += d));
 	const stop = () => {
 		try {
 			process.kill(-child.pid, "SIGTERM");
@@ -194,29 +230,43 @@ async function startMock() {
 /** Chrome with a DevTools connection to its first page. */
 async function startChrome(path) {
 	const profile = mkdtempSync(join(tmpdir(), "readme-shots-"));
-	const child = spawn(path, [
-		"--headless=new",
-		"--remote-debugging-port=0",
-		`--user-data-dir=${profile}`,
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--hide-scrollbars",
-		"--force-color-profile=srgb",
-		"--font-render-hinting=none",
-		// A mouse, not a touch screen: headless shells otherwise report (hover: none).
-		"--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4",
-		...(process.getuid?.() === 0 || process.env.CHROME_NO_SANDBOX ? ["--no-sandbox"] : []),
-		"about:blank",
-	], { stdio: "ignore" });
+	const child = spawn(
+		path,
+		[
+			"--headless=new",
+			"--remote-debugging-port=0",
+			`--user-data-dir=${profile}`,
+			"--no-first-run",
+			"--no-default-browser-check",
+			"--hide-scrollbars",
+			"--force-color-profile=srgb",
+			"--font-render-hinting=none",
+			// A mouse, not a touch screen: headless shells otherwise report (hover: none).
+			"--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4",
+			...(process.getuid?.() === 0 || process.env.CHROME_NO_SANDBOX ? ["--no-sandbox"] : []),
+			"about:blank",
+		],
+		{ stdio: "ignore" },
+	);
 	const stop = () => {
 		child.kill("SIGTERM");
 		rmSync(profile, { recursive: true, force: true });
 	};
 	try {
-		const port = await until("Chrome's DevTools port", async () => readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0], 30_000);
-		const pages = await until("Chrome's first page", async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((t) => t.type === "page"), 10_000);
+		const port = await until(
+			"Chrome's DevTools port",
+			async () => readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0],
+			30_000,
+		);
+		const pages = await until(
+			"Chrome's first page",
+			async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter(t => t.type === "page"),
+			10_000,
+		);
 		const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
-		await new Promise((ok, fail) => ((ws.onopen = ok), (ws.onerror = () => fail(new Error("could not connect to Chrome")))));
+		await new Promise(
+			(ok, fail) => ((ws.onopen = ok), (ws.onerror = () => fail(new Error("could not connect to Chrome")))),
+		);
 		let next = 0;
 		const waiting = new Map();
 		const listeners = new Set();
@@ -235,7 +285,15 @@ async function startChrome(path) {
 				waiting.set(id, { ok, fail });
 				ws.send(JSON.stringify({ id, method, params }));
 			});
-		const once = (method) => new Promise((ok) => listeners.add(function listen(m) { if (m.method === method) { listeners.delete(listen); ok(m.params); } }));
+		const once = method =>
+			new Promise(ok =>
+				listeners.add(function listen(m) {
+					if (m.method === method) {
+						listeners.delete(listen);
+						ok(m.params);
+					}
+				}),
+			);
 		return { send, once, stop: () => (ws.close(), stop()) };
 	} catch (error) {
 		stop();
@@ -244,7 +302,11 @@ async function startChrome(path) {
 }
 
 async function evaluate(send, expression) {
-	const { result, exceptionDetails } = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+	const { result, exceptionDetails } = await send("Runtime.evaluate", {
+		expression,
+		awaitPromise: true,
+		returnByValue: true,
+	});
 	if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
 	return result.value;
 }
@@ -273,15 +335,22 @@ async function capture({ send, once }, origin, shot) {
 		if (!box) throw new Error(`${shot.name}: nothing to crop to (${shot.clip})`);
 		const x = Math.max(0, Math.floor(box.x));
 		const y = Math.max(0, Math.floor(box.y));
-		clip = { x, y, width: Math.min(width - x, Math.ceil(box.width)), height: Math.min(height - y, Math.ceil(box.height)), scale: 1 };
+		clip = {
+			x,
+			y,
+			width: Math.min(width - x, Math.ceil(box.width)),
+			height: Math.min(height - y, Math.ceil(box.height)),
+			scale: 1,
+		};
 	}
 	const { data } = await send("Page.captureScreenshot", { format: "png", ...(clip ? { clip } : {}) });
 	return Buffer.from(data, "base64");
 }
 
 function compress(file) {
-	const has = (tool) => spawnSync("sh", ["-c", `command -v ${tool}`]).status === 0;
-	if (has("pngquant")) spawnSync("pngquant", ["--quality=75-92", "--speed=1", "--strip", "--force", "--output", file, file]);
+	const has = tool => spawnSync("sh", ["-c", `command -v ${tool}`]).status === 0;
+	if (has("pngquant"))
+		spawnSync("pngquant", ["--quality=75-92", "--speed=1", "--strip", "--force", "--output", file, file]);
 	if (has("oxipng")) spawnSync("oxipng", ["-o", "4", "--strip", "safe", "-q", file]);
 }
 
@@ -300,7 +369,12 @@ async function main() {
 		const { send } = chrome;
 		await send("Page.enable");
 		await send("Runtime.enable");
-		await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: opts.theme }, { name: "prefers-reduced-motion", value: "reduce" }] });
+		await send("Emulation.setEmulatedMedia", {
+			features: [
+				{ name: "prefers-color-scheme", value: opts.theme },
+				{ name: "prefers-reduced-motion", value: "reduce" },
+			],
+		});
 		// Signed in as the mock's user, in the chosen theme, before the app's own scripts run on every page.
 		await send("Page.addScriptToEvaluateOnNewDocument", {
 			source: `try { localStorage.setItem("wlp.theme", ${JSON.stringify(opts.theme)}); localStorage.setItem("wlp.auth.mock", ${JSON.stringify(JSON.stringify(MOCK_AUTH))}); } catch {}
@@ -331,7 +405,7 @@ async function main() {
 	}
 }
 
-main().catch((error) => {
+main().catch(error => {
 	console.error(error.message);
 	process.exit(1);
 });

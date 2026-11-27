@@ -16,7 +16,9 @@ function staticPage(): HTMLElement {
 	const container = document.createElement("div");
 	container.id = "root";
 	container.setAttribute("data-public", "");
-	container.innerHTML = renderToStaticMarkup(createElement(DocsView, { slug: "sessions", theme: "dark", onToggleTheme: () => {} }));
+	container.innerHTML = renderToStaticMarkup(
+		createElement(DocsView, { slug: "sessions", theme: "dark", onToggleTheme: () => {} }),
+	);
 	document.body.replaceChildren(container);
 	return container;
 }
@@ -44,7 +46,16 @@ describe("the docs' search on a prerendered page", () => {
 
 		container.replaceChildren();
 		const root = createRoot(container);
-		flushSync(() => root.render(createElement(DocsView, { slug: "sessions", theme: "dark", onToggleTheme: () => {}, initialSearch: taken ?? undefined })));
+		flushSync(() =>
+			root.render(
+				createElement(DocsView, {
+					slug: "sessions",
+					theme: "dark",
+					onToggleTheme: () => {},
+					initialSearch: taken ?? undefined,
+				}),
+			),
+		);
 		const app = container.querySelector<HTMLInputElement>("input[data-docs-search]");
 		expect(app?.value).toBe("steer");
 		expect(document.activeElement).toBe(app);

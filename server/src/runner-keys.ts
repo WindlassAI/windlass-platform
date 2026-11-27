@@ -3,7 +3,7 @@ import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export function newPairCode(): string {
-	const digits = [...randomBytes(8)].map((n) => ALPHABET[n & 31]).join("");
+	const digits = [...randomBytes(8)].map(n => ALPHABET[n & 31]).join("");
 	return digits.slice(0, 4) + "-" + digits.slice(4);
 }
 
@@ -23,7 +23,9 @@ export function publicSpki(pem: string): string | null {
 	try {
 		const key = createPublicKey(pem);
 		return key.asymmetricKeyType === "ed25519" ? key.export({ format: "der", type: "spki" }).toString("base64") : null;
-	} catch { return null; }
+	} catch {
+		return null;
+	}
 }
 
 export function signed(spki: string, message: string, signature: string): boolean {
@@ -34,6 +36,7 @@ export function signed(spki: string, message: string, signature: string): boolea
 /** Rivet and system errors may include a request in their message. Log only their category. */
 export function machineError(operation: string, error: unknown): void {
 	const code = (error as { code?: unknown } | null)?.code;
-	const cause = typeof code === "string" && /^[a-zA-Z_]{1,64}$/.test(code) ? code : error instanceof Error ? error.name : "unknown";
+	const cause =
+		typeof code === "string" && /^[a-zA-Z_]{1,64}$/.test(code) ? code : error instanceof Error ? error.name : "unknown";
 	console.error(`[wlp] ${operation} failed (${cause})`);
 }

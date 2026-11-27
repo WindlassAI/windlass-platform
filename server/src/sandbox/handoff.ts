@@ -89,8 +89,10 @@ export function tokenFileContent(token: AccessToken): string {
 // ---------------------------------------------------------------------------------------------
 
 export const NOT_SIGNED_IN = "You are not signed in with ChatGPT. Sign in with ChatGPT, then send the prompt again.";
-export const SIGN_IN_EXPIRED = "Your ChatGPT sign-in is no longer accepted: it expired or was withdrawn. Sign in with ChatGPT again, then send the prompt once more.";
-export const TOKEN_REJECTED = "ChatGPT rejected the access token of your sign-in. Sign in with ChatGPT again, then send the prompt once more.";
+export const SIGN_IN_EXPIRED =
+	"Your ChatGPT sign-in is no longer accepted: it expired or was withdrawn. Sign in with ChatGPT again, then send the prompt once more.";
+export const TOKEN_REJECTED =
+	"ChatGPT rejected the access token of your sign-in. Sign in with ChatGPT again, then send the prompt once more.";
 
 // ---------------------------------------------------------------------------------------------
 // Windlass's codes
@@ -135,7 +137,17 @@ export const SIGN_IN_UNREACHABLE = "network_error";
  * own codes, and `http_<status>` when the answer had none. Any other code of the service's (a
  * `server_error`, an `http_503`) is not taken for a refusal: the sign-in may well be fine.
  */
-export const SIGN_IN_REFUSED: ReadonlySet<string> = new Set(["invalid_grant", "invalid_client", "unauthorized_client", "access_denied", "invalid_request", "invalid_scope", "http_400", "http_401", "http_403"]);
+export const SIGN_IN_REFUSED: ReadonlySet<string> = new Set([
+	"invalid_grant",
+	"invalid_client",
+	"unauthorized_client",
+	"access_denied",
+	"invalid_request",
+	"invalid_scope",
+	"http_400",
+	"http_401",
+	"http_403",
+]);
 
 /**
  * What Windlass found wrong with the token it was handed:
@@ -185,12 +197,18 @@ export class SignInRefreshError extends Error {
 	}
 }
 
-const sentence = (error: unknown) => errorText(error).trim().replace(/[.\s]+$/, "");
+const sentence = (error: unknown) =>
+	errorText(error)
+		.trim()
+		.replace(/[.\s]+$/, "");
 
 /** Why no token could be had from the token source, as `RunTurnResult.failure`. The kind of error decides, which the token source made from Windlass's code. */
 export function tokenSourceFailure(error: unknown): Failure {
 	if (error instanceof SandboxUserError) return { reason: "auth_required", message: error.message };
-	return { reason: "token_unavailable", message: `The platform could not get an access token of your ChatGPT sign-in for this turn: ${sentence(error)}. Your sign-in is untouched; send the prompt again.` };
+	return {
+		reason: "token_unavailable",
+		message: `The platform could not get an access token of your ChatGPT sign-in for this turn: ${sentence(error)}. Your sign-in is untouched; send the prompt again.`,
+	};
 }
 
 export interface TokenFileState {
@@ -216,8 +234,10 @@ export function tokenRanOut(problem: HandedInProblem, state: TokenFileState, now
 	return problem === "expired" || (problem !== "undelivered" && (state.lapsed || state.expiresAt <= now));
 }
 
-const UNDELIVERED = "Windlass could not read the access token the platform handed it in this sandbox. Your ChatGPT sign-in is untouched; send the prompt again.";
-const UNUSABLE = "Windlass could not use the access token the platform handed it for this turn. Send the prompt again; if it ends the same way, sign in with ChatGPT again.";
+const UNDELIVERED =
+	"Windlass could not read the access token the platform handed it in this sandbox. Your ChatGPT sign-in is untouched; send the prompt again.";
+const UNUSABLE =
+	"Windlass could not use the access token the platform handed it for this turn. Send the prompt again; if it ends the same way, sign in with ChatGPT again.";
 
 /**
  * What Windlass's refusal of a handed-in token means for the user. Windlass ends such a turn with its
@@ -245,11 +265,16 @@ const UNUSABLE = "Windlass could not use the access token the platform handed it
 export const RELAY_LEASE_ENDED = "relay_lease_ended";
 export function relayRefused(code: string | null, ...said: (string | null | undefined)[]): boolean {
 	if (code === RELAY_LEASE_ENDED) return true;
-	return code !== null && handedInProblem(code) === "rejected" && said.some((text) => typeof text === "string" && /\brelay_lease_ended\b/.test(text));
+	return (
+		code !== null &&
+		handedInProblem(code) === "rejected" &&
+		said.some(text => typeof text === "string" && /\brelay_lease_ended\b/.test(text))
+	);
 }
 export const RELAY_REFUSED: Failure = {
 	reason: "token_unavailable",
-	message: "The platform's model relay no longer had this turn's lease (the turn ended, or the relay was restarted). Your ChatGPT sign-in is untouched; send the prompt again.",
+	message:
+		"The platform's model relay no longer had this turn's lease (the turn ended, or the relay was restarted). Your ChatGPT sign-in is untouched; send the prompt again.",
 };
 
 export function handedInFailure(problem: HandedInProblem, state: TokenFileState, now: number = Date.now()): Failure {
@@ -260,7 +285,14 @@ export function handedInFailure(problem: HandedInProblem, state: TokenFileState,
 	if (problem === "undelivered") return { reason: "token_unavailable", message: UNDELIVERED };
 	if (!ranOut) return { reason: "token_unavailable", message: UNUSABLE };
 	if (why !== null) {
-		return { reason: "token_unavailable", message: `The access token this turn was working with ran out and the platform could not replace it: ${sentence(why)}. Your ChatGPT sign-in is untouched; send the prompt again.` };
+		return {
+			reason: "token_unavailable",
+			message: `The access token this turn was working with ran out and the platform could not replace it: ${sentence(why)}. Your ChatGPT sign-in is untouched; send the prompt again.`,
+		};
 	}
-	return { reason: "token_unavailable", message: "The access token this turn was working with ran out before the platform replaced it. Your ChatGPT sign-in is untouched; send the prompt again." };
+	return {
+		reason: "token_unavailable",
+		message:
+			"The access token this turn was working with ran out before the platform replaced it. Your ChatGPT sign-in is untouched; send the prompt again.",
+	};
 }

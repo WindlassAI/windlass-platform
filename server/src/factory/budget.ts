@@ -24,7 +24,16 @@ import { MINUTE, providerWait } from "../provider-usage.js";
 import type { HarnessId, ItemAgent, ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
 import { itemTokensOf, machineHarness, type SignInMethod } from "../sandbox/harnesses.js";
 import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
-import type { AgentTurn, FactoryItem, FactoryLimits, ItemBudget, ItemSpend, StopCause, TurnSpend, Wait } from "./types.js";
+import type {
+	AgentTurn,
+	FactoryItem,
+	FactoryLimits,
+	ItemBudget,
+	ItemSpend,
+	StopCause,
+	TurnSpend,
+	Wait,
+} from "./types.js";
 
 export const FACTORY_DEFAULTS: FactoryLimits = {
 	dailyTokens: null,
@@ -65,8 +74,22 @@ export function weightedTokens(usage: TurnUsage | null): number {
 }
 
 /** An item's agent before its first turn: Windlass's tokens are counted as they come, a machine harness has reported none. */
-export function newAgent(harness: HarnessId, model: string, effort?: string | null, signIn?: ItemAgent["signIn"]): ItemAgent {
-	return { harness, model, ...(effort && { effort }), ...(signIn && { signIn }), tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
+export function newAgent(
+	harness: HarnessId,
+	model: string,
+	effort?: string | null,
+	signIn?: ItemAgent["signIn"],
+): ItemAgent {
+	return {
+		harness,
+		model,
+		...(effort && { effort }),
+		...(signIn && { signIn }),
+		tokens: harness === "windlass" ? "counted" : "not_reported",
+		reportedTokens: 0,
+		cost: null,
+		fiveHour: null,
+	};
 }
 
 /** The agent of an item, also of one filed before agents could be chosen. */
@@ -85,7 +108,13 @@ export const noSpend = (): ItemSpend => ({ tokens: 0, rawTokens: 0, turns: 0, ac
  * token (`itemTokensOf`: "budget", or an API key where the sign-in decides): a subscription's are shown,
  * not counted. `signIn`: the method used for this turn. Undefined for Windlass.
  */
-export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | null, context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null, fiveHourAtStart?: number, signIn?: SignInMethod): AgentTurn | undefined {
+export function agentTurn(
+	harness: HarnessId | undefined,
+	usage: TurnUsage | null,
+	context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null,
+	fiveHourAtStart?: number,
+	signIn?: SignInMethod,
+): AgentTurn | undefined {
 	const machine = machineHarness(harness);
 	if (!machine) return undefined;
 	const end = context?.fiveHourUsedPct;
@@ -100,7 +129,12 @@ export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | nul
 /** A turn's spend: its tokens count only where its agent's are counted, cost-weighted. */
 export function turnSpend(usage: TurnUsage | null, agent?: AgentTurn): TurnSpend {
 	const counted = !agent || agent.counted;
-	return { tokens: counted ? weightedTokens(usage) : 0, rawTokens: counted ? turnTokens(usage) : 0, hostedSeconds: 0, ...(agent && { agent }) };
+	return {
+		tokens: counted ? weightedTokens(usage) : 0,
+		rawTokens: counted ? turnTokens(usage) : 0,
+		hostedSeconds: 0,
+		...(agent && { agent }),
+	};
 }
 
 /**
@@ -117,7 +151,7 @@ export function unmeasuredTurn(spend: TurnSpend, agent: Pick<ItemAgent, "harness
 export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
 	const agent = item.agent ?? itemAgent(item);
 	if (turn.reported !== null) {
-		const subscribed = agent.tokens === "subscription" ? agent.reportedTokens : agent.subscriptionTokens ?? 0;
+		const subscribed = agent.tokens === "subscription" ? agent.reportedTokens : (agent.subscriptionTokens ?? 0);
 		agent.reportedTokens += turn.reported;
 		agent.tokens = turn.counted || agent.tokens === "counted" ? "counted" : "subscription";
 		if (agent.tokens === "counted") {
@@ -126,7 +160,8 @@ export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
 		}
 	}
 	if (turn.cost) agent.cost = turn.cost;
-	if (turn.fiveHour) agent.fiveHour = { first: agent.fiveHour?.first ?? turn.fiveHour.start, latest: turn.fiveHour.end };
+	if (turn.fiveHour)
+		agent.fiveHour = { first: agent.fiveHour?.first ?? turn.fiveHour.start, latest: turn.fiveHour.end };
 	item.agent = agent;
 }
 
@@ -134,18 +169,28 @@ export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
  * An item's tokens in words: "1,200 of 2,000,000 tokens (cost-weighted; 9,800 as reported)" where they are
  * counted, otherwise what its agent reported, never a 0 that was not measured.
  */
-export function tokenWords(spent: Pick<ItemSpend, "tokens" | "rawTokens">, budget: Pick<ItemBudget, "tokens">, agent?: ItemAgent): string {
-	const name = agent ? machineHarness(agent.harness)?.name ?? "Windlass" : "Windlass";
+export function tokenWords(
+	spent: Pick<ItemSpend, "tokens" | "rawTokens">,
+	budget: Pick<ItemBudget, "tokens">,
+	agent?: ItemAgent,
+): string {
+	const name = agent ? (machineHarness(agent.harness)?.name ?? "Windlass") : "Windlass";
 	if (!agent || agent.tokens === "counted") {
-		const subscription = agent?.subscriptionTokens ? `, plus ${agent.subscriptionTokens.toLocaleString("en-US")} subscription tokens` : "";
+		const subscription = agent?.subscriptionTokens
+			? `, plus ${agent.subscriptionTokens.toLocaleString("en-US")} subscription tokens`
+			: "";
 		return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens (cost-weighted; ${rawTokens(spent).toLocaleString("en-US")} as reported)${subscription}`;
 	}
-	if (agent.tokens === "subscription") return `${agent.reportedTokens.toLocaleString("en-US")} tokens reported by ${name}, not counted (subscription)`;
+	if (agent.tokens === "subscription")
+		return `${agent.reportedTokens.toLocaleString("en-US")} tokens reported by ${name}, not counted (subscription)`;
 	return `tokens not reported by ${name}`;
 }
 
 /** Settled hosted seconds for all sessions belonging to the item. */
-export function ledgerSeconds(entries: readonly Pick<UsageEntry, "session" | "seconds">[], sessions: readonly string[]): number {
+export function ledgerSeconds(
+	entries: readonly Pick<UsageEntry, "session" | "seconds">[],
+	sessions: readonly string[],
+): number {
 	return entries.reduce((sum, entry) => (sessions.includes(entry.session) ? sum + entry.seconds : sum), 0);
 }
 
@@ -158,7 +203,8 @@ export function spellTokens(tokens: number): string {
 
 const BUDGET_WORDS: Record<keyof ItemBudget, (spent: ItemSpend, budget: number) => string> = {
 	tokens: (_spent, budget) => `Used its ${spellTokens(budget)}-token budget.`,
-	hostedSeconds: (spent, budget) => `This item's hosted sandbox has run for ${spellSeconds(spent.hostedSeconds)} of its ${spellSeconds(budget)}.`,
+	hostedSeconds: (spent, budget) =>
+		`This item's hosted sandbox has run for ${spellSeconds(spent.hostedSeconds)} of its ${spellSeconds(budget)}.`,
 };
 
 /** The figures of a budget: tokens everywhere, hosted sandbox time only where the sandbox is hosted. */
@@ -168,7 +214,11 @@ export const BUDGET_FIGURES = ["tokens", "hostedSeconds"] as const satisfies Rea
  * The first of an item's budgets it has used up, with the sentence a person reads; null while every
  * one has something left. Hosted seconds are no limit on a machine.
  */
-export function budgetStop(budget: ItemBudget, spent: ItemSpend, place: SandboxPlace): { cause: StopCause & keyof ItemBudget; sentence: string } | null {
+export function budgetStop(
+	budget: ItemBudget,
+	spent: ItemSpend,
+	place: SandboxPlace,
+): { cause: StopCause & keyof ItemBudget; sentence: string } | null {
 	for (const cause of BUDGET_FIGURES) {
 		if (cause === "hostedSeconds" && place.kind !== "hosted") continue;
 		if (spent[cause] >= budget[cause]) return { cause, sentence: BUDGET_WORDS[cause](spent, budget[cause]) };
@@ -211,7 +261,10 @@ export type PlaceNow =
 
 /** An item's turn needs a hosted sandbox and every place the account may keep is taken: by what, and what the person can do. */
 export function keptCapSentence(limit: number, holders: string[]): string {
-	const named = holders.length === 0 ? "" : `: ${holders.slice(0, 5).join(", ")}${holders.length > 5 ? `, and ${holders.length - 5} more` : ""}`;
+	const named =
+		holders.length === 0
+			? ""
+			: `: ${holders.slice(0, 5).join(", ")}${holders.length > 5 ? `, and ${holders.length - 5} more` : ""}`;
 	return `This item's next turn needs a hosted sandbox, and all ${plural(limit, "hosted sandbox", "hosted sandboxes")} you may keep are in use${named}. Free one on the Usage page and the turn starts, wait for one to be freed, or give up. Sandboxes on your own machines are not counted.`;
 }
 
@@ -241,21 +294,45 @@ export function admit(input: AdmissionInput): Admission {
 	const { at, limits, place } = input;
 	const account = input.provider;
 	if (account?.state === "limited" && account.limitedUntil !== null && account.limitedUntil > at) {
-		const reset = account.windows.find(w => w.source === "refusal" && w.resetsAt !== null && w.resetsAt + MINUTE === account.limitedUntil)?.resetsAt;
-		return { ok: false, wait: providerWait(account.harness, place.kind === "hosted" ? "hosted" : place.name, account.limitedUntil, reset) };
+		const reset = account.windows.find(
+			w => w.source === "refusal" && w.resetsAt !== null && w.resetsAt + MINUTE === account.limitedUntil,
+		)?.resetsAt;
+		return {
+			ok: false,
+			wait: providerWait(account.harness, place.kind === "hosted" ? "hosted" : place.name, account.limitedUntil, reset),
+		};
 	}
 	const later = retryAt(at, input.attempt);
-	const wait = (reason: Wait["reason"], sentence: string, when = later, keptCap?: true): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when }, ...(keptCap && { keptCap }) });
+	const wait = (reason: Wait["reason"], sentence: string, when = later, keptCap?: true): Admission => ({
+		ok: false,
+		wait: { reason, sentence, retryAt: when },
+		...(keptCap && { keptCap }),
+	});
 
 	if (input.dailyTokenWait) return wait("capacity", input.dailyTokenWait, nextUtcDay(at));
 
 	if (place.kind === "machine" && (!place.online || (place.attachRetryAt ?? 0) > at)) {
-		return wait("machine", `Waiting for your machine "${place.name}" to come back online.`, place.online ? place.attachRetryAt! : later);
+		return wait(
+			"machine",
+			`Waiting for your machine "${place.name}" to come back online.`,
+			place.online ? place.attachRetryAt! : later,
+		);
 	}
 	if (place.kind === "machine") {
-		if (place.slots && place.slots.free < place.slots.units) return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
-		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`, later, true);
-		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there, its runner's limit.`);
+		if (place.slots && place.slots.free < place.slots.units)
+			return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
+		if (place.keptFull)
+			return wait(
+				"machine",
+				`Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`,
+				later,
+				true,
+			);
+		if (place.running >= place.max)
+			return wait(
+				"machine",
+				`Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there, its runner's limit.`,
+			);
 		return { ok: true };
 	}
 
@@ -263,16 +340,26 @@ export function admit(input: AdmissionInput): Admission {
 	if (usage.leftSeconds !== null && usage.leftSeconds < usage.startSeconds) {
 		const allowance = spellSeconds(usage.allowanceSeconds ?? 0);
 		const until = spellSeconds(Math.max(60, Math.ceil((usage.resetsAt - at) / 60_000) * 60));
-		return wait("capacity", `Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). The allowance is this deployment's setting, which its owner can raise.`, usage.resetsAt);
+		return wait(
+			"capacity",
+			`Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). The allowance is this deployment's setting, which its owner can raise.`,
+			usage.resetsAt,
+		);
 	}
 	if (place.needsSandbox && usage.sandboxes.limit !== null && usage.sandboxes.kept >= usage.sandboxes.limit) {
 		return wait("sandboxes", keptCapSentence(usage.sandboxes.limit, place.holders ?? []), later, true);
 	}
 	if (place.running >= limits.hostedRunning) {
-		return wait("capacity", `Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} that run at once: ${place.running} running now. Your machines don't count toward this.`);
+		return wait(
+			"capacity",
+			`Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} that run at once: ${place.running} running now. Your machines don't count toward this.`,
+		);
 	}
 	if (place.deploymentFull !== null) {
-		return wait("capacity", `Waiting for a hosted sandbox: this deployment runs ${place.deploymentFull} at once and all are in use. Trying again at ${utcTime(later)} UTC.`);
+		return wait(
+			"capacity",
+			`Waiting for a hosted sandbox: this deployment runs ${place.deploymentFull} at once and all are in use. Trying again at ${utcTime(later)} UTC.`,
+		);
 	}
 	return { ok: true };
 }

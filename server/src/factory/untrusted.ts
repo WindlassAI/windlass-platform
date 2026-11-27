@@ -62,11 +62,23 @@ export function thirdParty(list: readonly string[] | undefined | null): string[]
 }
 
 /** `untrustedWords.issue`, `untrustedWords.linear` and `untrustedWords.feedback`, as they begin: every source is made by those words. */
-const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^GitHub feedback from /, /^commit [a-f0-9]+ pushed by @/];
+const THIRD_PARTY = [
+	/^issue #\d+ by @/,
+	/^Linear issue [A-Za-z0-9]+-\d+ by /,
+	/^GitHub feedback from /,
+	/^commit [a-f0-9]+ pushed by @/,
+];
 
 /** The sources of several pieces of text, each once, in order. */
 export function sources(...lists: Array<readonly string[] | undefined | null>): string[] {
-	return [...new Set(lists.flatMap(list => list ?? []).map(source => source.trim()).filter(Boolean))];
+	return [
+		...new Set(
+			lists
+				.flatMap(list => list ?? [])
+				.map(source => source.trim())
+				.filter(Boolean),
+		),
+	];
 }
 
 /** One source for Windlass: the sources joined, cut to its limit (never refused for length). Null for none. */
@@ -126,11 +138,36 @@ export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
 	const openVm = turn.profile === "e2b-open" || turn.profile === "daytona";
 	if (turn.profile === "docker-hardened" || (openVm && !marker)) {
 		const outside = turn.unsandboxed ? [] : thirdParty(turn.currentSources ?? list);
-		if (outside.length) return { kind: "stop", sources: outside, reason: openVm ? `This turn includes text from someone else (${outside.join(", ")}). ${harnessName(turn.agent)} runs commands directly in the sandbox. Run it anyway or give up.` : hardenedRefusal(turn.agent, outside) };
-		return { kind: "labelled", sources: list, note: marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
+		if (outside.length)
+			return {
+				kind: "stop",
+				sources: outside,
+				reason: openVm
+					? `This turn includes text from someone else (${outside.join(", ")}). ${harnessName(turn.agent)} runs commands directly in the sandbox. Run it anyway or give up.`
+					: hardenedRefusal(turn.agent, outside),
+			};
+		return {
+			kind: "labelled",
+			sources: list,
+			note: marker
+				? hardenedUnmarkedNote(list)
+				: agentUnmarkedNote(
+						harnessName(turn.agent),
+						list,
+						machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false,
+					),
+		};
 	}
 	if (marker) return { kind: "marked", sources: list };
-	return { kind: "labelled", sources: list, note: agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
+	return {
+		kind: "labelled",
+		sources: list,
+		note: agentUnmarkedNote(
+			harnessName(turn.agent),
+			list,
+			machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false,
+		),
+	};
 }
 
 /** Why a turn with someone else's text does not start on "Docker, hardened" (`untrustedTurn`), in the words of its agent. */
@@ -141,8 +178,11 @@ export const hardenedRefusal = (agent: HarnessId, list: readonly string[]) => {
 		? `On “Open” ${name} cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
 		: `On “Open” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
 	// Codex runs its commands in its own sandbox there (`sandboxedOn`): it is filed again as itself. Any other agent is filed with Windlass.
-const own = machineHarness(agent)?.sandboxedOn.includes("docker-windlass-sandbox") ?? false;
-const elsewhere = marker || own ? `file the work again on “Strict”${own ? `, where ${name} runs its commands in its own sandbox` : ""}` : `file the work again with Windlass on “Strict”`;
+	const own = machineHarness(agent)?.sandboxedOn.includes("docker-windlass-sandbox") ?? false;
+	const elsewhere =
+		marker || own
+			? `file the work again on “Strict”${own ? `, where ${name} runs its commands in its own sandbox` : ""}`
+			: `file the work again with Windlass on “Strict”`;
 	return `This turn carries text from someone else (${sources(list).join("; ")}). ${what} Run it anyway, ${elsewhere}, or give up.`;
 };
 
@@ -168,4 +208,6 @@ export const unmarkedNote = (list: readonly string[]) =>
  */
 export const agentUnmarkedNote = (agent: string, list: readonly string[], sandboxed = false) =>
 	`${agent} cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only, ` +
-	(sandboxed ? "and its commands run in its own sandbox without network." : "and the agent runs its commands without asking.");
+	(sandboxed
+		? "and its commands run in its own sandbox without network."
+		: "and the agent runs its commands without asking.");

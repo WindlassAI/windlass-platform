@@ -14,22 +14,23 @@ import { searchDocs } from "./search";
 const contentDir = fileURLToPath(new URL("./content/", import.meta.url));
 
 /** Every page's rendered HTML, by its address. */
-const rendered = new Map(DOCS_PAGES.map((page) => [docsPath(page.slug), renderDocs(docsSource(page))]));
+const rendered = new Map(DOCS_PAGES.map(page => [docsPath(page.slug), renderDocs(docsSource(page))]));
 
 function idsOf(html: string): Set<string> {
-	return new Set(Array.from(html.matchAll(/\sid="([^"]+)"/g), (match) => match[1] ?? ""));
+	return new Set(Array.from(html.matchAll(/\sid="([^"]+)"/g), match => match[1] ?? ""));
 }
 
 describe("the docs' pages", () => {
 	it("each has a Markdown file, and each file a page", () => {
-		const files = readdirSync(contentDir).filter((name) => name.endsWith(".md"));
-		expect(new Set(DOCS_PAGES.map((page) => page.file))).toEqual(new Set(files));
-		for (const page of DOCS_PAGES) expect(readFileSync(contentDir + page.file, "utf8").trim().length, page.file).toBeGreaterThan(200);
+		const files = readdirSync(contentDir).filter(name => name.endsWith(".md"));
+		expect(new Set(DOCS_PAGES.map(page => page.file))).toEqual(new Set(files));
+		for (const page of DOCS_PAGES)
+			expect(readFileSync(contentDir + page.file, "utf8").trim().length, page.file).toBeGreaterThan(200);
 	});
 
 	it("have unique slugs and titles, a description each, and a known section", () => {
-		expect(new Set(DOCS_PAGES.map((page) => page.slug)).size).toBe(DOCS_PAGES.length);
-		expect(new Set(DOCS_PAGES.map((page) => page.title)).size).toBe(DOCS_PAGES.length);
+		expect(new Set(DOCS_PAGES.map(page => page.slug)).size).toBe(DOCS_PAGES.length);
+		expect(new Set(DOCS_PAGES.map(page => page.title)).size).toBe(DOCS_PAGES.length);
 		for (const page of DOCS_PAGES) {
 			expect(page.slug).toMatch(/^([a-z0-9]+(-[a-z0-9]+)*)?$/);
 			expect(page.description.length, page.slug).toBeGreaterThan(30);
@@ -55,10 +56,12 @@ describe("the docs' pages", () => {
 
 	it("are listed for the build with their titles and descriptions", () => {
 		const routes = docsRoutes();
-		expect(routes.map((route) => route.path)).toEqual(DOCS_PAGES.map((page) => docsPath(page.slug)));
+		expect(routes.map(route => route.path)).toEqual(DOCS_PAGES.map(page => docsPath(page.slug)));
 		for (const route of routes) {
 			expect(route.title).toMatch(/Windlass/);
-			expect(readFileSync(fileURLToPath(new URL(`../../../${route.file}`, import.meta.url)), "utf8").length).toBeGreaterThan(0);
+			expect(
+				readFileSync(fileURLToPath(new URL(`../../../${route.file}`, import.meta.url)), "utf8").length,
+			).toBeGreaterThan(0);
 		}
 	});
 
@@ -68,13 +71,15 @@ describe("the docs' pages", () => {
 			expect(html, page.slug).not.toMatch(/<h1/);
 			expect(headings.length, page.slug).toBeGreaterThan(0);
 			for (const heading of headings) expect(html).toContain(`id="${heading.id}"`);
-			expect(new Set(headings.map((heading) => heading.id)).size, page.slug).toBe(headings.length);
+			expect(new Set(headings.map(heading => heading.id)).size, page.slug).toBe(headings.length);
 		}
 	});
 
 	it("render as whole pages, with the sidebar, the page and the way on", () => {
 		for (const page of DOCS_PAGES) {
-			const html = renderToStaticMarkup(createElement(DocsView, { slug: page.slug, theme: "dark", onToggleTheme: () => {} }));
+			const html = renderToStaticMarkup(
+				createElement(DocsView, { slug: page.slug, theme: "dark", onToggleTheme: () => {} }),
+			);
 			expect(html).toContain('class="docs-title"');
 			expect(html).toContain('aria-current="page"');
 			expect(html).toContain('class="docs-prose"');
@@ -84,7 +89,7 @@ describe("the docs' pages", () => {
 
 	it("are offered to the build as public pages, each rendering without a browser", () => {
 		const pages = docsPublicPages();
-		expect(pages.map((page) => page.path)).toEqual(DOCS_PAGES.map((page) => docsPath(page.slug)));
+		expect(pages.map(page => page.path)).toEqual(DOCS_PAGES.map(page => docsPath(page.slug)));
 		for (const page of pages) {
 			expect(page.title.length, page.path).toBeLessThanOrEqual(60);
 			expect(renderToStaticMarkup(page.render())).toContain('class="docs-prose"');
@@ -93,7 +98,9 @@ describe("the docs' pages", () => {
 	});
 
 	it("say when a page does not exist", () => {
-		const html = renderToStaticMarkup(createElement(DocsView, { slug: "no-such-page", theme: "light", onToggleTheme: () => {} }));
+		const html = renderToStaticMarkup(
+			createElement(DocsView, { slug: "no-such-page", theme: "light", onToggleTheme: () => {} }),
+		);
 		expect(html).toContain("No page here");
 	});
 
@@ -116,8 +123,10 @@ describe("the docs' pages", () => {
 	});
 
 	it("make code blocks with a copy button and callouts of quotes that ask for one", () => {
-		const { html } = renderDocs("```sh\ndocker logs windlass-runner\n```\n\n> **Careful** It cannot be undone.\n\n> A plain quote.");
-		expect(html).toContain('data-docs-copy');
+		const { html } = renderDocs(
+			"```sh\ndocker logs windlass-runner\n```\n\n> **Careful** It cannot be undone.\n\n> A plain quote.",
+		);
+		expect(html).toContain("data-docs-copy");
 		expect(html).toContain("docker logs windlass-runner");
 		expect(html).toContain('class="docs-callout docs-callout-careful"');
 		expect(html).toContain("<blockquote>");
@@ -139,9 +148,17 @@ describe("the docs' pages", () => {
 
 describe("search across the docs", () => {
 	it("finds a command and a setting by their words", () => {
-		expect(searchDocs("max-turns").slice(0, 3).map((hit) => hit.href)).toContain("/docs/runner#run-options");
-		expect(searchDocs("pairing code").map((hit) => hit.page.slug)).toContain("machines");
-		expect(searchDocs("protected branch").slice(0, 3).map((hit) => hit.page.slug)).toContain("troubleshooting");
+		expect(
+			searchDocs("max-turns")
+				.slice(0, 3)
+				.map(hit => hit.href),
+		).toContain("/docs/runner#run-options");
+		expect(searchDocs("pairing code").map(hit => hit.page.slug)).toContain("machines");
+		expect(
+			searchDocs("protected branch")
+				.slice(0, 3)
+				.map(hit => hit.page.slug),
+		).toContain("troubleshooting");
 	});
 
 	it("leads to sections that exist", () => {

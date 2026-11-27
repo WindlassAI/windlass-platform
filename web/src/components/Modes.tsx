@@ -15,14 +15,19 @@ import { Tooltip } from "./ui/Tooltip";
  * that runs without asking.
  */
 /** The modes as a menu: each with its description under it, the current one checked. */
-export function modeMenu(modes: SessionMode[], current: string, onChoose: (mode: string) => void, warn = false): MenuSpec {
+export function modeMenu(
+	modes: SessionMode[],
+	current: string,
+	onChoose: (mode: string) => void,
+	warn = false,
+): MenuSpec {
 	return {
 		label: "Mode",
 		width: 300,
 		groups: [
 			{
 				id: "modes",
-				items: modes.map((mode) => ({
+				items: modes.map(mode => ({
 					id: mode.id,
 					label: mode.name,
 					description: mode.description || undefined,
@@ -38,20 +43,51 @@ export function modeMenu(modes: SessionMode[], current: string, onChoose: (mode:
 	};
 }
 
-export function ModePicker({ modes, current, disabled = false, title, warn = false, onChoose, onOpen, open, onOpenChange }: { modes: SessionMode[]; current: string; disabled?: boolean; title?: string; warn?: boolean; onChoose(mode: string): void; /** Told when the list opens, so that another open list can close. */ onOpen?(): void; open?: boolean; onOpenChange?(open: boolean): void }) {
-	const chosen = modes.find((mode) => mode.id === current) ?? null;
+export function ModePicker({
+	modes,
+	current,
+	disabled = false,
+	title,
+	warn = false,
+	onChoose,
+	onOpen,
+	open,
+	onOpenChange,
+}: {
+	modes: SessionMode[];
+	current: string;
+	disabled?: boolean;
+	title?: string;
+	warn?: boolean;
+	onChoose(mode: string): void /** Told when the list opens, so that another open list can close. */;
+	onOpen?(): void;
+	open?: boolean;
+	onOpenChange?(open: boolean): void;
+}) {
+	const chosen = modes.find(mode => mode.id === current) ?? null;
 	const spec = modeMenu(modes, current, onChoose, warn);
 	const pill = (
 		<Menu
 			spec={spec}
 			align="end"
 			open={open}
-			onOpenChange={(next) => {
+			onOpenChange={next => {
 				if (next) onOpen?.();
 				onOpenChange?.(next);
 			}}
-			trigger={(props) => (
-				<Pill {...props} outlined className="mode-picker" data-picker="mode" data-value={chosen?.name ?? current} icon={<ShieldIcon size={14} />} dot={warn ? "warn" : null} dotLabel={warn ? "runs without asking" : undefined} disabled={disabled} aria-label={`Mode: ${chosen?.name ?? current}${title ? `. ${title}` : ""}`}>
+			trigger={props => (
+				<Pill
+					{...props}
+					outlined
+					className="mode-picker"
+					data-picker="mode"
+					data-value={chosen?.name ?? current}
+					icon={<ShieldIcon size={14} />}
+					dot={warn ? "warn" : null}
+					dotLabel={warn ? "runs without asking" : undefined}
+					disabled={disabled}
+					aria-label={`Mode: ${chosen?.name ?? current}${title ? `. ${title}` : ""}`}
+				>
 					{chosen?.name ?? current}
 				</Pill>
 			)}

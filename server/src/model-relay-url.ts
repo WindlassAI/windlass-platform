@@ -39,9 +39,26 @@ export function parseModelRelayUrl(raw: string | undefined): ModelRelayUrl | nul
 	}
 	const host = url.hostname.toLowerCase();
 	const labels = host.split(".");
-	const named = host.length <= 253 && labels.length >= 2 && labels.every((label) => LABEL.test(label)) && !/^\d+$/.test(labels.at(-1)!) && host !== "localhost";
-	if (url.protocol !== "https:" || url.port !== "" || !named || (url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "")
-		return { problem: "WLP_MODEL_RELAY_URL must be an https address with a DNS name, no port and no path, such as https://windlass-relay.example.com" };
+	const named =
+		host.length <= 253 &&
+		labels.length >= 2 &&
+		labels.every(label => LABEL.test(label)) &&
+		!/^\d+$/.test(labels.at(-1)!) &&
+		host !== "localhost";
+	if (
+		url.protocol !== "https:" ||
+		url.port !== "" ||
+		!named ||
+		(url.pathname !== "/" && url.pathname !== "") ||
+		url.search !== "" ||
+		url.hash !== "" ||
+		url.username !== "" ||
+		url.password !== ""
+	)
+		return {
+			problem:
+				"WLP_MODEL_RELAY_URL must be an https address with a DNS name, no port and no path, such as https://windlass-relay.example.com",
+		};
 	return { origin: `https://${host}`, host };
 }
 

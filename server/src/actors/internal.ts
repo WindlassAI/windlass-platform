@@ -11,7 +11,27 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, PartScreenshots, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type {
+	EnvironmentBuild,
+	GithubId,
+	HarnessOptions,
+	HarnessId,
+	HostedSize,
+	ItemAction,
+	ItemSummary,
+	ItemView,
+	ModelList,
+	PartScreenshots,
+	ModelProvider,
+	RepositoryAutonomy,
+	RepositoryCheck,
+	RepositorySetup,
+	SandboxPlace,
+	SandboxProfileId,
+	SecretScope,
+	SessionSummary,
+	UsageNumbers,
+} from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -25,7 +45,13 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
-	readiness?: { attempt: string; commit: string; model?: string; effort?: string; draft?: import("../repo-setup/types.js").DraftRequest };
+	readiness?: {
+		attempt: string;
+		commit: string;
+		model?: string;
+		effort?: string;
+		draft?: import("../repo-setup/types.js").DraftRequest;
+	};
 	size?: number;
 	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
 	hostedSize?: HostedSize;
@@ -53,29 +79,70 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; afterPlanning?: { model: string; effort: string | null }; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; payer?: import("../contract.js").CredentialSource; payerSource?: "account" | "deployment" };
+	origin?: {
+		kind: "item";
+		itemId: string;
+		role?: "builder" | "reviewer";
+		planCritic?: true;
+		afterPlanning?: { model: string; effort: string | null };
+		subtaskScreenshots?: boolean;
+		owns?: string[];
+		childBranch?: { name: string; start: string };
+		size?: number;
+		effort?: string;
+		signIn?: SignInMethod;
+		payer?: import("../contract.js").CredentialSource;
+		payerSource?: "account" | "deployment";
+	};
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
 
 /** What a build session reports: its build, without what the user actor set when it started it. */
-export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "retries" | "interrupted" | "startedAt" | "setupHash" | "checksHash" | "profile">;
+export type EnvironmentBuildResult = Omit<
+	EnvironmentBuild,
+	"trigger" | "retries" | "interrupted" | "startedAt" | "setupHash" | "checksHash" | "profile"
+>;
 
 export type EnvironmentBuildReport = EnvironmentBuildResult | { interrupted: true } | { waiting: string };
 
 /** What a build session builds: `screenshots`, the image variant item sessions there use. */
-export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }
+export interface EnvironmentBuildOrigin {
+	project: string;
+	place: string;
+	screenshots: boolean;
+}
 
 /** Subtask builders carry the approved choice, including false. Other work items follow the repository permission. */
-export function itemScreenshots(item: { subtaskScreenshots?: boolean } | undefined, harness: SessionSummary["harness"], allowed: boolean): boolean {
+export function itemScreenshots(
+	item: { subtaskScreenshots?: boolean } | undefined,
+	harness: SessionSummary["harness"],
+	allowed: boolean,
+): boolean {
 	return allowed && !!item && item.subtaskScreenshots !== false && (harness ?? "windlass") === "windlass";
 }
 
 /** The image requested when creating or replacing a session's sandbox. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize" | "readiness">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(
+	session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> &
+		Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize" | "readiness">,
+	screenshots = false,
+): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: !!session.readiness || origin?.role === "reviewer", screenshots: session.environmentBuild ? screenshots && session.environmentBuild.screenshots : itemScreenshots(origin, session.harness, screenshots) };
+	return {
+		uid,
+		sessionId,
+		profile,
+		...(session.environmentBuild && { environmentBuild: true }),
+		...(size && { size }),
+		...(session.hostedSize && { hostedSize: session.hostedSize }),
+		...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}),
+		privateData: !!session.readiness || origin?.role === "reviewer",
+		screenshots: session.environmentBuild
+			? screenshots && session.environmentBuild.screenshots
+			: itemScreenshots(origin, session.harness, screenshots),
+	};
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -97,16 +164,32 @@ export interface ReserveRequest {
  * The answer: the hold and how many seconds it is for, or which limit refused it ("gone": the user
  * has no such session any more). Either way with the user's numbers as they are then.
  */
-export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
+export type ReserveAnswer =
+	| { ok: true; clampedSize?: HostedSize; hold: { id: string; seconds: number }; numbers: UsageNumbers }
+	| { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
-	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[], installation: GithubId, source: string): Promise<void>;
-	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void>;
+	internalSetupPublished(
+		session: string,
+		publication: import("../repo-setup/types.js").SetupPublication,
+		decisions: import("../repo-setup/types.js").NoteDecision[],
+		installation: GithubId,
+		source: string,
+	): Promise<void>;
+	internalReadinessResult(
+		session: string,
+		attempt: string,
+		report: import("../factory/readiness.js").Judgment | string | null,
+		diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null,
+	): Promise<void>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
-	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
+	internalDefaultBuilder(input: {
+		id: string;
+		job: import("./user-items.js").DefaultBuilder;
+	}): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
 	internalDiscardPlacement(itemId: string): Promise<void>;
 
 	internalHostedSizes(): Promise<HostedSize[]>;
@@ -116,27 +199,56 @@ export interface UserInternal {
 	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
 	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
 	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
-	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
+	internalObserveUsage(
+		location: import("./provider-accounts.js").AccountLocation,
+		generation: string,
+		observation: import("../provider-usage.js").UsageObservation,
+	): Promise<void>;
 
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
-	internalPlacementInventory(repositories: Record<string, GithubId>, snapshot?: GithubId): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
+	internalPlacementInventory(
+		repositories: Record<string, GithubId>,
+		snapshot?: GithubId,
+	): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
 
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
-	internalAcquireRun(sessionId: string, model?: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
+	internalAcquireRun(
+		sessionId: string,
+		model?: string,
+	): Promise<{
+		dailyTokenWait?: string;
+		ok: boolean;
+		running: number;
+		known: boolean;
+		until: number | null;
+		claim: number | null;
+	}>;
 	/** Gives back the running slot of the claim named `claim`, for a prompt the session refused after it was claimed; a newer claim, or one already settled, is left as it is. */
-	internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
+	internalReleaseRun(input: {
+		sessionId: string;
+		claim: number;
+		summary: SessionSummary;
+	}): Promise<{ released: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */
 	internalGithubConnection(): Promise<StoredConnection | null>;
 	/** The user's remembered approvals of a project's MCP servers that have not run out, the newest first (server-approvals.ts). */
 	internalServerApprovals(project: string): Promise<ServerApproval[]>;
 	/** Remembers that the user approved exactly this definition of a server for a project, from now. Answers with the project's approvals. */
-	internalServerApprove(input: { project: string; label: string; name: string; fingerprint: string }): Promise<ServerApproval[]>;
+	internalServerApprove(input: {
+		project: string;
+		label: string;
+		name: string;
+		fingerprint: string;
+	}): Promise<ServerApproval[]>;
 	/** Forgets the user's approvals of that server for a project. Answers with how many there were, and the project's approvals that are left. */
-	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
+	internalServerForget(input: {
+		project: string;
+		name: string;
+	}): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
 	/** A post-setup snapshot of the project was saved at `place` ("hosted" or a machine id): remembered for placement. */
@@ -149,7 +261,11 @@ export interface UserInternal {
 	internalEnvironmentPushed(repositoryId: GithubId): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else would file a request, but today only the session's own user calls it (repository-network.ts). */
-	internalAllowHost(input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;
+	internalAllowHost(input: {
+		sessionId: string;
+		host: string;
+		by: string;
+	}): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;
 	/** Hosts a session's sandbox could not reach, filed as requests on its repository's network list; `full` are those not filed because its requests are full. */
 	internalNetworkRequests(input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
@@ -159,7 +275,10 @@ export interface UserInternal {
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
 	/** The session's place among the kept sandboxes, claimed right before its sandbox is made (`UsageBook.claim`). */
-	internalClaimPlace(sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
+	internalClaimPlace(
+		sessionId: string,
+		hostedSize?: HostedSize,
+	): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
 	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
 	internalModels(): Promise<ModelList>;
 	/** A work item's summary changed (user-items.ts). */
@@ -203,7 +322,10 @@ export interface SealedSecrets {
 	 * each value sealed (account-secrets.ts), and the user's own MCP servers with their definitions as
 	 * Windlass takes them and whether their tools run without asking (personal-servers.ts).
 	 */
-	account?: { secrets: Array<{ name: string; scope: SecretScope; sealed: string }>; servers: Array<{ name: string; definition: Record<string, unknown>; unasked: boolean }> };
+	account?: {
+		secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;
+		servers: Array<{ name: string; definition: Record<string, unknown>; unasked: boolean }>;
+	};
 }
 
 /** An authenticated person's value, sealed before it leaves the requesting session. */
@@ -233,7 +355,11 @@ export interface SessionInternal {
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
-	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize, automatic?: { reason: string; cutoff?: number }): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
+	internalFreeSandbox(
+		throughReviewRun?: number,
+		hostedSize?: HostedSize,
+		automatic?: { reason: string; cutoff?: number },
+	): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
 	internalSandboxReclaimed(said: string): Promise<void>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
@@ -248,11 +374,26 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
-	internalBaseTests(input: { head: string; base: string; tests: import("../factory/base-tests.js").NamedTests }): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
-	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number; baseTip?: string } }): Promise<ItemPublishAnswer>;
+	internalBaseTests(input: {
+		head: string;
+		base: string;
+		tests: import("../factory/base-tests.js").NamedTests;
+	}): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
+	internalPublish(input: {
+		key: string;
+		title: string;
+		body: string;
+		blockedNetwork?: import("../contract.js").BlockedNetwork;
+		branchOnly?: boolean;
+		updateFromBase?: { head: string; at: number; baseTip?: string };
+	}): Promise<ItemPublishAnswer>;
 }
 
-export interface NetworkReceipt { sessionId: string; revision: number; network: import("../contract.js").BlockedNetwork }
+export interface NetworkReceipt {
+	sessionId: string;
+	revision: number;
+	network: import("../contract.js").BlockedNetwork;
+}
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
@@ -264,15 +405,50 @@ export interface ItemInternal {
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
 	internalFeatureTarget(): Promise<{ head: string; value: number; branch: string; available: boolean } | null>;
-	internalUpdateForChild(child: string, request: string, target: string, automatic?: true): Promise<"pending" | "finished">;
+	internalUpdateForChild(
+		child: string,
+		request: string,
+		target: string,
+		automatic?: true,
+	): Promise<"pending" | "finished">;
 	internalJoinStarted(child: string, key: string): Promise<boolean>;
 	internalClaimJoin(child: string, key: string): Promise<"busy" | "claimed" | import("../factory/types.js").JoinResult>;
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
-	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
+	internalChildNotice(
+		child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string },
+	): Promise<void>;
 	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
-	internalChildRequest(child: string): Promise<{ settings: import("../factory/resolve-run.js").RunContext; paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; joinOnGate: boolean; featureBody: string; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
+	internalChildRequest(child: string): Promise<{
+		settings: import("../factory/resolve-run.js").RunContext;
+		paused?: boolean;
+		job: import("../factory/types.js").FeatureJob;
+		sessionId: string;
+		feature: ItemSummary;
+		joinOnGate: boolean;
+		featureBody: string;
+		repository: { id: GithubId; base: string; alias: string } | null;
+		context: string;
+		previous?: {
+			head: string | null;
+			report: string;
+			place?: SandboxPlace;
+		} /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */;
+		untrusted?: string[] /** The feature's `FactoryItem.unsandboxed`. */;
+		unsandboxed?: string[];
+	} | null>;
 	/** A cross-repo feature's planning turn of `key`: the other repositories it reads, and where in the workspace. */
-	internalPlanningInputs(key: string): Promise<{ directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null>;
+	internalPlanningInputs(key: string): Promise<{
+		directory: string;
+		inputs: {
+			alias: string;
+			repositoryId: GithubId;
+			installationId: GithubId;
+			owner: string;
+			name: string;
+			baseRef: string;
+			sha: string | null;
+		}[];
+	} | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;
@@ -309,8 +485,14 @@ export function grantIsValid(grant: unknown, key: readonly string[], kind: strin
 	return false;
 }
 
-export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
-	if (input.origin && input.mode !== undefined) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
+export async function createSessionActor(
+	c: HasClient,
+	uid: string,
+	sessionId: string,
+	input: Omit<SessionCreateInput, "grant">,
+): Promise<void> {
+	if (input.origin && input.mode !== undefined)
+		throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
 	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
 }
@@ -323,7 +505,12 @@ export function isDuplicateKey(error: unknown): boolean {
 }
 
 /** Creates a work item; one of that key that exists already is the one a creation tried before made. */
-export async function createItemActor(c: HasClient, uid: string, itemId: string, input: Omit<ItemCreateInput, "grant">): Promise<void> {
+export async function createItemActor(
+	c: HasClient,
+	uid: string,
+	itemId: string,
+	input: Omit<ItemCreateInput, "grant">,
+): Promise<void> {
 	const full: ItemCreateInput = { ...input, grant: createGrant("workItem", [uid, itemId]) };
 	try {
 		await c.client().workItem.create([uid, itemId], { input: full, params: serviceParams() });
@@ -346,9 +533,15 @@ export function userActor(c: HasClient, uid: string): UserInternal {
 
 export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
 
-export function modelKeyActor(c: HasClient, uid: string): {
+export function modelKeyActor(
+	c: HasClient,
+	uid: string,
+): {
 	internalModelKeys(): Promise<import("../sandbox/provider.js").ModelKeyLease[]>;
-	internalCredentialSource(machineId: string, harness: string): Promise<import("../contract.js").CredentialSource | null>;
+	internalCredentialSource(
+		machineId: string,
+		harness: string,
+	): Promise<import("../contract.js").CredentialSource | null>;
 	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
 	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 } {
@@ -365,7 +558,9 @@ export function secretsCaller(uid: string, sessionId: string): string {
  * user and this session, which is the only one `internalSessionSecrets` takes.
  */
 export function secretsActor(c: HasClient, uid: string, sessionId: string): UserSecretsInternal {
-	return c.client().user.get([uid], { params: { token: issueServiceToken(secretsCaller(uid, sessionId)) } }) as UserSecretsInternal;
+	return c
+		.client()
+		.user.get([uid], { params: { token: issueServiceToken(secretsCaller(uid, sessionId)) } }) as UserSecretsInternal;
 }
 
 export { isActorGone, isSessionGone } from "../actor-errors.js";

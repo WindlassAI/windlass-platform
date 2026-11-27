@@ -11,67 +11,151 @@ import { postGuideCheck } from "../repo-setup/freshness.js";
 import type { GuideCheckStatus } from "../repo-setup/types.js";
 import { githubApp } from "../github/app.js";
 
-type Item = { itemId: string; uid: string; installationId?: GithubId; issue?: number; generation?: number; pr?: number; head?: string; moved?: string | null; live?: boolean };
-type Match = { itemId: string; uid: string; issue: number | null; generation: number | null; pr: number | null; head: string | null };
+type Item = {
+	itemId: string;
+	uid: string;
+	installationId?: GithubId;
+	issue?: number;
+	generation?: number;
+	pr?: number;
+	head?: string;
+	moved?: string | null;
+	live?: boolean;
+};
+type Match = {
+	itemId: string;
+	uid: string;
+	issue: number | null;
+	generation: number | null;
+	pr: number | null;
+	head: string | null;
+};
 const TTL = 10 * 60_000;
 
-export type IssueClaim = { generation: number; uid: string; itemId: string; installation: string; pending: number; subject: string }
-export type IssueDecision = { kind: "file"; filing: IssueFiling; itemId: string } | { kind: "retry"; itemId: string } | { kind: "refuse"; reason: string; generation: number } | { kind: "ignore" };
+export type IssueClaim = {
+	generation: number;
+	uid: string;
+	itemId: string;
+	installation: string;
+	pending: number;
+	subject: string;
+};
+export type IssueDecision =
+	| { kind: "file"; filing: IssueFiling; itemId: string }
+	| { kind: "retry"; itemId: string }
+	| { kind: "refuse"; reason: string; generation: number }
+	| { kind: "ignore" };
 type Receipt = { uid: string; generation: number; decision: string | null };
 
 export const githubRepository = actor({
 	onBeforeConnect: internalConnection,
-	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
-	db: db({ onMigrate: async db => {
-		await db.execute("CREATE TABLE IF NOT EXISTS items (item_id TEXT PRIMARY KEY, uid TEXT NOT NULL, issue INTEGER, generation INTEGER, pr INTEGER, head TEXT, live INTEGER NOT NULL)");
-		const columns = await db.execute<{ name: string }>("PRAGMA table_info(items)");
-		if (!columns.some(column => column.name === "moved")) await db.execute("ALTER TABLE items ADD COLUMN moved TEXT");
-		if (!columns.some(column => column.name === "installation")) await db.execute("ALTER TABLE items ADD COLUMN installation TEXT");
-		await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS live_issue ON items(issue) WHERE live = 1");
-		await db.execute("CREATE TABLE IF NOT EXISTS issue_claims (issue INTEGER PRIMARY KEY, generation INTEGER NOT NULL, uid TEXT NOT NULL, itemId TEXT NOT NULL, installation TEXT NOT NULL, pending INTEGER NOT NULL, subject TEXT NOT NULL)");
-		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
-		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
-		await db.execute("DROP TABLE IF EXISTS access");
-		await db.execute("CREATE TABLE IF NOT EXISTS guide_settings (id INTEGER PRIMARY KEY, enabled INTEGER DEFAULT 1, installation TEXT)");
-		await db.execute("CREATE TABLE IF NOT EXISTS guide_results (head TEXT PRIMARY KEY, result TEXT NOT NULL, at INTEGER NOT NULL)");
-		// The users with prepared environments of this repository, told of pushes to its default branch (github-inbox.ts).
-		await db.execute("CREATE TABLE IF NOT EXISTS environment_users (uid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
-	} }),
+	onCreate: c => {
+		if (!githubIdKey(c.key)) c.destroy();
+	},
+	db: db({
+		onMigrate: async db => {
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS items (item_id TEXT PRIMARY KEY, uid TEXT NOT NULL, issue INTEGER, generation INTEGER, pr INTEGER, head TEXT, live INTEGER NOT NULL)",
+			);
+			const columns = await db.execute<{ name: string }>("PRAGMA table_info(items)");
+			if (!columns.some(column => column.name === "moved")) await db.execute("ALTER TABLE items ADD COLUMN moved TEXT");
+			if (!columns.some(column => column.name === "installation"))
+				await db.execute("ALTER TABLE items ADD COLUMN installation TEXT");
+			await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS live_issue ON items(issue) WHERE live = 1");
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS issue_claims (issue INTEGER PRIMARY KEY, generation INTEGER NOT NULL, uid TEXT NOT NULL, itemId TEXT NOT NULL, installation TEXT NOT NULL, pending INTEGER NOT NULL, subject TEXT NOT NULL)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))",
+			);
+			await db.execute("DROP TABLE IF EXISTS access");
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS guide_settings (id INTEGER PRIMARY KEY, enabled INTEGER DEFAULT 1, installation TEXT)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS guide_results (head TEXT PRIMARY KEY, result TEXT NOT NULL, at INTEGER NOT NULL)",
+			);
+			// The users with prepared environments of this repository, told of pushes to its default branch (github-inbox.ts).
+			await db.execute("CREATE TABLE IF NOT EXISTS environment_users (uid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+		},
+	}),
 	actions: {
 		internalGuideSettings: async (c, head?: string): Promise<GuideCheckStatus> => {
 			requireServiceFor(c, "call");
 			const [row] = await c.db.execute<{ enabled: number }>("SELECT enabled FROM guide_settings");
-			const [run] = head ? await c.db.execute<{ result: string }>("SELECT result FROM guide_results WHERE head=?", head) : [];
+			const [run] = head
+				? await c.db.execute<{ result: string }>("SELECT result FROM guide_results WHERE head=?", head)
+				: [];
 			return { enabled: row?.enabled !== 0, result: run ? JSON.parse(run.result) : null };
 		},
 		internalSetGuideCheck: async (c, setting: { enabled: boolean } | { installation: GithubId }) => {
 			requireServiceFor(c, "call");
-			if ("enabled" in setting) await c.db.execute("INSERT INTO guide_settings(id,enabled) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled", Number(setting.enabled));
-			else await c.db.execute("INSERT INTO guide_settings(id,installation) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET installation=excluded.installation", String(setting.installation));
+			if ("enabled" in setting)
+				await c.db.execute(
+					"INSERT INTO guide_settings(id,enabled) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+					Number(setting.enabled),
+				);
+			else
+				await c.db.execute(
+					"INSERT INTO guide_settings(id,installation) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET installation=excluded.installation",
+					String(setting.installation),
+				);
 		},
 		internalGuideCheck: async (c, installation: GithubId, base: string, head: string, pull: boolean) => {
 			requireServiceFor(c, "call");
-			const enabled = async () => !!(await c.db.execute("SELECT 1 FROM guide_settings WHERE enabled=1 AND installation=?", String(installation))).length;
-			if (!await enabled() || (await c.db.execute("SELECT 1 FROM guide_results WHERE head=?", head)).length) return;
-			const app = githubApp(), repositoryId = githubId(c.key[0])!;
+			const enabled = async () =>
+				!!(await c.db.execute("SELECT 1 FROM guide_settings WHERE enabled=1 AND installation=?", String(installation)))
+					.length;
+			if (!(await enabled()) || (await c.db.execute("SELECT 1 FROM guide_results WHERE head=?", head)).length) return;
+			const app = githubApp(),
+				repositoryId = githubId(c.key[0])!;
 			if (!app) throw Error("GitHub is unavailable.");
-			const result = await app.withToken(installation, { repositoryId, permissions: { metadata: "read", contents: "read", checks: "write" } }, async token =>
-				postGuideCheck(app, token, await app.repositoryById(token, repositoryId), base, head, pull, enabled), { revokeAfter: true });
+			const result = await app.withToken(
+				installation,
+				{ repositoryId, permissions: { metadata: "read", contents: "read", checks: "write" } },
+				async token =>
+					postGuideCheck(app, token, await app.repositoryById(token, repositoryId), base, head, pull, enabled),
+				{ revokeAfter: true },
+			);
 			if (result) {
-				await c.db.execute("INSERT OR REPLACE INTO guide_results VALUES(?,?,?)", head, JSON.stringify(result), Date.now());
+				await c.db.execute(
+					"INSERT OR REPLACE INTO guide_results VALUES(?,?,?)",
+					head,
+					JSON.stringify(result),
+					Date.now(),
+				);
 				await c.db.execute("DELETE FROM guide_results WHERE at<?", Date.now() - 90 * 86400_000);
 			}
 		},
-		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {
+		internalIssuePermission: async (
+			c,
+			installation: GithubId,
+			user: GithubUser,
+		): Promise<"write" | "read" | "none"> => {
 			requireServiceFor(c, "call");
 			const now = Date.now();
-			const [cached] = await c.db.execute<{ level: "write" | "read" | "none" }>("SELECT level FROM issue_access WHERE installation=? AND user=? AND at>?", String(installation), String(user.id), now - TTL);
+			const [cached] = await c.db.execute<{ level: "write" | "read" | "none" }>(
+				"SELECT level FROM issue_access WHERE installation=? AND user=? AND at>?",
+				String(installation),
+				String(user.id),
+				now - TTL,
+			);
 			if (cached) return cached.level;
-			const app = githubApp(), repositoryId = githubId(c.key[0])!;
+			const app = githubApp(),
+				repositoryId = githubId(c.key[0])!;
 			if (!app) throw new Error("The GitHub App is unavailable.");
 			const level = await app.issuePermission(installation, repositoryId, user);
 			await c.db.execute("DELETE FROM issue_access WHERE at<=?", now - TTL);
-			await c.db.execute("INSERT OR REPLACE INTO issue_access VALUES (?,?,?,?)", String(installation), String(user.id), level, now);
+			await c.db.execute(
+				"INSERT OR REPLACE INTO issue_access VALUES (?,?,?,?)",
+				String(installation),
+				String(user.id),
+				level,
+				now,
+			);
 			return level;
 		},
 		internalIssueClaim: async (c, issue: number): Promise<IssueClaim | null> => {
@@ -80,11 +164,22 @@ export const githubRepository = actor({
 		},
 		// The subject and its decision are one write. Retrying a lost actor call finishes the same
 		// generation with its original snapshot, even when GitHub or the user's defaults have changed.
-		internalDecideIssue: async (c, input: { issue: number; installation: GithubId; subject: string; uid: string; previous: number; decision: IssueDecision }): Promise<IssueDecision> => {
+		internalDecideIssue: async (
+			c,
+			input: {
+				issue: number;
+				installation: GithubId;
+				subject: string;
+				uid: string;
+				previous: number;
+				decision: IssueDecision;
+			},
+		): Promise<IssueDecision> => {
 			requireServiceFor(c, "call");
 			return c.db.transaction(async tx => {
 				const [receipt] = await tx.execute<Receipt>("SELECT * FROM issue_receipts WHERE subject=?", input.subject);
-				if (receipt) return receipt.uid === input.uid && receipt.decision ? JSON.parse(receipt.decision) : { kind: "ignore" };
+				if (receipt)
+					return receipt.uid === input.uid && receipt.decision ? JSON.parse(receipt.decision) : { kind: "ignore" };
 				const [claim] = await tx.execute<IssueClaim>("SELECT * FROM issue_claims WHERE issue=?", input.issue);
 				if ((claim?.generation ?? 0) !== input.previous) throw new Error("The issue generation changed.");
 				const decision = input.decision;
@@ -93,10 +188,31 @@ export const githubRepository = actor({
 					if (claim?.pending) throw new Error("The previous filing is still pending.");
 					generation++;
 					await tx.execute("UPDATE items SET live=0 WHERE issue=? AND live=1", input.issue);
-					await tx.execute("INSERT INTO items(item_id,uid,issue,generation,installation,live) VALUES(?,?,?,?,?,1)", decision.itemId, input.uid, input.issue, generation, String(input.installation));
-					await tx.execute("INSERT OR REPLACE INTO issue_claims VALUES(?,?,?,?,?,1,?)", input.issue, generation, input.uid, decision.itemId, String(input.installation), input.subject);
+					await tx.execute(
+						"INSERT INTO items(item_id,uid,issue,generation,installation,live) VALUES(?,?,?,?,?,1)",
+						decision.itemId,
+						input.uid,
+						input.issue,
+						generation,
+						String(input.installation),
+					);
+					await tx.execute(
+						"INSERT OR REPLACE INTO issue_claims VALUES(?,?,?,?,?,1,?)",
+						input.issue,
+						generation,
+						input.uid,
+						decision.itemId,
+						String(input.installation),
+						input.subject,
+					);
 				}
-				await tx.execute("INSERT INTO issue_receipts VALUES(?,?,?,?)", input.subject, input.uid, generation, decision.kind === "ignore" ? null : JSON.stringify(decision));
+				await tx.execute(
+					"INSERT INTO issue_receipts VALUES(?,?,?,?)",
+					input.subject,
+					input.uid,
+					generation,
+					decision.kind === "ignore" ? null : JSON.stringify(decision),
+				);
 				return decision;
 			});
 		},
@@ -104,18 +220,29 @@ export const githubRepository = actor({
 			requireServiceFor(c, "call");
 			await c.db.transaction(async tx => {
 				const [r] = await tx.execute<Receipt>("SELECT * FROM issue_receipts WHERE subject=?", subject);
-				if (r?.decision && JSON.parse(r.decision).kind === "file") await tx.execute("UPDATE issue_claims SET pending=0 WHERE issue=? AND generation=?", issue, r.generation);
+				if (r?.decision && JSON.parse(r.decision).kind === "file")
+					await tx.execute("UPDATE issue_claims SET pending=0 WHERE issue=? AND generation=?", issue, r.generation);
 				await tx.execute("UPDATE issue_receipts SET decision=NULL WHERE subject=?", subject);
 			});
 		},
 		internalRegister: async (c, row: Item) => {
 			requireServiceFor(c, "call");
 			// Publishing updates pr/head without dropping the issue registration made at intake.
-			await c.db.execute(`INSERT INTO items (item_id, uid, issue, generation, pr, head, live, installation, moved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET
+			await c.db.execute(
+				`INSERT INTO items (item_id, uid, issue, generation, pr, head, live, installation, moved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET
 				installation = coalesce(excluded.installation, items.installation), issue = coalesce(excluded.issue, items.issue), generation = coalesce(excluded.generation, items.generation),
 				pr = CASE WHEN excluded.issue IS NULL THEN coalesce(excluded.pr, items.pr) ELSE excluded.pr END,
 				moved = excluded.moved, head = CASE WHEN excluded.issue IS NULL THEN coalesce(excluded.head, items.head) ELSE excluded.head END, live = excluded.live`,
-				row.itemId, row.uid, row.issue ?? null, row.generation ?? null, row.pr ?? null, row.head ?? null, Number(row.live ?? true), row.installationId == null ? null : String(row.installationId), row.moved ?? null);
+				row.itemId,
+				row.uid,
+				row.issue ?? null,
+				row.generation ?? null,
+				row.pr ?? null,
+				row.head ?? null,
+				Number(row.live ?? true),
+				row.installationId == null ? null : String(row.installationId),
+				row.moved ?? null,
+			);
 		},
 		internalWatchPushes: async (c, uid: string): Promise<void> => {
 			requireServiceFor(c, "call");
@@ -126,18 +253,29 @@ export const githubRepository = actor({
 		},
 		internalEnvironmentUsers: async (c): Promise<string[]> => {
 			requireServiceFor(c, "call");
-			return (await c.db.execute<{ uid: string }>("SELECT uid FROM environment_users ORDER BY at DESC LIMIT 100")).map(r => r.uid);
+			return (await c.db.execute<{ uid: string }>("SELECT uid FROM environment_users ORDER BY at DESC LIMIT 100")).map(
+				r => r.uid,
+			);
 		},
 		internalForget: async (c, itemId: string) => {
 			requireServiceFor(c, "call");
 			await c.db.execute("DELETE FROM items WHERE item_id = ?", itemId);
 		},
-		internalFind: async (c, key: ({ issue: number } | { pr: number } | { head: string }) & { installationId?: GithubId }): Promise<Match[]> => {
+		internalFind: async (
+			c,
+			key: ({ issue: number } | { pr: number } | { head: string }) & { installationId?: GithubId },
+		): Promise<Match[]> => {
 			requireServiceFor(c, "call");
 			const [column, value] = "issue" in key ? ["issue", key.issue] : "pr" in key ? ["pr", key.pr] : ["head", key.head];
 			const installation = key.installationId === undefined ? null : String(key.installationId);
-			return await c.db.execute<Match>(`SELECT item_id AS itemId, uid, issue, generation, pr, head FROM items
-				WHERE live = 1 AND ${column === "head" ? "(head = ? OR moved = ?)" : column + " = ?"} AND (? IS NULL OR installation = ?) ORDER BY item_id`, value, ...(column === "head" ? [value] : []), installation, installation);
+			return await c.db.execute<Match>(
+				`SELECT item_id AS itemId, uid, issue, generation, pr, head FROM items
+				WHERE live = 1 AND ${column === "head" ? "(head = ? OR moved = ?)" : column + " = ?"} AND (? IS NULL OR installation = ?) ORDER BY item_id`,
+				value,
+				...(column === "head" ? [value] : []),
+				installation,
+				installation,
+			);
 		},
 	},
 });

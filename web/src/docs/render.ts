@@ -33,7 +33,12 @@ export interface DocsSectionText {
 }
 
 export function escapeHtml(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
 
 /** "Turn limit and queueing" → "turn-limit-and-queueing". */
@@ -56,9 +61,10 @@ export function slugify(text: string): string {
 function plain(tokens: Token[] | undefined): string {
 	if (!tokens) return "";
 	return tokens
-		.map((token) => {
+		.map(token => {
 			if ("tokens" in token && Array.isArray(token.tokens)) return plain(token.tokens);
-			if (token.type === "codespan" || token.type === "text" || token.type === "escape") return decode((token as Tokens.Text).text);
+			if (token.type === "codespan" || token.type === "text" || token.type === "escape")
+				return decode((token as Tokens.Text).text);
 			if (token.type === "br") return " ";
 			if (token.type === "html") return "";
 			return "raw" in token ? token.raw : "";
@@ -67,13 +73,18 @@ function plain(tokens: Token[] | undefined): string {
 }
 
 function decode(text: string): string {
-	return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+	return text
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/&amp;/g, "&");
 }
 
 /** Ids for a page's headings, in order, made unique the way GitHub does: a second "Usage" is "usage-1". */
 function idMaker(): (text: string) => string {
 	const seen = new Map<string, number>();
-	return (text) => {
+	return text => {
 		const base = slugify(text);
 		const count = seen.get(base) ?? 0;
 		seen.set(base, count + 1);
@@ -84,15 +95,30 @@ function idMaker(): (text: string) => string {
 const CALLOUTS: Record<string, string> = { note: "Note", tip: "Tip", careful: "Careful" };
 
 /** The glyphs drawn beside a callout's label and in the copy button: the app's own icons, as markup. */
-const svg = (paths: string) => `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+const svg = (paths: string) =>
+	`<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 const CALLOUT_ICONS: Record<string, string> = {
 	note: svg('<circle cx="8" cy="8" r="5.6"/><path d="M8 7.4v3.4M8 5.2v.2"/>'),
-	tip: svg('<path d="M6.2 12.4h3.6M6.6 14h2.8M8 2.2a4 4 0 00-2.4 7.2c.4.3.6.8.6 1.3v.2h3.6v-.2c0-.5.2-1 .6-1.3A4 4 0 008 2.2z"/>'),
+	tip: svg(
+		'<path d="M6.2 12.4h3.6M6.6 14h2.8M8 2.2a4 4 0 00-2.4 7.2c.4.3.6.8.6 1.3v.2h3.6v-.2c0-.5.2-1 .6-1.3A4 4 0 008 2.2z"/>',
+	),
 	careful: svg('<path d="M8 2.4l6 10.6H2z"/><path d="M8 6.6v3M8 11.4v.2"/>'),
 };
-const COPY_ICON = svg('<rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.4"/><path d="M10.4 5.6V4.2a1.4 1.4 0 00-1.4-1.4H4.2a1.4 1.4 0 00-1.4 1.4V9a1.4 1.4 0 001.4 1.4h1.4"/>');
+const COPY_ICON = svg(
+	'<rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.4"/><path d="M10.4 5.6V4.2a1.4 1.4 0 00-1.4-1.4H4.2a1.4 1.4 0 00-1.4 1.4V9a1.4 1.4 0 001.4 1.4h1.4"/>',
+);
 
-const LANGUAGES: Record<string, string> = { sh: "shell", bash: "shell", shell: "shell", console: "shell", text: "text", json: "json", yaml: "yaml", ts: "typescript", js: "javascript" };
+const LANGUAGES: Record<string, string> = {
+	sh: "shell",
+	bash: "shell",
+	shell: "shell",
+	console: "shell",
+	text: "text",
+	json: "json",
+	yaml: "yaml",
+	ts: "typescript",
+	js: "javascript",
+};
 
 const cache = new Map<string, DocsRendered>();
 
@@ -116,7 +142,8 @@ export function renderDocs(source: string): DocsRendered {
 			link({ href, title, tokens }) {
 				const inner = this.parser.parseInline(tokens);
 				const titled = title ? ` title="${escapeHtml(title)}"` : "";
-				if (href.startsWith("/docs") || href.startsWith("#")) return `<a href="${escapeHtml(href)}" data-docs-link${titled}>${inner}</a>`;
+				if (href.startsWith("/docs") || href.startsWith("#"))
+					return `<a href="${escapeHtml(href)}" data-docs-link${titled}>${inner}</a>`;
 				if (href.startsWith("/")) return `<a href="${escapeHtml(href)}"${titled}>${inner}</a>`;
 				return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"${titled}>${inner}<span class="visually-hidden"> (opens in a new tab)</span></a>`;
 			},
@@ -134,10 +161,20 @@ export function renderDocs(source: string): DocsRendered {
 				return `<aside class="docs-callout docs-callout-${kind}" aria-label="${CALLOUTS[kind]}"><p class="docs-callout-label">${CALLOUT_ICONS[kind] ?? ""}${CALLOUTS[kind]}</p>${body}</aside>\n`;
 			},
 			table(token) {
-				const head = token.header.map((cell) => `<th${cell.align ? ` style="text-align:${cell.align}"` : ""}>${this.parser.parseInline(cell.tokens)}</th>`).join("");
+				const head = token.header
+					.map(
+						cell =>
+							`<th${cell.align ? ` style="text-align:${cell.align}"` : ""}>${this.parser.parseInline(cell.tokens)}</th>`,
+					)
+					.join("");
 				// Each cell carries its column's name, so a narrow screen can show a row as a card of labelled lines.
-				const labels = token.header.map((cell) => escapeHtml(plain(cell.tokens)));
-				const rows = token.rows.map((row) => `<tr>${row.map((cell, at) => `<td data-label="${labels[at] ?? ""}"${cell.align ? ` style="text-align:${cell.align}"` : ""}>${this.parser.parseInline(cell.tokens)}</td>`).join("")}</tr>`).join("\n");
+				const labels = token.header.map(cell => escapeHtml(plain(cell.tokens)));
+				const rows = token.rows
+					.map(
+						row =>
+							`<tr>${row.map((cell, at) => `<td data-label="${labels[at] ?? ""}"${cell.align ? ` style="text-align:${cell.align}"` : ""}>${this.parser.parseInline(cell.tokens)}</td>`).join("")}</tr>`,
+					)
+					.join("\n");
 				return `<div class="docs-table" role="region" aria-label="Table" tabindex="0"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>\n`;
 			},
 		},
@@ -165,15 +202,16 @@ export function docsSections(source: string): DocsSectionText[] {
 				if (heading.depth === 2 || heading.depth === 3) sections.push({ id: nextId(text), heading: text, text: "" });
 				else add(text);
 			} else if (token.type === "code") add((token as Tokens.Code).text);
-			else if (token.type === "paragraph" || token.type === "text") add(plain((token as Tokens.Paragraph).tokens ?? []) || (token as Tokens.Text).text);
+			else if (token.type === "paragraph" || token.type === "text")
+				add(plain((token as Tokens.Paragraph).tokens ?? []) || (token as Tokens.Text).text);
 			else if (token.type === "list") for (const item of (token as Tokens.List).items) walk(item.tokens);
 			else if (token.type === "blockquote") walk((token as Tokens.Blockquote).tokens);
 			else if (token.type === "table") {
 				const table = token as Tokens.Table;
-				add([table.header, ...table.rows].map((row) => row.map((cell) => plain(cell.tokens)).join(" ")).join(" "));
+				add([table.header, ...table.rows].map(row => row.map(cell => plain(cell.tokens)).join(" ")).join(" "));
 			}
 		}
 	};
 	walk(tokens);
-	return sections.filter((section) => section.heading !== "" || section.text !== "");
+	return sections.filter(section => section.heading !== "" || section.text !== "");
 }

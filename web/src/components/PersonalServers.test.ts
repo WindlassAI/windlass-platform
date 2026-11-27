@@ -13,7 +13,8 @@ const text = (value: unknown) => JSON.stringify(value, null, 2);
 
 describe("a snippet pasted as a server's README gives it", () => {
 	it("is one server's definition as it always was: nothing is taken apart", () => {
-		for (const definition of [TRACKER, DOCS, { command: "x" }, { url: "https://example.com/mcp", servers: {} }]) expect(pastedServers(text(definition))).toBeNull();
+		for (const definition of [TRACKER, DOCS, { command: "x" }, { url: "https://example.com/mcp", servers: {} }])
+			expect(pastedServers(text(definition))).toBeNull();
 		expect(pastedServers("")).toBeNull();
 		expect(pastedServers('{ "mcpServers": ')).toBeNull();
 		expect(pastedServers("[]")).toBeNull();
@@ -34,8 +35,14 @@ describe("a snippet pasted as a server's README gives it", () => {
 	});
 
 	it("names every server of a snippet that has several, and none is taken for the user", () => {
-		expect(pastedServers(text({ mcpServers: { tracker: TRACKER, docs: DOCS } }))?.map((server) => server.name)).toEqual(["tracker", "docs"]);
-		expect(pastedServers(text({ tracker: TRACKER, docs: DOCS }))?.map((server) => server.name)).toEqual(["tracker", "docs"]);
+		expect(pastedServers(text({ mcpServers: { tracker: TRACKER, docs: DOCS } }))?.map(server => server.name)).toEqual([
+			"tracker",
+			"docs",
+		]);
+		expect(pastedServers(text({ tracker: TRACKER, docs: DOCS }))?.map(server => server.name)).toEqual([
+			"tracker",
+			"docs",
+		]);
 		expect(pastedServers(text({ mcpServers: {} }))).toEqual([]);
 	});
 
@@ -51,7 +58,11 @@ describe("a snippet pasted as a server's README gives it", () => {
 
 describe("the form for a server that is reached at an address", () => {
 	it("comes to the definition the same server has as JSON, which the server keeps as it is", () => {
-		const withHeader = addressDefinition({ url: " https://docs.example.com/mcp ", header: "Authorization", value: "Bearer ${DOCS_TOKEN}" });
+		const withHeader = addressDefinition({
+			url: " https://docs.example.com/mcp ",
+			header: "Authorization",
+			value: "Bearer ${DOCS_TOKEN}",
+		});
 		expect(withHeader).toEqual(DOCS);
 		expect(cleanServerDefinition(withHeader)).toEqual(DOCS);
 		const plain = addressDefinition({ url: "https://docs.example.com/mcp", header: "", value: "" });
@@ -61,10 +72,29 @@ describe("the form for a server that is reached at an address", () => {
 	});
 
 	it("shows a definition that is an address and at most one header, and no other", () => {
-		expect(addressForm(DOCS)).toEqual({ url: "https://docs.example.com/mcp", header: "Authorization", value: "Bearer ${DOCS_TOKEN}" });
-		expect(addressForm({ url: "https://docs.example.com/mcp" })).toEqual({ url: "https://docs.example.com/mcp", header: "", value: "" });
-		expect(addressForm({ url: "https://docs.example.com/mcp", headers: {} })).toEqual({ url: "https://docs.example.com/mcp", header: "", value: "" });
-		for (const more of [TRACKER, { ...DOCS, timeoutSeconds: 30 }, { ...DOCS, untrusted: false }, { url: "https://docs.example.com/mcp", headers: { A: "1", B: "2" } }, { url: "https://docs.example.com/mcp", headers: { A: 1 } }]) expect(addressForm(more)).toBeNull();
+		expect(addressForm(DOCS)).toEqual({
+			url: "https://docs.example.com/mcp",
+			header: "Authorization",
+			value: "Bearer ${DOCS_TOKEN}",
+		});
+		expect(addressForm({ url: "https://docs.example.com/mcp" })).toEqual({
+			url: "https://docs.example.com/mcp",
+			header: "",
+			value: "",
+		});
+		expect(addressForm({ url: "https://docs.example.com/mcp", headers: {} })).toEqual({
+			url: "https://docs.example.com/mcp",
+			header: "",
+			value: "",
+		});
+		for (const more of [
+			TRACKER,
+			{ ...DOCS, timeoutSeconds: 30 },
+			{ ...DOCS, untrusted: false },
+			{ url: "https://docs.example.com/mcp", headers: { A: "1", B: "2" } },
+			{ url: "https://docs.example.com/mcp", headers: { A: 1 } },
+		])
+			expect(addressForm(more)).toBeNull();
 		// There and back again changes nothing.
 		expect(addressDefinition(addressForm(DOCS) ?? { url: "", header: "", value: "" })).toEqual(DOCS);
 	});

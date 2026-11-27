@@ -23,8 +23,8 @@ function items(raw: string | undefined, fold: boolean): Set<string> {
 	return new Set(
 		(raw ?? "")
 			.split(",")
-			.map((item) => (fold ? item.trim().toLowerCase() : item.trim()))
-			.filter((item) => item !== ""),
+			.map(item => (fold ? item.trim().toLowerCase() : item.trim()))
+			.filter(item => item !== ""),
 	);
 }
 
@@ -45,4 +45,5 @@ export function mayUse(profile: Pick<UserProfile, "uid" | "email" | "demo">, rul
 }
 
 /** What an account that is not on the list is told when it signs in. */
-export const NOT_INVITED = "This platform is by invitation for now, and this account is not on its list. Ask whoever runs it to add you.";
+export const NOT_INVITED =
+	"This platform is by invitation for now, and this account is not on its list. Ask whoever runs it to add you.";

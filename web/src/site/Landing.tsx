@@ -13,7 +13,25 @@
 import type { ReactNode } from "react";
 import { ClaudeLogo } from "../components/AgentLogos";
 import { machineProfileName } from "../lib/machines";
-import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, Mark, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon } from "../components/Icons";
+import {
+	ArrowUpIcon,
+	AskIcon,
+	BranchIcon,
+	CheckIcon,
+	CloudIcon,
+	FileIcon,
+	LockIcon,
+	MachineIcon,
+	Mark,
+	MoonIcon,
+	PullRequestIcon,
+	RepoIcon,
+	ShieldIcon,
+	SteerIcon,
+	StopIcon,
+	SunIcon,
+	ThoughtIcon,
+} from "../components/Icons";
 import { ACCESS_URL } from "./config";
 import { AGENTS, FACTORY_STEPS, FAQ, SESSION_FEATURES, type Feature } from "./content";
 
@@ -43,7 +61,18 @@ export function Landing({ onToggleTheme }: { onToggleTheme?: () => void }) {
 /** The windlass: the drum turns (CSS), the line hangs, the weight at its end. */
 function MarkGlyph({ size, turning = false }: { size: number; turning?: boolean }) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false" className="mark">
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 28 28"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={2}
+			strokeLinecap="round"
+			aria-hidden="true"
+			focusable="false"
+			className="mark"
+		>
 			<g className={`mark-drum${turning ? " lp-turn" : ""}`}>
 				<circle cx="11.5" cy="11.5" r="7.5" />
 				<path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1" />
@@ -72,7 +101,14 @@ function SiteBar({ onToggleTheme }: { onToggleTheme?: () => void }) {
 					<a href="/docs">Docs</a>
 				</nav>
 				<div className="lp-bar-end">
-					<button type="button" className="icon-button lp-theme" data-theme-toggle="" aria-label="Switch between the light and dark theme" title="Switch theme" onClick={onToggleTheme}>
+					<button
+						type="button"
+						className="icon-button lp-theme"
+						data-theme-toggle=""
+						aria-label="Switch between the light and dark theme"
+						title="Switch theme"
+						onClick={onToggleTheme}
+					>
 						<SunIcon className="lp-theme-sun" />
 						<MoonIcon className="lp-theme-moon" />
 					</button>
@@ -137,7 +173,9 @@ function Hero() {
 							<span className="lp-dim"> Watch every turn.</span>
 						</h1>
 						<p className="lp-lede">
-							Windlass runs coding agents — its own, Windlass, and Claude Code — each in a sandbox of its own: hosted, or on a machine of yours. Every file read and every command run shows up as it happens. Steer it, answer what it asks, and take the work as a pull request.
+							Windlass runs coding agents — its own, Windlass, and Claude Code — each in a sandbox of its own: hosted,
+							or on a machine of yours. Every file read and every command run shows up as it happens. Steer it, answer
+							what it asks, and take the work as a pull request.
 						</p>
 						<Calls />
 					</div>
@@ -172,7 +210,21 @@ function Hero() {
 }
 
 /** A row of the timeline as the app draws it: a glyph on the rope, a verb in mono, its subject, quiet facts. */
-function Row({ k, verb, subject, facts, glyph, className = "" }: { k: number; verb: string; subject: ReactNode; facts?: ReactNode; glyph?: ReactNode; className?: string }) {
+function Row({
+	k,
+	verb,
+	subject,
+	facts,
+	glyph,
+	className = "",
+}: {
+	k: number;
+	verb: string;
+	subject: ReactNode;
+	facts?: ReactNode;
+	glyph?: ReactNode;
+	className?: string;
+}) {
 	return (
 		<li className={`lp-row lp-k${k} ${className}`}>
 			<span className="lp-row-glyph">{glyph ?? <CheckIcon size={13} />}</span>
@@ -207,7 +259,13 @@ function SessionFrame() {
 				<div className="lp-frame-main">
 					<p className="lp-person lp-k1">The slugify test fails on punctuation. Fix it and open a pull request.</p>
 					<ol className="lp-rows">
-						<Row k={2} verb="thought" glyph={<ThoughtIcon size={13} />} className="lp-row-thought" subject="Leading punctuation turns into dashes at the ends." />
+						<Row
+							k={2}
+							verb="thought"
+							glyph={<ThoughtIcon size={13} />}
+							className="lp-row-thought"
+							subject="Leading punctuation turns into dashes at the ends."
+						/>
 						<Row k={3} verb="read" subject={<code>slugify/slugify.js</code>} facts="8 lines · 9 ms" />
 						<Row
 							k={4}
@@ -333,7 +391,21 @@ function SessionFrame() {
 
 /* ---- the sections ------------------------------------------------------------------------------- */
 
-function Head({ id, number, kicker, title, dim, lede }: { id: string; number: string; kicker: string; title: string; dim: string; lede: ReactNode }) {
+function Head({
+	id,
+	number,
+	kicker,
+	title,
+	dim,
+	lede,
+}: {
+	id: string;
+	number: string;
+	kicker: string;
+	title: string;
+	dim: string;
+	lede: ReactNode;
+}) {
 	return (
 		<header className="lp-head">
 			<p className="lp-kicker">
@@ -359,7 +431,7 @@ const FEATURE_ICONS: Record<string, ReactNode> = {
 };
 
 const feature = (key: string): Feature => {
-	const found = SESSION_FEATURES.find((item) => item.key === key);
+	const found = SESSION_FEATURES.find(item => item.key === key);
 	if (!found) throw new Error(`No session feature ${key}`);
 	return found;
 };
@@ -379,7 +451,7 @@ function Sessions() {
 							lede="A session is one agent on one piece of work. It runs turn by turn and the browser shows each step as it happens, so you step in when it matters and leave it alone when it does not."
 						/>
 						<ul className="lp-feats">
-							{["start", "watch", "steer"].map((key) => {
+							{["start", "watch", "steer"].map(key => {
 								const item = feature(key);
 								return (
 									<li key={key} className="lp-feat">
@@ -454,7 +526,13 @@ function SteerCard() {
 							<p className="lp-steer-meta">you · sent while working · read at step 7</p>
 						</div>
 					</li>
-					<Row k={0} verb="thought" glyph={<ThoughtIcon size={13} />} className="lp-row-thought lp-s2" subject="Switching the formatter to Intl.NumberFormat with unit “meter” and “foot”." />
+					<Row
+						k={0}
+						verb="thought"
+						glyph={<ThoughtIcon size={13} />}
+						className="lp-row-thought lp-s2"
+						subject="Switching the formatter to Intl.NumberFormat with unit “meter” and “foot”."
+					/>
 					<Row
 						k={0}
 						verb="edit"
@@ -466,7 +544,13 @@ function SteerCard() {
 							</>
 						}
 					/>
-					<Row k={0} verb="shell" className="lp-s4" subject={<code>pnpm vitest run settings</code>} facts="9 passed · 2.1 s" />
+					<Row
+						k={0}
+						verb="shell"
+						className="lp-s4"
+						subject={<code>pnpm vitest run settings</code>}
+						facts="9 passed · 2.1 s"
+					/>
 				</ol>
 				<div className="lp-steer-composer">
 					<SteerIcon size={14} />
@@ -479,7 +563,9 @@ function SteerCard() {
 					</span>
 				</div>
 			</div>
-			<figcaption className="lp-caption">A message sent mid-turn, read at the agent’s next step. Illustration.</figcaption>
+			<figcaption className="lp-caption">
+				A message sent mid-turn, read at the agent’s next step. Illustration.
+			</figcaption>
 		</figure>
 	);
 }
@@ -533,8 +619,8 @@ function DiffTile() {
 				</p>
 				<pre>
 					<span className="lp-diff-line">{" export function length(m: number, unit: Unit) {"}</span>
-					<span className="lp-diff-line lp-diff-del">{"-  return unit === \"ft\" ? `${m * 3.28} ft` : `${m} m`;"}</span>
-					<span className="lp-diff-line lp-diff-add">{"+  const style = { style: \"unit\", unit: UNITS[unit] };"}</span>
+					<span className="lp-diff-line lp-diff-del">{'-  return unit === "ft" ? `${m * 3.28} ft` : `${m} m`;'}</span>
+					<span className="lp-diff-line lp-diff-add">{'+  const style = { style: "unit", unit: UNITS[unit] };'}</span>
 					<span className="lp-diff-line lp-diff-add">{"+  return new Intl.NumberFormat(locale, style)"}</span>
 				</pre>
 			</div>
@@ -571,7 +657,9 @@ function SandboxLine({ facts }: { facts: string[] }) {
 	return (
 		<p className="lp-sandbox-line">
 			<ShieldIcon size={13} />
-			{facts.map(fact => <span key={fact}>{fact}</span>)}
+			{facts.map(fact => (
+				<span key={fact}>{fact}</span>
+			))}
 		</p>
 	);
 }
@@ -623,7 +711,8 @@ function WhereItRuns() {
 						</p>
 						<h3 className="lp-place-title">Connect your computer</h3>
 						<p className="lp-place-text">
-							Pair a Mac, Linux or Windows (WSL) computer with Docker. It connects to Windlass. <strong>No inbound connection is needed.</strong>
+							Pair a Mac, Linux or Windows (WSL) computer with Docker. It connects to Windlass.{" "}
+							<strong>No inbound connection is needed.</strong>
 						</p>
 						<div className="lp-dial" aria-hidden="true">
 							<div className="lp-dial-box">
@@ -660,7 +749,8 @@ function WhereItRuns() {
 				<p className="lp-note">
 					<LockIcon size={14} />
 					<span>
-						Use Strict for untrusted code. In Open, commands can reach the network and read credentials available to the agent.
+						Use Strict for untrusted code. In Open, commands can reach the network and read credentials available to the
+						agent.
 					</span>
 				</p>
 			</div>
@@ -700,7 +790,9 @@ function Factory() {
 						))}
 					</ol>
 				</div>
-				<p className="lp-caption lp-caption-solo">A work item on its way to “Ready for you”. Illustration with a made-up repository.</p>
+				<p className="lp-caption lp-caption-solo">
+					A work item on its way to “Ready for you”. Illustration with a made-up repository.
+				</p>
 			</div>
 		</section>
 	);
@@ -722,9 +814,12 @@ function Agents() {
 					lede="Windlass is the platform’s own agent: a coding agent for the terminal, built alongside the platform. Claude Code runs on a machine of yours, signed in there. More are on the way."
 				/>
 				<ul className="lp-agents">
-					{AGENTS.map((agent) => (
+					{AGENTS.map(agent => (
 						<li key={agent.name} className={`lp-agent lp-agent-${agent.state}`}>
-							<span className={`lp-agent-glyph${agent.name === "Windlass" ? " lp-agent-glyph-accent" : ""}`} aria-hidden="true">
+							<span
+								className={`lp-agent-glyph${agent.name === "Windlass" ? " lp-agent-glyph-accent" : ""}`}
+								aria-hidden="true"
+							>
 								{agent.name === "Windlass" ? <MarkGlyph size={20} /> : (GLYPHS[agent.name] ?? agent.name.slice(0, 1))}
 							</span>
 							<h3 className="lp-agent-name">{agent.name}</h3>
@@ -743,7 +838,14 @@ function Questions() {
 		<section id="questions" className="lp-section" aria-labelledby="questions-title">
 			<div className="lp-wrap lp-faq-wrap">
 				<div className="lp-faq-side">
-					<Head id="questions" number="05" kicker="Questions" title="What people" dim="ask first." lede="Short answers here. The docs go further, and the app says what each choice promises before you make it." />
+					<Head
+						id="questions"
+						number="05"
+						kicker="Questions"
+						title="What people"
+						dim="ask first."
+						lede="Short answers here. The docs go further, and the app says what each choice promises before you make it."
+					/>
 					<a className="lp-btn lp-btn-line" href="/docs/faq">
 						More in the docs
 					</a>
@@ -771,7 +873,15 @@ function Closing() {
 				<div className="lp-closing-card">
 					<div className="lp-grid-bg" aria-hidden="true" />
 					<div className="lp-closing-mark" aria-hidden="true">
-						<svg width="72" height="72" viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+						<svg
+							width="72"
+							height="72"
+							viewBox="0 0 64 64"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="2.5"
+							strokeLinecap="round"
+						>
 							<g className="lp-turn-slow">
 								<circle cx="32" cy="32" r="24" />
 								<path d="M32 8v13M11.2 44l11.4-6.6M52.8 44l-11.4-6.6" />

@@ -21,10 +21,14 @@ const FRESH_WORKSPACE =
 export function platformNotes(meta: SessionMeta, reviewer: boolean): { text: string; told(): void } {
 	const prepared = meta.snapshotCommit ?? null;
 	const fresh = !reviewer && meta.freshWorkspace === true;
-	const unfinished = reviewer ? null : meta.setupUnfinished ?? null;
-	const onBase = reviewer ? null : meta.setupOnBase ?? null;
+	const unfinished = reviewer ? null : (meta.setupUnfinished ?? null);
+	const onBase = reviewer ? null : (meta.setupOnBase ?? null);
 	return {
-		text: (prepared ? snapshotPrompt(prepared) : "") + (fresh ? FRESH_WORKSPACE : "") + (unfinished ? setupNote(unfinished) : "") + (onBase ? setupOnBaseNote(onBase) : ""),
+		text:
+			(prepared ? snapshotPrompt(prepared) : "") +
+			(fresh ? FRESH_WORKSPACE : "") +
+			(unfinished ? setupNote(unfinished) : "") +
+			(onBase ? setupOnBaseNote(onBase) : ""),
 		told() {
 			if (fresh) meta.freshWorkspace = false;
 			if (unfinished && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
@@ -34,25 +38,41 @@ export function platformNotes(meta: SessionMeta, reviewer: boolean): { text: str
 	};
 }
 
-export async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<boolean> {
+export async function restoreBackup(
+	c: Ctx,
+	meta: SessionMeta,
+	turn: number,
+	sandbox: SandboxHandle,
+	layer: SandboxLayer,
+): Promise<boolean> {
 	const backups = layer.backups;
 	const saved = meta.backup;
 	const session = meta.windlassSessionId;
 	// Without a bucket nothing was ever copied, and nothing is said of it.
 	if (!backups || !session) return false;
 	if (!saved || saved.windlassSessionId !== session) {
-		console.log(`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier Windlass session" : "no copy of the session was saved"}`);
+		console.log(
+			`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier Windlass session" : "no copy of the session was saved"}`,
+		);
 		return false;
 	}
 	try {
 		const restored = await backups.restore(sandbox, { uid: meta.uid, sessionId: meta.sessionId }, saved, session);
 		if (restored.outcome !== "restored") {
-			console.warn(`[wlp] backup.restore_failed session=${meta.sessionId} turn=${turn}: ${restored.outcome === "missing" ? "the bucket has no copy of the session" : restored.reason}`);
+			console.warn(
+				`[wlp] backup.restore_failed session=${meta.sessionId} turn=${turn}: ${restored.outcome === "missing" ? "the bucket has no copy of the session" : restored.reason}`,
+			);
 			return false;
 		}
-		console.log(`[wlp] backup.restored session=${meta.sessionId} turn=${turn} bytes=${saved.size} ms=${restored.ms} saved_after_turn=${saved.turn}`);
+		console.log(
+			`[wlp] backup.restored session=${meta.sessionId} turn=${turn} bytes=${saved.size} ms=${restored.ms} saved_after_turn=${saved.turn}`,
+		);
 	} catch (error) {
-		c.log.warn({ msg: "could not restore the copy of Windlass's session", session: meta.sessionId, error: describeError(error) });
+		c.log.warn({
+			msg: "could not restore the copy of Windlass's session",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 		return false;
 	}
 	// What came back was small enough to copy: it is copied again from this turn on.
@@ -61,12 +81,24 @@ export async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, san
 	// A turn whose copy could not be saved, or was too large to keep, is not in what came back.
 	const missed = (meta.memoryTurn ?? saved.turn) > saved.turn ? Math.max(1, turn - 1 - saved.turn) : 0;
 	if (missed === 0) note(c, turn, "info", "Restored the agent's memory of the conversation into the new sandbox.");
-	else note(c, turn, "warn", `Restored the agent's memory of the conversation into the new sandbox, without the last ${missed === 1 ? "turn: no copy of it" : `${missed} turns: no copy of them`} could be saved.`);
+	else
+		note(
+			c,
+			turn,
+			"warn",
+			`Restored the agent's memory of the conversation into the new sandbox, without the last ${missed === 1 ? "turn: no copy of it" : `${missed} turns: no copy of them`} could be saved.`,
+		);
 	return true;
 }
 
 // Copy after the process exits. Retry a failed backup at the next turn end without waking an idle sandbox.
-export async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
+export async function saveBackup(
+	c: Ctx,
+	meta: SessionMeta,
+	turn: number,
+	sandbox: SandboxHandle,
+	layer: SandboxLayer,
+): Promise<void> {
 	const backups = layer.backups;
 	const session = meta.windlassSessionId;
 	if (!backups || !(await privateSessionData(meta, layer.sandboxes, sandbox.id)) || !session) return;
@@ -82,9 +114,13 @@ export async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbo
 		if (saved.outcome === "saved") {
 			meta.backup = { windlassSessionId: session, ...saved.backup, turn };
 			meta.backupStopped = null;
-			console.log(`[wlp] backup.saved session=${meta.sessionId} turn=${turn} bytes=${saved.backup.size} ms=${saved.ms}`);
+			console.log(
+				`[wlp] backup.saved session=${meta.sessionId} turn=${turn} bytes=${saved.backup.size} ms=${saved.ms}`,
+			);
 		} else if (saved.outcome === "too_large") {
-			console.log(`[wlp] backup.too_large session=${meta.sessionId} turn=${turn} bytes=${saved.size} limit=${saved.limit}`);
+			console.log(
+				`[wlp] backup.too_large session=${meta.sessionId} turn=${turn} bytes=${saved.size} limit=${saved.limit}`,
+			);
 			const earlier = meta.backup?.windlassSessionId === session;
 			if (!stopped) {
 				note(
@@ -99,7 +135,11 @@ export async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbo
 			console.warn(`[wlp] backup.save_failed session=${meta.sessionId} turn=${turn}: ${saved.reason}`);
 		}
 	} catch (error) {
-		c.log.warn({ msg: "could not copy Windlass's session out of the sandbox", session: meta.sessionId, error: describeError(error) });
+		c.log.warn({
+			msg: "could not copy Windlass's session out of the sandbox",
+			session: meta.sessionId,
+			error: describeError(error),
+		});
 	}
 }
 
@@ -121,16 +161,20 @@ export async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 				return;
 			} catch (error) {
 				if (attempt >= 3) {
-					console.warn(`[wlp] backup.remove_retry uid=${meta.uid} session=${meta.sessionId} try=${attempt}: ${describeError(error)}`);
+					console.warn(
+						`[wlp] backup.remove_retry uid=${meta.uid} session=${meta.sessionId} try=${attempt}: ${describeError(error)}`,
+					);
 					break;
 				}
-				await new Promise((resolve) => setTimeout(resolve, 1_000));
+				await new Promise(resolve => setTimeout(resolve, 1_000));
 			}
 		}
 		await userActor(c, meta.uid).internalRemoveBackupLater(meta.sessionId);
 		backupRemoved.add(meta);
 	} catch (error) {
-		console.error(`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's Windlass data may still be in the bucket (${describeError(error)})`);
+		console.error(
+			`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's Windlass data may still be in the bucket (${describeError(error)})`,
+		);
 	}
 }
 

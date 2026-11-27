@@ -33,7 +33,7 @@ export function MachineUsage() {
 				</p>
 			) : (
 				<ul className="usage-machines">
-					{list.map((machine) => (
+					{list.map(machine => (
 						<li key={machine.machineId} className="usage-machine">
 							<div className="usage-machine-head">
 								<h3 className="usage-machine-name">{machineLabel(machine)}</h3>
@@ -47,8 +47,13 @@ export function MachineUsage() {
 								<p className="usage-machine-empty">No sandbox on it.</p>
 							) : (
 								<ul className="machine-sandboxes usage-machine-sandboxes">
-									{machine.sandboxes.map((sandbox) => (
-										<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} offlineSince={machine.status === "offline" ? machine.since : null} />
+									{machine.sandboxes.map(sandbox => (
+										<SandboxLine
+											key={sandbox.sessionId}
+											sandbox={sandbox}
+											now={now}
+											offlineSince={machine.status === "offline" ? machine.since : null}
+										/>
 									))}
 								</ul>
 							)}

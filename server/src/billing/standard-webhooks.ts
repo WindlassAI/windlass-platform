@@ -23,7 +23,12 @@ export function sign(secret: string, id: string, timestamp: number, body: string
 }
 
 /** The delivery's id when its signature verifies and its time is within the tolerance; null otherwise. */
-export function verify(secret: string, headers: Headers, body: string, now: number): { id: string; timestamp: number } | null {
+export function verify(
+	secret: string,
+	headers: Headers,
+	body: string,
+	now: number,
+): { id: string; timestamp: number } | null {
 	const id = headers.get("webhook-id");
 	const stamp = headers.get("webhook-timestamp");
 	const signatures = headers.get("webhook-signature");

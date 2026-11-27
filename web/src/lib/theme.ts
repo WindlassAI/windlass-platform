@@ -14,7 +14,8 @@ function stored(): Theme | null {
 	}
 }
 
-const system = (): Theme => (typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+const system = (): Theme =>
+	typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 
 export function useTheme(): [Theme, () => void] {
 	const [theme, setTheme] = useState<Theme>(() => stored() ?? system());
@@ -34,7 +35,7 @@ export function useTheme(): [Theme, () => void] {
 	}, []);
 
 	const toggle = useCallback(() => {
-		setTheme((current) => {
+		setTheme(current => {
 			const next = current === "dark" ? "light" : "dark";
 			try {
 				localStorage.setItem(KEY, next);

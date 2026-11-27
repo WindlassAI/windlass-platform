@@ -21,7 +21,16 @@ export function jsonPrefix(text: string, room: number): { text: string; size: nu
 	return { text: piece, size: size(piece) };
 }
 
-const identifiers = new Set(["sessionUpdate", "originalSessionUpdate", "toolCallId", "type", "kind", "status", "priority", "currentModeId"]);
+const identifiers = new Set([
+	"sessionUpdate",
+	"originalSessionUpdate",
+	"toolCallId",
+	"type",
+	"kind",
+	"status",
+	"priority",
+	"currentModeId",
+]);
 
 /** Called after numbering and redaction. Keys, punctuation, metadata and the truncation flag all count. */
 export function boundedAcpItem(item: AcpItem): AcpItem {
@@ -45,8 +54,15 @@ export function boundedAcpItem(item: AcpItem): AcpItem {
 	}
 	// The keys or containers alone overflow. Keep a bounded summary with a valid discriminator.
 	const u = item.update;
-	const update: AcpUpdate = u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update"
-		? { sessionUpdate: u.sessionUpdate, toolCallId: u.toolCallId.slice(0, 256), status: u.status?.slice(0, 256) }
-		: { sessionUpdate: "unknown", originalSessionUpdate: (u.sessionUpdate === "unknown" ? u.originalSessionUpdate : u.sessionUpdate).slice(0, 256) };
+	const update: AcpUpdate =
+		u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update"
+			? { sessionUpdate: u.sessionUpdate, toolCallId: u.toolCallId.slice(0, 256), status: u.status?.slice(0, 256) }
+			: {
+					sessionUpdate: "unknown",
+					originalSessionUpdate: (u.sessionUpdate === "unknown" ? u.originalSessionUpdate : u.sessionUpdate).slice(
+						0,
+						256,
+					),
+				};
 	return { ...clipped, update };
 }

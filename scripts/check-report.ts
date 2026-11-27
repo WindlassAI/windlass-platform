@@ -25,7 +25,7 @@ export class Report {
 	private readonly fold: boolean;
 
 	constructor(options: ReportOptions = {}) {
-		this.print = options.print ?? ((line) => console.log(line));
+		this.print = options.print ?? (line => console.log(line));
 		this.dash = options.failure === "dash";
 		this.fold = options.fold ?? true;
 	}
@@ -59,7 +59,11 @@ export class Report {
 	};
 
 	/** Runs one check: PASS with what `body` returns, FAIL with what it throws. */
-	check = async (name: string, body: () => Promise<string | undefined | void> | string | undefined | void, describe: (error: unknown) => string = messageOf): Promise<boolean> => {
+	check = async (
+		name: string,
+		body: () => Promise<string | undefined | void> | string | undefined | void,
+		describe: (error: unknown) => string = messageOf,
+	): Promise<boolean> => {
 		try {
 			this.pass(name, (await body()) ?? "");
 			return true;

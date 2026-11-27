@@ -12,7 +12,15 @@ import { BlockedList, blockedHeadline, type AllowHostContext } from "./BlockedNe
  * `context`: how "Allow for this repository" is sent, through the builder's session; null where it is
  * not offered (a feature over several repositories names no repository for a host).
  */
-export function ItemNetwork({ network, context, now }: { network: BlockedNetwork | undefined; context: AllowHostContext | null; now: number }) {
+export function ItemNetwork({
+	network,
+	context,
+	now,
+}: {
+	network: BlockedNetwork | undefined;
+	context: AllowHostContext | null;
+	now: number;
+}) {
 	if (!network || blockedRequests(network) === 0) return null;
 	return (
 		<section className="usage-section item-network" aria-labelledby="item-network">
@@ -20,10 +28,19 @@ export function ItemNetwork({ network, context, now }: { network: BlockedNetwork
 				Network
 			</h2>
 			<p className="usage-lede">
-				Blocked: {blockedHeadline(network)}, across the turns of its builder and reviewer. Their sandboxes' network policy refused them; the work went on without.
+				Blocked: {blockedHeadline(network)}, across the turns of its builder and reviewer. Their sandboxes' network
+				policy refused them; the work went on without.
 			</p>
-			<BlockedList hosts={network.hosts} overflow={network.overflow} context={context} when={(at) => relativeTime(at, now)} label="Blocked destinations" />
-			{context === null && network.hosts.some((entry) => entry.allow === "repository") ? <p className="usage-note">Allow a host in the network settings of the repository that needs it.</p> : null}
+			<BlockedList
+				hosts={network.hosts}
+				overflow={network.overflow}
+				context={context}
+				when={at => relativeTime(at, now)}
+				label="Blocked destinations"
+			/>
+			{context === null && network.hosts.some(entry => entry.allow === "repository") ? (
+				<p className="usage-note">Allow a host in the network settings of the repository that needs it.</p>
+			) : null}
 		</section>
 	);
 }

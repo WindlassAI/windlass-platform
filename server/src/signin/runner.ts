@@ -114,7 +114,22 @@ export function defaultTmpRoot(): string {
 }
 
 /** Variables a Windlass on the server needs from the server's own environment to reach the sign-in service. Nothing else is passed on. */
-const PASSED_ON = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "LANG", "LC_ALL", "TZ"];
+const PASSED_ON = [
+	"HTTPS_PROXY",
+	"HTTP_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+	"https_proxy",
+	"http_proxy",
+	"all_proxy",
+	"no_proxy",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+	"LANG",
+	"LC_ALL",
+	"TZ",
+];
 
 export interface LocalLoginRunnerOptions {
 	/** The Windlass executable: a path, or a name on PATH. */
@@ -136,7 +151,7 @@ export class LocalLoginRunner implements LoginRunner {
 	constructor(private readonly options: LocalLoginRunnerOptions) {
 		this.binary = options.binary;
 		this.tmpRoot = options.tmpRoot ?? defaultTmpRoot();
-		this.log = options.log ?? ((line) => console.error(line));
+		this.log = options.log ?? (line => console.error(line));
 	}
 
 	async run(material: SignInMaterial, command: LoginCommand): Promise<LoginRun> {
@@ -146,7 +161,13 @@ export class LocalLoginRunner implements LoginRunner {
 				const text = material.files[name];
 				if (text !== undefined) await writeFile(join(data, name), text, { mode: 0o600, flag: "wx" });
 			}
-			const ended = await execute(this.binary, ["login", ...command.args], { cwd: dir, env, stdin: command.stdin, timeoutMs: command.timeoutMs, signal: command.signal });
+			const ended = await execute(this.binary, ["login", ...command.args], {
+				cwd: dir,
+				env,
+				stdin: command.stdin,
+				timeoutMs: command.timeoutMs,
+				signal: command.signal,
+			});
 			return { ...ended, material: await readBack(data), materialRead: true };
 		});
 	}
@@ -155,7 +176,11 @@ export class LocalLoginRunner implements LoginRunner {
 		return this.inPrivateDirectory(async (dir, env) => {
 			const file = join(dir, "access-token.json");
 			await writeFile(file, tokenFileContent(token), { mode: 0o600, flag: "wx" });
-			return execute(this.binary, command.args, { cwd: dir, env: { ...env, [ACCESS_TOKEN_FILE_ENV]: file }, timeoutMs: command.timeoutMs });
+			return execute(this.binary, command.args, {
+				cwd: dir,
+				env: { ...env, [ACCESS_TOKEN_FILE_ENV]: file },
+				timeoutMs: command.timeoutMs,
+			});
 		});
 	}
 
@@ -166,7 +191,8 @@ export class LocalLoginRunner implements LoginRunner {
 		// mkdtemp makes it with mode 0700: nobody else on the machine can list or enter it.
 		const dir = await mkdtemp(join(this.tmpRoot, TMP_PREFIX));
 		try {
-			for (const sub of ["home", "config", "tmp", join("data", "windlass")]) await mkdir(join(dir, sub), { recursive: true, mode: 0o700 });
+			for (const sub of ["home", "config", "tmp", join("data", "windlass")])
+				await mkdir(join(dir, sub), { recursive: true, mode: 0o700 });
 			const env: Record<string, string> = {
 				PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
 				HOME: join(dir, "home"),
@@ -182,14 +208,20 @@ export class LocalLoginRunner implements LoginRunner {
 			return await step(dir, env);
 		} finally {
 			await rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
-				this.log(`[wlp] sign-in.tmp_left dir=${dir}: the private directory of a sign-in command could not be removed (${errorText(error)}); remove it by hand`);
+				this.log(
+					`[wlp] sign-in.tmp_left dir=${dir}: the private directory of a sign-in command could not be removed (${errorText(error)}); remove it by hand`,
+				);
 			});
 		}
 	}
 
 	async version(): Promise<string | null> {
 		try {
-			const said = await execute(this.binary, ["--version"], { cwd: this.tmpRoot, env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" }, timeoutMs: 20_000 });
+			const said = await execute(this.binary, ["--version"], {
+				cwd: this.tmpRoot,
+				env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" },
+				timeoutMs: 20_000,
+			});
 			// "Windlass 0.4.0 (linux-arm64)"
 			const match = /^\S+\s+(\S+)/.exec(said.stdout.trim());
 			return said.code === 0 && match !== null ? match[1]! : null;
@@ -209,9 +241,17 @@ export class LocalLoginRunner implements LoginRunner {
 				if (!name.startsWith(TMP_PREFIX)) continue;
 				const path = join(this.tmpRoot, name);
 				const found = await stat(path).catch(() => null);
-				if (found === null || !found.isDirectory() || found.uid !== process.getuid?.() || Date.now() - found.mtimeMs < STALE_MS) continue;
+				if (
+					found === null ||
+					!found.isDirectory() ||
+					found.uid !== process.getuid?.() ||
+					Date.now() - found.mtimeMs < STALE_MS
+				)
+					continue;
 				await rm(path, { recursive: true, force: true });
-				this.log(`[wlp] sign-in.tmp_swept dir=${path}: a private directory an earlier server process left behind was removed`);
+				this.log(
+					`[wlp] sign-in.tmp_swept dir=${path}: a private directory an earlier server process left behind was removed`,
+				);
 			}
 		} catch {
 			// Nothing to sweep, or not ours to list: the next command still makes and removes its own.
@@ -240,11 +280,20 @@ interface Executed {
 }
 
 /** Runs a program to its end. Rejects only when it could not be started. */
-function execute(file: string, args: string[], options: { cwd: string; env: Record<string, string>; stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<Executed> {
+function execute(
+	file: string,
+	args: string[],
+	options: { cwd: string; env: Record<string, string>; stdin?: string; timeoutMs: number; signal?: AbortSignal },
+): Promise<Executed> {
 	return new Promise((resolve, reject) => {
 		// In a process group of its own, so that stopping it stops whatever it started as well: nothing
 		// is left holding the directory, or the pipes this waits for.
-		const child = spawn(file, args, { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+		const child = spawn(file, args, {
+			cwd: options.cwd,
+			env: options.env,
+			stdio: ["pipe", "pipe", "pipe"],
+			detached: true,
+		});
 		const kill = () => {
 			try {
 				if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
@@ -258,7 +307,8 @@ function execute(file: string, args: string[], options: { cwd: string; env: Reco
 		let stderr = "";
 		let timedOut = false;
 		let aborted = false;
-		const keep = (kept: string, chunk: string) => (kept.length >= MAX_OUTPUT_CHARS ? kept : (kept + chunk).slice(0, MAX_OUTPUT_CHARS));
+		const keep = (kept: string, chunk: string) =>
+			kept.length >= MAX_OUTPUT_CHARS ? kept : (kept + chunk).slice(0, MAX_OUTPUT_CHARS);
 		child.stdout.on("data", (chunk: Buffer) => (stdout = keep(stdout, out.write(chunk))));
 		child.stderr.on("data", (chunk: Buffer) => (stderr = keep(stderr, err.write(chunk))));
 		child.stdin.on("error", () => {});
@@ -277,12 +327,12 @@ function execute(file: string, args: string[], options: { cwd: string; env: Reco
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);
 		};
-		child.on("error", (error) => {
+		child.on("error", error => {
 			done();
 			// The message names the program and the reason, never an argument or anything it was given.
 			reject(new Error(`could not run ${file}: ${(error as NodeJS.ErrnoException).code ?? error.message}`));
 		});
-		child.on("close", (code) => {
+		child.on("close", code => {
 			done();
 			resolve({ code, stdout: stdout + out.end(), stderr: stderr + err.end(), timedOut, aborted });
 		});

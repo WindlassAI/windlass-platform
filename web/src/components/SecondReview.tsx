@@ -12,7 +12,16 @@
  * the repository, the reviewed commit and a path the contract allows (`blobLink`).
  */
 import { modelWords } from "../lib/models";
-import type { ItemAttachment, ItemReview, ItemSummary, ItemView, ReviewBlock, ReviewLocation, ReviewRecommendation, Verdict } from "@contract";
+import type {
+	ItemAttachment,
+	ItemReview,
+	ItemSummary,
+	ItemView,
+	ReviewBlock,
+	ReviewLocation,
+	ReviewRecommendation,
+	Verdict,
+} from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { linkProps } from "../lib/router";
 import { FOLD_WORDS, FoldToggle } from "./Fold";
@@ -23,7 +32,11 @@ import { ordinal } from "../lib/format";
 export type ReviewState = NonNullable<ItemSummary["review"]>["state"];
 
 /** A recommendation as a word, the row's and the page's: what the reviewer says, never what the platform found. */
-export const RECOMMENDATION_WORD: Record<ReviewRecommendation, string> = { approve: "approves", changes_requested: "asks for changes", needs_person: "needs you" };
+export const RECOMMENDATION_WORD: Record<ReviewRecommendation, string> = {
+	approve: "approves",
+	changes_requested: "asks for changes",
+	needs_person: "needs you",
+};
 
 /** The cut-offs a review step is tried again after (server/src/factory/blueprint.ts, `RULES.interruptions`). */
 const INTERRUPTIONS = 3;
@@ -46,17 +59,29 @@ const NONE = "No second review: ";
  * a review that was not filed, else the item's reason (`ItemView.reviewNone`), else the log's line for
  * it in the run shown (blueprint.ts, `handoff`).
  */
-export function noneLine(view: Pick<ItemView, "events" | "run" | "reviewNone">, review: ItemReview | null, state: ReviewState): string {
+export function noneLine(
+	view: Pick<ItemView, "events" | "run" | "reviewNone">,
+	review: ItemReview | null,
+	state: ReviewState,
+): string {
 	if (review?.state === "none" && review.said) return `${NONE}${clause(review.said)}.`;
 	if (view.reviewNone) return `${NONE}${clause(view.reviewNone)}.`;
 	const run = view.run?.n ?? null;
-	const logged = view.events.findLast((event) => event.said.startsWith(NONE) && (run === null || event.step === null || event.step.run === run));
+	const logged = view.events.findLast(
+		event => event.said.startsWith(NONE) && (run === null || event.step === null || event.step.run === run),
+	);
 	if (logged) return logged.said;
-	return state === "off" ? "No second review for this item: turned off for this deployment." : "No second review of this commit.";
+	return state === "off"
+		? "No second review for this item: turned off for this deployment."
+		: "No second review of this commit.";
 }
 
 /** The second review's state while there is no review of the run to show, in a sentence; null when the review is what is shown. */
-export function stateLine(view: Pick<ItemView, "events" | "run" | "head" | "wait" | "state" | "reviewNone">, state: ReviewState, review: ItemReview | null): string | null {
+export function stateLine(
+	view: Pick<ItemView, "events" | "run" | "head" | "wait" | "state" | "reviewNone">,
+	state: ReviewState,
+	review: ItemReview | null,
+): string | null {
 	const step = view.run?.step;
 	const at = (view.head ?? "").slice(0, 7);
 	const reviewing = step?.kind === "review" && view.run?.endedAt === null;
@@ -85,18 +110,34 @@ const SEVERITY_ORDER = { blocking: 0, should_fix: 1, note: 2 } as const;
  * findings (blocking first), the answers to earlier findings; then, after its screenshots, its other
  * text, risks and excerpts in the order filed.
  */
-export function reviewOrder(blocks: ReviewBlock[]): { questions: Extract<ReviewBlock, { kind: "question" }>[]; lead: ReviewBlock[]; rest: ReviewBlock[] } {
-	const questions = blocks.filter((block): block is Extract<ReviewBlock, { kind: "question" }> => block.kind === "question");
-	const findings = blocks.filter((block): block is Extract<ReviewBlock, { kind: "finding" }> => block.kind === "finding");
+export function reviewOrder(blocks: ReviewBlock[]): {
+	questions: Extract<ReviewBlock, { kind: "question" }>[];
+	lead: ReviewBlock[];
+	rest: ReviewBlock[];
+} {
+	const questions = blocks.filter(
+		(block): block is Extract<ReviewBlock, { kind: "question" }> => block.kind === "question",
+	);
+	const findings = blocks.filter(
+		(block): block is Extract<ReviewBlock, { kind: "finding" }> => block.kind === "finding",
+	);
 	findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
-	const lead = [...blocks.filter((block) => block.kind === "summary"), ...findings, ...blocks.filter((block) => block.kind === "earlier")];
-	const rest = blocks.filter((block) => block.kind === "text" || block.kind === "risk" || block.kind === "excerpt");
+	const lead = [
+		...blocks.filter(block => block.kind === "summary"),
+		...findings,
+		...blocks.filter(block => block.kind === "earlier"),
+	];
+	const rest = blocks.filter(block => block.kind === "text" || block.kind === "risk" || block.kind === "excerpt");
 	return { questions, lead, rest };
 }
 
 /** The verdict a review's references are read against: the one it was given, else the one at its commit. */
 function verdictOf(review: ItemReview, verdicts: Verdict[]): Verdict | null {
-	return verdicts.find((verdict) => verdict.id === review.verdictId) ?? verdicts.findLast((verdict) => verdict.head === review.head) ?? null;
+	return (
+		verdicts.find(verdict => verdict.id === review.verdictId) ??
+		verdicts.findLast(verdict => verdict.head === review.head) ??
+		null
+	);
 }
 
 interface ReviewProps {
@@ -113,7 +154,8 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierCommit = !review.requestedPull && latest !== undefined && latest.head !== review.head;
 	const verdict = verdictOf(review, view.verdicts);
-	const linkTo: LinkTo = (at: ReviewLocation) => blobLink(review.requestedPull ?? view.repository, at.side === "base" ? review.base : review.head, at);
+	const linkTo: LinkTo = (at: ReviewLocation) =>
+		blobLink(review.requestedPull ?? view.repository, at.side === "base" ? review.base : review.head, at);
 	const author = "The reviewer";
 	if (review.state === "none") {
 		return (
@@ -131,15 +173,18 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 	}
 	const { questions, lead, rest } = reviewOrder(review.blocks);
 	const shots = reviewShots(review);
-	const shown = review.blocks.flatMap((block) => {
-		const shot = block.kind === "screenshot" ? shots.find((one) => one.id === block.attachment) : undefined;
+	const shown = review.blocks.flatMap(block => {
+		const shot = block.kind === "screenshot" ? shots.find(one => one.id === block.attachment) : undefined;
 		return shot ? [shot] : [];
 	});
 	return (
 		<article className="item-verdict-block review-article">
 			<p className="item-verdict-head">
 				<span className="review-says">
-					{review.requestedPull ? `Requested review of PR #${review.requestedPull.pr}` : "Second review"}: <span className="review-word">{review.recommendation ? RECOMMENDATION_WORD[review.recommendation] : "no recommendation"}</span>
+					{review.requestedPull ? `Requested review of PR #${review.requestedPull.pr}` : "Second review"}:{" "}
+					<span className="review-word">
+						{review.recommendation ? RECOMMENDATION_WORD[review.recommendation] : "no recommendation"}
+					</span>
 				</span>
 				<span className="agent-meta">
 					<span>at {review.head.slice(0, 7)}</span>
@@ -164,15 +209,31 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 					{questions.map((block, index) => (
 						<ReviewText key={index} text={block.text} />
 					))}
-					{view.state === "review" ? <p className="usage-gloss">No answer is sent from here. You can send it back with a note.</p> : null}
+					{view.state === "review" ? (
+						<p className="usage-gloss">No answer is sent from here. You can send it back with a note.</p>
+					) : null}
 				</div>
 			) : null}
 			{lead.length > 0 ? (
-				<BlockRows blocks={lead} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
+				<BlockRows
+					blocks={lead}
+					records={review.records}
+					verdict={verdict}
+					author={author}
+					linkTo={linkTo}
+					named={named}
+				/>
 			) : null}
 			{shown[0] ? <Screenshots by="reviewer" head={shown[0].head} shots={shown} links={links} /> : null}
 			{rest.length > 0 ? (
-				<BlockRows blocks={rest} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
+				<BlockRows
+					blocks={rest}
+					records={review.records}
+					verdict={verdict}
+					author={author}
+					linkTo={linkTo}
+					named={named}
+				/>
 			) : null}
 		</article>
 	);
@@ -182,15 +243,30 @@ function Review({ view, review, links, when, named }: ReviewProps) {
  * The review of the run shown, when it was filed (or kept as not filed), the earlier ones newest first, and where the review
  * is while there is none to show (`stateLine`). `current` is null while the run's review waits, runs, or was not reached.
  */
-export function shownReview(view: ItemView): { state: ReviewState | null; current: ItemReview | null; before: ItemReview[]; line: string | null } {
+export function shownReview(view: ItemView): {
+	state: ReviewState | null;
+	current: ItemReview | null;
+	before: ItemReview[];
+	line: string | null;
+} {
 	const { reviews } = view;
 	const state = view.review?.state ?? null;
 	const run = view.run?.n ?? null;
 	const last = reviews.findLast(review => !review.requestedPull) ?? null;
 	// The review of the run shown is shown when it was filed; any other, earlier or not filed, is folded under it.
-	const current = last !== null && (run === null || last.run === run) && (state === null || state === "filed" || last.state === "none") ? last : null;
-	const before = reviews.filter((one) => one !== current && !one.requestedPull).reverse();
-	const line = current || state === null ? null : view.parent && state === "off" ? "Reviewed with the whole feature." : stateLine(view, state, null);
+	const current =
+		last !== null &&
+		(run === null || last.run === run) &&
+		(state === null || state === "filed" || last.state === "none")
+			? last
+			: null;
+	const before = reviews.filter(one => one !== current && !one.requestedPull).reverse();
+	const line =
+		current || state === null
+			? null
+			: view.parent && state === "off"
+				? "Reviewed with the whole feature."
+				: stateLine(view, state, null);
 	return { state, current, before, line };
 }
 
@@ -200,14 +276,30 @@ export function shownReview(view: ItemView): { state: ReviewState | null; curren
  * reached it, or a view of a platform without reviewer sessions. `bare` leaves out the state line, which the panel says
  * itself.
  */
-export function SecondReview({ view, links, when, bare = false }: { view: ItemView; links: ScreenshotLinks; when(at: number): ReactNode; bare?: boolean }) {
+export function SecondReview({
+	view,
+	links,
+	when,
+	bare = false,
+}: {
+	view: ItemView;
+	links: ScreenshotLinks;
+	when(at: number): ReactNode;
+	bare?: boolean;
+}) {
 	const [open, setOpen] = useState(false);
 	const folded = useId();
 	const { reviews } = view;
 	const { state, current, before, line } = shownReview(view);
 	if (state === null && reviews.length === 0) return null;
 	const requested = reviews.filter(one => one.requestedPull).reverse();
-	const titles = new Map(reviews.filter(one => !one.requestedPull).flatMap((one) => one.blocks.flatMap((block) => (block.kind === "finding" ? [[block.id, block.title] as const] : []))));
+	const titles = new Map(
+		reviews
+			.filter(one => !one.requestedPull)
+			.flatMap(one =>
+				one.blocks.flatMap(block => (block.kind === "finding" ? [[block.id, block.title] as const] : [])),
+			),
+	);
 	const named = (finding: string) => titles.get(finding) ?? null;
 	const session = view.reviewerSessionId;
 	return (
@@ -231,14 +323,21 @@ export function SecondReview({ view, links, when, bare = false }: { view: ItemVi
 					to see what it ran. Its words are its own: the platform's records above do not rest on them.
 				</p>
 			) : null}
-			{requested.map(one => <Review key={one.id} view={view} review={one} links={links} when={when} named={named} />)}
+			{requested.map(one => (
+				<Review key={one.id} view={view} review={one} links={links} when={when} named={named} />
+			))}
 			{before.length > 0 ? (
 				<>
 					<p className="agents-fold items-fold">
-						<FoldToggle open={open} controls={folded} label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")} onToggle={() => setOpen((value) => !value)} />
+						<FoldToggle
+							open={open}
+							controls={folded}
+							label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")}
+							onToggle={() => setOpen(value => !value)}
+						/>
 					</p>
 					<div id={folded} hidden={!open}>
-						{before.map((one) => (
+						{before.map(one => (
 							<Review key={one.id} view={view} review={one} links={links} when={when} named={named} />
 						))}
 					</div>

@@ -13,7 +13,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { PlatformPrompts, platformPromptLabel, Turn } from "../components/Blocks";
-import { AGENT_PUSH_MEANS, PUBLISH_UNASKED_MEANS, PublishUnaskedCheck, publishAskedOverMcp, REVIEWER_PUBLISHES_NOTHING } from "../components/PullRequest";
+import {
+	AGENT_PUSH_MEANS,
+	PUBLISH_UNASKED_MEANS,
+	PublishUnaskedCheck,
+	publishAskedOverMcp,
+	REVIEWER_PUBLISHES_NOTHING,
+} from "../components/PullRequest";
 import { saveAuth } from "../lib/authStore";
 import { ZERO_USAGE, type TurnView } from "../lib/timeline";
 import { AppProvider } from "../state/app";
@@ -26,11 +32,14 @@ import { Session, useSessionMachine } from "./Session";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollTo ??= () => {};
 
-const auth = { token: "mock:user:u_step:ada@example.com", profile: { uid: "u_step", email: "ada@example.com", demo: false } };
+const auth = {
+	token: "mock:user:u_step:ada@example.com",
+	profile: { uid: "u_step", email: "ada@example.com", demo: false },
+};
 
 let views: ItemView[] = [];
 const viewNamed = (title: string): ItemView => {
-	const found = views.find((view) => view.title === title);
+	const found = views.find(view => view.title === title);
 	if (!found) throw new Error(`no seeded item "${title}"`);
 	return found;
 };
@@ -39,7 +48,7 @@ beforeEach(async () => {
 	if (views.length > 0) return;
 	const mock = createMockClient({ pace: 0 });
 	const user = mock.user(auth);
-	views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+	views = await Promise.all((await user.listItems()).map(item => user.item(item.id)));
 	mock.dispose();
 });
 
@@ -111,11 +120,19 @@ describe("pages rendered with the mock", () => {
 		] as const) {
 			const view = viewNamed(title);
 			const page = { view, error: null, missing: false, reload: () => undefined, replace: () => undefined };
-			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })));
+			await act(async () =>
+				root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })),
+			);
 			const strip = host.querySelector('section[aria-labelledby="item-checks"]') as HTMLElement;
 			expect(strip.querySelector(".item-verdict") === null, title).toBe(reviewing);
-			expect(strip.querySelector(reviewing ? ".checks-summary .item-row-review" : ".checks-summary .item-verdict")?.textContent, title).toBe(reviewing ? "being reviewed" : "Ready for review");
-			expect(strip.querySelector(".checks-summary-main")?.textContent?.includes("the second review"), title).toBe(reviewing);
+			expect(
+				strip.querySelector(reviewing ? ".checks-summary .item-row-review" : ".checks-summary .item-verdict")
+					?.textContent,
+				title,
+			).toBe(reviewing ? "being reviewed" : "Ready for review");
+			expect(strip.querySelector(".checks-summary-main")?.textContent?.includes("the second review"), title).toBe(
+				reviewing,
+			);
 			if (!reviewing) expect(strip.textContent).toContain("On GitHub as windlass/verified: Success");
 			// The facts the verdict rests on are there either way.
 			expect(strip.querySelector(".item-facts"), title).not.toBeNull();
@@ -134,7 +151,7 @@ describe("pages rendered with the mock", () => {
 		saveAuth("mock", signedIn);
 		const listed = client.user(signedIn).listItems();
 		await vi.advanceTimersByTimeAsync(1000);
-		const item = (await listed).find((one) => one.title === "Show the upload's checksum in the log") as ItemSummary;
+		const item = (await listed).find(one => one.title === "Show the upload's checksum in the log") as ItemSummary;
 		const read = client.user(signedIn).item(item.id);
 		await vi.advanceTimersByTimeAsync(1000);
 		const reviewerId = (await read).reviewerSessionId as string;
@@ -147,14 +164,20 @@ describe("pages rendered with the mock", () => {
 		for (let step = 0; step < 10; step++) await act(async () => void (await vi.advanceTimersByTimeAsync(400)));
 
 		const note = host.querySelector(".item-note") as HTMLElement;
-		expect(note.querySelector(".item-note-text")?.textContent).toBe("This agent is the second reviewer of a work item: it reads the commit the item pushed and files one review. The item sends its prompts.");
-		expect([...note.querySelectorAll("a")].map((link) => [link.textContent, link.getAttribute("href")])).toEqual([["work item", `/items/${item.id}`]]);
+		expect(note.querySelector(".item-note-text")?.textContent).toBe(
+			"This agent is the second reviewer of a work item: it reads the commit the item pushed and files one review. The item sends its prompts.",
+		);
+		expect([...note.querySelectorAll("a")].map(link => [link.textContent, link.getAttribute("href")])).toEqual([
+			["work item", `/items/${item.id}`],
+		]);
 		expect(host.querySelector(".session-main textarea, .composer-box, .starters")).toBeNull();
 
 		const panel = host.querySelector("aside#details") as HTMLElement;
 		expect(panel.querySelector(".gh-item-note")?.textContent).toBe(REVIEWER_PUBLISHES_NOTHING);
 		expect(panel.textContent).not.toContain("Let the agent open and update it");
-		expect([...panel.querySelectorAll("button")].map((button) => button.textContent)).not.toEqual(expect.arrayContaining([expect.stringMatching(/pull request|Push|Commit/)]));
+		expect([...panel.querySelectorAll("button")].map(button => button.textContent)).not.toEqual(
+			expect.arrayContaining([expect.stringMatching(/pull request|Push|Commit/)]),
+		);
 
 		// Its first prompt is the platform's, with no text of its own: a plain line, never an empty message.
 		const first = host.querySelector(".turn .block-user") as HTMLElement;
@@ -166,7 +189,19 @@ describe("pages rendered with the mock", () => {
 });
 
 describe("a prompt of the platform's in the reviewer's timeline", () => {
-	const turn = (n: number, text: string): TurnView => ({ turn: n, blocks: [{ id: `u${n}`, kind: "user", at: 1_700_000_000_000, text, model: "gpt-6.1-sol", effort: null, steer: false }], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null });
+	const turn = (n: number, text: string): TurnView => ({
+		turn: n,
+		blocks: [
+			{ id: `u${n}`, kind: "user", at: 1_700_000_000_000, text, model: "gpt-6.1-sol", effort: null, steer: false },
+		],
+		steps: 0,
+		stepOpen: false,
+		interruptRequested: false,
+		changedFiles: null,
+		usage: ZERO_USAGE,
+		end: null,
+		platformAnswer: null,
+	});
 	let host: HTMLElement;
 	let root: Root;
 
@@ -182,7 +217,14 @@ describe("a prompt of the platform's in the reviewer's timeline", () => {
 
 	it("stands under a plain label, its text clamped to two lines with Show all only when cut", () => {
 		const text = "You were interrupted. Continue from where you were.";
-		act(() => root.render(createElement(PlatformPrompts.Provider, { value: "reviewer", children: createElement(Turn, { turn: turn(2, text) }) })));
+		act(() =>
+			root.render(
+				createElement(PlatformPrompts.Provider, {
+					value: "reviewer",
+					children: createElement(Turn, { turn: turn(2, text) }),
+				}),
+			),
+		);
 		expect(host.querySelector(".user-platform-line")?.textContent).toBe(platformPromptLabel(false));
 		const shown = host.querySelector(".user-platform-text") as HTMLElement;
 		expect(shown.textContent).toBe(text);
@@ -193,7 +235,14 @@ describe("a prompt of the platform's in the reviewer's timeline", () => {
 	});
 
 	it("is the factory's brief in a builder's timeline", () => {
-		act(() => root.render(createElement(PlatformPrompts.Provider, { value: "builder", children: createElement(Turn, { turn: turn(1, "Goal: stream the rows.") }) })));
+		act(() =>
+			root.render(
+				createElement(PlatformPrompts.Provider, {
+					value: "builder",
+					children: createElement(Turn, { turn: turn(1, "Goal: stream the rows.") }),
+				}),
+			),
+		);
 		expect(host.querySelector(".user-platform-line")?.textContent).toBe("The factory's brief");
 		expect(host.querySelector(".user-platform-text")?.textContent).toBe("Goal: stream the rows.");
 		expect(host.textContent).not.toContain("You:");
@@ -207,7 +256,13 @@ describe("a prompt of the platform's in the reviewer's timeline", () => {
 });
 
 describe("what the agent's own push does on GitHub", () => {
-	const sandboxed = { id: "docker-windlass-sandbox", name: "Windlass sandbox", approval: "sandboxed", commandNetwork: false, commandsCanReadAccessToken: false } as unknown as SandboxProfile;
+	const sandboxed = {
+		id: "docker-windlass-sandbox",
+		name: "Windlass sandbox",
+		approval: "sandboxed",
+		commandNetwork: false,
+		commandsCanReadAccessToken: false,
+	} as unknown as SandboxProfile;
 	const open = { ...sandboxed, approval: "full" } as SandboxProfile;
 
 	it("is said in one sentence: it runs the repository's CI on the agent's changes, with the CI's secrets", () => {
@@ -217,7 +272,9 @@ describe("what the agent's own push does on GitHub", () => {
 
 	it("stands behind the setting's ⓘ in the panel, whichever way the setting can be", () => {
 		for (const profile of [sandboxed, open]) {
-			const html = renderToStaticMarkup(createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile }));
+			const html = renderToStaticMarkup(
+				createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile }),
+			);
 			const host = document.createElement("div");
 			host.innerHTML = html;
 			expect(host.querySelector(".info-dot")?.getAttribute("aria-label"), profile.approval).toContain(AGENT_PUSH_MEANS);
@@ -225,11 +282,21 @@ describe("what the agent's own push does on GitHub", () => {
 	});
 
 	it("for an agent that reaches its tools over MCP, says it is asked every time, with no setting, in the Windlass sandbox profile too", () => {
-		const html = renderToStaticMarkup(createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile: sandboxed, agent: "Codex" }));
+		const html = renderToStaticMarkup(
+			createElement(PublishUnaskedCheck, {
+				checked: false,
+				disabled: false,
+				onChange: () => undefined,
+				profile: sandboxed,
+				agent: "Codex",
+			}),
+		);
 		const host = document.createElement("div");
 		host.innerHTML = html;
 		expect(host.querySelector("input")).toBeNull();
 		expect(host.querySelector(".check-name")?.textContent).toBe("You're asked each time it publishes ");
-		expect(host.querySelector(".info-dot")?.getAttribute("aria-label")).toBe(`${publishAskedOverMcp("Codex")} ${AGENT_PUSH_MEANS}`);
+		expect(host.querySelector(".info-dot")?.getAttribute("aria-label")).toBe(
+			`${publishAskedOverMcp("Codex")} ${AGENT_PUSH_MEANS}`,
+		);
 	});
 });

@@ -27,5 +27,6 @@ export const SAFE_FLAGS = TRANSPORT_FLAGS + " -c credential.helper=";
  * can hold a `~/.gitconfig` a setup wrote. So it reads no configuration of the home's or the system's;
  * what the image's `~/.gitconfig` gave it (the branch, the author) is said here.
  */
-export const INIT_WORKSPACE = "(export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null; git init -q -b main && " +
+export const INIT_WORKSPACE =
+	"(export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null; git init -q -b main && " +
 	`git ${SAFE_FLAGS} -c commit.gpgSign=false -c user.name='Windlass agent' -c user.email=agent@windlass-platform.invalid commit -q --no-verify --allow-empty -m 'Empty workspace')`;

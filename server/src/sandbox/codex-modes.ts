@@ -4,16 +4,23 @@ import { CODEX } from "./harnesses.js";
 const name = CODEX.name;
 
 export const containerMode = "agent-full-access";
-export const innerModesReason =
-	`${name} read-only and workspace-write modes require a successful ${name} sandbox probe on the docker-windlass-sandbox profile.`;
+export const innerModesReason = `${name} read-only and workspace-write modes require a successful ${name} sandbox probe on the docker-windlass-sandbox profile.`;
 const container: SessionMode = {
 	id: containerMode,
 	name: "Container access",
 	description: "Commands run as agent in this machine’s container, with this machine’s egress setting.",
 };
 const inner: SessionMode[] = [
-	{ id: "read-only", name: "Read-only", description: `Commands run in ${name}’s sandbox without network and cannot change files. Requests to edit or to go outside the sandbox are refused.` },
-	{ id: "workspace-write", name: "Workspace access", description: `Commands run in ${name}’s sandbox without network and can change files in the workspace only. Requests to go outside the sandbox are refused.` },
+	{
+		id: "read-only",
+		name: "Read-only",
+		description: `Commands run in ${name}’s sandbox without network and cannot change files. Requests to edit or to go outside the sandbox are refused.`,
+	},
+	{
+		id: "workspace-write",
+		name: "Workspace access",
+		description: `Commands run in ${name}’s sandbox without network and can change files in the workspace only. Requests to go outside the sandbox are refused.`,
+	},
 ];
 /**
  * The Windlass sandbox profile's container is loosened (AppArmor and system paths unconfined, user
@@ -26,7 +33,7 @@ const inner: SessionMode[] = [
  */
 export function codexModes(profile: SandboxProfileId, probed?: readonly string[]) {
 	const modes = profile === "docker-windlass-sandbox" ? inner : [container];
-	return modes.filter((mode) => !probed || probed.includes(mode.id));
+	return modes.filter(mode => !probed || probed.includes(mode.id));
 }
 /** Whether a Codex permission request must be refused without asking: on this profile each one leaves Codex's sandbox. */
 export const refusesSandboxEscape = (profile: SandboxProfileId) => profile === "docker-windlass-sandbox";
@@ -49,5 +56,7 @@ export function codexDefaultMode(profile: SandboxProfileId | undefined) {
 export const allCodexModes: readonly SessionMode[] = [container, ...inner];
 /** The mode ids a runner reports: Container access, and the inner modes once its probe passed. */
 export function reportedCodexModes(innerProbed: boolean) {
-	return [...codexModes("docker-hardened"), ...(innerProbed ? codexModes("docker-windlass-sandbox") : [])].map((mode) => mode.id);
+	return [...codexModes("docker-hardened"), ...(innerProbed ? codexModes("docker-windlass-sandbox") : [])].map(
+		mode => mode.id,
+	);
 }

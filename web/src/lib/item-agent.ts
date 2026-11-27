@@ -9,7 +9,8 @@ import { modelWords } from "./models";
 import { plural, sandboxTime } from "./format";
 
 /** What a subscription agent spent, which no token budget holds: "4 turns, 12 min". */
-export const subscriptionSpend = (spent: Pick<ItemSpend, "turns" | "activeSeconds">): string => `${plural(spent.turns, "turn")}, ${sandboxTime(spent.activeSeconds)}`;
+export const subscriptionSpend = (spent: Pick<ItemSpend, "turns" | "activeSeconds">): string =>
+	`${plural(spent.turns, "turn")}, ${sandboxTime(spent.activeSeconds)}`;
 
 /** "Claude Code · Sonnet · effort high", "Windlass · GPT-6.2 Sol"; the agent's default model is said as such. */
 export function agentLine(agent: ItemAgent | undefined): string {
@@ -29,11 +30,21 @@ export function agentTokens(agent: ItemAgent | undefined): string | null {
 export function agentFacts(agent: ItemAgent | undefined): { label: string; value: string }[] {
 	if (!agent) return [];
 	const facts: { label: string; value: string }[] = [];
-	if (agent.subscriptionTokens) facts.push({ label: "Subscription tokens", value: agent.subscriptionTokens.toLocaleString("en-US") });
-	if (agent.cost) facts.push({ label: "Cost", value: `${agent.cost.amount.toLocaleString("en-US", { style: "currency", currency: agent.cost.currency, maximumFractionDigits: 2 })}, as ${HARNESS_NAMES[agent.harness] ?? agent.harness} reported it` });
-	if (agent.fiveHour) facts.push({ label: "5-hour window", value: `${Math.round(agent.fiveHour.first)}% used at the first turn, ${Math.round(agent.fiveHour.latest)}% after the latest` });
+	if (agent.subscriptionTokens)
+		facts.push({ label: "Subscription tokens", value: agent.subscriptionTokens.toLocaleString("en-US") });
+	if (agent.cost)
+		facts.push({
+			label: "Cost",
+			value: `${agent.cost.amount.toLocaleString("en-US", { style: "currency", currency: agent.cost.currency, maximumFractionDigits: 2 })}, as ${HARNESS_NAMES[agent.harness] ?? agent.harness} reported it`,
+		});
+	if (agent.fiveHour)
+		facts.push({
+			label: "5-hour window",
+			value: `${Math.round(agent.fiveHour.first)}% used at the first turn, ${Math.round(agent.fiveHour.latest)}% after the latest`,
+		});
 	// Claude Code sends the share of the window used only with a usage warning (its rate_limit_event carries
 	// `utilization` only then), so most items never get one. Say so rather than leave the row out.
-	else if (agent.harness === "claude") facts.push({ label: "5-hour window", value: "Not reported: Claude Code sends it only with a usage warning" });
+	else if (agent.harness === "claude")
+		facts.push({ label: "5-hour window", value: "Not reported: Claude Code sends it only with a usage warning" });
 	return facts;
 }

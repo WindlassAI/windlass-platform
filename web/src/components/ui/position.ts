@@ -38,7 +38,12 @@ const opposite: Record<Side, Side> = { top: "bottom", bottom: "top", left: "righ
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(value, Math.max(low, high)));
 
-export function place(anchor: Box, panel: { width: number; height: number }, viewport: { width: number; height: number }, options: PlaceOptions): Placement {
+export function place(
+	anchor: Box,
+	panel: { width: number; height: number },
+	viewport: { width: number; height: number },
+	options: PlaceOptions,
+): Placement {
 	const { offset, padding } = options;
 	const cap = options.maxHeight ?? Number.POSITIVE_INFINITY;
 	const room: Record<Side, number> = {
@@ -66,5 +71,11 @@ export function place(anchor: Box, panel: { width: number; height: number }, vie
 	const x = side === "right" ? anchor.x + anchor.width + offset : anchor.x - offset - panel.width;
 	const wanted = options.align === "start" ? anchor.y : anchor.y + anchor.height - height;
 	const y = clamp(wanted, padding, viewport.height - height - padding);
-	return { x: clamp(x, padding, viewport.width - panel.width - padding), y, side, maxHeight, origin: `top ${side === "right" ? "left" : "right"}` };
+	return {
+		x: clamp(x, padding, viewport.width - panel.width - padding),
+		y,
+		side,
+		maxHeight,
+		origin: `top ${side === "right" ? "left" : "right"}`,
+	};
 }

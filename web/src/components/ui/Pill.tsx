@@ -24,14 +24,34 @@ export interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 	children: ReactNode;
 }
 
-export function Pill({ icon, secondary, dot = null, dotLabel, chevron = true, outlined = false, className, children, type = "button", ...rest }: PillProps) {
+export function Pill({
+	icon,
+	secondary,
+	dot = null,
+	dotLabel,
+	chevron = true,
+	outlined = false,
+	className,
+	children,
+	type = "button",
+	...rest
+}: PillProps) {
 	return (
-		<button type={type} className={`ui-pill${outlined ? " ui-pill-outlined" : ""}${dot === "warn" ? " ui-pill-warn" : ""}${dot === "changed" ? " ui-pill-changed" : ""}${className ? ` ${className}` : ""}`} {...rest}>
+		<button
+			type={type}
+			className={`ui-pill${outlined ? " ui-pill-outlined" : ""}${dot === "warn" ? " ui-pill-warn" : ""}${dot === "changed" ? " ui-pill-changed" : ""}${className ? ` ${className}` : ""}`}
+			{...rest}
+		>
 			{icon ? <span className="ui-pill-icon">{icon}</span> : null}
 			<span className="ui-pill-value">{children}</span>
 			{secondary ? <span className="ui-pill-secondary">{secondary}</span> : null}
 			{dot ? (
-				<span className={`ui-dot ui-dot-${dot}`} role={dotLabel ? "img" : undefined} aria-label={dotLabel} aria-hidden={dotLabel ? undefined : true} />
+				<span
+					className={`ui-dot ui-dot-${dot}`}
+					role={dotLabel ? "img" : undefined}
+					aria-label={dotLabel}
+					aria-hidden={dotLabel ? undefined : true}
+				/>
 			) : null}
 			{chevron ? <ChevronDownIcon size={12} className="ui-pill-chevron" /> : null}
 		</button>
@@ -49,10 +69,24 @@ export function agentId(harness: string): HarnessId {
  * An agent's badge: its own logo in a small square (components/AgentLogos.tsx; Windlass's is the app's
  * mark). Every agent badge is this one. Takes the harness's id ("claude") or its name.
  */
-export function AgentGlyph({ harness, accent = false, size = 13, inline = false }: { harness: string; accent?: boolean; size?: number; /** In a line of text, before the agent's name. */ inline?: boolean }) {
+export function AgentGlyph({
+	harness,
+	accent = false,
+	size = 13,
+	inline = false,
+}: {
+	harness: string;
+	accent?: boolean;
+	size?: number /** In a line of text, before the agent's name. */;
+	inline?: boolean;
+}) {
 	const id = agentId(harness);
 	return (
-		<span className={`ui-glyph ui-glyph-logo${accent ? " ui-glyph-accent" : ""}${inline ? " ui-glyph-inline" : ""}`} aria-hidden="true" data-agent={id}>
+		<span
+			className={`ui-glyph ui-glyph-logo${accent ? " ui-glyph-accent" : ""}${inline ? " ui-glyph-inline" : ""}`}
+			aria-hidden="true"
+			data-agent={id}
+		>
 			<AgentLogo id={id} size={size} />
 		</span>
 	);

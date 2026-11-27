@@ -1,6 +1,9 @@
 /** The comma-separated, trimmed case-name prefixes in an environment variable such as `FACTORY_ONLY`. */
 export function sectionPrefixes(variable: string): string[] {
-	return (process.env[variable] ?? "").split(",").map(name => name.trim()).filter(Boolean);
+	return (process.env[variable] ?? "")
+		.split(",")
+		.map(name => name.trim())
+		.filter(Boolean);
 }
 
 /** Whether a case runs under that variable: every case does when it is unset or empty. */

@@ -28,7 +28,13 @@
  * to Windlass with WINDLASS_ACCESS_TOKEN_FILE.
  */
 
-import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, NO_MATERIAL, type SignInMaterial, cleanMaterial } from "../signin/material.js";
+import {
+	MATERIAL_FILES,
+	MAX_MATERIAL_FILE_BYTES,
+	NO_MATERIAL,
+	type SignInMaterial,
+	cleanMaterial,
+} from "../signin/material.js";
 import type { LoginCommand, LoginRun, LoginRunner, TokenCommand, TokenRun } from "../signin/runner.js";
 import type { AccessToken } from "./api.js";
 import { IMAGE, docker, helperFlags, tmpName } from "./docker.js";
@@ -111,7 +117,12 @@ export class DockerLoginRunner implements LoginRunner {
 	}
 
 	async run(material: SignInMaterial, command: LoginCommand): Promise<LoginRun> {
-		return this.inContainer(["login", ...command.args], { files: material.files, stdin: command.stdin ?? "" }, command, material);
+		return this.inContainer(
+			["login", ...command.args],
+			{ files: material.files, stdin: command.stdin ?? "" },
+			command,
+			material,
+		);
 	}
 
 	async runWithToken(token: AccessToken, command: TokenCommand): Promise<TokenRun> {
@@ -119,7 +130,12 @@ export class DockerLoginRunner implements LoginRunner {
 	}
 
 	/** One container for one command: `args` are Windlass's, `request` what the program inside is given. `material` is what the answer holds when nothing could be read back. */
-	private async inContainer(args: string[], request: Record<string, unknown>, command: Pick<LoginCommand, "network" | "timeoutMs" | "signal">, material: SignInMaterial = NO_MATERIAL): Promise<LoginRun> {
+	private async inContainer(
+		args: string[],
+		request: Record<string, unknown>,
+		command: Pick<LoginCommand, "network" | "timeoutMs" | "signal">,
+		material: SignInMaterial = NO_MATERIAL,
+	): Promise<LoginRun> {
 		const name = tmpName();
 		const flags = [...helperFlags(name, command.network ? this.network : "none"), ...(this.options.extraFlags ?? [])];
 		const seconds = String(Math.max(1, Math.ceil(command.timeoutMs / 1000)));
@@ -133,11 +149,12 @@ export class DockerLoginRunner implements LoginRunner {
 				for (let tries = 0; tries < 60 && !returned; tries += 1) {
 					const removed = await docker(["rm", "-f", name]).catch(() => null);
 					if (removed !== null && removed.code === 0 && removed.stdout.trim() === name) return;
-					await new Promise((done) => setTimeout(done, 200));
+					await new Promise(done => setTimeout(done, 200));
 				}
 			})();
 		};
-		if (command.signal?.aborted) return { code: null, stdout: "", stderr: "", timedOut: false, aborted: true, material, materialRead: false };
+		if (command.signal?.aborted)
+			return { code: null, stdout: "", stderr: "", timedOut: false, aborted: true, material, materialRead: false };
 		command.signal?.addEventListener("abort", onAbort, { once: true });
 		let result: Awaited<ReturnType<typeof docker>>;
 		try {
@@ -154,10 +171,29 @@ export class DockerLoginRunner implements LoginRunner {
 		const answer = parseAnswer(result.stdout);
 		if (answer === null) {
 			// The container gave no answer of its own: it was removed, or could not be started. Nothing was read back.
-			if (!aborted && !result.timedOut) throw new Error(`could not run Windlass in a helper container of ${this.image} (exit code ${result.code}): ${result.stderr.replace(/\s+/g, " ").trim().slice(0, 300) || "it printed nothing"}`);
-			return { code: null, stdout: "", stderr: "", timedOut: result.timedOut && !aborted, aborted, material, materialRead: false };
+			if (!aborted && !result.timedOut)
+				throw new Error(
+					`could not run Windlass in a helper container of ${this.image} (exit code ${result.code}): ${result.stderr.replace(/\s+/g, " ").trim().slice(0, 300) || "it printed nothing"}`,
+				);
+			return {
+				code: null,
+				stdout: "",
+				stderr: "",
+				timedOut: result.timedOut && !aborted,
+				aborted,
+				material,
+				materialRead: false,
+			};
 		}
-		return { code: answer.code, stdout: answer.stdout, stderr: answer.stderr, timedOut: answer.timedOut, aborted, material: cleanMaterial(answer.files), materialRead: true };
+		return {
+			code: answer.code,
+			stdout: answer.stdout,
+			stderr: answer.stderr,
+			timedOut: answer.timedOut,
+			aborted,
+			material: cleanMaterial(answer.files),
+			materialRead: true,
+		};
 	}
 
 	async version(): Promise<string | null> {
@@ -176,8 +212,20 @@ interface ContainerAnswer {
 function parseAnswer(stdout: string): ContainerAnswer | null {
 	try {
 		const value = JSON.parse(stdout) as Partial<ContainerAnswer> | null;
-		if (typeof value !== "object" || value === null || typeof value.stdout !== "string" || typeof value.stderr !== "string") return null;
-		return { code: typeof value.code === "number" ? value.code : null, stdout: value.stdout, stderr: value.stderr, timedOut: value.timedOut === true, files: value.files };
+		if (
+			typeof value !== "object" ||
+			value === null ||
+			typeof value.stdout !== "string" ||
+			typeof value.stderr !== "string"
+		)
+			return null;
+		return {
+			code: typeof value.code === "number" ? value.code : null,
+			stdout: value.stdout,
+			stderr: value.stderr,
+			timedOut: value.timedOut === true,
+			files: value.files,
+		};
 	} catch {
 		return null;
 	}

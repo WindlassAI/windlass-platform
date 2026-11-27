@@ -37,8 +37,23 @@
  * scripts/account-check.ts runs them against a database of its own.
  */
 
-import { type AccountSecret, type AccountSecrets, MAX_ACCOUNT_SECRETS, type SandboxProfile, type SecretReach, type SecretScope } from "./contract.js";
-import { type CommandSandbox, type OpenedSecret, SecretProblem, type WindlassSecrets, commandSandbox, secretReach, windlassEnvironment } from "./repo-secrets.js";
+import {
+	type AccountSecret,
+	type AccountSecrets,
+	MAX_ACCOUNT_SECRETS,
+	type SandboxProfile,
+	type SecretReach,
+	type SecretScope,
+} from "./contract.js";
+import {
+	type CommandSandbox,
+	type OpenedSecret,
+	SecretProblem,
+	type WindlassSecrets,
+	commandSandbox,
+	secretReach,
+	windlassEnvironment,
+} from "./repo-secrets.js";
 import type { DefaultsDb } from "./repository-defaults.js";
 
 /** What an account's sealed value is bound to where a repository's is bound to its repository. No repository's key can be this. */
@@ -74,9 +89,12 @@ export function accountSecretReach(scope: SecretScope, profile: Promises): Secre
  */
 export function accountSecretsNote(profile: Promises): string | null {
 	const sandbox: CommandSandbox = commandSandbox(profile);
-	const only = "Of your account's secrets, MCP servers are given only those that are also for the agent's commands in this sandbox";
-	if (sandbox === "none") return `${only}: the agent's commands run here without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
-	if (sandbox === "unknown") return `${only}: it has not been established that Windlass can sandbox the agent's commands here, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
+	const only =
+		"Of your account's secrets, MCP servers are given only those that are also for the agent's commands in this sandbox";
+	if (sandbox === "none")
+		return `${only}: the agent's commands run here without Windlass's sandbox, where a command can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
+	if (sandbox === "unknown")
+		return `${only}: it has not been established that Windlass can sandbox the agent's commands here, and a command it cannot sandbox can read whatever Windlass was handed for an MCP server from Windlass's own process. A server that reads another one does not start.`;
 	return null;
 }
 
@@ -88,8 +106,11 @@ export interface OpenedAccountSecret {
 }
 
 /** The account's secrets a session is handed: those no secret of its repository has the name of. */
-export function accountSecretsFor(account: readonly OpenedAccountSecret[], repository: readonly Pick<OpenedSecret, "name">[]): OpenedAccountSecret[] {
-	return account.filter((secret) => !repository.some((other) => other.name === secret.name));
+export function accountSecretsFor(
+	account: readonly OpenedAccountSecret[],
+	repository: readonly Pick<OpenedSecret, "name">[],
+): OpenedAccountSecret[] {
+	return account.filter(secret => !repository.some(other => other.name === secret.name));
 }
 
 /**
@@ -100,7 +121,11 @@ export function accountSecretsFor(account: readonly OpenedAccountSecret[], repos
  * everywhere. One whose name a secret of the repository has is left out, whatever becomes of the
  * repository's.
  */
-export function turnEnvironment(repository: readonly OpenedSecret[], account: readonly OpenedAccountSecret[], profile: Promises): WindlassSecrets {
+export function turnEnvironment(
+	repository: readonly OpenedSecret[],
+	account: readonly OpenedAccountSecret[],
+	profile: Promises,
+): WindlassSecrets {
 	return windlassEnvironment([...repository, ...accountSecretsFor(account, repository)], profile);
 }
 
@@ -119,7 +144,14 @@ export class SecretNotFound extends SecretProblem {}
  * while the account keeps fewer than `limit`. Without: the scope of the one of that name. Throws
  * TooManySecrets at the limit, and SecretNotFound for a scope of a name that is not saved.
  */
-export async function saveAccountSecret(db: DefaultsDb, name: string, scope: SecretScope, sealed: string | undefined, now: number, limit = MAX_ACCOUNT_SECRETS): Promise<void> {
+export async function saveAccountSecret(
+	db: DefaultsDb,
+	name: string,
+	scope: SecretScope,
+	sealed: string | undefined,
+	now: number,
+	limit = MAX_ACCOUNT_SECRETS,
+): Promise<void> {
 	if (sealed === undefined) {
 		await db.execute("UPDATE account_secret SET scope = ?, updated_at = ? WHERE name = ?", scope, now, name);
 		const [row] = await db.execute<{ name: string }>("SELECT name FROM account_secret WHERE name = ?", name);
@@ -142,7 +174,8 @@ export async function saveAccountSecret(db: DefaultsDb, name: string, scope: Sec
 		const [row] = await db.execute<{ name: string }>("SELECT name FROM account_secret WHERE name = ?", name);
 		if (row) return;
 		const [count] = await db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM account_secret");
-		if (Number(count?.n ?? 0) >= limit) throw new TooManySecrets(`An account can keep ${limit} secrets, and yours has that many. Delete one first.`);
+		if (Number(count?.n ?? 0) >= limit)
+			throw new TooManySecrets(`An account can keep ${limit} secrets, and yours has that many. Delete one first.`);
 		// Neither saved nor at the limit: a secret was deleted between the two statements. Once more.
 	}
 	throw new Error("the secret could not be saved");
@@ -155,7 +188,7 @@ export async function deleteAccountSecret(db: DefaultsDb, name: string): Promise
 /** The names of the account's secrets. */
 export async function accountSecretNames(db: DefaultsDb): Promise<Set<string>> {
 	const rows = await db.execute<{ name: string }>("SELECT name FROM account_secret");
-	return new Set(rows.map((row) => String(row.name)));
+	return new Set(rows.map(row => String(row.name)));
 }
 
 /**
@@ -165,14 +198,26 @@ export async function accountSecretNames(db: DefaultsDb): Promise<Set<string>> {
  * the rows of the repositories' secrets that share a name with one of these: the key
  * ("github:<GitHub's id>") and what the repository was called when it was saved.
  */
-export function listedAccountSecrets(rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>, repositories: ReadonlyArray<{ name: string; project: string; label: string }>, profile: SandboxProfile): AccountSecrets {
+export function listedAccountSecrets(
+	rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>,
+	repositories: ReadonlyArray<{ name: string; project: string; label: string }>,
+	profile: SandboxProfile,
+): AccountSecrets {
 	return {
 		profile: profile.id,
 		secrets: rows.map((row): AccountSecret => {
 			const name = String(row.name);
 			const scope: SecretScope = row.scope === "agent" ? "agent" : "setup";
-			const shared = repositories.filter((other) => other.name === name).map((other) => (other.label !== "" ? other.label : `repository ${other.project.replace(/^github:/, "")}`));
-			return { name, scope, updatedAt: Number(row.updated_at), reach: accountSecretReach(scope, profile), repositories: [...new Set(shared)].sort((a, b) => a.localeCompare(b)) };
+			const shared = repositories
+				.filter(other => other.name === name)
+				.map(other => (other.label !== "" ? other.label : `repository ${other.project.replace(/^github:/, "")}`));
+			return {
+				name,
+				scope,
+				updatedAt: Number(row.updated_at),
+				reach: accountSecretReach(scope, profile),
+				repositories: [...new Set(shared)].sort((a, b) => a.localeCompare(b)),
+			};
 		}),
 	};
 }

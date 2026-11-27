@@ -82,13 +82,17 @@ export function requireUser(c: HasCaller & { vars: { tokenGen: number } }): User
 	return caller.profile;
 }
 
-export async function disconnectRevoked(conns: ReadonlyMap<string, { params: unknown; disconnect(reason: string): Promise<void> }>, generation: number): Promise<void> {
+export async function disconnectRevoked(
+	conns: ReadonlyMap<string, { params: unknown; disconnect(reason: string): Promise<void> }>,
+	generation: number,
+): Promise<void> {
 	const closing: Promise<void>[] = [];
 	for (const conn of conns.values()) {
 		const token = tokenOf(conn.params);
 		if (typeof token !== "string") continue;
 		const caller = verifyToken(token);
-		if (!caller || (caller.kind === "user" && caller.generation < generation)) closing.push(conn.disconnect("user.invalid_token"));
+		if (!caller || (caller.kind === "user" && caller.generation < generation))
+			closing.push(conn.disconnect("user.invalid_token"));
 	}
 	await Promise.all(closing);
 }
@@ -105,7 +109,8 @@ export function requireService(c: HasCaller): void {
  */
 export function requireServiceFor(c: HasCaller, subject: string): void {
 	const caller = callerOf(c);
-	if (caller.kind !== "service" || caller.subject !== subject) throw new UserError("This action is internal.", { code: "forbidden" });
+	if (caller.kind !== "service" || caller.subject !== subject)
+		throw new UserError("This action is internal.", { code: "forbidden" });
 }
 
 export function internalConnection(c: HasRequest & { key: string[] }, params: unknown) {
@@ -136,15 +141,23 @@ export function isSandboxUserError(error: unknown): error is Error {
  * What to throw to the client for a failure: a UserError passes through, a SandboxUserError becomes
  * one with its message, a missing actor is a lookup miss, and unexpected failures use `fallback`.
  */
-export function clientError(log: { debug?: (entry: unknown) => void; error: (entry: unknown) => void }, error: unknown, fallback: string, code = "internal_error"): UserError {
+export function clientError(
+	log: { debug?: (entry: unknown) => void; error: (entry: unknown) => void },
+	error: unknown,
+	fallback: string,
+	code = "internal_error",
+): UserError {
 	if (error instanceof UserError) return error;
 	if (isSessionGone(error)) {
 		const session = !isActorGone(error);
 		log.debug?.({ msg: "A requested actor no longer exists." });
-		return new UserError(session ? "This agent was deleted." : "The requested resource no longer exists.", { code: session ? "session_not_found" : "not_found" });
+		return new UserError(session ? "This agent was deleted." : "The requested resource no longer exists.", {
+			code: session ? "session_not_found" : "not_found",
+		});
 	}
 	if (isSandboxUserError(error)) return new UserError(error.message, { code: "sandbox_error" });
-	if (error instanceof Error && error.name === "RepositoryLimit") return new UserError(error.message, { code: "limit" });
+	if (error instanceof Error && error.name === "RepositoryLimit")
+		return new UserError(error.message, { code: "limit" });
 	log.error({ msg: fallback, error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
 	return new UserError(fallback, { code });
 }

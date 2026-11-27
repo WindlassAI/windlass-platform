@@ -1,5 +1,15 @@
 /** A list that is loading, drawn as the rows it will show: a heading, then a title, chips and a line of facts per row, and the row's action at its end. */
-export function RowsSkeleton({ label, rows = 2, chips = 0, action = true }: { label: string; rows?: number; chips?: number; action?: boolean }) {
+export function RowsSkeleton({
+	label,
+	rows = 2,
+	chips = 0,
+	action = true,
+}: {
+	label: string;
+	rows?: number;
+	chips?: number;
+	action?: boolean;
+}) {
 	return (
 		<div aria-busy="true" aria-label={label}>
 			<span className="skeleton skeleton-heading" />

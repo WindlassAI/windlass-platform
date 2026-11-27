@@ -108,12 +108,16 @@ export interface BoardCard {
  * subtasks. Each card stands in exactly one column; "Needs you" the longest asking first, the rest
  * the newest changed first.
  */
-export function boardCards(list: readonly ItemSummary[], children: readonly ItemSummary[] | undefined, reviewer = true): Record<BoardColumn, BoardCard[]> {
-	const top = new Map(list.filter((item) => !item.parent).map((item) => [item.id, item]));
+export function boardCards(
+	list: readonly ItemSummary[],
+	children: readonly ItemSummary[] | undefined,
+	reviewer = true,
+): Record<BoardColumn, BoardCard[]> {
+	const top = new Map(list.filter(item => !item.parent).map(item => [item.id, item]));
 	const partsOf = new Map<string, ItemSummary[]>();
 	const add = (parentId: string, child: ItemSummary) => {
 		const parts = partsOf.get(parentId) ?? [];
-		if (!parts.some((part) => part.id === child.id)) parts.push(child);
+		if (!parts.some(part => part.id === child.id)) parts.push(child);
 		partsOf.set(parentId, parts);
 	};
 	for (const child of children ?? []) if (child.parent && top.has(child.parent.itemId)) add(child.parent.itemId, child);
@@ -128,24 +132,35 @@ export function boardCards(list: readonly ItemSummary[], children: readonly Item
 		const prefix = `${item.parent.title} — `;
 		const own = { ...item, title: item.title.startsWith(prefix) ? item.title.slice(prefix.length) : item.title };
 		const parts = partsOf.get(item.parent.itemId) ?? [];
-		const at = parts.findIndex((part) => part.id === item.id);
+		const at = parts.findIndex(part => part.id === item.id);
 		if (at >= 0) parts[at] = { ...parts[at]!, question: item.question };
 		else add(item.parent.itemId, own);
 	}
-	const columns = Object.fromEntries(BOARD_COLUMNS.map((column) => [column, [] as BoardCard[]])) as Record<BoardColumn, BoardCard[]>;
+	const columns = Object.fromEntries(BOARD_COLUMNS.map(column => [column, [] as BoardCard[]])) as Record<
+		BoardColumn,
+		BoardCard[]
+	>;
 	for (const item of [...top.values(), ...alone]) {
 		const parts = (partsOf.get(item.id) ?? []).sort((a, b) => a.createdAt - b.createdAt);
-		const column = parts.some((part) => part.question) && item.state !== "done" && item.state !== "failed" && item.state !== "cancelled" ? "needs" : boardColumn(item, reviewer);
+		const column =
+			parts.some(part => part.question) &&
+			item.state !== "done" &&
+			item.state !== "failed" &&
+			item.state !== "cancelled"
+				? "needs"
+				: boardColumn(item, reviewer);
 		columns[column].push({ kind: "item", item, parts, column });
 	}
-	const askedAt = (card: BoardCard) => Math.min(card.item.question?.askedAt ?? Infinity, ...card.parts.map((part) => part.question?.askedAt ?? Infinity));
+	const askedAt = (card: BoardCard) =>
+		Math.min(card.item.question?.askedAt ?? Infinity, ...card.parts.map(part => part.question?.askedAt ?? Infinity));
 	columns.needs.sort((a, b) => askedAt(a) - askedAt(b));
-	for (const column of BOARD_COLUMNS) if (column !== "needs") columns[column].sort((a, b) => b.item.updatedAt - a.item.updatedAt);
+	for (const column of BOARD_COLUMNS)
+		if (column !== "needs") columns[column].sort((a, b) => b.item.updatedAt - a.item.updatedAt);
 	return columns;
 }
 
 /** The pipeline's columns, after the tray. */
-export const PIPELINE_COLUMNS = BOARD_COLUMNS.filter((column) => column !== "needs") as Exclude<BoardColumn, "needs">[];
+export const PIPELINE_COLUMNS = BOARD_COLUMNS.filter(column => column !== "needs") as Exclude<BoardColumn, "needs">[];
 
 /** The width of a column with nothing in it: a slim strip with its name and "0" standing up. */
 export const SLIM_COLUMN = "44px";
@@ -155,7 +170,9 @@ export const SLIM_COLUMN = "44px";
  * ones with cards share the width ("Ended", narrower).
  */
 export function boardTracks(totals: Record<Exclude<BoardColumn, "needs">, number>): string {
-	return PIPELINE_COLUMNS.map((column) => (totals[column] === 0 ? SLIM_COLUMN : column === "ended" ? "minmax(160px, 0.8fr)" : "minmax(188px, 1fr)")).join(" ");
+	return PIPELINE_COLUMNS.map(column =>
+		totals[column] === 0 ? SLIM_COLUMN : column === "ended" ? "minmax(160px, 0.8fr)" : "minmax(188px, 1fr)",
+	).join(" ");
 }
 
 /** Wider than a phone: the Factory shows the board; a phone has the list. */

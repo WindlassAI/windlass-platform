@@ -9,12 +9,35 @@
 
 import type { GithubId, PullRequestInfo, SessionRepository } from "./contract/github.js";
 import type { PlanInfo } from "./contract/usage.js";
-export type { UsageNumbers, HostedMonth, PlanId, BillingPeriod, PlanInfo, BillingView, UsageSession, UsageDay, KeptSandbox, UsagePrice, UsageView } from "./contract/usage.js";
+export type {
+	UsageNumbers,
+	HostedMonth,
+	PlanId,
+	BillingPeriod,
+	PlanInfo,
+	BillingView,
+	UsageSession,
+	UsageDay,
+	KeptSandbox,
+	UsagePrice,
+	UsageView,
+} from "./contract/usage.js";
 import type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
 export type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
 export type { Isolation } from "./contract/isolation.js";
 export { ISOLATION_LINES, ISOLATION_NAMES, PROFILE_ISOLATION, isolationName, openLine } from "./contract/isolation.js";
-export { HOSTED_SIZES, HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, hostedSizeWords, hostedSizeFor, largerHostedSize, outOfMemoryWords } from "./contract/hosted-sizes.js";
+export {
+	HOSTED_SIZES,
+	HOSTED_SIZE_NAMES,
+	HOSTED_SIZE_SPECS,
+	ITEM_HOSTED_SIZE,
+	SESSION_HOSTED_SIZE,
+	isHostedSize,
+	hostedSizeWords,
+	hostedSizeFor,
+	largerHostedSize,
+	outOfMemoryWords,
+} from "./contract/hosted-sizes.js";
 export * from "./contract/github.js";
 export * from "./contract/repository.js";
 export * from "./contract/account.js";
@@ -228,17 +251,28 @@ export type TurnOutcome =
 
 /** Every agent the platform runs; the canonical list (`HarnessId`). Per-agent facts live in sandbox/harnesses.ts. */
 export const HARNESS_IDS = ["windlass", "claude", "opencode", "codex"] as const;
-export type HarnessId = typeof HARNESS_IDS[number];
+export type HarnessId = (typeof HARNESS_IDS)[number];
 /** The agents a machine (or a hosted ACP sandbox) runs: every harness but Windlass. */
 export const MACHINE_HARNESS_IDS = ["claude", "opencode", "codex"] as const satisfies readonly HarnessId[];
-export type MachineHarnessId = typeof MACHINE_HARNESS_IDS[number];
+export type MachineHarnessId = (typeof MACHINE_HARNESS_IDS)[number];
 
 export function isHarnessId(value: unknown): value is HarnessId {
 	return (HARNESS_IDS as readonly unknown[]).includes(value);
 }
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
-export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review" | "file_repo_setup" | "file_repo_setup_review";
+export type PlatformToolName =
+	| "publish"
+	| "report"
+	| "request_secret"
+	| "ask_person"
+	| "push"
+	| "fetch_base"
+	| "file_review"
+	| "file_plan"
+	| "file_plan_review"
+	| "file_repo_setup"
+	| "file_repo_setup_review";
 
 /** Screens choose behavior by capability, so a new harness needs no agent-name checks. */
 export interface SessionCapabilities {
@@ -362,7 +396,14 @@ export interface SessionSummary {
 	/** Reload servers() when changedAt advances. Absent when the session has no known MCP servers. */
 	servers?: { count: number; changedAt: number };
 	/** Item sessions receive prompts from the factory. The recorded sign-in determines token accounting for machine agents. */
-	item?: { id: string; role?: "builder" | "reviewer"; subtaskScreenshots?: boolean; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
+	item?: {
+		id: string;
+		role?: "builder" | "reviewer";
+		subtaskScreenshots?: boolean;
+		planCritic?: true;
+		reviewer?: { id: string; status: SessionStatus };
+		signIn?: "api-key" | "chatgpt" | "subscription";
+	};
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
 	readiness?: true;
@@ -380,11 +421,17 @@ export function sessionTitle(session: Pick<SessionSummary, "title" | "item">): s
 
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
-	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
-	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild && !s.readiness).map(session => {
-		const reviewer = session.item && reviewers.get(session.item.id);
-		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
-	});
+	const reviewers = new Map(
+		sessions.flatMap(s =>
+			s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : [],
+		),
+	);
+	return sessions
+		.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild && !s.readiness)
+		.map(session => {
+			const reviewer = session.item && reviewers.get(session.item.id);
+			return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
+		});
 }
 
 export interface CreateSessionInput {
@@ -424,4 +471,3 @@ export interface ChatgptStatus {
 	/** When the saved sign-in's access token expires, ms since the epoch. The platform refreshes it when a turn needs a token within twenty minutes of that, or after. */
 	accessExpiresAt: number | null;
 }
-

@@ -10,7 +10,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { LABEL, MACHINE_LABEL } from "../server/src/sandbox/docker.js";
-import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
+import {
+	cloneWithToken,
+	commitWork,
+	discardHandover,
+	fetchWithToken,
+	outgoingPatch,
+	pushWithToken,
+} from "../server/src/github/git.js";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import type { ExecOptions } from "../server/src/sandbox/api.js";
 import type { TimelineItem } from "../server/src/contract.js";
@@ -20,7 +27,12 @@ import { writeProofDocker } from "./runner-proof-docker.js";
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const repoUrl = "https://github.com/octocat/Hello-World.git";
-export async function sessionEgress(dir: string, origin: string, endpoint: string, start: (env: Record<string, string>) => Promise<void>) {
+export async function sessionEgress(
+	dir: string,
+	origin: string,
+	endpoint: string,
+	start: (env: Record<string, string>) => Promise<void>,
+) {
 	const [base, claude] = process.argv.slice(3);
 	for (const pin of [base, claude]) assert.match(pin, /^sha256:[a-f0-9]{64}$/);
 	const prefix = "egress-" + randomUUID() + "-";
@@ -32,43 +44,128 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 	const probe = await readFile(join(root, "fixtures/acp-agent/egress.sh"), "utf8");
 	const lan = prefix + "lan";
 	const remote = prefix + "git";
-	await writeProofDocker(dir, prefix, realDocker, { adapter: fake, scenarios: join(root, "fixtures/acp-agent"), lan }, ["wlp-egress-m_", "wlp-claude-relay-", "wlp-claude-socket-", "wlp-prepared-"]);
+	await writeProofDocker(dir, prefix, realDocker, { adapter: fake, scenarios: join(root, "fixtures/acp-agent"), lan }, [
+		"wlp-egress-m_",
+		"wlp-claude-relay-",
+		"wlp-claude-socket-",
+		"wlp-prepared-",
+	]);
 	await exec(process.execPath, [join(root, "runner/bundle.mjs"), base, bundle, "claude=" + claude]);
 	const model = join(dir, "model.json");
-	await writeFile(model, JSON.stringify({ responses: [
-		[{ type: "tool_call", callId: "network", name: "shell", input: { command: `(\n${probe}\n) > /tmp/proof-output` } }, { type: "finish", reason: "tool_calls" }],
-		[{ type: "text", text: "Finished the probes." }, { type: "finish", reason: "stop" }],
-	] }));
+	await writeFile(
+		model,
+		JSON.stringify({
+			responses: [
+				[
+					{
+						type: "tool_call",
+						callId: "network",
+						name: "shell",
+						input: { command: `(\n${probe}\n) > /tmp/proof-output` },
+					},
+					{ type: "finish", reason: "tool_calls" },
+				],
+				[
+					{ type: "text", text: "Finished the probes." },
+					{ type: "finish", reason: "stop" },
+				],
+			],
+		}),
+	);
 	await start({ WLP_TEST_MODEL_SCRIPT: model, WLP_PUBLIC_ENDPOINT: endpoint });
 	const client = createClient<Registry>({ endpoint, token: "default", namespace: "default" });
-	const { profile: { uid }, token } = await loginHttp(origin).demo();
+	const {
+		profile: { uid },
+		token,
+	} = await loginHttp(origin).demo();
 	const params = { token };
 	const user = client.user.getOrCreate([uid], { params });
-	const runner = spawn(process.execPath, [bundle, "--platform", origin, "--egress", "restricted", "--egress-allow", "git-fixture.test", "--harness", "claude"], {
-		env: { HOME: dir, PATH: dir + ":" + process.env.PATH, WLP_RUNNER_STATE_DIR: join(dir, "runner-state") }, stdio: ["ignore", "pipe", "pipe"],
-	});
+	const runner = spawn(
+		process.execPath,
+		[
+			bundle,
+			"--platform",
+			origin,
+			"--egress",
+			"restricted",
+			"--egress-allow",
+			"git-fixture.test",
+			"--harness",
+			"claude",
+		],
+		{
+			env: { HOME: dir, PATH: dir + ":" + process.env.PATH, WLP_RUNNER_STATE_DIR: join(dir, "runner-state") },
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	let output = "";
-	runner.stdout.on("data", data => output += data);
-	runner.stderr.on("data", data => output += data);
+	runner.stdout.on("data", data => (output += data));
+	runner.stderr.on("data", data => (output += data));
 	let machineId: string | undefined;
 	try {
 		await docker("network", "create", lan);
-		await docker("run", "-d", "--name", remote, "--network", lan, "--network-alias", "git-fixture.test", "--network-alias", "unlisted.test",
-			base, "bash", "-ec", [
+		await docker(
+			"run",
+			"-d",
+			"--name",
+			remote,
+			"--network",
+			lan,
+			"--network-alias",
+			"git-fixture.test",
+			"--network-alias",
+			"unlisted.test",
+			base,
+			"bash",
+			"-ec",
+			[
 				"cd /tmp && mkdir -p cgi-bin && git init -q --bare remote.git && git -C remote.git config http.receivepack true",
 				"printf '%s\\n' '#!/bin/sh' 'export GIT_PROJECT_ROOT=/tmp GIT_HTTP_EXPORT_ALL=1' 'exec git http-backend' > cgi-bin/git",
 				"chmod +x cgi-bin/git && exec python3 -m http.server --cgi 8080",
-			].join("\n"));
+			].join("\n"),
+		);
 		const code = await until("pairing code", () => /enter (\w{4}-\w{4})/.exec(output)?.[1]);
 		await user.claimMachine({ code });
 		({ machineId } = await user.confirmMachine({ code, keyConfirmed: true }));
-		const labels = ["--label", LABEL + "=1", "--label", MACHINE_LABEL + "=" + machineId, "--label", LABEL + ".uid=" + uid];
+		const labels = [
+			"--label",
+			LABEL + "=1",
+			"--label",
+			MACHINE_LABEL + "=" + machineId,
+			"--label",
+			LABEL + ".uid=" + uid,
+		];
 		const login = prefix + "login-" + machineId;
 		await docker("volume", "create", ...labels, login);
-		await docker("run", "--rm", "--network", "none", "--user", "0", "-v", login + ":/login", base, "sh", "-ec", "echo fixture > /login/token; chown 1000:1000 /login/token; chmod 400 /login/token");
-		await until("signed-in restricted report", async () => (await user.machines()).some(m => m.machineId === machineId && m.egress === "restricted" && m.harnesses?.some(h => h.signIn === "token")), 120_000);
+		await docker(
+			"run",
+			"--rm",
+			"--network",
+			"none",
+			"--user",
+			"0",
+			"-v",
+			login + ":/login",
+			base,
+			"sh",
+			"-ec",
+			"echo fixture > /login/token; chown 1000:1000 /login/token; chmod 400 /login/token",
+		);
+		await until(
+			"signed-in restricted report",
+			async () =>
+				(await user.machines()).some(
+					m => m.machineId === machineId && m.egress === "restricted" && m.harnesses?.some(h => h.signIn === "token"),
+				),
+			120_000,
+		);
 		for (const harness of ["windlass", "claude"] as const) {
-			const session = await user.createSession({ place: { kind: "machine", machineId }, profile: "docker-hardened", repoUrl, harness });
+			const session = await user.createSession({
+				place: { kind: "machine", machineId },
+				profile: "docker-hardened",
+				repoUrl,
+				harness,
+			});
 			const conn = client.agentSession.get([uid, session.id], { params }).connect();
 			const items: TimelineItem[] = [];
 			conn.on("item", (i: unknown) => items.push(i as TimelineItem));
@@ -76,13 +173,27 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 				const { turn } = await conn.prompt({ text: "plain" });
 				const end = await until("turn end", () => items.find(i => i.kind === "turn.ended" && i.turn === turn), 180_000);
 				assert(end.kind === "turn.ended" && end.outcome === "succeeded", JSON.stringify(items.slice(-5)));
-				const observations = (await conn.snapshot()).timeline.filter(i => i.kind === "network.blocked" && i.turn === turn);
+				const observations = (await conn.snapshot()).timeline.filter(
+					i => i.kind === "network.blocked" && i.turn === turn,
+				);
 				assert.equal(observations.length, 1, "one final refusal snapshot for this sandbox's turn");
 				const blocked = observations[0];
 				assert.ok(blocked.kind === "network.blocked");
 				for (const host of ["169.254.169.254", "10.0.0.1", "172.17.0.1"])
-					assert.ok(blocked.hosts.some(h => h.host === host && h.port === 80 && h.count === 1 && h.reason === "private" && h.allow === "never"));
-				const name = await docker("ps", "--filter", "label=" + MACHINE_LABEL + "=" + machineId, "--filter", "label=" + LABEL + ".session=" + session.id, "--format", "{{.Names}}");
+					assert.ok(
+						blocked.hosts.some(
+							h => h.host === host && h.port === 80 && h.count === 1 && h.reason === "private" && h.allow === "never",
+						),
+					);
+				const name = await docker(
+					"ps",
+					"--filter",
+					"label=" + MACHINE_LABEL + "=" + machineId,
+					"--filter",
+					"label=" + LABEL + ".session=" + session.id,
+					"--format",
+					"{{.Names}}",
+				);
 				assert(name.startsWith(prefix + "agent-"));
 				const result = await docker("exec", name, "cat", "/tmp/proof-output");
 				assert.match(result, /^([0-9a-f]{40})\n\1\s+HEAD\n\d+\.\d+\.\d+\nblocked$/);
@@ -92,8 +203,12 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 					await docker("exec", name, "mkdir", cwd);
 					const git = (script: string) => docker("exec", "-w", cwd, name, "bash", "-ec", script);
 					const box = new (class extends DockerSandboxHandle {
-						override get container() { return name; }
-						override run(command: string, options: ExecOptions = {}) { return super.run(command, { cwd, ...options }); }
+						override get container() {
+							return name;
+						}
+						override run(command: string, options: ExecOptions = {}) {
+							return super.run(command, { cwd, ...options });
+						}
 					})(name, "docker-hardened", uid);
 					const cloned = await cloneWithToken(box, "", { url: repoUrl, branch: "master", directory: "hello" });
 					assert(cloned.ok && cloned.marks.get("dir") === ".");
@@ -105,26 +220,59 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 					assert(fetched.ok && baseSha);
 					const branch = "egress-proof";
 					await git("echo egress > proof.txt");
-					const committed = await commitWork(box, { branch, baseSha, sessionId: session.id, pushed: null,
-						author: { name: "Fixture", email: "test@example.invalid" } }, "Fixture commit");
+					const committed = await commitWork(
+						box,
+						{
+							branch,
+							baseSha,
+							sessionId: session.id,
+							pushed: null,
+							author: { name: "Fixture", email: "test@example.invalid" },
+						},
+						"Fixture commit",
+					);
 					try {
-						assert(committed.ok && await outgoingPatch(box, committed.attempt) !== null);
+						assert(committed.ok && (await outgoingPatch(box, committed.attempt)) !== null);
 						const pushed = await pushWithToken(box, "", { attempt: committed.attempt, url, branch });
-						const received = await docker("exec", remote, "git", "-C", "/tmp/remote.git", "rev-parse", "refs/heads/" + branch);
+						const received = await docker(
+							"exec",
+							remote,
+							"git",
+							"-C",
+							"/tmp/remote.git",
+							"rev-parse",
+							"refs/heads/" + branch,
+						);
 						assert.equal(pushed.marks.get("pushed"), received);
-					} finally { await discardHandover(box, committed.attempt); }
+					} finally {
+						await discardHandover(box, committed.attempt);
+					}
 					console.log("PASS platform clone and fetch, allowlisted push and denied alias");
 				}
-			} finally { await conn.dispose(); }
+			} finally {
+				await conn.dispose();
+			}
 		}
-	} catch (err) { console.error(output); throw err; }
-	finally {
+	} catch (err) {
+		console.error(output);
+		throw err;
+	} finally {
 		const exit = once(runner, "exit");
-		if (runner.exitCode === null && !runner.signalCode) { runner.kill("SIGTERM"); await exit; }
+		if (runner.exitCode === null && !runner.signalCode) {
+			runner.kill("SIGTERM");
+			await exit;
+		}
 		if (machineId) {
-			const filters = ["--filter", "label=" + MACHINE_LABEL + "=" + machineId, "--filter", "label=" + LABEL + ".uid=" + uid];
-			for (const id of (await docker("ps", "-aq", ...filters)).split(/\s+/).filter(Boolean)) await docker("rm", "-fv", id);
-			for (const vol of (await docker("volume", "ls", "-q", ...filters)).split(/\s+/).filter(Boolean)) await docker("volume", "rm", vol);
+			const filters = [
+				"--filter",
+				"label=" + MACHINE_LABEL + "=" + machineId,
+				"--filter",
+				"label=" + LABEL + ".uid=" + uid,
+			];
+			for (const id of (await docker("ps", "-aq", ...filters)).split(/\s+/).filter(Boolean))
+				await docker("rm", "-fv", id);
+			for (const vol of (await docker("volume", "ls", "-q", ...filters)).split(/\s+/).filter(Boolean))
+				await docker("volume", "rm", vol);
 		}
 		await docker("rm", "-f", remote).catch(() => {});
 		await docker("network", "rm", lan);

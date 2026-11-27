@@ -38,7 +38,7 @@ export function AppProvider({ client, children }: { client: PlatformClient; chil
 		let current = true;
 		setInfoLoading(true);
 		client.info().then(
-			(value) => {
+			value => {
 				if (!current) return;
 				setInfo(value);
 				setInfoError(null);
@@ -76,14 +76,21 @@ export function AppProvider({ client, children }: { client: PlatformClient; chil
 
 	const explain = useCallback(
 		(error: unknown) => {
-			if (error instanceof PlatformError && error.code === "unauthorized") signOut("Your sign-in is no longer accepted. Sign in again to carry on.");
+			if (error instanceof PlatformError && error.code === "unauthorized")
+				signOut("Your sign-in is no longer accepted. Sign in again to carry on.");
 			return errorMessage(error);
 		},
 		[signOut],
 	);
 
-	const platform = useMemo<InfoState>(() => ({ info, error: infoError, loading: infoLoading, reload: () => setAttempt((value) => value + 1) }), [info, infoError, infoLoading]);
-	const value = useMemo<AppContextValue>(() => ({ client, auth, signedOutReason, signIn, signOut, explain, platform }), [client, auth, signedOutReason, signIn, signOut, explain, platform]);
+	const platform = useMemo<InfoState>(
+		() => ({ info, error: infoError, loading: infoLoading, reload: () => setAttempt(value => value + 1) }),
+		[info, infoError, infoLoading],
+	);
+	const value = useMemo<AppContextValue>(
+		() => ({ client, auth, signedOutReason, signIn, signOut, explain, platform }),
+		[client, auth, signedOutReason, signIn, signOut, explain, platform],
+	);
 	return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

@@ -9,7 +9,14 @@ import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
 import { wires } from "../../../sandbox/relay/wires.cjs";
-import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type KeyReference, type TakeRelayRequest, type TurnModelRelay } from "./provider.js";
+import {
+	SECRET_FILE_SCRIPT,
+	type ForwardedKeyLease,
+	type KeyTurnRelay,
+	type KeyReference,
+	type TakeRelayRequest,
+	type TurnModelRelay,
+} from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
@@ -46,7 +53,9 @@ export function relayScript(): string {
 	].join("\n");
 }
 function forwarderScript(): string {
-	return typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(root(), "runner", "src", "egress-proxy.mjs"), "utf8");
+	return typeof EGRESS_SOURCE === "string"
+		? EGRESS_SOURCE
+		: readFileSync(join(root(), "runner", "src", "egress-proxy.mjs"), "utf8");
 }
 
 const READY = `
@@ -65,8 +74,13 @@ function retry() { if (Date.now() >= deadline) process.exit(1); setTimeout(probe
 probe();`;
 /** Probe inside the helper namespace. A marker also proves which process owns the listener. */
 async function waitForListener(id: string, address: string, marker?: string): Promise<void> {
-	const result = await docker(["exec", id, "node", "-e", READY, address, ...(marker ? [marker] : [])], { timeoutMs: 15_000 });
-	if (result.code !== 0) throw new Error(`the model relay helper did not start listening (${result.stderr.trim() || `exit ${result.code}`})`);
+	const result = await docker(["exec", id, "node", "-e", READY, address, ...(marker ? [marker] : [])], {
+		timeoutMs: 15_000,
+	});
+	if (result.code !== 0)
+		throw new Error(
+			`the model relay helper did not start listening (${result.stderr.trim() || `exit ${result.code}`})`,
+		);
 }
 
 export interface DockerModelRelayOptions {
@@ -121,12 +135,20 @@ export class DockerModelRelay {
 	}
 
 	private labels(role: "relay" | "forward" | "socket"): string[] {
-		return ["--label", LABEL_ARG, ...(this.options.machine ? ["--label", `${MACHINE_LABEL}=${this.options.machine}`] : []), ...(this.options.labelFlags ?? []), "--label", `${ROLE}=${role}`];
+		return [
+			"--label",
+			LABEL_ARG,
+			...(this.options.machine ? ["--label", `${MACHINE_LABEL}=${this.options.machine}`] : []),
+			...(this.options.labelFlags ?? []),
+			"--label",
+			`${ROLE}=${role}`,
+		];
 	}
 
 	/** Names can collide. Verify every ownership label before touching a container or volume. */
 	private owned(labels: Record<string, string> | null | undefined, role: string): boolean {
-		if (labels?.[LABEL] !== "1" || labels[ROLE] !== role || (labels[MACHINE_LABEL] ?? "") !== this.options.machine) return false;
+		if (labels?.[LABEL] !== "1" || labels[ROLE] !== role || (labels[MACHINE_LABEL] ?? "") !== this.options.machine)
+			return false;
 		const extra = this.options.labelFlags ?? [];
 		for (let i = 0; i + 1 < extra.length; i += 2) {
 			const at = extra[i + 1].indexOf("=");
@@ -136,8 +158,13 @@ export class DockerModelRelay {
 		return true;
 	}
 
-	private async inspect(name: string): Promise<{ id: string; running: boolean; labels: Record<string, string> } | null> {
-		const result = await docker(["container", "inspect", "--format", "{{.Id}}|{{.State.Running}}|{{json .Config.Labels}}", name], { timeoutMs: 15_000 });
+	private async inspect(
+		name: string,
+	): Promise<{ id: string; running: boolean; labels: Record<string, string> } | null> {
+		const result = await docker(
+			["container", "inspect", "--format", "{{.Id}}|{{.State.Running}}|{{json .Config.Labels}}", name],
+			{ timeoutMs: 15_000 },
+		);
 		if (result.code !== 0) {
 			if (/no such (container|object)/i.test(result.stderr)) return null;
 			throw new Error("Docker could not inspect the model relay.");
@@ -152,7 +179,21 @@ export class DockerModelRelay {
 
 	private version(): string {
 		const { image, requests, userRequests, network, upstream, limits } = this.options;
-		return createHash("sha256").update(relayScript()).update(JSON.stringify([image, requests ?? null, userRequests ?? null, network ?? null, upstream ?? null, limits ?? null, RELAY_MEMORY, this.logOptions])).digest("hex");
+		return createHash("sha256")
+			.update(relayScript())
+			.update(
+				JSON.stringify([
+					image,
+					requests ?? null,
+					userRequests ?? null,
+					network ?? null,
+					upstream ?? null,
+					limits ?? null,
+					RELAY_MEMORY,
+					this.logOptions,
+				]),
+			)
+			.digest("hex");
 	}
 
 	/** Concurrent callers share a single startup attempt. */
@@ -164,7 +205,8 @@ export class DockerModelRelay {
 	private async ensureOnce(): Promise<string> {
 		const version = this.version();
 		let box = await this.inspect(this.relayName);
-		if (box && !this.owned(box.labels, "relay")) throw new Error("The model relay's container name belongs to another container.");
+		if (box && !this.owned(box.labels, "relay"))
+			throw new Error("The model relay's container name belongs to another container.");
 		if (box && (box.labels[VERSION] !== version || !box.running)) {
 			// Another program or a stopped one: its tokens went with its tmpfs. Turns that used it get a 401 and end.
 			await docker(["rm", "-f", box.id], { timeoutMs: 30_000, check: true });
@@ -173,24 +215,59 @@ export class DockerModelRelay {
 		if (box) return box.id;
 		await this.options.ensureImage?.();
 		await this.ensureVolume();
-		const limits = { ...(this.options.limits ?? {}), ...(this.options.requests ? { machineRequests: this.options.requests } : {}), ...(this.options.userRequests ? { userRequests: this.options.userRequests } : {}) };
-		const run = await docker([
-			"run", "-d", "--pull", "never", "--name", this.relayName, ...this.labels("relay"), "--label", `${VERSION}=${version}`,
-			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", ...this.logOptions,
-			"--memory", RELAY_MEMORY, "--pids-limit", "48", "--restart", "no",
-			"--network", this.options.network ?? "bridge",
-			"--mount", `type=volume,src=${this.socketVolume},dst=/workspace`,
-			"--tmpfs", `${TOKENS}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=4m`,
-			"-e", "WLP_MODEL_RELAY_PROGRAM=1",
-			...(this.options.machine ? ["-e", "WLP_MODEL_RELAY_MACHINE=" + this.options.machine] : []),
-			...(Object.keys(limits).length ? ["-e", `WLP_MODEL_RELAY_LIMITS=${JSON.stringify(limits)}`] : []),
-			...(this.options.upstream ? ["-e", `WLP_MODEL_RELAY_UPSTREAM=${this.options.upstream}`] : []),
-			this.options.image, "node", "-e", relayScript(),
-		], { timeoutMs: 120_000 });
+		const limits = {
+			...(this.options.limits ?? {}),
+			...(this.options.requests ? { machineRequests: this.options.requests } : {}),
+			...(this.options.userRequests ? { userRequests: this.options.userRequests } : {}),
+		};
+		const run = await docker(
+			[
+				"run",
+				"-d",
+				"--pull",
+				"never",
+				"--name",
+				this.relayName,
+				...this.labels("relay"),
+				"--label",
+				`${VERSION}=${version}`,
+				"--user",
+				"1000:1000",
+				"--read-only",
+				"--cap-drop",
+				"ALL",
+				"--security-opt",
+				"no-new-privileges",
+				...this.logOptions,
+				"--memory",
+				RELAY_MEMORY,
+				"--pids-limit",
+				"48",
+				"--restart",
+				"no",
+				"--network",
+				this.options.network ?? "bridge",
+				"--mount",
+				`type=volume,src=${this.socketVolume},dst=/workspace`,
+				"--tmpfs",
+				`${TOKENS}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=4m`,
+				"-e",
+				"WLP_MODEL_RELAY_PROGRAM=1",
+				...(this.options.machine ? ["-e", "WLP_MODEL_RELAY_MACHINE=" + this.options.machine] : []),
+				...(Object.keys(limits).length ? ["-e", `WLP_MODEL_RELAY_LIMITS=${JSON.stringify(limits)}`] : []),
+				...(this.options.upstream ? ["-e", `WLP_MODEL_RELAY_UPSTREAM=${this.options.upstream}`] : []),
+				this.options.image,
+				"node",
+				"-e",
+				relayScript(),
+			],
+			{ timeoutMs: 120_000 },
+		);
 		if (run.code !== 0) {
 			// Another server process made it at the same moment: use that one when it is this program.
 			const other = await this.inspect(this.relayName);
-			if (other && this.owned(other.labels, "relay") && other.labels[VERSION] === version && other.running) return other.id;
+			if (other && this.owned(other.labels, "relay") && other.labels[VERSION] === version && other.running)
+				return other.id;
 			throw new Error(`could not start the model relay: ${run.stderr.trim() || `exit ${run.code}`}`);
 		}
 		const id = run.stdout.trim();
@@ -204,9 +281,12 @@ export class DockerModelRelay {
 	}
 
 	private async ensureVolume(): Promise<void> {
-		const inspected = await docker(["volume", "inspect", "--format", "{{json .Labels}}", this.socketVolume], { timeoutMs: 15_000 });
+		const inspected = await docker(["volume", "inspect", "--format", "{{json .Labels}}", this.socketVolume], {
+			timeoutMs: 15_000,
+		});
 		if (inspected.code === 0) {
-			if (!this.owned(JSON.parse(inspected.stdout.trim() || "{}"), "socket")) throw new Error("The model relay's socket volume belongs to someone else.");
+			if (!this.owned(JSON.parse(inspected.stdout.trim() || "{}"), "socket"))
+				throw new Error("The model relay's socket volume belongs to someone else.");
 			return;
 		}
 		const made = await docker(["volume", "create", ...this.labels("socket"), this.socketVolume], { timeoutMs: 30_000 });
@@ -214,46 +294,119 @@ export class DockerModelRelay {
 			throw new Error(`could not create the model relay's socket volume: ${made.stderr.trim()}`);
 	}
 
-	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: KeyReference, signal?: AbortSignal, takeRequest?: TakeRelayRequest) {
+	openKey(
+		container: string,
+		sandbox: string,
+		uid: string,
+		sessionId: string,
+		key: KeyReference,
+		signal?: AbortSignal,
+		takeRequest?: TakeRelayRequest,
+	) {
 		if (!this.options.forwardKeyLease) throw new Error("A saved provider key requires a platform model relay.");
-		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward), signal, takeRequest);
+		return this.options.forwardKeyLease(
+			uid,
+			sessionId,
+			key,
+			this.options.machine || undefined,
+			forward => this.open(container, sandbox, uid, forward),
+			signal,
+			takeRequest,
+		);
 	}
 
 	/** Start the turn's forwarder before handing credentials to the relay. */
 	open(container: string, sandbox: string, user?: string): Promise<DockerTurnRelay>;
-	open(container: string, sandbox: string, user: string | undefined, forward: ForwardedKeyLease | undefined): Promise<DockerKeyRelay | DockerTurnRelay>;
-	async open(container: string, sandbox: string, user?: string, forward?: ForwardedKeyLease): Promise<DockerKeyRelay | DockerTurnRelay> {
+	open(
+		container: string,
+		sandbox: string,
+		user: string | undefined,
+		forward: ForwardedKeyLease | undefined,
+	): Promise<DockerKeyRelay | DockerTurnRelay>;
+	async open(
+		container: string,
+		sandbox: string,
+		user?: string,
+		forward?: ForwardedKeyLease,
+	): Promise<DockerKeyRelay | DockerTurnRelay> {
 		const relay = await this.ensure();
 		const nonce = randomBytes(16).toString("hex");
 		const placeholder = `wlp-model.${randomBytes(16).toString("hex")}`;
 		const name = this.forwarderName(sandbox);
 		await this.endSandbox(sandbox);
-		const started = await docker([
-			"run", "-d", "--pull", "never", "--name", name, ...this.labels("forward"), "--label", `${NONCE_LABEL}=${nonce}`,
-			"--network", `container:${container}`, "--user", "agent", "--cap-drop", "ALL", "--read-only",
-			"--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", FORWARDER_MEMORY, "--cpus", "0.25", "--restart", "no", ...NO_LOGS,
-			"--mount", `type=volume,src=${this.socketVolume},dst=/run/wlp-model/socket,readonly,volume-nocopy`,
-			"--tmpfs", `${FORWARD_READY_DIR}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=16k`,
-			this.options.image, "node", "--input-type=module", "-e", forwarderScript(), "--", "wlp-model-forward", nonce,
-		], { timeoutMs: 60_000 });
-		if (started.code !== 0) throw new Error(`could not start the model relay's forwarder: ${started.stderr.trim() || `exit ${started.code}`}`);
+		const started = await docker(
+			[
+				"run",
+				"-d",
+				"--pull",
+				"never",
+				"--name",
+				name,
+				...this.labels("forward"),
+				"--label",
+				`${NONCE_LABEL}=${nonce}`,
+				"--network",
+				`container:${container}`,
+				"--user",
+				"agent",
+				"--cap-drop",
+				"ALL",
+				"--read-only",
+				"--security-opt",
+				"no-new-privileges",
+				"--pids-limit",
+				"32",
+				"--memory",
+				FORWARDER_MEMORY,
+				"--cpus",
+				"0.25",
+				"--restart",
+				"no",
+				...NO_LOGS,
+				"--mount",
+				`type=volume,src=${this.socketVolume},dst=/run/wlp-model/socket,readonly,volume-nocopy`,
+				"--tmpfs",
+				`${FORWARD_READY_DIR}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=16k`,
+				this.options.image,
+				"node",
+				"--input-type=module",
+				"-e",
+				forwarderScript(),
+				"--",
+				"wlp-model-forward",
+				nonce,
+			],
+			{ timeoutMs: 60_000 },
+		);
+		if (started.code !== 0)
+			throw new Error(
+				`could not start the model relay's forwarder: ${started.stderr.trim() || `exit ${started.code}`}`,
+			);
 		const id = started.stdout.trim();
 		try {
 			await waitForListener(id, "17893", FORWARD_READY);
 			// Require the forwarder's own readiness marker: a session process might hold the port.
 			const box = await this.inspect(id);
-			if (!box?.running) throw new Error("the model relay's forwarder could not take 127.0.0.1:17893 in the session: a process in the sandbox may be holding that port. Stop it, or send the prompt again");
+			if (!box?.running)
+				throw new Error(
+					"the model relay's forwarder could not take 127.0.0.1:17893 in the session: a process in the sandbox may be holding that port. Stop it, or send the prompt again",
+				);
 		} catch (error) {
 			await docker(["rm", "-f", id], { timeoutMs: 30_000 });
 			if (error instanceof Error && /did not start listening/.test(error.message))
-				throw new Error(`the model relay's forwarder did not start listening on 127.0.0.1:17893 in the session (a process in the sandbox may be holding that port): ${error.message}`);
+				throw new Error(
+					`the model relay's forwarder did not start listening on 127.0.0.1:17893 in the session (a process in the sandbox may be holding that port): ${error.message}`,
+				);
 			throw error;
 		}
 		const file = `${TOKENS}/${nonce}.json`;
 		let closed = false;
 		const write = async (record: object) => {
 			const content = JSON.stringify({ ...record, lease: placeholder, user });
-			const result = await docker(["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file], { stdin: content, timeoutMs: 30_000 });
+			const result = await docker(
+				["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file],
+				{ stdin: content, timeoutMs: 30_000 },
+			);
 			if (result.code !== 0) throw new Error("Could not write the turn's model relay lease.");
 		};
 		const lease: DockerKeyRelay = {
@@ -269,21 +422,33 @@ export class DockerModelRelay {
 			},
 		};
 		if (forward) {
-			try { await write({ forward, expiresAt: forward.expiresAt }); }
-			catch (error) { await lease.close(); throw error; }
+			try {
+				await write({ forward, expiresAt: forward.expiresAt });
+			} catch (error) {
+				await lease.close();
+				throw error;
+			}
 		}
 		this.openLeases.set(sandbox, lease);
 		if (forward) return lease;
-		return { ...lease, hand: async (token: AccessToken) => {
-			if (closed) throw new Error("This relay lease has ended.");
-			await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
-		} };
+		return {
+			...lease,
+			hand: async (token: AccessToken) => {
+				if (closed) throw new Error("This relay lease has ended.");
+				await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
+			},
+		};
 	}
 
 	/** Removes the files of these nonces from the relay's tmpfs. Never rejects. */
 	private async removeFiles(relay: string, nonces: string[]): Promise<void> {
-		const paths = nonces.filter((n) => /^[a-f0-9]{32}$/.test(n)).flatMap((n) => [`${TOKENS}/${n}.json`, `${TOKENS}/${n}.json.tmp`]);
-		if (paths.length) await docker(["exec", "-u", "1000:1000", relay, "rm", "-f", "--", ...paths], { timeoutMs: 15_000 }).catch(() => undefined);
+		const paths = nonces
+			.filter(n => /^[a-f0-9]{32}$/.test(n))
+			.flatMap(n => [`${TOKENS}/${n}.json`, `${TOKENS}/${n}.json.tmp`]);
+		if (paths.length)
+			await docker(["exec", "-u", "1000:1000", relay, "rm", "-f", "--", ...paths], { timeoutMs: 15_000 }).catch(
+				() => undefined,
+			);
 	}
 
 	/** The forwarder's nonce lets us revoke the lease even if its owner has exited. */
@@ -300,19 +465,28 @@ export class DockerModelRelay {
 
 	/** One process owns each daemon scope. Keep its live leases when clearing orphaned files and forwarders. */
 	async sweep(): Promise<number> {
-		const listed = await docker(["ps", "-aq", "--no-trunc", "--filter", `label=${ROLE}=forward`], { timeoutMs: 15_000 });
+		const listed = await docker(["ps", "-aq", "--no-trunc", "--filter", `label=${ROLE}=forward`], {
+			timeoutMs: 15_000,
+		});
 		let removed = 0;
 		for (const id of listed.code === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : []) {
 			const box = await this.inspect(id).catch(() => null);
-			if (!box || !this.owned(box.labels, "forward") || [...this.openLeases.values()].some((lease) => lease.nonce === box.labels[NONCE_LABEL])) continue;
+			if (
+				!box ||
+				!this.owned(box.labels, "forward") ||
+				[...this.openLeases.values()].some(lease => lease.nonce === box.labels[NONCE_LABEL])
+			)
+				continue;
 			if ((await docker(["rm", "-f", box.id], { timeoutMs: 30_000 })).code === 0) removed += 1;
 		}
 		const relay = await this.inspect(this.relayName).catch(() => null);
 		if (relay?.running && this.owned(relay.labels, "relay")) {
-			const live = [...this.openLeases.values()].map((lease) => `${lease.nonce}.json`);
+			const live = [...this.openLeases.values()].map(lease => `${lease.nonce}.json`);
 			// Every file but those of the leases this process holds now.
 			const script = `cd ${TOKENS} && for f in *; do [ -e "$f" ] || continue; case " $* " in *" $f "*) ;; *) rm -f -- "$f" ;; esac; done`;
-			await docker(["exec", "-u", "1000:1000", relay.id, "sh", "-c", script, "sh", ...live], { timeoutMs: 30_000 }).catch(() => undefined);
+			await docker(["exec", "-u", "1000:1000", relay.id, "sh", "-c", script, "sh", ...live], {
+				timeoutMs: 30_000,
+			}).catch(() => undefined);
 		}
 		return removed;
 	}

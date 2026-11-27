@@ -33,10 +33,22 @@ vi.mock("rivetkit/client", () => {
 		connect: () => {
 			rivet.connects += 1;
 			return {
-				get connStatus() { return rivet.status; },
+				get connStatus() {
+					return rivet.status;
+				},
 				on: () => () => undefined,
-				onStatusChange: (cb: typeof rivet.onStatus) => { rivet.onStatus = cb; return () => { rivet.onStatus = undefined; }; },
-				onError: (cb: typeof rivet.onError) => { rivet.onError = cb; return () => { rivet.onError = undefined; }; },
+				onStatusChange: (cb: typeof rivet.onStatus) => {
+					rivet.onStatus = cb;
+					return () => {
+						rivet.onStatus = undefined;
+					};
+				},
+				onError: (cb: typeof rivet.onError) => {
+					rivet.onError = cb;
+					return () => {
+						rivet.onError = undefined;
+					};
+				},
 				action: rivet.load,
 				dispose: async () => {
 					rivet.disposed += 1;
@@ -54,13 +66,16 @@ vi.mock("rivetkit/client", () => {
 
 const { createRivetClient } = await import("./rivet");
 
-const AUTH: AuthResult = { token: "platform-token", profile: { uid: "u1", displayName: "Test", email: null, demo: true } } as unknown as AuthResult;
+const AUTH: AuthResult = {
+	token: "platform-token",
+	profile: { uid: "u1", displayName: "Test", email: null, demo: true },
+} as unknown as AuthResult;
 const EXPIRED = { group: "auth", code: "token_expired", message: "Authentication token has expired." };
 
 /** A source that answers at once, or when `release` is called. */
 function source(connection: Connection, held = false) {
 	let release: () => void = () => undefined;
-	const gate = held ? new Promise<void>((done) => (release = done)) : Promise.resolve();
+	const gate = held ? new Promise<void>(done => (release = done)) : Promise.resolve();
 	const fake = {
 		connection: async () => {
 			await gate;
@@ -73,7 +88,7 @@ function source(connection: Connection, held = false) {
 	return { source: fake as unknown as ConnectionSource, token: fake.token, release };
 }
 
-const settle = () => new Promise<void>((done) => setTimeout(done, 0));
+const settle = () => new Promise<void>(done => setTimeout(done, 0));
 
 beforeEach(() => {
 	rivet.made.length = 0;
@@ -91,7 +106,15 @@ describe("the RivetKit client", () => {
 		const { source: from, token } = source({ endpoint: "https://engine.test", namespace: "production", tokens: true });
 		const client = createRivetClient("http://localhost:6420", "http://platform.test", from);
 		await settle();
-		expect(rivet.made).toEqual([{ endpoint: "https://engine.test", namespace: "production", disableMetadataLookup: true, getToken: token, devtools: false }]);
+		expect(rivet.made).toEqual([
+			{
+				endpoint: "https://engine.test",
+				namespace: "production",
+				disableMetadataLookup: true,
+				getToken: token,
+				devtools: false,
+			},
+		]);
 		expect(client.endpoint).toBe("https://engine.test");
 	});
 
@@ -123,7 +146,10 @@ describe("an action the engine refuses for its token", () => {
 			},
 			() => ({ turn: 3, steered: false }),
 		);
-		expect(await client.session(AUTH, "s1").prompt({ text: "after a day" } as never)).toEqual({ turn: 3, steered: false });
+		expect(await client.session(AUTH, "s1").prompt({ text: "after a day" } as never)).toEqual({
+			turn: 3,
+			steered: false,
+		});
 		expect(rivet.calls).toEqual(["prompt", "prompt"]);
 	});
 
@@ -159,8 +185,17 @@ describe("an action the engine refuses for its token", () => {
 
 describe("an action that meets the platform restarting", () => {
 	const STOPPED = { group: "guard", code: "actor_stopped_while_waiting", message: "Actor stopped while waiting." };
-	const client = () => createRivetClient("http://localhost:6420", "http://platform.test", source({ endpoint: "https://engine.test", namespace: "default", tokens: true }).source);
-	const failure = (pending: Promise<unknown>) => pending.then(() => null, (thrown: unknown) => thrown as PlatformError);
+	const client = () =>
+		createRivetClient(
+			"http://localhost:6420",
+			"http://platform.test",
+			source({ endpoint: "https://engine.test", namespace: "default", tokens: true }).source,
+		);
+	const failure = (pending: Promise<unknown>) =>
+		pending.then(
+			() => null,
+			(thrown: unknown) => thrown as PlatformError,
+		);
 
 	beforeEach(() => {
 		vi.useFakeTimers();
@@ -168,9 +203,12 @@ describe("an action that meets the platform restarting", () => {
 	});
 
 	it("is sent once more after two seconds when it only reads", async () => {
-		rivet.script.push(() => {
-			throw STOPPED;
-		}, () => []);
+		rivet.script.push(
+			() => {
+				throw STOPPED;
+			},
+			() => [],
+		);
 		const listed = client().user(AUTH).listSessions();
 		await vi.advanceTimersByTimeAsync(1_900);
 		expect(rivet.calls).toEqual(["listSessions"]);
@@ -185,15 +223,23 @@ describe("an action that meets the platform restarting", () => {
 		});
 		const error = failure(client().user(AUTH).me());
 		await vi.advanceTimersByTimeAsync(2_000);
-		expect(await error).toMatchObject({ code: "restarting", message: "The platform is restarting. Try again in a moment." });
+		expect(await error).toMatchObject({
+			code: "restarting",
+			message: "The platform is restarting. Try again in a moment.",
+		});
 		expect(rivet.calls).toEqual(["me", "me"]);
 	});
 
 	it("is sent once more when it writes with the key of its submission, and not without one", async () => {
-		rivet.script.push(() => {
-			throw STOPPED;
-		}, () => ({ turn: 1, steered: false }));
-		const prompted = client().session(AUTH, "s1").prompt({ text: "hi", idempotencyKey: "k1" } as never);
+		rivet.script.push(
+			() => {
+				throw STOPPED;
+			},
+			() => ({ turn: 1, steered: false }),
+		);
+		const prompted = client()
+			.session(AUTH, "s1")
+			.prompt({ text: "hi", idempotencyKey: "k1" } as never);
 		await vi.advanceTimersByTimeAsync(2_000);
 		expect(await prompted).toEqual({ turn: 1, steered: false });
 		expect(rivet.calls).toEqual(["prompt", "prompt"]);
@@ -203,7 +249,10 @@ describe("an action that meets the platform restarting", () => {
 		rivet.script.push(() => {
 			throw STOPPED;
 		});
-		expect(await failure(client().session(AUTH, "s1").stop())).toMatchObject({ code: "restarting", message: "The platform is restarting. Try again in a moment." });
+		expect(await failure(client().session(AUTH, "s1").stop())).toMatchObject({
+			code: "restarting",
+			message: "The platform is restarting. Try again in a moment.",
+		});
 		expect(rivet.calls).toEqual(["stop"]);
 	});
 
@@ -211,17 +260,23 @@ describe("an action that meets the platform restarting", () => {
 		rivet.script.push(() => {
 			throw { group: "rivetkit", code: "internal_error", message: "Internal error" };
 		});
-		expect(await failure(client().user(AUTH).me())).toMatchObject({ code: "internal", message: "The server hit an internal error. Its log has the details." });
+		expect(await failure(client().user(AUTH).me())).toMatchObject({
+			code: "internal",
+			message: "The server hit an internal error. Its log has the details.",
+		});
 		expect(rivet.calls).toEqual(["me"]);
 	});
 });
 
 describe("a feed", () => {
 	it("opens once the connection is known", async () => {
-		const { source: from, release } = source({ endpoint: "https://engine.test", namespace: "default", tokens: true }, true);
+		const { source: from, release } = source(
+			{ endpoint: "https://engine.test", namespace: "default", tokens: true },
+			true,
+		);
 		const client = createRivetClient("http://localhost:6420", "http://platform.test", from);
 		const states: ConnectionState[] = [];
-		const close = client.user(AUTH).watch({ onSessions: () => undefined, onConnection: (state) => states.push(state) });
+		const close = client.user(AUTH).watch({ onSessions: () => undefined, onConnection: state => states.push(state) });
 		await settle();
 		expect(states).toEqual(["connecting"]);
 		expect(rivet.connects).toBe(0);
@@ -241,30 +296,48 @@ describe("a feed", () => {
 			const { source: from } = source({ endpoint: null, namespace: "default", tokens: false });
 			const api = createRivetClient("http://engine.test", "http://platform.test", from).session(AUTH, "gone");
 			const onConnection = vi.fn();
-			const close = api.open({ onConnection, onSnapshot: vi.fn(), onItem: vi.fn(), onDelta: vi.fn(), onSummary: vi.fn(), onQuestion: vi.fn() });
+			const close = api.open({
+				onConnection,
+				onSnapshot: vi.fn(),
+				onItem: vi.fn(),
+				onDelta: vi.fn(),
+				onSummary: vi.fn(),
+				onQuestion: vi.fn(),
+			});
 			await vi.advanceTimersByTimeAsync(120_000);
 			expect(rivet.resolve).toHaveBeenCalledTimes(1);
 			expect(rivet.load).not.toHaveBeenCalled();
 			expect(rivet.disposed).toBe(1);
 			expect(onConnection).toHaveBeenLastCalledWith("failed", expect.objectContaining({ code: "not_found" }));
 			close();
-		} finally { vi.useRealTimers(); }
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
-	it.each(["socket", "snapshot"])("stops watching a deleted session after a %s refusal", async (path) => {
+	it.each(["socket", "snapshot"])("stops watching a deleted session after a %s refusal", async path => {
 		const { source: from } = source({ endpoint: null, namespace: "default", tokens: false });
 		const api = createRivetClient("http://engine.test", "http://platform.test", from).session(AUTH, "gone");
 		const onConnection = vi.fn();
 		const gone = { group: "actor", code: "not_found", message: "The actor does not exist or was destroyed." };
 		if (path === "snapshot") rivet.load.mockRejectedValueOnce({ ...gone, group: "user", code: "session_not_found" });
-		const close = api.open({ onConnection, onSnapshot: vi.fn(), onItem: vi.fn(), onDelta: vi.fn(), onQuestion: vi.fn(), onSummary: vi.fn() });
+		const close = api.open({
+			onConnection,
+			onSnapshot: vi.fn(),
+			onItem: vi.fn(),
+			onDelta: vi.fn(),
+			onQuestion: vi.fn(),
+			onSummary: vi.fn(),
+		});
 		await settle();
 		if (path === "socket") rivet.onError!(gone);
 		rivet.onStatus?.("idle");
 		rivet.onStatus?.("connected");
 		api.resync();
 		await settle();
-		expect(onConnection.mock.calls.filter(([state]) => state === "failed")).toEqual([["failed", expect.objectContaining({ code: "not_found" })]]);
+		expect(onConnection.mock.calls.filter(([state]) => state === "failed")).toEqual([
+			["failed", expect.objectContaining({ code: "not_found" })],
+		]);
 		expect(rivet.load).toHaveBeenCalledTimes(1);
 		expect(rivet.disposed).toBe(1);
 		close();
@@ -272,7 +345,10 @@ describe("a feed", () => {
 	});
 
 	it("that is closed before the connection is known never opens", async () => {
-		const { source: from, release } = source({ endpoint: "https://engine.test", namespace: "default", tokens: true }, true);
+		const { source: from, release } = source(
+			{ endpoint: "https://engine.test", namespace: "default", tokens: true },
+			true,
+		);
 		const client = createRivetClient("http://localhost:6420", "http://platform.test", from);
 		const close = client.user(AUTH).watch({ onSessions: () => undefined });
 		close();
@@ -282,7 +358,12 @@ describe("a feed", () => {
 	});
 
 	it("says so when the server refuses to say how to connect", async () => {
-		const refused = { connection: () => Promise.reject(new Error("This origin is not allowed to connect.")), token: async () => "", failure: () => null, close: () => undefined } as unknown as ConnectionSource;
+		const refused = {
+			connection: () => Promise.reject(new Error("This origin is not allowed to connect.")),
+			token: async () => "",
+			failure: () => null,
+			close: () => undefined,
+		} as unknown as ConnectionSource;
 		const client = createRivetClient("http://localhost:6420", "http://platform.test", refused);
 		const seen: Array<[ConnectionState, string | undefined]> = [];
 		client.session(AUTH, "s1").open({

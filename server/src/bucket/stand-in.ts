@@ -15,7 +15,14 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type GetOptions, type PutOptions, type ObjectStore, ObjectStoreError, type SignedLink, checkKey } from "./store.js";
+import {
+	type GetOptions,
+	type PutOptions,
+	type ObjectStore,
+	ObjectStoreError,
+	type SignedLink,
+	checkKey,
+} from "./store.js";
 
 const SCHEME = "wlp-stand-in:";
 
@@ -62,7 +69,12 @@ export class StandInObjectStore implements ObjectStore {
 	/** What a sandbox does with a link: uploads `body` with it, or downloads. The status is a store's own. */
 	use(url: string, method: "PUT", body: Uint8Array, headers?: HeadersInit): { status: number };
 	use(url: string, method: "GET"): { status: number; body?: Buffer; headers?: Headers };
-	use(url: string, method: "PUT" | "GET", body?: Uint8Array, headers?: HeadersInit): { status: number; body?: Buffer; headers?: Headers } {
+	use(
+		url: string,
+		method: "PUT" | "GET",
+		body?: Uint8Array,
+		headers?: HeadersInit,
+	): { status: number; body?: Buffer; headers?: Headers } {
 		let link: URL;
 		try {
 			link = new URL(url);
@@ -76,7 +88,8 @@ export class StandInObjectStore implements ObjectStore {
 		const type = link.searchParams.get("type") ?? "";
 		const disposition = link.searchParams.get("disposition") ?? "";
 		const expected = this.sign(link.searchParams.get("method") ?? "", key, expires, size, type, disposition);
-		if (link.protocol !== SCHEME || signature.length !== expected.length || !timingSafeEqual(signature, expected)) return { status: 403 };
+		if (link.protocol !== SCHEME || signature.length !== expected.length || !timingSafeEqual(signature, expected))
+			return { status: 403 };
 		if (link.searchParams.get("method") !== method || !(this.now() < expires)) return { status: 403 };
 		if (method === "PUT") {
 			if (body === undefined || String(body.length) !== size) return { status: 403 };
@@ -87,18 +100,52 @@ export class StandInObjectStore implements ObjectStore {
 			return { status: 200 };
 		}
 		const found = this.read(key);
-		return found === null ? { status: 404 } : { status: 200, body: found, headers: new Headers({ "content-type": type || this.types.get(key) || "application/octet-stream", ...(disposition ? { "content-disposition": disposition } : {}) }) };
+		return found === null
+			? { status: 404 }
+			: {
+					status: 200,
+					body: found,
+					headers: new Headers({
+						"content-type": type || this.types.get(key) || "application/octet-stream",
+						...(disposition ? { "content-disposition": disposition } : {}),
+					}),
+				};
 	}
 
-	private link(method: "PUT" | "GET", key: string, ttlMs: number, size: number | null, type = "", disposition = ""): SignedLink {
+	private link(
+		method: "PUT" | "GET",
+		key: string,
+		ttlMs: number,
+		size: number | null,
+		type = "",
+		disposition = "",
+	): SignedLink {
 		checkKey(key);
 		const expiresAt = this.now() + Math.max(1000, Math.round(ttlMs));
-		const query = new URLSearchParams({ method, type, disposition, expires: String(expiresAt), ...(size === null ? {} : { size: String(size) }), signature: this.sign(method, key, expiresAt, size === null ? null : String(size), type, disposition).toString("hex") });
+		const query = new URLSearchParams({
+			method,
+			type,
+			disposition,
+			expires: String(expiresAt),
+			...(size === null ? {} : { size: String(size) }),
+			signature: this.sign(method, key, expiresAt, size === null ? null : String(size), type, disposition).toString(
+				"hex",
+			),
+		});
 		return { url: `${SCHEME}//bucket/${key}?${query.toString()}`, expiresAt };
 	}
 
-	private sign(method: string, key: string, expires: number, size: string | null, type: string, disposition: string): Buffer {
-		return createHmac("sha256", this.secret).update([method, key, String(expires), size ?? "", type, disposition].join("\n")).digest();
+	private sign(
+		method: string,
+		key: string,
+		expires: number,
+		size: string | null,
+		type: string,
+		disposition: string,
+	): Buffer {
+		return createHmac("sha256", this.secret)
+			.update([method, key, String(expires), size ?? "", type, disposition].join("\n"))
+			.digest();
 	}
 
 	private read(key: string): Buffer | null {

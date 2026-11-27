@@ -58,7 +58,11 @@ export function docker(args: string[], options: DockerOptions = {}): Promise<Doc
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;
-		const collect = options.onStdout ?? ((chunk: string) => { stdout += chunk; });
+		const collect =
+			options.onStdout ??
+			((chunk: string) => {
+				stdout += chunk;
+			});
 		child.stdout.on("data", (chunk: Buffer) => collect(out.write(chunk)));
 		child.stderr.on("data", (chunk: Buffer) => (stderr += err.write(chunk)));
 		child.stdin.on("error", () => {});
@@ -70,16 +74,21 @@ export function docker(args: string[], options: DockerOptions = {}): Promise<Doc
 						timedOut = true;
 						child.kill("SIGKILL");
 					}, options.timeoutMs);
-		child.on("error", (error) => {
+		child.on("error", error => {
 			if (timer) clearTimeout(timer);
 			reject(new Error(`could not run docker: ${error.message}`));
 		});
-		child.on("close", (code) => {
+		child.on("close", code => {
 			if (timer) clearTimeout(timer);
 			collect(out.end());
 			stderr += err.end();
 			const result = { code, stdout, stderr, timedOut };
-			if (options.check && code !== 0) reject(new Error(`docker ${args[0]} failed (${timedOut ? "timed out" : `exit ${code}`}): ${stderr.trim() || stdout.trim()}`));
+			if (options.check && code !== 0)
+				reject(
+					new Error(
+						`docker ${args[0]} failed (${timedOut ? "timed out" : `exit ${code}`}): ${stderr.trim() || stdout.trim()}`,
+					),
+				);
 			else resolve(result);
 		});
 	});
@@ -138,9 +147,17 @@ export function helperFlags(name: string, network: "none" | "bridge"): string[] 
  * Runs a throwaway container to its end. On a timeout the container itself is removed too (killing the
  * local client does not stop it).
  */
-export async function runHelper(flags: string[], name: string, command: string[], options: { stdin?: string; timeoutMs?: number; image?: string } = {}): Promise<DockerResult> {
+export async function runHelper(
+	flags: string[],
+	name: string,
+	command: string[],
+	options: { stdin?: string; timeoutMs?: number; image?: string } = {},
+): Promise<DockerResult> {
 	const timeoutMs = options.timeoutMs ?? 60_000;
-	const result = await docker(["run", ...flags, options.image ?? IMAGE, ...command], { stdin: options.stdin, timeoutMs });
+	const result = await docker(["run", ...flags, options.image ?? IMAGE, ...command], {
+		stdin: options.stdin,
+		timeoutMs,
+	});
 	if (result.timedOut) await docker(["rm", "-f", name]);
 	return result;
 }

@@ -23,14 +23,23 @@ interface ServicePayload {
 
 type Payload = UserPayload | ServicePayload;
 
-export type Caller = { kind: "user"; generation: number; profile: UserProfile; expiresAt: number } | { kind: "service"; subject: string };
+export type Caller =
+	| { kind: "user"; generation: number; profile: UserProfile; expiresAt: number }
+	| { kind: "service"; subject: string };
 
 function encode(payload: Payload): string {
 	return signedPayload("v2", payload.k === "u" ? "user-token" : "service-token", payload);
 }
 
 export function issueUserToken(profile: UserProfile, generation: number, now = Date.now()): AuthToken {
-	return encode({ k: "u", gen: generation, uid: profile.uid, email: profile.email, demo: profile.demo, exp: now + USER_TOKEN_TTL_MS });
+	return encode({
+		k: "u",
+		gen: generation,
+		uid: profile.uid,
+		email: profile.email,
+		demo: profile.demo,
+		exp: now + USER_TOKEN_TTL_MS,
+	});
 }
 
 export function issueServiceToken(subject = "call", now = Date.now()): string {
@@ -39,7 +48,9 @@ export function issueServiceToken(subject = "call", now = Date.now()): string {
 
 /** The caller a token stands for, or null when it is malformed, forged or expired. */
 export function verifyToken(token: unknown, now = Date.now()): Caller | null {
-	const payload = readSignedPayload(token, "v2", 2048, kind => kind === "u" ? "user-token" : kind === "s" ? "service-token" : null);
+	const payload = readSignedPayload(token, "v2", 2048, kind =>
+		kind === "u" ? "user-token" : kind === "s" ? "service-token" : null,
+	);
 	if (!payload) return null;
 	if (typeof payload.exp !== "number" || payload.exp <= now) return null;
 
@@ -47,7 +58,12 @@ export function verifyToken(token: unknown, now = Date.now()): Caller | null {
 		if (typeof payload.gen !== "number" || !Number.isSafeInteger(payload.gen) || payload.gen < 0) return null;
 		if (typeof payload.uid !== "string" || payload.uid === "") return null;
 		const email = typeof payload.email === "string" ? payload.email : null;
-		return { kind: "user", generation: payload.gen, profile: { uid: payload.uid, email, demo: payload.demo === true }, expiresAt: payload.exp };
+		return {
+			kind: "user",
+			generation: payload.gen,
+			profile: { uid: payload.uid, email, demo: payload.demo === true },
+			expiresAt: payload.exp,
+		};
 	}
 	if (payload.k === "s") {
 		if (typeof payload.sub !== "string") return null;

@@ -6,7 +6,17 @@
  * build step can render a page to HTML. `DocsApp` is the page in a browser: it follows the address, the theme and
  * the title.
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	type KeyboardEvent as ReactKeyboardEvent,
+	type MouseEvent as ReactMouseEvent,
+} from "react";
 import { ArrowLeftIcon, ChevronIcon, CrossIcon, SearchIcon } from "../components/Icons";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { href, lastAppHref, navigate, useHash, useRoute } from "../lib/router";
@@ -37,14 +47,34 @@ function go(address: string): boolean {
 }
 
 /** A link inside the docs: no page load, and a new tab on a modified click. */
-function DocsLink({ to, className, children, current, onFollow }: { to: string; className?: string; children: React.ReactNode; current?: boolean; onFollow?(): void }) {
+function DocsLink({
+	to,
+	className,
+	children,
+	current,
+	onFollow,
+}: {
+	to: string;
+	className?: string;
+	children: React.ReactNode;
+	current?: boolean;
+	onFollow?(): void;
+}) {
 	return (
 		<a
 			className={className}
 			href={to}
 			aria-current={current ? "page" : undefined}
-			onClick={(event) => {
-				if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+			onClick={event => {
+				if (
+					event.defaultPrevented ||
+					event.button !== 0 ||
+					event.metaKey ||
+					event.ctrlKey ||
+					event.shiftKey ||
+					event.altKey
+				)
+					return;
 				if (go(to)) {
 					event.preventDefault();
 					onFollow?.();
@@ -65,8 +95,8 @@ function appHref(): string {
 
 function Highlight({ text, query }: { text: string; query: string }) {
 	const words = terms(query)
-		.filter((word) => word.length > 1)
-		.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+		.filter(word => word.length > 1)
+		.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 	if (words.length === 0) return <>{text}</>;
 	const parts = text.split(new RegExp(`(${words.join("|")})`, "gi"));
 	return <>{parts.map((part, at) => (at % 2 === 1 ? <mark key={at}>{part}</mark> : part))}</>;
@@ -88,10 +118,25 @@ export function takeStaticSearch(container: HTMLElement): StaticSearch | null {
 	if (!field) return null;
 	const focused = document.activeElement === field;
 	if (!focused && field.value === "") return null;
-	return { query: field.value, focused, selection: field.selectionStart !== null && field.selectionEnd !== null ? [field.selectionStart, field.selectionEnd] : null };
+	return {
+		query: field.value,
+		focused,
+		selection:
+			field.selectionStart !== null && field.selectionEnd !== null ? [field.selectionStart, field.selectionEnd] : null,
+	};
 }
 
-function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoFocus?: boolean; onDone?(): void; initial?: StaticSearch; bar?: boolean }) {
+function DocsSearch({
+	autoFocus = false,
+	onDone,
+	initial,
+	bar = false,
+}: {
+	autoFocus?: boolean;
+	onDone?(): void;
+	initial?: StaticSearch;
+	bar?: boolean;
+}) {
 	const [query, setQuery] = useState(initial?.query ?? "");
 	const [open, setOpen] = useState(initial?.focused ?? false);
 	const [active, setActive] = useState(0);
@@ -120,7 +165,8 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 		if (autoFocus) return;
 		const onKey = (event: KeyboardEvent) => {
 			if (event.defaultPrevented || event.isComposing || event.repeat) return;
-			const chord = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
+			const chord =
+				(event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
 			const slash = event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey;
 			if (!chord && !slash) return;
 			const target = event.target instanceof Element ? event.target : null;
@@ -140,7 +186,10 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 	// The chord as this machine writes it: known only in a browser, so the static page shows "/".
 	const [chordLabel, setChordLabel] = useState<string | null>(null);
 	useEffect(() => {
-		const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform ?? navigator.userAgent;
+		const platform =
+			(navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+			navigator.platform ??
+			navigator.userAgent;
 		setChordLabel(/mac|iphone|ipad/i.test(platform) ? "⌘K" : "Ctrl K");
 	}, []);
 
@@ -156,10 +205,10 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 		if (event.key === "ArrowDown") {
 			event.preventDefault();
 			setOpen(true);
-			setActive((at) => Math.min(at + 1, hits.length - 1));
+			setActive(at => Math.min(at + 1, hits.length - 1));
 		} else if (event.key === "ArrowUp") {
 			event.preventDefault();
-			setActive((at) => Math.max(at - 1, 0));
+			setActive(at => Math.max(at - 1, 0));
 		} else if (event.key === "Enter") {
 			const hit = hits[active];
 			if (hit) {
@@ -193,7 +242,7 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 					aria-activedescendant={showing && hits[active] ? `${listId}-${active}` : undefined}
 					autoComplete="off"
 					spellCheck={false}
-					onChange={(event) => {
+					onChange={event => {
 						setQuery(event.target.value);
 						setActive(0);
 						setOpen(true);
@@ -217,12 +266,19 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 					) : (
 						<ul id={listId} role="listbox" aria-label="Results">
 							{hits.map((hit, at) => (
-								<li key={hit.href} id={`${listId}-${at}`} role="option" aria-selected={at === active} className="docs-result" onMouseEnter={() => setActive(at)}>
+								<li
+									key={hit.href}
+									id={`${listId}-${at}`}
+									role="option"
+									aria-selected={at === active}
+									className="docs-result"
+									onMouseEnter={() => setActive(at)}
+								>
 									<a
 										href={hit.href}
 										tabIndex={-1}
-										onMouseDown={(event) => event.preventDefault()}
-										onClick={(event) => {
+										onMouseDown={event => event.preventDefault()}
+										onClick={event => {
 											if (event.metaKey || event.ctrlKey || event.shiftKey) return;
 											event.preventDefault();
 											follow(hit);
@@ -269,13 +325,18 @@ function DocsSearch({ autoFocus = false, onDone, initial, bar = false }: { autoF
 function DocsNav({ current, onFollow }: { current: DocsPage | undefined; onFollow?(): void }) {
 	return (
 		<nav className="docs-nav-list" aria-label="Documentation">
-			{DOCS_SECTIONS.map((section) => (
+			{DOCS_SECTIONS.map(section => (
 				<div key={section} className="docs-nav-group">
 					<p className="docs-nav-heading">{section}</p>
 					<ul>
-						{DOCS_PAGES.filter((page) => page.section === section).map((page) => (
+						{DOCS_PAGES.filter(page => page.section === section).map(page => (
 							<li key={page.slug}>
-								<DocsLink to={docsPath(page.slug)} className="docs-nav-link" current={page === current} onFollow={onFollow}>
+								<DocsLink
+									to={docsPath(page.slug)}
+									className="docs-nav-link"
+									current={page === current}
+									onFollow={onFollow}
+								>
 									<span className="docs-nav-num" aria-hidden="true">
 										{chapter(page) || "··"}
 									</span>
@@ -294,7 +355,7 @@ function DocsNav({ current, onFollow }: { current: DocsPage | undefined; onFollo
 function Contents({ headings, active }: { headings: DocsHeading[]; active: string }) {
 	return (
 		<ul className="docs-toc-list">
-			{headings.map((heading) => (
+			{headings.map(heading => (
 				<li key={heading.id} className={heading.depth === 3 ? "docs-toc-sub" : undefined}>
 					<a href={`#${heading.id}`} aria-current={heading.id === active ? "location" : undefined}>
 						{heading.text}
@@ -333,7 +394,7 @@ function Pager({ page }: { page: DocsPage }) {
 function Chapters() {
 	return (
 		<ol className="docs-chapters">
-			{DOCS_PAGES.slice(1).map((page) => (
+			{DOCS_PAGES.slice(1).map(page => (
 				<li key={page.slug}>
 					<DocsLink to={docsPath(page.slug)} className="docs-chapter">
 						<span className="docs-chapter-num" aria-hidden="true">
@@ -361,7 +422,14 @@ export interface DocsViewProps {
 	initialSearch?: StaticSearch;
 }
 
-export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", returnHref = "/", initialSearch }: DocsViewProps) {
+export function DocsView({
+	slug,
+	theme,
+	onToggleTheme,
+	activeHeading = "",
+	returnHref = "/",
+	initialSearch,
+}: DocsViewProps) {
 	const page = docsPage(slug);
 	const rendered = useMemo(() => (page ? renderDocs(docsSource(page)) : null), [page]);
 	const [menu, setMenu] = useState<"closed" | "nav" | "search">("closed");
@@ -411,7 +479,7 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", retur
 		if (go(address)) event.preventDefault();
 	}, []);
 
-	const headings = rendered?.headings.filter((heading) => heading.depth === 2 || heading.depth === 3) ?? [];
+	const headings = rendered?.headings.filter(heading => heading.depth === 2 || heading.depth === 3) ?? [];
 
 	return (
 		<div className="docs">
@@ -427,14 +495,26 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", retur
 					<DocsSearch bar initial={initialSearch} />
 				</div>
 				<div className="docs-bar-end">
-					<button type="button" className="icon-button docs-bar-narrow" aria-label="Search the docs" onClick={() => setMenu("search")}>
+					<button
+						type="button"
+						className="icon-button docs-bar-narrow"
+						aria-label="Search the docs"
+						onClick={() => setMenu("search")}
+					>
 						<SearchIcon />
 					</button>
 					<ThemeToggle theme={theme} onToggle={onToggleTheme} />
 					<a className="button button-outline button-small docs-open" href={returnHref}>
 						Open Windlass
 					</a>
-					<button type="button" className="icon-button docs-bar-narrow" aria-label="Menu" aria-expanded={menu === "nav"} aria-controls="docs-drawer" onClick={() => setMenu(menu === "nav" ? "closed" : "nav")}>
+					<button
+						type="button"
+						className="icon-button docs-bar-narrow"
+						aria-label="Menu"
+						aria-expanded={menu === "nav"}
+						aria-controls="docs-drawer"
+						onClick={() => setMenu(menu === "nav" ? "closed" : "nav")}
+					>
 						<span className="docs-burger" aria-hidden="true" />
 					</button>
 				</div>
@@ -443,7 +523,15 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", retur
 			{menu !== "closed" ? (
 				<div className="docs-drawer-backdrop" onClick={() => setMenu("closed")} aria-hidden="true" />
 			) : null}
-			<div id="docs-drawer" className="docs-drawer" data-open={menu !== "closed" ? "" : undefined} role="dialog" aria-modal="true" aria-label="Docs menu" hidden={menu === "closed"}>
+			<div
+				id="docs-drawer"
+				className="docs-drawer"
+				data-open={menu !== "closed" ? "" : undefined}
+				role="dialog"
+				aria-modal="true"
+				aria-label="Docs menu"
+				hidden={menu === "closed"}
+			>
 				<div className="docs-drawer-head">
 					<span className="eyebrow">Docs</span>
 					<button type="button" className="icon-button" aria-label="Close the menu" onClick={() => setMenu("closed")}>
@@ -503,7 +591,12 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", retur
 								</details>
 							) : null}
 
-							<div ref={prose} className="docs-prose" onClick={onProseClick} dangerouslySetInnerHTML={{ __html: rendered.html }} />
+							<div
+								ref={prose}
+								className="docs-prose"
+								onClick={onProseClick}
+								dangerouslySetInnerHTML={{ __html: rendered.html }}
+							/>
 
 							<Pager page={page} />
 						</article>
@@ -514,7 +607,10 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", retur
 								<h1 className="docs-title" tabIndex={-1}>
 									No page here
 								</h1>
-								<p className="docs-lede">The docs have no page at this address. It may have moved: the overview lists every page, and search finds what is on them.</p>
+								<p className="docs-lede">
+									The docs have no page at this address. It may have moved: the overview lists every page, and search
+									finds what is on them.
+								</p>
 							</header>
 							<DocsLink to="/docs" className="button button-outline">
 								<ArrowLeftIcon />
@@ -557,7 +653,8 @@ function useActiveHeading(slug: string): string {
 				else break;
 			}
 			// At the bottom of the page, the last heading is the one you are reading.
-			if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4 && headings.length) current = headings[headings.length - 1]?.id ?? current;
+			if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4 && headings.length)
+				current = headings[headings.length - 1]?.id ?? current;
 			setActive(current);
 		};
 		const onScroll = () => {
@@ -586,7 +683,15 @@ function setDescription(text: string): void {
 }
 
 /** The docs in a browser: the address's page, its title, and the scroll to where the address points. */
-export function DocsApp({ theme: given, onToggleTheme: givenToggle, initialSearch }: { theme?: Theme; onToggleTheme?(): void; initialSearch?: StaticSearch } = {}) {
+export function DocsApp({
+	theme: given,
+	onToggleTheme: givenToggle,
+	initialSearch,
+}: {
+	theme?: Theme;
+	onToggleTheme?(): void;
+	initialSearch?: StaticSearch;
+} = {}) {
 	const route = useRoute();
 	const hash = useHash();
 	const [ownTheme, ownToggle] = useTheme();
@@ -612,6 +717,14 @@ export function DocsApp({ theme: given, onToggleTheme: givenToggle, initialSearc
 		first.current = false;
 	}, [slug, hash]);
 
-	return <DocsView slug={slug} theme={theme} onToggleTheme={onToggleTheme} activeHeading={active} returnHref={lastAppHref()} initialSearch={initialSearch} />;
+	return (
+		<DocsView
+			slug={slug}
+			theme={theme}
+			onToggleTheme={onToggleTheme}
+			activeHeading={active}
+			returnHref={lastAppHref()}
+			initialSearch={initialSearch}
+		/>
+	);
 }
-
