@@ -80,6 +80,7 @@ import {
 	modelKeyActor,
 	grantIsValid,
 	secretsActor,
+	type ForkSource,
 	type SessionCreateInput,
 	userActor,
 } from "./internal.js";
@@ -158,6 +159,7 @@ import type { Ctx, SessionMeta, ActiveTurn, PromptAnswer, FeedbackPrompt, Sessio
 import { runnerLink, layerOf, durableTurns, isRunnerSocket } from "./agent-session/runner.js";
 import { publish, summaryOf, report } from "./agent-session/summary.js";
 import { removeBackup } from "./agent-session/workspace.js";
+import { continuationMeta, forkSource } from "./agent-session/continuation.js";
 import {
 	TurnProblem,
 	githubConnection,
@@ -1864,7 +1866,7 @@ export const agentSession = actor({
 				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions) }),
 				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
-				effort: input.origin?.effort ?? null,
+				effort: input.origin?.effort ?? (!input.origin && typeof input.effort === "string" ? input.effort : null),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
 				repo: typeof input.repo === "object" && input.repo !== null ? input.repo : null,
 				publishUnasked: typeof input.repo === "object" && input.repo !== null && input.publishUnasked === true,
@@ -1895,6 +1897,7 @@ export const agentSession = actor({
 							},
 						}
 					: {}),
+				...(!input.origin && input.continuation && continuationMeta(input.continuation)),
 			};
 			await c.db.execute("INSERT OR REPLACE INTO meta (id, data) VALUES (1, ?)", JSON.stringify(meta));
 		} catch (error) {
@@ -3176,6 +3179,12 @@ export const agentSession = actor({
 		internalSummary: (c): SessionSummary => {
 			requireService(c);
 			return summaryOf(liveMeta(c));
+		},
+
+		/** Only `user` asks, for a session of its own (`continueSession`): the actor's key holds the user's id. */
+		internalForkSource: async (c): Promise<ForkSource> => {
+			requireService(c);
+			return await forkSource(c, liveMeta(c));
 		},
 
 		internalAssessRepository: async (

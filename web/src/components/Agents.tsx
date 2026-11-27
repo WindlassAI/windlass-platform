@@ -158,6 +158,12 @@ function AgentRow({
 					</span>
 				) : null}
 				{pull ? <PullChip pull={pull} /> : null}
+				{session.continuedFrom ? (
+					<span className="agent-chip agent-chip-quiet" title={`Continued from ${session.continuedFrom.title}`}>
+						continued
+						<span className="visually-hidden"> from {session.continuedFrom.title}</span>
+					</span>
+				) : null}
 				{/* A turn that ended well says so with its glyph; any other ending says it in words. */}
 				{active || session.lastOutcome === "succeeded" ? null : <OutcomeChip outcome={session.lastOutcome} />}
 				{session.sandbox === "running" && !active ? (

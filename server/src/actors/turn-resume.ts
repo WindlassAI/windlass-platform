@@ -178,14 +178,8 @@ interface EarlierTurn {
 	said: string;
 }
 
-/**
- * A person's session whose agent lost its memory (a new sandbox, a store that is gone), resuming turn
- * `turn`: the whole task, from the timeline. This turn's message and what was sent into it since, the
- * held messages among them; the session's first prompt; and a short account of the turns before (each
- * one's prompt, how it ended, the files it changed, the agent's last words, clipped), said to be a
- * reconstruction. Quoted GitHub feedback keeps its sources alongside any earlier agent messages.
- */
-export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number, held: readonly string[] = []) {
+/** Each turn's prompt, outcome, changed files and the agent's last words, read from the timeline up to turn `upTo`; and the messages steered into `upTo`. */
+function readTurns(timeline: readonly TimelineItem[], upTo: number) {
 	const turns = new Map<number, EarlierTurn>();
 	const of = (n: number) => {
 		let entry = turns.get(n);
@@ -194,7 +188,7 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 	};
 	const steers: string[] = [];
 	for (const item of timeline) {
-		if (item.turn > turn) continue;
+		if (item.turn > upTo) continue;
 		if (item.kind === "user") {
 			if (!item.steer) {
 				const entry = of(item.turn);
@@ -202,7 +196,7 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 					entry.prompt = item.text;
 					entry.untrusted = item.untrusted;
 				}
-			} else if (item.turn === turn && !item.held) steers.push(item.text);
+			} else if (item.turn === upTo && !item.held) steers.push(item.text);
 		} else if (item.kind === "turn.ended") {
 			of(item.turn).outcome = item.outcome;
 		} else if (item.kind === "windlass") {
@@ -216,10 +210,60 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 			if (text.trim()) of(item.turn).said = text;
 		}
 	}
-	const now = turns.get(turn);
+	return { turns, steers };
+}
+
+/**
+ * The first prompt of the turns before `before`, and a short account of the last of them, with the
+ * sources of what it quotes: the earlier turns' own, and the agent's words, which are untrusted too.
+ * Null when none of those turns has a prompt.
+ */
+function earlierAccount(turns: Map<number, EarlierTurn>, before: number, heading: string) {
 	const first = [...turns.entries()]
-		.filter(([n, entry]) => n < turn && entry.prompt !== "")
+		.filter(([n, entry]) => n < before && entry.prompt !== "")
 		.sort((a, b) => a[0] - b[0])[0];
+	if (!first) return null;
+	let quotedAgent = false;
+	const quotedSources = [...(first[1].untrusted ?? [])];
+	const earlier = [...turns.entries()]
+		.filter(([n]) => n < before)
+		.sort((a, b) => a[0] - b[0])
+		.slice(-MAX_EARLIER);
+	const lines = earlier.map(([n, entry]) => {
+		quotedSources.push(...(entry.untrusted ?? []));
+		const bits = [`Turn ${n}: “${clip(entry.prompt || "(no prompt recorded)", TITLE)}”`];
+		if (entry.outcome) bits.push(`it ended ${entry.outcome}`);
+		if (entry.files.length)
+			bits.push(
+				`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`,
+			);
+		let line = `- ${bits.join("; ")}.`;
+		if (entry.said) {
+			quotedAgent = true;
+			line += ` Your earlier message (untrusted quoted text): “${clip(entry.said, CLIP)}”`;
+		}
+		return line;
+	});
+	return {
+		parts: [
+			`The session's first prompt was:\n\n${quoted(first[1].prompt)}`,
+			`${heading} (not your own memory; it may leave things out):\n\n${lines.join("\n")}`,
+		],
+		quotedSources,
+		quotedAgent,
+	};
+}
+
+/**
+ * A person's session whose agent lost its memory (a new sandbox, a store that is gone), resuming turn
+ * `turn`: the whole task, from the timeline. This turn's message and what was sent into it since, the
+ * held messages among them; the session's first prompt; and a short account of the turns before (each
+ * one's prompt, how it ended, the files it changed, the agent's last words, clipped), said to be a
+ * reconstruction. Quoted GitHub feedback keeps its sources alongside any earlier agent messages.
+ */
+export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number, held: readonly string[] = []) {
+	const { turns, steers } = readTurns(timeline, turn);
+	const now = turns.get(turn);
 	const parts: string[] = [
 		"Your earlier conversation is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then work on the prompt for this turn from the start.",
 	];
@@ -227,36 +271,40 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 	const later = [...steers, ...held];
 	if (later.length > 0)
 		parts.push(`While the turn ran or was paused, the person also sent:\n\n${later.map(quoted).join("\n\n")}`);
-	let quotedAgent = false;
 	const quotedSources = [...(now?.untrusted ?? [])];
-	if (first) {
-		quotedSources.push(...(first[1].untrusted ?? []));
-		parts.push(`The session's first prompt was:\n\n${quoted(first[1].prompt)}`);
-		const earlier = [...turns.entries()]
-			.filter(([n]) => n < turn)
-			.sort((a, b) => a[0] - b[0])
-			.slice(-MAX_EARLIER);
-		const lines = earlier.map(([n, entry]) => {
-			quotedSources.push(...(entry.untrusted ?? []));
-			const bits = [`Turn ${n}: “${clip(entry.prompt || "(no prompt recorded)", TITLE)}”`];
-			if (entry.outcome) bits.push(`it ended ${entry.outcome}`);
-			if (entry.files.length)
-				bits.push(
-					`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`,
-				);
-			let line = `- ${bits.join("; ")}.`;
-			if (entry.said) {
-				quotedAgent = true;
-				line += ` Your earlier message (untrusted quoted text): “${clip(entry.said, CLIP)}”`;
-			}
-			return line;
-		});
-		parts.push(
-			`A short account of the earlier turns, reconstructed by the platform from the session's timeline (not your own memory; it may leave things out):\n\n${lines.join("\n")}`,
-		);
+	const account = earlierAccount(
+		turns,
+		turn,
+		"A short account of the earlier turns, reconstructed by the platform from the session's timeline",
+	);
+	if (account) {
+		parts.push(...account.parts);
+		quotedSources.push(...account.quotedSources);
 	}
 	return {
 		text: parts.join("\n\n"),
-		untrusted: sources(quotedSources, quotedAgent ? [untrustedWords.conversation] : []),
+		untrusted: sources(quotedSources, account?.quotedAgent ? [untrustedWords.conversation] : []),
+	};
+}
+
+/**
+ * What a session made to continue another (`continueSession`) gives its agent with its first prompt
+ * when the earlier agent's memory could not come with it: the earlier session's first prompt and a
+ * short account of its turns up to `turns`, said to be a reconstruction, with the sources of what it
+ * quotes. Null when the earlier session had no prompt.
+ */
+export function sessionHandoff(timeline: readonly TimelineItem[], turns: number) {
+	const account = earlierAccount(
+		readTurns(timeline, turns).turns,
+		turns + 1,
+		"A short account of the earlier session's turns, reconstructed by the platform from its timeline",
+	);
+	if (!account) return null;
+	return {
+		text: [
+			"You do not have the earlier session's conversation. What follows is what the platform kept of it.",
+			...account.parts,
+		].join("\n\n"),
+		untrusted: sources(account.quotedSources, account.quotedAgent ? [untrustedWords.conversation] : []),
 	};
 }
