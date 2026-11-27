@@ -24,9 +24,11 @@ import {
 	deploymentSize,
 	filedAgentSettings,
 	machinePayers,
+	namesModel,
 	partRun,
 	resolveRun,
 	runPlace,
+	withoutUnofferedModels,
 	type ResolvedRun,
 	type RunContext,
 } from "../factory/resolve-run.js";
@@ -98,6 +100,7 @@ import {
 	machineLabel,
 	type GithubId,
 	type ApiToken,
+	type ModelList,
 	type ApiTokenScope,
 	type CreateItemInput,
 	type CreateSessionInput,
@@ -364,11 +367,11 @@ export interface ItemSessionInput {
 	issue?: { number: number; installationId: GithubId };
 	effort?: string;
 }
-export type MakeSession = (
-	owner: UserProfile,
-	input: CreateSessionInput,
-	item: ItemSessionInput,
-) => Promise<SessionSummary>;
+export interface MakeSession {
+	(owner: UserProfile, input: CreateSessionInput, item: ItemSessionInput): Promise<SessionSummary>;
+	/** The account's Windlass models, to leave out a saved default model they no longer offer (`withoutUnofferedModels`). */
+	accountModels?(demo: boolean): Promise<ModelList>;
+}
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -787,6 +790,22 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
+/** The account's and the repository's saved defaults for a new item, without a model the account no longer offers. */
+async function savedContext(
+	c: ItemsCtx,
+	profile: UserProfile,
+	repositoryId: GithubId,
+	makeSession: MakeSession,
+): Promise<RunContext> {
+	const account = await readAccountDefaults(c.db);
+	const repository = await readDefaults(c.db, "github:" + repositoryId);
+	if (!makeSession.accountModels || !(namesModel(account) || namesModel(repository))) return { account, repository };
+	// Without a list (the plan is signed out), the defaults stay as saved and the item waits with the reason.
+	const list = await makeSession.accountModels(profile.demo).catch(() => null);
+	if (!list) return { account, repository };
+	return { account: withoutUnofferedModels(account, list), repository: withoutUnofferedModels(repository, list) };
+}
+
 async function makeItem(
 	c: ItemsCtx,
 	profile: UserProfile,
@@ -833,10 +852,7 @@ async function makeItem(
 			: `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
-	const context: RunContext = child?.context ?? {
-		account: await readAccountDefaults(c.db),
-		repository: await readDefaults(c.db, "github:" + input.repository.id),
-	};
+	const context: RunContext = child?.context ?? (await savedContext(c, profile, input.repository.id, makeSession));
 	const role = child?.role ?? (input.mode === "orchestrate" ? "planner" : "builder");
 	if (!child) {
 		const offered = hostedSizesForPlan(

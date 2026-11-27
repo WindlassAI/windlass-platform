@@ -5,6 +5,7 @@ import type {
 	HostedSize,
 	ItemPlaceDefaults,
 	MachineSummary,
+	ModelList,
 	PlanSubtask,
 	SandboxPlace,
 	SandboxProfileId,
@@ -132,6 +133,25 @@ function runLayers(context: RunContext): [Source, RunSettings][] {
 
 const agentLayerOf = (layers: [Source, RunSettings][]) =>
 	[...layers].reverse().find(([, settings]) => settings.harness != null);
+
+/**
+ * A saved default with any Windlass model the account's list no longer offers left out, so the next layer's model
+ * applies. The repository and Settings pages already say such a default is ignored (web/src/lib/repositories.ts,
+ * `startingChoices`); without this, an item filed under it would wait on a model that cannot be had.
+ */
+export function withoutUnofferedModels(settings: RunSettings | undefined, list: ModelList): RunSettings | undefined {
+	if (!settings) return settings;
+	const offered = (model: string | null | undefined) => !model || list.models.some(candidate => candidate.id === model);
+	if (offered(settings.model) && offered(settings.reviewModel)) return settings;
+	return {
+		...settings,
+		...(!offered(settings.model) && { model: null }),
+		...(!offered(settings.reviewModel) && { reviewModel: null }),
+	};
+}
+
+/** Whether a saved default names a Windlass model, so filing needs the account's list to check it. */
+export const namesModel = (settings: RunSettings | undefined) => !!(settings?.model || settings?.reviewModel);
 
 /** Store a filed model and effort under the agent they belong to, including an inherited agent. */
 export function filedAgentSettings(context: RunContext, model: string | null, effort: string | null): RunSettings {

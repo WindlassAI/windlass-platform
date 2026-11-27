@@ -7,6 +7,7 @@ import { modelRefusal } from "../../../server/src/account-models.js";
 import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import { machinePayers } from "../lib/run";
+import { withoutUnofferedModels } from "../../../server/src/factory/resolve-run.js";
 import type { AccountDefaultsPatch, RepositoryDefaultsPatch } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
@@ -1264,12 +1265,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		},
 		defaultPlace: (auth, repositoryId) =>
 			savedPlace(defaultsOf(worldOf(auth), repositoryId), accountDefaultsOf(worldOf(auth))),
-		runContext: (auth, repositoryId) => ({
-			deployment: { hostedSize: "standard" },
-			account: accountDefaultsOf(worldOf(auth)),
-			repository: defaultsOf(worldOf(auth), repositoryId),
-			machinePayers: machinePayers(machineState === "off" ? [] : machinesView(auth)),
-		}),
+		runContext: (auth, repositoryId) => {
+			// A saved model the account no longer offers is left out, as user-items.ts `savedContext` does.
+			const models = modelsFor(auth.profile);
+			return {
+				deployment: { hostedSize: "standard" },
+				account: withoutUnofferedModels(accountDefaultsOf(worldOf(auth)), models),
+				repository: withoutUnofferedModels(defaultsOf(worldOf(auth), repositoryId), models),
+				machinePayers: machinePayers(machineState === "off" ? [] : machinesView(auth)),
+			};
+		},
 		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,
 		machines: auth =>
 			machineState === "off" ? null : { list: machinesView(auth), minRunnerVersion: MOCK_MIN_RUNNER_VERSION },

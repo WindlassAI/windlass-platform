@@ -1651,7 +1651,13 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 
 /** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
 function itemSession(c: CreateCtx): MakeSession {
-	return (profile, input, item) => makeSession(c, profile, input, null, item);
+	return Object.assign(
+		(profile: UserProfile, input: CreateSessionInput, item: ItemSessionInput) =>
+			makeSession(c, profile, input, null, item),
+		{
+			accountModels: (demo: boolean) => modelsOf(c, demo),
+		},
+	);
 }
 
 type RevocationContext = UserCtx & {
