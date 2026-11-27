@@ -6,18 +6,21 @@ const SOURCES: Record<SourceId, SourceCaps> = {
 	github: {
 		displayName: "GitHub",
 		noun: "issue",
+		handle: "@",
 		quickLabels: ["windlass:quick"],
 		untrusted: { words: (display, author) => `issue ${display} by @${author}`, pattern: /^issue #\d+ by @/ },
 	},
 	gitlab: {
 		displayName: "GitLab",
 		noun: "issue",
+		handle: "@",
 		quickLabels: [],
 		untrusted: { words: display => `GitLab issue ${display}`, pattern: /^GitLab issue #\d+$/ },
 	},
 	linear: {
 		displayName: "Linear",
 		noun: "issue",
+		handle: "",
 		quickLabels: ["windlass:quick", "windlass-quick"],
 		untrusted: {
 			words: (display, author) => `Linear issue ${display} by ${author}`,
@@ -27,6 +30,7 @@ const SOURCES: Record<SourceId, SourceCaps> = {
 	jira: {
 		displayName: "Jira",
 		noun: "issue",
+		handle: "",
 		quickLabels: ["windlass:quick", "windlass-quick"],
 		untrusted: {
 			words: (display, author) => `Jira issue ${display} by ${author}`,
@@ -36,6 +40,7 @@ const SOURCES: Record<SourceId, SourceCaps> = {
 	slack: {
 		displayName: "Slack",
 		noun: "message",
+		handle: "",
 		quickLabels: [],
 		untrusted: { words: () => "a Slack request", pattern: /^a Slack request$/ },
 	},

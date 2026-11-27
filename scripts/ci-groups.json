@@ -96,7 +96,7 @@
         "environment": "tsx ../scripts/environment-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",
         "untrusted": "tsx ../scripts/untrusted-check.ts",
-        "sources": "tsx --test src/sources/registry.test.ts src/sources/updates.test.ts",
+        "sources": "tsx --test src/sources/registry.test.ts src/sources/updates.test.ts src/sources/bindings.test.ts",
         "usage": "tsx ../scripts/usage-check.ts",
         "billing": "tsx ../scripts/billing-check.ts",
         "verified": "tsx ../scripts/verified-check.ts",
