@@ -4,6 +4,7 @@ import { AddressBudget, clientAddress, rateLimited } from "../http-limits.js";
 import { isActorGone } from "../actor-errors.js";
 import { serviceParams } from "../auth.js";
 import { digest, jiraActors } from "./connect.js";
+import { isRecord } from "../util.js";
 
 export const JIRA_WEBHOOK_PATH = "/jira/webhook";
 export interface JiraDelivery {
@@ -19,7 +20,7 @@ export interface JiraDelivery {
 	sentAt: number;
 }
 export type JiraDispatch = "taken" | "duplicate" | "ignored";
-const obj = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const obj = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 const account = (value: unknown): string | null => typeof value === "string" && /^[a-zA-Z0-9:_-]{1,128}$/.test(value) ? value : null;
 const numericId = (v: unknown): v is string => typeof v === "string" && /^[1-9]\d{0,31}$/.test(v);
 const normalized = (label: string) => label.trim().toLowerCase();

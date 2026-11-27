@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
+import { record } from "./app.js";
 import { decimalId, gitlabId, parseGitlabJson } from "./ids.js";
 
 export const GITLAB_WEBHOOK_PATH = "/gitlab/webhook";
@@ -21,7 +22,6 @@ export type GitlabDelivery = { guid: string; projectId: string } & (
 	| (IssueText & { event: "note"; target: "issue"; iid: number | string; noteId: string; senderId: string; body: string })
 );
 
-const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const id = decimalId;
 const iid = gitlabId;
 const sha = (v: unknown) => typeof v === "string" && /^[a-f\d]{40}$/i.test(v) && !/^0+$/.test(v) ? v : null;

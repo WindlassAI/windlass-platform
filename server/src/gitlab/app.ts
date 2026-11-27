@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isRecord } from "../util.js";
 import { decimalId, gitlabId, parseGitlabJson } from "./ids.js";
 
 export interface GitlabAppSettings {
@@ -50,7 +51,7 @@ const MAX_PAGES = 10;
 export const GITLAB_SCOPES = ["api"] as const;
 export const newVerifier = () => randomBytes(32).toString("base64url");
 export const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
-export const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+export const record = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 export const text = (value: unknown): string => typeof value === "string" ? value : "";
 
 /** Provider diagnostics may echo the request (including OAuth credentials). Keep only the status and retry time. */
