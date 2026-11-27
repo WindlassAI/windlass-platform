@@ -106,25 +106,23 @@ export async function freeBranch(title: string, taken: (name: string) => Promise
 	throw new Error(`GitHub already has ${wanted} and 19 more like it.`);
 }
 
-/** Whether the repository has a branch of exactly this name. Another refusal from GitHub is thrown. */
-export async function branchTaken(
+/** `freeBranch` against the repository at GitHub, with one token for every name it tries. A refusal other than "no such branch" is thrown. */
+export async function freeBranchAt(
 	app: GithubApp,
 	connection: StoredConnection,
 	repository: SessionRepository,
-	name: string,
-): Promise<boolean> {
+	title: string,
+): Promise<string> {
 	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	const { owner, name } = resolved.repository;
+	const missing = (error: unknown) => {
+		if (error instanceof GithubError && error.status === 404) return false;
+		throw error;
+	};
 	return app.withToken(
 		resolved.installation.id,
 		{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
-		token =>
-			refHead(app, token, resolved.repository.owner, resolved.repository.name, name).then(
-				() => true,
-				(error: unknown) => {
-					if (error instanceof GithubError && error.status === 404) return false;
-					throw error;
-				},
-			),
+		token => freeBranch(title, branch => refHead(app, token, owner, name, branch).then(() => true, missing)),
 		{ revokeAfter: true },
 	);
 }

@@ -40,8 +40,7 @@ import {
 	type StoredRepository,
 	hasUnpushedWork,
 	branchFor,
-	branchTaken,
-	freeBranch,
+	freeBranchAt,
 	wantedBranch,
 	refreshPull,
 	type PublishEvidence,
@@ -288,9 +287,10 @@ export async function testSessionBase(
 }
 
 /**
- * The branch the session pushes to: the one it pushed to before; a work item's agent's, named as its item
- * names it; else a branch named for the title that GitHub does not have yet. Where GitHub cannot say which
- * names are free, the title with the end of the session's id, as before.
+ * The branch the session pushes to, decided the first time a push or a request to publish needs it and kept
+ * from then on: a work item's agent's is named as its item names it; any other is named for the title, as
+ * GitHub does not have it yet. Where GitHub cannot say which names are free, the title with the end of the
+ * session's id, as before.
  */
 async function branchOf(
 	c: Ctx,
@@ -300,10 +300,12 @@ async function branchOf(
 ): Promise<string> {
 	if (meta.publishBranch) return meta.publishBranch;
 	const fallback = branchFor(meta.title, meta.sessionId);
-	if (meta.origin?.kind === "item") return fallback;
-	const connection = await githubConnection(c, meta);
-	if (!connection) return fallback;
-	return freeBranch(meta.title, name => branchTaken(app, connection, repo, name)).catch(() => fallback);
+	const connection = meta.origin?.kind === "item" ? null : await githubConnection(c, meta);
+	const picked = connection ? await freeBranchAt(app, connection, repo, meta.title).catch(() => fallback) : fallback;
+	// A second request that asked GitHub at the same time keeps what the first one decided.
+	meta.publishBranch ??= picked;
+	void persist(c);
+	return meta.publishBranch;
 }
 
 /** What the push dialog names before the first push: `branchOf` without asking GitHub. */
@@ -347,7 +349,6 @@ export async function publishSession(
 	// Pushing uses the sandbox: the idle times count from here, and again from when it is done.
 	markUsed(c, meta);
 	const branch = await branchOf(c, meta, app, repo);
-	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
 		if (branchOnly || updateFromBase) {
@@ -637,7 +638,6 @@ export async function agentPublish(
 			}
 		}
 
-		meta.publishBranch = branch;
 		try {
 			const published = await publishWork({
 				app,
@@ -727,8 +727,11 @@ export async function agentPush(
 	const repo = meta.repo;
 	const app = githubApp();
 	if (!repo || !app) return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
-	if (active.closed || c.vars.turn !== active) return "Not pushed. The turn this call was made in has ended.";
+	const ended = () => active.closed || c.vars.turn !== active;
+	if (ended()) return "Not pushed. The turn this call was made in has ended.";
 	const branch = await branchOf(c, meta, app, repo);
+	// Naming the branch may have asked GitHub: the turn can have ended meanwhile.
+	if (ended()) return "Not pushed. The turn this call was made in has ended.";
 	const checked = pushRequest(
 		request.arguments,
 		{ branch, title: meta.title },
@@ -751,7 +754,6 @@ export async function agentPush(
 	}
 	c.vars.publishing = true;
 	const release = takeSandbox(c);
-	meta.publishBranch = branch;
 	// What the platform itself pushed last is all the push may replace: the agent's rebase of its own branch, nothing anyone else pushed.
 	const lease = meta.platformPushed ?? null;
 	try {
@@ -844,15 +846,16 @@ export async function agentFetchBase(
 	if (active.closed || c.vars.turn !== active) return "Not fetched. The turn this call was made in has ended.";
 	const release = takeSandbox(c);
 	try {
-		// The session's own branch too, once the platform has pushed it: what others pushed there, for the agent to merge.
-		await fetchBase(app, await githubConnection(c, meta), repo, sandbox, meta.publishBranch ?? null);
+		// The session's own branch too, where GitHub has it: what others pushed there, for the agent to merge.
+		const work = meta.publishBranch ?? null;
+		const fetchedWork = await fetchBase(app, await githubConnection(c, meta), repo, sandbox, work);
 		note(
 			c,
 			active.number,
 			"info",
 			said(`Fetched ${repo.branch} from GitHub into the workspace as origin/${repo.branch}, as the agent asked.`),
 		);
-		return fetchedForAgent(repo.branch, meta.publishBranch ?? null);
+		return fetchedForAgent(repo.branch, fetchedWork ? work : null);
 	} catch (error) {
 		const why = error instanceof GithubProblem ? error.message : describeError(error);
 		note(c, active.number, "warn", said(`${repo.branch} could not be fetched from GitHub for the agent: ${why}`));
