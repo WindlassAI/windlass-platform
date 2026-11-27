@@ -2,6 +2,7 @@
 
 import type {
 	ChatgptStatus,
+	ContinueSessionInput,
 	CreateSessionInput,
 	HarnessId,
 	HarnessOptions,
@@ -243,6 +244,15 @@ export interface UserActions {
 	deleteAccountSecret(input: { profile: SandboxProfileId; name: string }): Promise<AccountSecrets>;
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
+	/**
+	 * A new session that continues a session in a new workspace, on a new branch, with its own pull
+	 * request: the same repository, agent, model, effort, mode, placement and isolation. The agent's
+	 * memory is copied where the platform keeps a copy of it; otherwise its first prompt gets an account
+	 * of the earlier session. The earlier session is not changed. Throws `session_not_found`,
+	 * `item_session` for a work item's or other platform session, `no_repository`, `turn_running`, and
+	 * `not_pushed` for `stack` on a session that has pushed nothing.
+	 */
+	continueSession(input: ContinueSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
 	/** On machine_unreachable the session stays listed so deletion can be retried. */
 	deleteSession(id: string): Promise<void>;

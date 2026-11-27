@@ -54,6 +54,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.readiness && { readiness: true as const }),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
+		...(meta.continuedFrom && { continuedFrom: { id: meta.continuedFrom.id, title: meta.continuedFrom.title } }),
 	};
 }
 

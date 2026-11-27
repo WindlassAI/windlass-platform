@@ -55,7 +55,7 @@ import { VerificationLog, groupReviewPaths } from "../../verified.js";
 import { turnTokens } from "../../factory/budget.js";
 import { reportedModelUsage, usesPlatformModel } from "../../usage.js";
 import { PlatformChecks } from "../../sandbox/platform-checks.js";
-import { itemActor, secretsActor, userActor } from "../internal.js";
+import { type Handoff, itemActor, secretsActor, userActor } from "../internal.js";
 import { attachmentStore, uploadShots } from "../../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../../agent-publish.js";
 import { RULES } from "../../factory/blueprint.js";
@@ -72,7 +72,7 @@ import {
 	stepRefusal,
 	turnRefusal,
 } from "../../provider-refusal.js";
-import { untrustedTurn, unmarkedNote } from "../../factory/untrusted.js";
+import { sources, untrustedTurn, unmarkedNote } from "../../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, ReviewCommands } from "../../factory/review.js";
 import { DeploymentFull, ENVIRONMENT_SLOT_WAIT, PLATFORM_RESTART, sandboxConnectionLost } from "../../sandbox/api.js";
 import { StartClock, keepStartTimes, startTimesLog } from "../../start-times.js";
@@ -791,6 +791,41 @@ export async function checkHarness(
 	return { harness, caps, profile, platformTool };
 }
 
+/**
+ * Puts the account of the session this one continues (continuation.ts) before the person's prompt.
+ * What it quotes keeps its sources, labelled as on any resume; only this prompt's own can stop the turn.
+ */
+function handOver(c: Ctx, t: TurnScope, handoff: Handoff): void {
+	const { meta } = t;
+	const own = t.untrusted;
+	const untrusted = sources(own, handoff.untrusted);
+	const text = `${handoff.text}\n\nThe person's message for this session:\n\n${t.text}`;
+	const handling = untrustedTurn({
+		agent: meta.harness ?? "windlass",
+		profile: meta.profile,
+		untrusted,
+		currentSources: own,
+		unsandboxed: undefined,
+	});
+	if (t.resumed) {
+		if (handling.kind !== "stop")
+			t.fresh = { prompt: text, ...(handling.kind === "marked" && { untrusted: handling.sources }) };
+		return;
+	}
+	// What the earlier conversation had seen counts as seen in this one.
+	t.outsideText ||= handoff.untrusted.length > 0 || !!meta.secretRequestBlocked;
+	t.text = text;
+	t.untrusted = untrusted;
+	t.handling = handling;
+	if (handling.kind === "stop") refuseUntrusted(c, t, undefined, handling, text);
+	note(
+		c,
+		t.turn,
+		"info",
+		"The agent does not have the earlier session's memory, so its first prompt includes an account of that session.",
+	);
+}
+
 /** Decides which conversation the agent continues and what it is told; answers whether this is a summary turn. */
 export async function choosePrompt(c: Ctx, t: TurnScope): Promise<boolean> {
 	const { meta, active, run, critic, requested, turn } = t;
@@ -802,6 +837,8 @@ export async function choosePrompt(c: Ctx, t: TurnScope): Promise<boolean> {
 	}
 	// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 	t.resumed = critic || requested ? null : meta.windlassSessionId;
+	// A continuing session's first turn: the earlier session's account goes with the prompt, or stands by should its memory fail to resume.
+	if (meta.handoff && !active.item && !active.resume) handOver(c, t, meta.handoff);
 	// Reuse the task when its saved conversation did not survive replacement.
 	if (active.resume && run?.prompted) {
 		const whole = await wholeTask(c, meta, active, turn);

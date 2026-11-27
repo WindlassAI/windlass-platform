@@ -10,6 +10,7 @@ import { isTurnSandbox } from "../../sandbox/provider.js";
 import { note } from "./timeline.js";
 import type { SessionMeta, Ctx, WorkspaceCopy } from "./state.js";
 import { layerOf } from "./runner.js";
+import { continuationNote } from "./continuation.js";
 
 function megabytes(bytes: number): string {
 	const mb = bytes / (1024 * 1024);
@@ -22,17 +23,23 @@ const FRESH_WORKSPACE =
 // Clear a one-shot note only after the agent receives the prompt it was attached to.
 export function platformNotes(meta: SessionMeta, reviewer: boolean): { text: string; told(): void } {
 	const prepared = meta.snapshotCommit ?? null;
+	// A continuing session's note says the workspace is new in its own words.
+	const continued = continuationNote(meta);
 	const fresh = !reviewer && meta.freshWorkspace === true;
 	const unfinished = reviewer ? null : (meta.setupUnfinished ?? null);
 	const onBase = reviewer ? null : (meta.setupOnBase ?? null);
 	return {
 		text:
 			(prepared ? snapshotPrompt(prepared) : "") +
-			(fresh ? FRESH_WORKSPACE : "") +
+			(continued || (fresh ? FRESH_WORKSPACE : "")) +
 			(unfinished ? setupNote(unfinished) : "") +
 			(onBase ? setupOnBaseNote(onBase) : ""),
 		told() {
 			if (fresh) meta.freshWorkspace = false;
+			if (continued && meta.continuedFrom) {
+				meta.continuedFrom.told = true;
+				meta.handoff = null;
+			}
 			if (unfinished && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
 			if (prepared && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
 			if (onBase && meta.setupOnBase === onBase) meta.setupOnBase = null;

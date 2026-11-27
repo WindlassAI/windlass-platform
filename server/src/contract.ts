@@ -411,6 +411,8 @@ export interface SessionSummary {
 	readiness?: true;
 	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
 	environment?: { commit: string; validatedAt: number; checks: number };
+	/** Set for a session made by `continueSession`: the session it continues, as it was named then. */
+	continuedFrom?: { id: string; title: string };
 }
 
 export function itemSessionRole(item: NonNullable<SessionSummary["item"]>): string {
@@ -460,6 +462,14 @@ export interface CreateSessionInput {
 	/** With `repository`: `SessionSummary.publishUnasked` to start with. Left out: the agent's requests to publish are asked about. Refused (`bad_input`) for a profile it cannot be on in. */
 	publishUnasked?: boolean;
 	/** The key of this submission (`IdempotencyKey`): the same key again answers with the session the first attempt made, for as long as that session exists. */
+	idempotencyKey?: IdempotencyKey;
+}
+
+/** What `continueSession` takes: the session to continue in a new one with a new workspace, branch and pull request. */
+export interface ContinueSessionInput {
+	id: string;
+	/** Start from the session's pushed branch, so the new pull request is based on its pull request's branch. Left out: the repository's default branch. */
+	stack?: boolean;
 	idempotencyKey?: IdempotencyKey;
 }
 
