@@ -27,7 +27,7 @@
 
 import type { HarnessId, SandboxProfileId } from "../contract.js";
 import { harnessName, machineHarness, takesUntrustedMarker } from "../sandbox/harnesses.js";
-import { CONNECTORS } from "../sources/registry.js";
+import { sourceCaps } from "../sources/registry.js";
 import { SOURCE_IDS, type SourceId } from "../sources/types.js";
 
 /** The longest source Windlass takes (its docs/acp.md, `_meta["windlass/untrusted"]`). */
@@ -42,7 +42,7 @@ export const untrustedWords = {
 	 * Someone else's filing in a work source, by its record: `display` is the filing as the source shows it ("#12",
 	 * "ENG-12"), `author` as the source names them. A matching sender name does not make the text trusted.
 	 */
-	source: (id: SourceId, display = "", author = "") => CONNECTORS[id].caps.untrusted.words(display, author),
+	source: (id: SourceId, display = "", author = "") => sourceCaps(id).untrusted.words(display, author),
 	gitlabNote: (id: string) => `GitLab note ${id}`,
 	ci: (head: string) => `CI logs of ${short(head)}`,
 	push: (head: string, pusher: string) => `commit ${short(head)} pushed by @${pusher}`,
@@ -68,7 +68,7 @@ export function thirdParty(list: readonly string[] | undefined | null): string[]
 
 /** Source prefixes produced by `untrustedWords` for third-party text: each work source's filings, then the rest. */
 const THIRD_PARTY = [
-	...SOURCE_IDS.map(id => CONNECTORS[id].caps.untrusted.pattern),
+	...SOURCE_IDS.map(id => sourceCaps(id).untrusted.pattern),
 	/^GitLab note \d+$/,
 	/^GitHub feedback from /,
 	/^commit [a-f0-9]+ pushed by @/,

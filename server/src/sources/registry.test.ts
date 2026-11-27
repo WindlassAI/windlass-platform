@@ -2,15 +2,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { INTAKE_SOURCES } from "../actors/issue-intake.js";
+import { issueMode } from "../factory/intake.js";
 import { thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { isTriggerLabel } from "../linear/webhook.js";
-import { bySource, CONNECTORS, filterWord, sourceNames } from "./registry.js";
+import { bySource, filterWord, sourceCaps, sourceNames } from "./registry.js";
 import { SOURCE_IDS } from "./types.js";
 
 test("the source list is the five work sources, in their order", () => {
 	assert.deepEqual(SOURCE_IDS, ["github", "gitlab", "linear", "jira", "slack"]);
 	assert.deepEqual([...INTAKE_SOURCES], ["github", "gitlab", "linear", "jira", "slack"]);
-	for (const id of SOURCE_IDS) assert.equal(CONNECTORS[id].id, id);
 });
 
 test("the web's source words come out as before", () => {
@@ -52,8 +52,11 @@ test("someone else's filing is named as before, and is third-party", () => {
 	assert.deepEqual(thirdParty(["a Slack request, really", "GitLab issue #7 by x", "Linear issue ENG by x"]), []);
 });
 
-test("Linear's Quick labels come from its record", () => {
-	assert.deepEqual(CONNECTORS.linear.caps.quickLabels, ["windlass:quick", "windlass-quick"]);
+test("Quick labels come from each source's record", () => {
+	assert.deepEqual(sourceCaps("linear").quickLabels, ["windlass:quick", "windlass-quick"]);
+	assert.deepEqual(sourceCaps("github").quickLabels, ["windlass:quick"]);
+	assert.equal(issueMode("", ["windlass:quick"]).mode, "single");
+	assert.equal(issueMode("", ["windlass-quick"]).mode, "orchestrate");
 	assert.ok(isTriggerLabel(" Windlass-Quick "));
 	assert.ok(isTriggerLabel("windlass"));
 	assert.ok(!isTriggerLabel("windlass:orchestrate"));

@@ -11,6 +11,7 @@ import {
 	type GithubId,
 } from "../contract.js";
 import type { SlackDelivery } from "../slack/webhook.js";
+import { sourceCaps } from "../sources/registry.js";
 import { commentText } from "./review.js";
 
 const plain = (s: string) =>
@@ -130,7 +131,7 @@ export function issueMode(
 	note: string,
 	labels: unknown[],
 	enabled = true,
-	quickLabels: readonly string[] = ["windlass:quick"],
+	quickLabels: readonly string[] = sourceCaps("github").quickLabels,
 ) {
 	const quick = quickToken.test(note) || quickLabels.some(label => labels.includes(label));
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");

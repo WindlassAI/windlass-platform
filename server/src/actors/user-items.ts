@@ -2075,8 +2075,8 @@ export const itemActions = {
 	): Promise<TrackerFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () =>
-			fileTrackerIssue(c, filing, githubItemId, (profile, input, intake) =>
-				fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake),
+			fileTrackerIssue(c, filing, githubItemId, (profile, input, source, intake) =>
+				fileItem(c, profile, input, source, makeSession, intake),
 			),
 		);
 	},

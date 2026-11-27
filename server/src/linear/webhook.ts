@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { config, linearConfig, type LinearConfig } from "../config.js";
 import { AddressBudget, clientAddress, MINUTE_MS, rateLimited } from "../http-limits.js";
-import { CONNECTORS } from "../sources/registry.js";
+import { sourceCaps } from "../sources/registry.js";
 import { isLinearId, record, text } from "./app.js";
 
 export const LINEAR_WEBHOOK_PATH = "/linear/webhook";
@@ -12,7 +12,7 @@ export const MAX_TIMESTAMP_SKEW_MS = 60_000;
 
 export function isTriggerLabel(name: string): boolean {
 	const label = name.trim().toLowerCase();
-	return label === "windlass" || CONNECTORS.linear.caps.quickLabels.includes(label);
+	return label === "windlass" || sourceCaps("linear").quickLabels.includes(label);
 }
 
 /** What a qualifying delivery comes to once authenticated: lookup ids and the transition, nothing of the issue's content. */
