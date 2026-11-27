@@ -254,7 +254,7 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 							<span title={modelLabel(block.model) === block.model ? undefined : block.model}>
 								{modelLabel(block.model)}
 							</span>
-							{block.effort ? <span>effort {block.effort}</span> : null}
+							<span>{block.effort ? `effort ${block.effort}` : "default effort"}</span>
 						</>
 					)}
 					{block.at !== null ? <time dateTime={new Date(block.at).toISOString()}>{absoluteTime(block.at)}</time> : null}

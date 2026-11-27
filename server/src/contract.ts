@@ -371,6 +371,8 @@ export interface SessionSummary {
 	/** Hosted, where the deployment offers sizes: the size of its sandboxes. */
 	hostedSize?: HostedSize;
 	model: string;
+	/** The effort the next turn runs at unless its prompt names another; null (or absent, on older summaries) is the model's default. */
+	effort?: string | null;
 	/** A git repository cloned into the workspace when the sandbox was created, if any. */
 	repoUrl: string | null;
 	/** Absent or null for pasted URLs and sessions without a repository. */

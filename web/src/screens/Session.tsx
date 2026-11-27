@@ -641,6 +641,7 @@ export function Session({
 						online={online}
 						models={summary.capabilities.models === "harness" ? harnessModelsOf(summary) : models.list}
 						model={summary.model}
+						effort={summary.effort ?? null}
 						modelProblem={
 							hostedAgent
 								? model =>

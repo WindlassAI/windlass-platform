@@ -230,6 +230,49 @@ describe("another harness's model picker", () => {
 	});
 });
 
+describe("the composer's effort", () => {
+	const models = {
+		source: "account" as const,
+		fetchedAt: 1,
+		defaultModel: "gpt-6.1-sol",
+		models: [
+			{ id: "gpt-6.1-sol", name: null, efforts: ["low", "medium", "high"] },
+			{ id: "gpt-7-nova", name: null, efforts: [] },
+		],
+	};
+	const pill = () => host.querySelector('[data-picker="effort"]') as HTMLButtonElement;
+	const choose = (level: string) => {
+		act(() => pill().click());
+		act(() => document.querySelector<HTMLElement>(`.ui-pop [role="menuitemradio"][data-value="${level}"]`)!.click());
+	};
+
+	it("starts at the session's effort, sends none while it is unchanged, and null for the default chosen", async () => {
+		show({ models, effort: "high" });
+		expect(pill().dataset.value).toBe("high");
+		expect(pill().textContent).toBe("effort high");
+		write("First");
+		await send();
+		expect(sent[0]).not.toHaveProperty("effort", expect.anything());
+		choose("default");
+		expect(pill().textContent).toBe("default effort");
+		write("Second");
+		await send();
+		expect(sent[1]?.effort).toBeNull();
+		// The session now runs at the default, and the choice stays.
+		show({ models, effort: null });
+		choose("low");
+		write("Third");
+		await send();
+		expect(sent[2]?.effort).toBe("low");
+	});
+
+	it("shows the default for a session effort the model does not take", () => {
+		show({ models, effort: "xhigh" });
+		expect(pill().dataset.value).toBe("");
+		expect(pill().textContent).toBe("default effort");
+	});
+});
+
 describe("a message to a running turn whose harness takes none then", () => {
 	// The server's refusal of a steer (server/src/actors/agent-session.ts, `steerTurn`): known by its code, whatever its words.
 	const notNow = () =>

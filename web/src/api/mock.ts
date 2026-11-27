@@ -3,7 +3,7 @@
  * timeline and broadcast transient deltas until the next durable event. This client owns the
  * timers for replay, pending questions and cancellation.
  */
-import { modelRefusal } from "../../../server/src/account-models.js";
+import { modelRefusal, turnEffort } from "../../../server/src/account-models.js";
 import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import { machinePayers } from "../lib/run";
@@ -1986,9 +1986,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				};
 				cancel(session.pauseTimer);
 				session.pauseTimer = null;
-				store(session, { turn, kind: "user", text: input.text, model, effort: input.effort ?? null });
+				const effort = input.effort ?? null;
+				store(session, { turn, kind: "user", text: input.text, model, effort });
 				const title = !session.titled && session.summary.turns === 0 ? promptTitle(input.text) : session.summary.title;
-				setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
+				setSummary(world, session, { status: "starting", model, effort, title, updatedAt: now() });
 			},
 		});
 		if (script.unreachable && script.platformFailure !== undefined) {
@@ -2976,7 +2977,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const turn = session.summary.turns + 1;
 		const model = input.model ?? session.summary.model;
 		const fallback =
-			input.effort !== undefined &&
+			typeof input.effort === "string" &&
 			model !== session.summary.model &&
 			!MOCK_CLAUDE_MODELS.models.find(m => m.id === model)?.efforts.includes(input.effort);
 		const steps: Step[] = [
@@ -3019,13 +3020,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					};
 					cancel(session.pauseTimer);
 					session.pauseTimer = null;
-					store(session, {
-						turn,
-						kind: "user",
-						text: input.text,
-						model,
-						effort: fallback ? null : (input.effort ?? null),
-					});
+					const effort = fallback ? null : (input.effort ?? null);
+					store(session, { turn, kind: "user", text: input.text, model, effort });
 					if (fallback)
 						store(session, {
 							turn,
@@ -3035,7 +3031,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						});
 					const title =
 						!session.titled && session.summary.turns === 0 ? promptTitle(input.text) : session.summary.title;
-					setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
+					setSummary(world, session, { status: "starting", model, effort, title, updatedAt: now() });
 				},
 			},
 		];
@@ -6380,7 +6376,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						kind: "user",
 						text,
 						model: session.summary.model,
-						effort: null,
+						effort: session.summary.effort ?? null,
 						steer: true,
 						held: true,
 					});
@@ -6403,19 +6399,33 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					throw new PlatformError("user", "OpenCode cannot steer this turn.", { reason: "steer_unavailable" });
 				if ((status === "running" || status === "waiting") && session.run && session.summary.harness === "claude") {
 					// Claude Code takes it through its steering extension: the server stores it as a steer.
-					if (input.model !== undefined || input.effort !== undefined)
+					if (input.model || input.effort)
 						throw new PlatformError("user", "Choose the model and effort when starting a turn.", {
 							reason: "bad_input",
 						});
 					const turn = session.run.turn;
-					store(session, { turn, kind: "user", text, model: session.summary.model, effort: null, steer: true });
+					store(session, {
+						turn,
+						kind: "user",
+						text,
+						model: session.summary.model,
+						effort: session.summary.effort ?? null,
+						steer: true,
+					});
 					setSummary(world, session, { updatedAt: now() });
 					return take({ turn, steered: true });
 				}
 				if ((status === "running" || status === "waiting") && session.run) {
 					// A message to a running turn steers it: stored as a steer, delivered at the next step.
 					const turn = session.run.turn;
-					store(session, { turn, kind: "user", text, model: session.summary.model, effort: null, steer: true });
+					store(session, {
+						turn,
+						kind: "user",
+						text,
+						model: session.summary.model,
+						effort: session.summary.effort ?? null,
+						steer: true,
+					});
 					const messageId = `msg_${hex(24)}`;
 					emit(
 						session,
@@ -6467,19 +6477,29 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					const listed = session.summary.harnessModels ?? null;
 					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some(one => one.id === input.model))
 						throw new PlatformError("user", `${name} offers no model "${input.model}".`, { reason: "bad_model" });
+					// As the server: absent keeps the session's effort, null or "" is the default. A new model's efforts are known once it is selected.
+					let effort = input.effort === undefined ? (session.summary.effort ?? null) : input.effort || null;
+					const offeredEfforts =
+						listed?.models.find(one => one.id === (input.model ?? session.summary.model))?.efforts ?? [];
 					if (
 						(!input.model || input.model === session.summary.model) &&
-						input.effort !== undefined &&
-						!(listed?.models.find(one => one.id === (input.model ?? session.summary.model))?.efforts ?? []).includes(
-							input.effort,
-						)
-					)
-						throw new PlatformError("user", `${name} offered no such effort.`, { reason: "bad_effort" });
+						effort !== null &&
+						!offeredEfforts.includes(effort)
+					) {
+						if (input.effort !== undefined)
+							throw new PlatformError("user", `${name} offered no such effort.`, { reason: "bad_effort" });
+						effort = null;
+					}
 					const turn = session.summary.turns + 1;
 					if (unreachable !== null) {
 						play(
 							session,
-							plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }),
+							plan(
+								world,
+								session,
+								{ ...input, text, effort },
+								{ events: [], platformFailure: unreachable, unreachable: true },
+							),
 						);
 						return take({ turn, steered: false });
 					}
@@ -6488,7 +6508,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						acpTurn(
 							world,
 							session,
-							{ ...input, text },
+							{ ...input, text, effort },
 							harness === "claude"
 								? claudeScript(session, text)
 								: {
@@ -6515,18 +6535,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					throw new PlatformError("user", "Start a new Windlass session to change providers.", { reason: "bad_model" });
 				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
-				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.
-				const efforts = models.models.find(
-					candidate => candidate.id === (input.model ?? session.summary.model),
-				)?.efforts;
-				if (input.effort !== undefined && efforts !== undefined && !efforts.includes(input.effort)) {
-					throw new PlatformError(
-						"user",
-						efforts.length === 0
-							? `${input.model ?? session.summary.model} takes no reasoning effort. Leave the effort at its default.`
-							: `The effort for ${input.model ?? session.summary.model} must be one of: ${efforts.join(", ")}`,
-						{ reason: "bad_effort" },
+				// The effort as the server holds it (`turnEffort`): absent keeps the session's, which gives way to the default where the turn's model does not take it.
+				let effort: string | null;
+				try {
+					effort = turnEffort(
+						input.effort,
+						session.summary.effort ?? null,
+						input.model ?? session.summary.model,
+						models,
 					);
+				} catch (problem) {
+					throw new PlatformError("user", (problem as Error).message, { reason: "bad_effort" });
 				}
 				// The user's two limits, as the server holds a prompt to them: time for the sandbox to run on, and a place for one the agent does not have. Not on the user's own machine.
 				const numbers = usageNumbers(world);
@@ -6545,7 +6564,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					const turn = session.summary.turns + 1;
 					play(
 						session,
-						plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }),
+						plan(
+							world,
+							session,
+							{ ...input, text, effort },
+							{ events: [], platformFailure: unreachable, unreachable: true },
+						),
 					);
 					return take({ turn, steered: false });
 				}
@@ -6557,7 +6581,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const server = chooseServer(text);
 				const script: Script = server ? { ...recording, server } : recording;
 				const turn = session.summary.turns + 1;
-				play(session, plan(world, session, { ...input, text }, script));
+				play(session, plan(world, session, { ...input, text, effort }, script));
 				return take({ turn, steered: false });
 			},
 			async answer(input: { questionId: string; choice: string; note?: string }) {

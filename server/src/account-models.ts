@@ -295,10 +295,28 @@ export function checkItemEffort(list: ModelList, model: string, effort: unknown,
 	checkEffort(list, model, effort);
 }
 
+/** Whether `model` accepts `effort`; a model the list does not have is taken to. */
+function takesEffort(list: ModelList, model: string, effort: unknown): boolean {
+	const efforts = list.models.find(candidate => candidate.id === model)?.efforts;
+	return typeof effort === "string" && (efforts === undefined || efforts.includes(effort));
+}
+
+/**
+ * The effort a turn runs at. `asked` is its prompt's: absent keeps `kept`, the session's, and null or "" is the
+ * model's default. Held against `model` where `list` is given: a named effort the model does not take is refused,
+ * a kept one gives way to the default.
+ */
+export function turnEffort(asked: unknown, kept: string | null, model: string, list: ModelList | null): string | null {
+	if (asked === undefined) return kept !== null && list && !takesEffort(list, model, kept) ? null : kept;
+	if (asked === null || asked === "") return null;
+	if (list) checkEffort(list, model, asked);
+	return asked as string;
+}
+
 /** Holds an effort against the ones `model` accepts. A model the list does not have is Windlass's to refuse: the list says nothing of it. */
 export function checkEffort(list: ModelList, model: string, effort: unknown): void {
+	if (takesEffort(list, model, effort)) return;
 	const efforts = list.models.find(candidate => candidate.id === model)?.efforts;
-	if (typeof effort === "string" && (efforts === undefined || efforts.includes(effort))) return;
 	throw new ModelProblem(
 		"bad_effort",
 		efforts === undefined || efforts.length === 0
