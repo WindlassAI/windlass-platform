@@ -6,6 +6,7 @@ import { internalConnection, requireServiceFor, serviceParams } from "../auth.js
 import { config, gitlabConfig, ownEngineEndpoint } from "../config.js";
 import { isActorGone } from "../actor-errors.js";
 import { AddressBudget, clientAddress, rateLimited } from "../http-limits.js";
+import { GITLAB_RECONNECT } from "../gitlab/connect.js";
 import { GitlabWebhookError, parseGitlabWebhook, readGitlabWebhookBody, type GitlabDelivery } from "../gitlab/webhook.js";
 import type { Registry } from "../registry.js";
 
@@ -101,6 +102,11 @@ async function drain(c: Ctx) {
 			if (!row) break;
 			try { await dispatch(c, row.binding, JSON.parse(row.data)); }
 			catch (error) {
+				// A grant GitLab refused stays refused until the owner reconnects, which also rebinds the hook.
+				if ((error as { code?: string })?.code === GITLAB_RECONNECT) {
+					await c.db.execute("UPDATE inbox SET data=NULL WHERE guid=?", row.guid);
+					continue;
+				}
 				if (!isActorGone(error) && row.tries < 7) {
 					await c.db.execute("UPDATE inbox SET tries=tries+1, due=? WHERE guid=?", Date.now() + RETRY * 2 ** row.tries, row.guid);
 					continue;

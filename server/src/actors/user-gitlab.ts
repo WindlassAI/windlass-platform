@@ -6,7 +6,7 @@ import { assertOrigin, authenticate, checkGeneration, requireServiceFor, service
 import { config, ownEngineEndpoint } from "../config.js";
 import type { GitlabProjectList, GitlabStatus, SessionRepository } from "../contract.js";
 import { challengeOf, GitlabApp, GitlabError, newVerifier, record, text, type GitlabToken } from "../gitlab/app.js";
-import { gitlabApp, issuerOf, openGitlabTicket, type GitlabConnectStore } from "../gitlab/connect.js";
+import { GITLAB_RECONNECT, gitlabApp, issuerOf, openGitlabTicket, type GitlabConnectStore } from "../gitlab/connect.js";
 import { decimalId, gitlabId } from "../gitlab/ids.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
@@ -16,6 +16,7 @@ import { isActorGone, userActor } from "./internal.js";
 const STATE_TTL = 10 * 60_000;
 const invalid = () => new UserError("Start connecting GitLab again.", { code: "gitlab_state" });
 const disconnected = () => new UserError("Connect GitLab first.", { code: "gitlab_not_connected" });
+const reconnect = () => new UserError("Reconnect GitLab in Settings.", { code: GITLAB_RECONNECT });
 function configured() {
 	const app = gitlabApp();
 	if (!app) throw new UserError("GitLab is not configured.", { code: "gitlab_off" });
@@ -77,7 +78,15 @@ async function tokenInQueue(c: Context, app: GitlabApp) {
 	let token = open(c, saved);
 	if (token.expiresAt !== null && token.expiresAt <= Date.now() + 60_000) {
 		if (!token.refreshToken) throw disconnected();
-		const renewed = await app.refresh(token.refreshToken);
+		const renewed = await app.refresh(token.refreshToken).catch(async error => {
+			// GitLab answers invalid_grant (400) or 401 for a revoked or expired grant: no retry can succeed.
+			if (!(error instanceof GitlabError && (error.status === 400 || error.status === 401))) throw error;
+			await c.db.transaction(async tx => {
+				await tx.execute("DELETE FROM grant_record");
+				await tx.execute("INSERT OR REPLACE INTO revoked_record VALUES (1, ?)", Date.now());
+			});
+			throw reconnect();
+		});
 		token = { ...renewed, refreshToken: renewed.refreshToken ?? token.refreshToken };
 		await c.db.execute("UPDATE grant_record SET sealed=? WHERE id=1", seal(c, saved.issuer, saved.viewer, token));
 	}
@@ -87,7 +96,8 @@ async function status(c: Context): Promise<GitlabStatus> {
 	const app = gitlabApp();
 	if (!app) return { state: "off" };
 	const saved = await grant(c, app);
-	return saved ? { state: "connected", baseUrl: app.settings.baseUrl, project: saved.project ? JSON.parse(saved.project) : null } : { state: "disconnected" };
+	if (saved) return { state: "connected", baseUrl: app.settings.baseUrl, project: saved.project ? JSON.parse(saved.project) : null };
+	return (await c.db.execute("SELECT 1 FROM revoked_record")).length ? { state: "disconnected", reconnect: true } : { state: "disconnected" };
 }
 /** Use only provider-confirmed paths and construct links on the configured instance. */
 function project(app: GitlabApp, value: unknown): SessionRepository | null {
@@ -118,6 +128,7 @@ export const userGitlab = actor({
 	},
 	db: db({ onMigrate: async db => {
 		await db.execute("CREATE TABLE IF NOT EXISTS grant_record (id INTEGER PRIMARY KEY CHECK(id=1), issuer TEXT NOT NULL, viewer TEXT NOT NULL, sealed TEXT NOT NULL, project TEXT, hook_id TEXT, hook_sealed TEXT)");
+		await db.execute("CREATE TABLE IF NOT EXISTS revoked_record (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS oauth_state (nonce TEXT PRIMARY KEY, issuer TEXT NOT NULL, origin TEXT NOT NULL, verifier TEXT NOT NULL, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)");
 	} }),
 	createVars: () => ({ queue: Promise.resolve() }),
@@ -175,6 +186,7 @@ export const userGitlab = actor({
 					const claimed = await tx.execute("DELETE FROM oauth_state WHERE nonce=? AND generation=? AND issuer=? AND expires_at>? RETURNING nonce", `ticket:${nonce}`, generation, issuer, Date.now());
 					if (!claimed.length) throw invalid();
 					// Reauthorizing the same account keeps its selection and hook, not another account's.
+					await tx.execute("DELETE FROM revoked_record");
 					await tx.execute("DELETE FROM grant_record WHERE issuer != ? OR viewer != ?", issuer, viewerId);
 					await tx.execute(`INSERT INTO grant_record (id, issuer, viewer, sealed) VALUES (1, ?, ?, ?)
 						ON CONFLICT (id) DO UPDATE SET sealed=excluded.sealed`, issuer, viewerId, seal(c, issuer, viewerId, token));
@@ -232,7 +244,11 @@ export const userGitlab = actor({
 			await owner(c);
 			return serialized(c, async () => {
 				const app = gitlabApp(), saved = app && await grant(c, app);
-				await c.db.transaction(async tx => { await tx.execute("DELETE FROM oauth_state"); await tx.execute("DELETE FROM grant_record"); });
+				await c.db.transaction(async tx => {
+					await tx.execute("DELETE FROM oauth_state");
+					await tx.execute("DELETE FROM grant_record");
+					await tx.execute("DELETE FROM revoked_record");
+				});
 				// Local access ends even when the instance is down or the saved token expired.
 				if (app && saved) await retire(c, app, saved);
 				return status(c);

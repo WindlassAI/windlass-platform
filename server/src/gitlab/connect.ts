@@ -3,6 +3,8 @@ import { serverSealer } from "../signin/seal.js";
 import { GITLAB_SCOPES, GitlabApp, GitlabError, type GitlabToken } from "./app.js";
 
 export const GITLAB_CALLBACK_PATH = "/gitlab/callback";
+/** The error code for a grant GitLab refused: only the owner reconnecting can help. */
+export const GITLAB_RECONNECT = "gitlab_reconnect";
 export function gitlabApp(): GitlabApp | null {
 	const { app } = gitlabConfig();
 	return app && new GitlabApp(app, { clientSecret: gitlabClientSecret });

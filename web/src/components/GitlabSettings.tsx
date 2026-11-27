@@ -73,7 +73,9 @@ export function GitlabSettings({ connection }: { connection: ReturnType<typeof u
 				}}>Disconnect…</button>}
 			</h3>
 			{error && <p className="callout callout-warn" role="alert">{error} {!status && <button className="link" onClick={reload}>Try again</button>}</p>}
-			{status?.state === "disconnected" && <p className="usage-lede">Connect GitLab to choose a project for Windlass.</p>}
+			{status?.state === "disconnected" && (status.reconnect
+				? <p className="callout callout-warn" role="status">GitLab no longer accepts Windlass's access. Reconnect GitLab and choose the project again.</p>
+				: <p className="usage-lede">Connect GitLab to choose a project for Windlass.</p>)}
 			{status?.state === "connected" && <>
 				<p className="usage-lede">Connected to <strong>{status.baseUrl}</strong>.</p>
 				<p className="field-note" role="status">{status.project ? <>Selected project: <strong>{status.project.owner}/{status.project.name}</strong> · <code>{status.project.branch}</code></> : "No project selected."}</p>

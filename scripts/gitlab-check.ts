@@ -283,6 +283,12 @@ async function checkGitlab(sections: string[]) {
 		assert.deepEqual(await owner.gitlabPickProject(String(project.id)), saved);
 		assert.deepEqual(fixture.hooks.map(h => h.id), [hook.id], "repeated pick must keep the original hook without registering another");
 		console.log("PASS connect: picking the same project twice keeps its original hook");
+		await probe.checkGrant(true);
+		fixture.sessions.clear(); // The owner revoked Windlass's access in GitLab.
+		await assert.rejects(owner.gitlabProjects(""), /Reconnect GitLab in Settings/);
+		assert.deepEqual(await owner.gitlab(), { state: "disconnected", reconnect: true });
+		await assert.rejects(owner.gitlabProjects(""), /Connect GitLab first/);
+		console.log("PASS connect: a refused refresh forgets the grant and asks the owner to reconnect");
 		const pending = await begin();
 		assert.deepEqual(await owner.gitlabDisconnect(), disconnected);
 		assert.equal(fixture.sessions.size, 0, "disconnect should revoke the provider grant");

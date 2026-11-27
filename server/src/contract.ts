@@ -429,7 +429,8 @@ export interface GithubStatus {
 /** Public state of the owner’s GitLab connection. Credentials and hook secrets stay server-side. */
 export type GitlabStatus =
 	| { state: "off" }
-	| { state: "disconnected" }
+	/** `reconnect`: GitLab refused the saved grant (revoked or expired), so it was forgotten. */
+	| { state: "disconnected"; reconnect?: true }
 	| { state: "connected"; baseUrl: string; project: SessionRepository | null };
 
 export interface GitlabProjectList {
