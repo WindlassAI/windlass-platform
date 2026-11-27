@@ -8,7 +8,6 @@ import type { GitlabProjectList, GitlabStatus, SessionRepository } from "../cont
 import { challengeOf, GitlabApp, GitlabError, newVerifier, record, text, type GitlabToken } from "../gitlab/app.js";
 import { gitlabApp, issuerOf, openGitlabTicket, type GitlabConnectStore } from "../gitlab/connect.js";
 import { decimalId, gitlabId } from "../gitlab/ids.js";
-import { GITLAB_WEBHOOK_PATH } from "../gitlab/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
@@ -213,8 +212,7 @@ export const userGitlab = actor({
 					// The suffix locates an existing owner. It is not proof of the binding.
 					const secret = `${newVerifier()}_${Buffer.from(c.key[0]!).toString("base64url")}`;
 					const hookSealed = sealSecret(serverSealer(), c.key[0]!, JSON.stringify(["gitlab-project", issuerOf(app), id]), "webhook-token", secret);
-					const url = new URL(GITLAB_WEBHOOK_PATH, app.settings.redirectUrl);
-					const hookId = await app.projectHook(token, id, url.href, secret).catch(error => {
+					const hookId = await app.projectHook(token, id, app.settings.webhookUrl, secret).catch(error => {
 						if (error instanceof GitlabError && error.status === 403) throw new UserError("GitLab requires Maintainer access to register the Windlass project hook.", { code: "gitlab_hook_denied" });
 						throw error;
 					});

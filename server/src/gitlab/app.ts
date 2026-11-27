@@ -5,6 +5,8 @@ export interface GitlabAppSettings {
 	clientId: string;
 	baseUrl: string;
 	redirectUrl: string;
+	/** Where project hooks deliver: the deployment's public address, path prefix included. */
+	webhookUrl: string;
 }
 
 export interface GitlabToken {
@@ -116,7 +118,7 @@ export class GitlabApp {
 
 	constructor(settings: GitlabAppSettings, private readonly secrets: { clientSecret: () => string | null }) {
 		const baseUrl = endpoint(settings.baseUrl).href.replace(/\/+$/, "");
-		this.settings = Object.freeze({ clientId: settings.clientId, baseUrl, redirectUrl: endpoint(settings.redirectUrl).href });
+		this.settings = Object.freeze({ clientId: settings.clientId, baseUrl, redirectUrl: endpoint(settings.redirectUrl).href, webhookUrl: endpoint(settings.webhookUrl).href });
 	}
 
 	cloneUrl(owner: string, name: string): string {

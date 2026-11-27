@@ -10,6 +10,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ciState } from "../server/src/codehost/ci.js";
+import { gitlabConfig } from "../server/src/config.js";
 import { GITLAB_WEBHOOK_PATH, MAX_WEBHOOK_BYTES, type GitlabDelivery } from "../server/src/gitlab/webhook.js";
 
 import { GitlabStandin } from "./gitlab-standin.js";
@@ -61,7 +62,9 @@ async function hookReceiver(route: (request: Request) => Promise<Response | null
 
 const fixture = await GitlabStandin.start({ pageSize: 1 });
 try {
-	const app = new GitlabApp({ clientId: fixture.clientId, baseUrl: fixture.url, redirectUrl: fixture.redirectUrl }, { clientSecret: () => fixture.clientSecret });
+	const app = new GitlabApp({ clientId: fixture.clientId, baseUrl: fixture.url, redirectUrl: fixture.redirectUrl, webhookUrl: fixture.url + GITLAB_WEBHOOK_PATH }, { clientSecret: () => fixture.clientSecret });
+	const prefixed = gitlabConfig({ WLP_GITLAB_BASE_URL: fixture.url, WLP_GITLAB_CLIENT_ID: "client", WLP_GITLAB_CLIENT_SECRET: "secret", WLP_PUBLIC_URL: "https://windlass.example/wlp/" }).app;
+	assert.deepEqual([prefixed?.redirectUrl, prefixed?.webhookUrl], ["https://windlass.example/wlp/gitlab/callback", "https://windlass.example/wlp" + GITLAB_WEBHOOK_PATH]);
 	const verifier = newVerifier(), state = randomUUID();
 	async function authorize() {
 		const redirect = await fetch(app.authorizeUrl(state, challengeOf(verifier)), { redirect: "manual" });

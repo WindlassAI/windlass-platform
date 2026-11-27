@@ -224,6 +224,7 @@
  *   WLP_GITLAB_CLIENT_SECRET   OAuth application secret; not included in public settings
  *   WLP_GITLAB_REDIRECT_URL    registered callback URL (default <WLP_PUBLIC_URL>/gitlab/callback,
  *                              or the server's localhost URL when WLP_PUBLIC_URL is unset)
+ *   Project hooks are registered at <WLP_PUBLIC_URL>/gitlab/webhook, keeping any path prefix.
  *
  * Linear (read by `linearConfig` below). A Linear OAuth app of this deployment's own lets the owner connect
  * a Linear workspace, map a team to a repository, and have an issue that gains a Windlass filing label or
@@ -585,7 +586,7 @@ export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string |
 }
 
 export interface GitlabConfig {
-	app: { clientId: string; baseUrl: string; redirectUrl: string } | null;
+	app: { clientId: string; baseUrl: string; redirectUrl: string; webhookUrl: string } | null;
 	missing: string[];
 }
 
@@ -596,8 +597,8 @@ export function gitlabConfig(env: NodeJS.ProcessEnv = process.env): GitlabConfig
 	if (missing.length) return { app: null, missing: missing.length === required.length ? [] : missing };
 	const clientId = env.WLP_GITLAB_CLIENT_ID!.trim();
 	if (!/^[A-Za-z0-9._-]{1,128}$/.test(clientId)) throw new Error("WLP_GITLAB_CLIENT_ID is not a client id");
-	const address = (key: string, fallback: string) => {
-		const url = URL.parse(env[key]?.trim() || fallback);
+	const address = (key: string, fallback: string, raw = env[key]?.trim() || fallback) => {
+		const url = URL.parse(raw);
 		if (!url || url.username || url.password || /[?#]/.test(url.href) ||
 			(url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
 			throw new Error(`${key} must be an HTTPS or loopback URL with no credentials, query or fragment`);
@@ -606,7 +607,8 @@ export function gitlabConfig(env: NodeJS.ProcessEnv = process.env): GitlabConfig
 	};
 	const publicUrl = (env.WLP_PUBLIC_URL?.trim() || `http://localhost:${config.httpPort}`).replace(/\/+$/, "");
 	return { app: { clientId, baseUrl: address("WLP_GITLAB_BASE_URL", "").replace(/\/+$/, ""),
-		redirectUrl: address("WLP_GITLAB_REDIRECT_URL", `${publicUrl}/gitlab/callback`) }, missing: [] };
+		redirectUrl: address("WLP_GITLAB_REDIRECT_URL", `${publicUrl}/gitlab/callback`),
+		webhookUrl: address("WLP_PUBLIC_URL", "", `${publicUrl}/gitlab/webhook`) }, missing: [] };
 }
 
 export function gitlabClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
