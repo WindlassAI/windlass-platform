@@ -14,7 +14,8 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { clientError, requireService, requireServiceFor, requireUser } from "../../auth.js";
 import { config } from "../../config.js";
-import type { KeptSandbox, ModelProvider, SessionSummary, UsageNumbers, UsageView } from "../../contract.js";
+import type { CostRates, KeptSandbox, ModelProvider, SessionSummary, UsageNumbers, UsageView } from "../../contract.js";
+import { modelPrices } from "../../model-prices.js";
 import { getLayer } from "../../layer.js";
 import type { ListedSandbox } from "../../sandbox/api.js";
 import {
@@ -553,6 +554,17 @@ export const usageActions = {
 		} catch (error) {
 			throw clientError(c.log, error, "Your usage could not be read. Try again.");
 		}
+	},
+	costRates: async (c: UsageActionCtx): Promise<CostRates> => {
+		requireUser(c);
+		const [{ models, source }, layer] = await Promise.all([modelPrices(), getLayer()]);
+		// Every size, not just the plan's: an item may have run at one the plan no longer offers.
+		const sizes = layer.sandboxes.sizes?.();
+		return {
+			models,
+			source,
+			sandbox: sizes ? Object.fromEntries(sizes.map(size => [size.id, size.usdPerHour])) : null,
+		};
 	},
 	freeSandbox: async (c: UsageActionCtx, sessionId: string): Promise<UsageView> => {
 		const profile = requireUser(c);

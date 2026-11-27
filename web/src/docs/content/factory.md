@@ -319,6 +319,16 @@ A subtask asks the same way, without **Hand it over as it is**. What you give it
 
 **When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item waits and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
 
+### What an item cost
+
+Each item shows what it cost in dollars: on its page (the total, the models' and the sandbox's shares, each part of a feature, and by model who paid), as one figure on its Factory card, and in the **Work items** table on **Usage**, with the total of the items listed there. A feature's cost includes all its parts, and parts that ran again.
+
+- **An API key's tokens** (a Settings key, or the machine's own key) are priced by model. Where Claude Code runs on an API key, its own reported cost for the turn is used. Otherwise the tokens are priced from the public [models.dev](https://models.dev) catalog, which the platform reads once a day; cached input is priced at the catalog's cached price.
+- **A turn on your Claude or ChatGPT plan** has no dollar figure: it shows as "on your Claude plan" or "on your ChatGPT plan", and a machine's own subscription sign-in as "on your machine's plan". The plan's usage windows are what such turns use, not dollars.
+- **Hosted sandbox time** is priced at the deployment's rate for its size. A sandbox on your own machine costs nothing here.
+
+Where a part cannot be priced, for example a model the catalog does not list, or a turn on a key that reported no tokens, it says "cost unknown" next to what is known, and never guesses. Prices are estimates: the catalog's base price is used even where a provider charges more for a very long context, and writing to the prompt cache is priced as input. Token counts stay as details under **By model**.
+
 ### When a check can't run
 
 Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item retries the step once. If the environment still prevents the check, it asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.
@@ -592,7 +602,7 @@ The Factory page lists your items by what you must do:
 - **Drafts**.
 - **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest filed first, each with the day it was filed and the day it ended (an item's page says both too). Items that ended before the platform kept that day show only when they were filed. Choose **Show 25 more** for the next ones.
 
-A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
+A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones in dollars (see [What an item cost](#what-an-item-cost)), and says how many older ended items the Factory page lists.
 
 Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue or a Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
 

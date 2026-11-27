@@ -27,6 +27,7 @@ import {
 	validatePlan,
 } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { addSandbox, addTurn, mergeUsage, noUsage, tokensUsd, turnMeter } from "../../../server/src/factory/cost.js";
 import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
@@ -48,6 +49,8 @@ import {
 	type ApiToken,
 	type ApiTokenScope,
 	type AuthResult,
+	type CostRates,
+	type SpendUsage,
 	type ChoiceId,
 	type CreateItemInput,
 	type CreateSessionInput,
@@ -4016,6 +4019,74 @@ function seededBlocked(at: number): NonNullable<ItemView["blockedNetwork"]> {
 	};
 }
 
+/** A slice of models.dev's catalog as server/src/model-prices.ts keeps it (November 2026): the models the seeded items ran. */
+export const MOCK_MODEL_PRICES: Pick<CostRates, "models" | "source"> = {
+	models: {
+		"anthropic/claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3 },
+		"anthropic/claude-opus-4-5": { input: 5, output: 25, cacheRead: 0.5 },
+		"openai/gpt-5.3-codex": { input: 1.75, output: 14, cacheRead: 0.175 },
+		"openai/gpt-5": { input: 1.25, output: 10, cacheRead: 0.125 },
+	},
+	source: { name: "models.dev", url: "https://models.dev/api.json", fetchedAt: Date.UTC(2026, 10, 27) },
+};
+
+const SEEDED_KEY_MODEL = "anthropic/claude-sonnet-4-5";
+
+/**
+ * What a seeded item's own turns used, as its agents would have reported them: almost all input, most of it reread
+ * from the cache. One Windlass item in three ran on a Settings key (dollars); the others on the ChatGPT plan. Claude
+ * Code reports its own dollars where it runs on an API key. A feature's own share is what its parts did not use.
+ */
+function seededUsage(item: ItemView, index: number, parts: readonly ItemView[]): SpendUsage {
+	const usage = noUsage();
+	const raw = Math.max(
+		0,
+		(item.spent.rawTokens ?? item.spent.tokens) - parts.reduce((n, p) => n + (p.spent.rawTokens ?? p.spent.tokens), 0),
+	);
+	const turns = Math.max(1, item.spent.turns - parts.reduce((n, p) => n + p.spent.turns, 0));
+	const agent = item.agent;
+	const keyed = !agent && index % 3 === 0;
+	const harness = agent?.harness ?? "windlass";
+	const model = keyed ? SEEDED_KEY_MODEL : (agent?.model ?? "default");
+	const size = item.place.kind === "hosted" ? "standard" : null;
+	const perTurn = Math.round(raw / turns);
+	for (let turn = 0; raw > 0 && turn < turns; turn++) {
+		const input = Math.round(perTurn * 0.95);
+		const tokens = { inputTokens: input, cachedInputTokens: Math.round(input * 0.85), outputTokens: perTurn - input };
+		const reported = harness === "claude" && agent?.signIn === "api-key";
+		addTurn(
+			usage,
+			turnMeter({
+				harness,
+				model,
+				key: keyed ? { provider: "anthropic", generation: "mock" } : undefined,
+				signIn: agent?.signIn,
+				usage: { ...tokens, reasoningTokens: 0 },
+				cost: reported
+					? { amount: tokensUsd(tokens, { input: 5, output: 25, cacheRead: 0.5 }), currency: "USD" }
+					: null,
+				size,
+			}),
+		);
+	}
+	const seconds = item.spent.hostedSeconds - parts.reduce((n, p) => n + p.spent.hostedSeconds, 0);
+	if (size) addSandbox(usage, size, seconds);
+	return usage;
+}
+
+/** Gives the seeded items their usage, and each feature its parts'. */
+function withSeededUsage(items: readonly ItemView[]): void {
+	const byId = new Map(items.map(item => [item.id, item]));
+	items.forEach((item, index) => {
+		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
+		item.spent.usage ??= seededUsage(item, index, parts);
+	});
+	for (const item of items) {
+		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
+		if (parts.length) item.partsUsage = mergeUsage(parts.map(part => part.spent.usage));
+	}
+}
+
 const summaryOf = ({
 	blockedNetwork: _blocked,
 	feedback: _feedback,
@@ -4100,6 +4171,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				.map(view => (deps.blocked && view.report ? { ...view, blockedNetwork: seededBlocked(at) } : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
+			withSeededUsage(items);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
 			const machines = (deps.machines(auth)?.list ?? []).map(m => ({ name: m.name, machineId: m.machineId }));

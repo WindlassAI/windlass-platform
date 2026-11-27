@@ -211,6 +211,12 @@ export interface AcpProfile {
 	/** The providers whose subscription plan it can run on, hosted, through the relay: Claude Code on a Claude plan, Codex on a ChatGPT plan. */
 	planProviders: readonly PlanProvider[];
 	/**
+	 * What the cost in its `usage_update` covers, where the platform takes it as a turn's dollars (factory/cost.ts).
+	 * "turn": the agent process runs one turn, and its cost is that process's total (Claude Code's `total_cost_usd`).
+	 * Absent: its reported cost is not used, and its tokens are priced from the catalog instead.
+	 */
+	reportedCost?: "turn";
+	/**
 	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
 	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
 	 */
@@ -239,6 +245,7 @@ export const CLAUDE: AcpProfile = {
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, modes: "launch" }),
 	keyProviders: ["anthropic"],
 	planProviders: ["anthropic"],
+	reportedCost: "turn",
 };
 
 export const OPENCODE: AcpProfile = {

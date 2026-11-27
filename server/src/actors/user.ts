@@ -2387,6 +2387,7 @@ export const user = actor({
 		internalRetryOverage: usageActions.internalRetryOverage,
 		internalBillingEvent: usageActions.internalBillingEvent,
 		usage: usageActions.usage,
+		costRates: usageActions.costRates,
 		freeSandbox: usageActions.freeSandbox,
 
 		github: (c): GithubStatus => {

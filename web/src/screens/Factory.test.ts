@@ -451,6 +451,20 @@ describe("the live feed's ended items beyond its first page", () => {
 		expect(note.textContent).toBe(`And ${older} older ended items, listed under Ended on the Factory page.`);
 		expect(note.querySelector("a")?.getAttribute("href")).toBe("/factory");
 	});
+
+	it("on the usage page: each item's cost in dollars, or the plan that carried it, and the listed items' total", async () => {
+		await show("/usage#usage-items", { items: "many" });
+		await settle();
+		const table = host.querySelector(".factory-cost") as HTMLElement;
+		expect(table.querySelector("thead th:nth-child(2)")?.textContent).toBe("Cost");
+		const costs = [...table.querySelectorAll("tbody tr td:nth-of-type(1)")].map(cell => cell.textContent ?? "");
+		expect(costs.some(cost => /^\$\d/.test(cost))).toBe(true);
+		expect(costs.some(cost => cost.includes("on your ChatGPT plan") || cost === "On your ChatGPT plan")).toBe(true);
+		expect(costs.join(" ")).not.toContain("tokens");
+		expect(host.querySelector(".factory-cost-total")?.textContent).toMatch(
+			/^Cost of the items listed here: \$[\d,]+\.\d\d, plus what your plans carried\./,
+		);
+	});
 });
 
 describe("filing a work item from the Factory page", () => {
@@ -678,6 +692,12 @@ describe("the Factory page's board", () => {
 		const feature = [...host.querySelectorAll(".board-card")].find(card => card.querySelector(".board-part-asks"));
 		expect(feature?.closest(".board-tray")).not.toBeNull();
 		expect(feature?.querySelector(".board-card-action")?.textContent).toBe("Answer");
+		// One figure a card: dollars, or the plan that carried it; a feature's counts its parts too.
+		await settle();
+		const costs = [...host.querySelectorAll(".board-card-cost")].map(cost => cost.textContent ?? "");
+		expect(costs.some(cost => /^\$\d/.test(cost))).toBe(true);
+		expect(costs.every(cost => cost === "" || /^\$\d|^On your/.test(cost))).toBe(true);
+		expect(feature?.querySelector(".board-card-cost")?.textContent).not.toBe("");
 	});
 
 	it("draws an empty column as a slim strip and gives the width to the columns with cards", async () => {

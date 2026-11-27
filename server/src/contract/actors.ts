@@ -329,6 +329,8 @@ export interface UserActions {
 	actOnItem(input: { id: string; action: ItemAction }): Promise<ItemView>;
 	/** The factory's limits for this user. */
 	factoryLimits(): Promise<FactoryLimits>;
+	/** What prices items' usage: model prices from the public catalog (cached server-side) and the hosted sandbox rates. */
+	costRates(): Promise<import("./cost.js").CostRates>;
 	/** The user's API tokens, the newest first; never a token's value. */
 	apiTokens(): Promise<ApiToken[]>;
 	/** Makes an API token: `secret` is its value, shown this once. Throws a UserError with code `bad_input` for a name or scopes that cannot be taken, `too_many_tokens` at MAX_API_TOKENS. */

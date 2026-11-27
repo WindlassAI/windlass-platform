@@ -78,6 +78,7 @@ Usage, limits and provider refusals:
 Models and model providers:
 
 - `server/src/account-models.ts` lists the models and reasoning efforts a user may choose.
+- `server/src/model-prices.ts` reads model prices from the public models.dev catalog once a day (bounded, stale prices kept on failure) for items' dollar cost (`server/src/factory/cost.ts`).
 
 Platform tools, MCP servers and Windlass config:
 

@@ -167,6 +167,8 @@ export interface ItemSpend extends ItemBudget {
 	rawTokens?: number;
 	turns: number;
 	activeSeconds: number;
+	/** What the item's own turns used, by model, payer and sandbox size: what its cost is priced from (factory/cost.ts). */
+	usage?: import("./cost.js").SpendUsage;
 }
 
 /** A subtask's budget in a feature's plan: one token figure. At dispatch its token share also determines its share of hosted time. */
@@ -449,6 +451,8 @@ export interface ItemSummary {
 	} | null;
 	budget: ItemBudget;
 	spent: ItemSpend;
+	/** A feature's: what all its parts used, retries among them. Its own turns are in `spent.usage`. */
+	partsUsage?: import("./cost.js").SpendUsage;
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;

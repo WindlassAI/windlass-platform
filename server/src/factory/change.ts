@@ -21,6 +21,8 @@ import { crossRepo, plannerText } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, noteAgentTurn, spellTokens } from "./budget.js";
+import { addSandbox, addTurn, noUsage, sandboxSeconds } from "./cost.js";
+import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 import { environmentFailure } from "./check-environment.js";
 import type {
 	ChoiceId,
@@ -755,8 +757,23 @@ export function chargeTurn(item: FactoryItem, spend: TurnSpend): void {
 	item.spent.rawTokens = (item.spent.rawTokens ?? item.spent.tokens) + (spend.rawTokens ?? spend.tokens);
 	item.spent.tokens += spend.tokens;
 	if (spend.agent) noteAgentTurn(item, spend.agent);
+	if (spend.meter) addTurn((item.spent.usage ??= noUsage()), spend.meter);
 	item.spent.turns += 1;
 	if (item.place.kind === "hosted") item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, spend.hostedSeconds);
+	noteHostedTime(item);
+}
+
+/**
+ * Puts the item's own hosted seconds not yet in its usage there, at the size its latest turn ran: what its
+ * sandbox time costs. A feature's parts keep their own, so theirs are left out of its own.
+ */
+export function noteHostedTime(item: FactoryItem): void {
+	if (item.place.kind !== "hosted") return;
+	const parts = (item.jobs ?? []).reduce((sum, job) => sum + job.spent.hostedSeconds, 0);
+	const fresh = item.spent.hostedSeconds - parts - sandboxSeconds(item.spent.usage);
+	if (fresh <= 0) return;
+	const usage = (item.spent.usage ??= noUsage());
+	addSandbox(usage, usage.size ?? ITEM_HOSTED_SIZE, fresh);
 }
 
 export function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnPlan): void {

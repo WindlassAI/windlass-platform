@@ -42,6 +42,7 @@ import {
 	WIDE_HOSTS,
 	type HostedSize,
 	isHostedSize,
+	SESSION_HOSTED_SIZE,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
@@ -73,6 +74,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn } from "../factory/budget.js";
+import { turnMeter } from "../factory/cost.js";
 import { cutTurnUsage, cutTurnUsageNote, usesPlatformModel, freedNote, hostedLimitsApply } from "../usage.js";
 import { type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import {
@@ -1750,6 +1752,17 @@ async function itemTurnEnded(
 			...(item.escaped && { escaped: item.escaped }),
 		};
 	}
+	// What the turn used, for its cost (factory/cost.ts). One that could not run ("error") and reported nothing cost nothing.
+	if (ended.credential && (ended.usage !== null || ended.acp?.usage || ended.outcome !== "error"))
+		fact.spend.meter = turnMeter({
+			harness: meta.harness ?? "windlass",
+			model: ended.credential.model,
+			key: ended.credential.key,
+			signIn: ended.itemSignIn,
+			usage: ended.usage,
+			cost: ended.acp?.usage?.cost,
+			size: meta.place.kind === "hosted" ? (meta.hostedSize ?? SESSION_HOSTED_SIZE) : null,
+		});
 	if (
 		fact.kind === "turn_ended" &&
 		meta.origin?.subtaskScreenshots &&

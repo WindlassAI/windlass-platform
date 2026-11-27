@@ -478,6 +478,8 @@ export interface TurnSpend {
 	hostedSeconds: number;
 	/** What a machine harness reported of the turn. Absent for Windlass. */
 	agent?: AgentTurn;
+	/** The turn's model, payer, tokens and sandbox size, for its cost (cost.ts). Absent from the platform's own spend facts. */
+	meter?: import("./cost.js").TurnMeter;
 }
 
 /** What a machine harness (Claude Code, OpenCode) reported of one turn. */

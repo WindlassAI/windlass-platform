@@ -136,6 +136,7 @@ import {
 	type UsageNumbers,
 	listedSessions,
 	type UsageView,
+	type CostRates,
 	type UserProfile,
 	type WindlassEvent,
 	type WorkspaceFile,
@@ -195,7 +196,7 @@ import {
 } from "../../../server/src/personal-server-definition.js";
 import { sandboxTime } from "../lib/format";
 import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/src/usage";
-import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
+import { createMockItems, MOCK_FACTORY_LIMITS, MOCK_MODEL_PRICES, type MockItemsState } from "./mock-items";
 import { HOUR, MINUTE } from "./mock-time";
 
 /** The mock GitHub picture: drawn here, so nothing leaves the page. */
@@ -6266,6 +6267,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async usage(): Promise<UsageView> {
 				await latency(320);
 				return usageView(world());
+			},
+			async costRates(): Promise<CostRates> {
+				await latency(200);
+				return {
+					...structuredClone(MOCK_MODEL_PRICES),
+					sandbox: Object.fromEntries(MOCK_SIZES.map(size => [size.id, size.usdPerHour])),
+				};
 			},
 			async billing(): Promise<BillingView> {
 				await latency(200);

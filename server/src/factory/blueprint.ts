@@ -116,6 +116,7 @@ import {
 	marked,
 	nextTurn,
 	NO_GATE,
+	noteHostedTime,
 	OUTCOME_WORDS,
 	outOfMemory,
 	ownSpent,
@@ -756,6 +757,7 @@ function apply(c: Change, fact: Fact): boolean {
 		case "spent":
 			if (item.place.kind !== "hosted" || !(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
 			item.spent.hostedSeconds = fact.hostedSeconds;
+			noteHostedTime(item);
 			return true;
 		default:
 			return stepFact(c, fact);
@@ -1862,6 +1864,11 @@ function chargeChild(
 		if (delta <= 0) continue;
 		job.spent[figure] = now[figure];
 		item.spent[figure] = (item.spent[figure] ?? (figure === "rawTokens" ? item.spent.tokens : 0)) + delta;
+		changed = true;
+	}
+	// A part's usage is its own record, taken whole: the feature sums its parts' when it is shown (`partsUsage`).
+	if (observed.usage && JSON.stringify(observed.usage) !== JSON.stringify(job.spent.usage)) {
+		job.spent.usage = observed.usage;
 		changed = true;
 	}
 	if (budget) {

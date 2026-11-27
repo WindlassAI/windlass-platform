@@ -16,6 +16,7 @@ import type {
 	ApiTokenScope,
 	AuthResult,
 	ChatgptStatus,
+	CostRates,
 	CreateItemInput,
 	CreateSessionInput,
 	FactoryLimits,
@@ -333,6 +334,8 @@ export interface UserApi
 	actOnItem(id: string, action: ItemAction): Promise<ItemView>;
 	/** The factory's limits for this user, which the deployment's owner sets. */
 	factoryLimits(): Promise<FactoryLimits>;
+	/** What prices items' usage: the model catalog's prices and the hosted sandbox rates (`CostRates`). */
+	costRates(): Promise<CostRates>;
 	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
 	linear(): Promise<LinearStatus>;
 	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=<ticket>` or `#linear-error=<code>`. */

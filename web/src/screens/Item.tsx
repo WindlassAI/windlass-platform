@@ -20,6 +20,7 @@ import { ITEM_MODE_WORDS } from "../lib/feature";
 import { MissingPageLinks } from "../components/MissingPageLinks";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeaturePlan";
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
+import { ItemCost } from "../components/ItemCost";
 import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Menu, type MenuItem } from "../components/ui/Menu";
@@ -37,7 +38,7 @@ import { ItemChecks } from "./ItemChecks";
 import { absoluteTime, clockTime, compact, ordinal, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useNow, useSessions } from "../state/hooks";
+import { useCostRates, useNow, useSessions } from "../state/hooks";
 import { ItemGlyph, ItemRow, ItemStages, PartStages } from "../components/ItemRow";
 import { STATE_WORD } from "../lib/items";
 import { useSessionMachine } from "./Session";
@@ -1036,6 +1037,7 @@ function spendFacts(view: ItemView): { label: string; value: string }[] {
 }
 
 function Cost({ view, now }: { view: ItemView; now: number }) {
+	const rates = useCostRates();
 	const step = view.run?.step;
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
@@ -1073,6 +1075,7 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 				</p>
 			)}
 			<div className="usage-card item-cost-card">
+				<ItemCost view={view} rates={rates} />
 				<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 				{facts.length > 0 ? (
 					<dl className="item-cost-foot">

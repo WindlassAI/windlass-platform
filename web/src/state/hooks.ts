@@ -3,6 +3,7 @@ import { monthState } from "../lib/hosted";
 import type {
 	AccountSettings,
 	ChatgptStatus,
+	CostRates,
 	FactoryLimits,
 	MachineSummary,
 	ModelList,
@@ -234,6 +235,40 @@ export function useFactoryLimits(enabled = true): { value: FactoryLimits | null;
 		};
 	}, [client, auth, explain, enabled]);
 	return limits;
+}
+
+const RATES_FRESH_MS = 3_600_000;
+const heldRates = new WeakMap<object, { at: number; value: Promise<CostRates> }>();
+
+/**
+ * What prices items' cost (`CostRates`), read at most once an hour and shared by every screen. Null until read, or
+ * where it could not be. An answer without model prices yet (the server's first read of the catalog) is not kept.
+ */
+export function useCostRates(): CostRates | null {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [rates, setRates] = useState<CostRates | null>(null);
+	useEffect(() => {
+		let current = true;
+		let held = heldRates.get(client);
+		if (!held || Date.now() - held.at > RATES_FRESH_MS) {
+			const value = client.user(auth).costRates();
+			held = { at: Date.now(), value };
+			heldRates.set(client, held);
+			value.then(
+				read => read.models === null && heldRates.get(client)?.value === value && heldRates.delete(client),
+				() => heldRates.get(client)?.value === value && heldRates.delete(client),
+			);
+		}
+		held.value.then(
+			value => current && setRates(value),
+			() => undefined,
+		);
+		return () => {
+			current = false;
+		};
+	}, [client, auth]);
+	return rates;
 }
 
 export function useSession(sessionId: string): SessionState {

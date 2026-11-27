@@ -5,7 +5,7 @@
  * account.ts (settings, model providers, API tokens), connect.ts (connected plans, the connect command),
  * machines.ts, items.ts (work items), reviews.ts, timeline.ts (Windlass/ACP events, timeline), questions.ts
  * (questions, MCP servers), actors.ts (actor actions/events, snapshot), limits.ts (endpoints, paths, size limits),
- * usage.ts, hosted-sizes.ts, isolation.ts.
+ * usage.ts, hosted-sizes.ts, isolation.ts, cost.ts (what an item's turns used and what prices it).
  */
 
 import type { GithubId, PullRequestInfo, SessionRepository } from "./contract/github.js";
@@ -50,6 +50,7 @@ export * from "./contract/timeline.js";
 export * from "./contract/questions.js";
 export * from "./contract/actors.js";
 export * from "./contract/limits.js";
+export * from "./contract/cost.js";
 
 // Sandboxes
 

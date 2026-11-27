@@ -194,6 +194,7 @@ Operators can set [per-user limits](#per-user-limits), including a daily token c
 | `WLP_FACTORY_CROSS_REPO` | `1` enables Plan-first features spanning two connected repositories, subject to the account’s plan. Default off. |
 | `WLP_FACTORY_SCREENSHOTS` | `off`: no work item of the deployment takes screenshots, whatever its repository's setting says. Sessions get the base image or template, never the screenshots one (also a builder that reconnects to a sandbox made before), agents are not offered screenshots in their reports, plans see no machine with screenshots, and a repository's setting cannot be turned on (one saved on can still be turned off). `on` or unset: each repository's setting decides (default on) |
 | `WLP_FACTORY_ATTACHMENT_BYTES`, `WLP_FACTORY_ATTACHMENTS_PER_ITEM`, `WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES`, `WLP_FACTORY_ATTACHMENT_DAYS` | screenshots on work items: bytes per screenshot (default 2 MiB), screenshots per item (40), bytes per account (1 GiB), and days they are kept after the item ended (180) |
+| `WLP_MODEL_PRICES_URL` | the public model catalog items' dollar cost prices API-key tokens from (default `https://models.dev/api.json`). Read once a day by each server, at most 32 MiB within 20 seconds; a failed read keeps the prices read before and is tried again in an hour. `off`: none is read, and a key's turns show "cost unknown" unless their agent reported its own cost. Hosted sandbox time is priced from the rate card (`WLP_HOSTED_RATE_CARD_FILE`) |
 
 ## Web app
 

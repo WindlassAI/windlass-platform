@@ -436,6 +436,7 @@ function summaryFields(item: ItemSummary): ItemSummary {
 		review,
 		budget,
 		spent,
+		...(item.partsUsage && { partsUsage: item.partsUsage }),
 		sessionId,
 		createdAt,
 		updatedAt,

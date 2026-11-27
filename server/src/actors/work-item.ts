@@ -92,6 +92,7 @@ import {
 	type SessionSummary,
 } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
+import { mergeUsage } from "../factory/cost.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -361,6 +362,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		review: secondReview(item, meta),
 		budget: item.budget,
 		spent: item.spent,
+		...(item.jobs?.length && { partsUsage: mergeUsage(item.jobs.map(job => job.spent.usage)) }),
 		agent: itemAgent(item),
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
@@ -743,6 +745,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 				...(fact.spend?.rawTokens !== undefined && { rawTokens: fact.spend.rawTokens }),
 				hostedSeconds,
 				...(fact.spend?.agent && { agent: fact.spend.agent }),
+				...(fact.spend?.meter && { meter: fact.spend.meter }),
 			},
 		});
 	} else {

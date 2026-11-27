@@ -72,6 +72,9 @@
  *                              turning it off and on again loses nothing; while it is off, nobody can
  *                              file, read or act on an item
  *   WLP_DAILY_TOKENS           model tokens per user per UTC day (default unlimited)
+ *   WLP_MODEL_PRICES_URL       the public model catalog items' token costs are priced from (model-prices.ts;
+ *                              default https://models.dev/api.json). `off`: none is read, and a turn's tokens
+ *                              are priced only where its agent reported its cost; otherwise its cost is unknown
  *   WLP_FACTORY_CROSS_REPO=1   let a Plan-first feature be filed over two repositories (default off):
  *                              its children build in either, each repository gets its own draft PR,
  *                              and the repositories are tested together before the feature is handed
@@ -371,6 +374,8 @@ export interface Config {
 	modelRelay: { on: boolean; requests: number; turnRequests: number; url: ModelRelayUrl | null };
 	/** Who may connect and use subscription plans (WLP_PLAN_USERS): everyone, these user ids, or nobody. */
 	plans: "all" | ReadonlySet<string>;
+	/** Where items' model prices are read from (WLP_MODEL_PRICES_URL); null: nowhere. */
+	modelPricesUrl: string | null;
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
 	/** Selected remote provider settings, without credentials. */
@@ -993,6 +998,15 @@ function readPlanUsers(raw: string | undefined): Config["plans"] {
 	);
 }
 
+function readModelPricesUrl(raw: string | undefined): string | null {
+	const value = raw?.trim() || "https://models.dev/api.json";
+	if (value === "off") return null;
+	const url = URL.parse(value);
+	if (!url || (url.protocol !== "https:" && url.protocol !== "http:"))
+		throw new Error(`WLP_MODEL_PRICES_URL must be an http(s) address or "off"; got "${value}"`);
+	return url.href;
+}
+
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
 	machines: readMachines(httpPort),
@@ -1022,6 +1036,7 @@ export const config: Config = {
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
 	plans: readPlanUsers(process.env.WLP_PLAN_USERS),
+	modelPricesUrl: readModelPricesUrl(process.env.WLP_MODEL_PRICES_URL),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
 	hosted: sandbox === "e2b" ? readE2bSettings() : sandbox === "daytona" ? readDaytonaSettings() : null,
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),

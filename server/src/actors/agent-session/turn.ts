@@ -137,6 +137,8 @@ type Handling = ReturnType<typeof untrustedTurn>;
 export type ItemTurnEnd = {
 	outcome: TurnOutcome;
 	itemSignIn: TurnCredential["itemSignIn"];
+	/** What the turn ran on and who paid (null where it never got that far): for its cost. */
+	credential: TurnCredential | null;
 	stepLimit?: number;
 	verified: Verified | null;
 	used: SandboxHandle | null;
@@ -210,6 +212,7 @@ export interface TurnScope {
 	readonly account: AccountLocation;
 	generation: string | null;
 	itemSignIn: TurnCredential["itemSignIn"];
+	credential: TurnCredential | null;
 	// Coalesce successive readings by window while an actor write is in flight.
 	readonly pendingLimits: Map<string, LimitEvent>;
 	writingLimits: Promise<void> | null;
@@ -351,6 +354,7 @@ export function newTurnScope(
 		account,
 		generation: null,
 		itemSignIn,
+		credential: run?.credential ?? null,
 		pendingLimits,
 		writingLimits: null,
 		acpTimeline,
@@ -690,6 +694,7 @@ export async function takeCredential(
 		}));
 	const { key } = credential;
 	t.itemSignIn = credential.itemSignIn ?? meta.origin?.signIn;
+	t.credential = credential;
 	if (run) {
 		run.credential = credential;
 		if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
@@ -2171,6 +2176,7 @@ export async function closeTurn(
 			await t.hooks.itemTurnEnded(c, meta, active.item, {
 				outcome,
 				itemSignIn: t.itemSignIn,
+				credential: t.credential,
 				stepLimit,
 				verified,
 				used,

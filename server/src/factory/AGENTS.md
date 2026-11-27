@@ -40,6 +40,7 @@ Types and inputs:
 Limits and judgement:
 
 - `./budget.ts` tracks an item's budget and returns a `Wait` when a turn may not start yet. It never refuses.
+- `./cost.ts` records what each turn used (model, payer, tokens, hosted size and seconds) in the item's spend (`usage`) and prices it in dollars with `CostRates` (`server/src/model-prices.ts`). Plans' turns get no dollars; an unpriced part is unknown, never guessed.
 - `./autonomy.ts` holds required CI branches, the small-plan limit, the plan critic and the merge decision.
 - `./feature-plan.ts` validates the planner's subtasks and dependencies. It stays free of Node modules because the web mock imports it; child and session ids live in `./feature-ids.ts` (uses `node:crypto`).
 - `./cross-repo.ts` adds cross-repo features (`WLP_FACTORY_CROSS_REPO=1`) as pure helpers that the blueprint calls at a few points.
@@ -66,7 +67,7 @@ Review and readiness:
 
 ## Pitfalls
 
-- The web imports `budget`, `default-place`, `feature-plan`, `placement`, `readiness`, `readiness-track`, `resolve-run`, `answered`, `types` and `verdict`. Keep their runtime imports browser-safe and run the web typecheck too.
+- The web imports `budget`, `cost`, `default-place`, `feature-plan`, `placement`, `readiness`, `readiness-track`, `resolve-run`, `answered`, `types` and `verdict`. Keep their runtime imports browser-safe and run the web typecheck too.
 - Do not import a later flow module from an earlier one; the order above avoids cycles.
 - Never decide by harness id. Use the capability flags on records in `server/src/sandbox/harnesses.ts`.
 
