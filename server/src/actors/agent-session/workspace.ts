@@ -1,11 +1,12 @@
 import { snapshotPrompt } from "../../sandbox/snapshot-key.js";
 import { describeError } from "../../auth.js";
+import type { WorkspaceFile } from "../../contract.js";
 import type { SandboxHandle, SandboxLayer } from "../../sandbox/api.js";
 import { setupNote } from "../../setup-command.js";
 import { userActor } from "../internal.js";
 import { privateSessionData } from "../../sandbox/session-data.js";
 import { note } from "./timeline.js";
-import type { SessionMeta, Ctx } from "./state.js";
+import type { SessionMeta, Ctx, WorkspaceCopy } from "./state.js";
 import { layerOf } from "./runner.js";
 
 function megabytes(bytes: number): string {
@@ -136,3 +137,18 @@ export async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 /** What the agent is told, once, after its workspace was put on its branch past a setup run on the base. */
 const setupOnBaseNote = (where: { branch: string; base: string }) =>
 	`[A note from the platform, not from the user: in this new sandbox the repository's setup command ran on ${where.base}, before the workspace was put on your branch ${where.branch}; it never runs on what a session pushed. What your branch added or changed in its dependencies is not installed: install it with your own commands if you need it.]\n\n`;
+
+export async function savedWorkspace(c: Ctx): Promise<WorkspaceCopy | null> {
+	if (c.vars.workspace !== undefined) return c.vars.workspace;
+	const [row] = await c.db.execute<{ files: string; diff: string }>("SELECT files, diff FROM workspace WHERE id = 1");
+	c.vars.workspace = row ? { files: JSON.parse(row.files) as WorkspaceFile[], diff: row.diff } : null;
+	return c.vars.workspace;
+}
+
+/** Forgets the copy: the workspace it was taken from is gone, or changed without a new copy. Never throws. */
+export async function dropWorkspace(c: Ctx): Promise<void> {
+	c.vars.workspace = null;
+	await c.db.execute("DELETE FROM workspace").catch((error: unknown) => {
+		c.log.warn({ msg: "could not forget the copy of the workspace", error: describeError(error) });
+	});
+}
