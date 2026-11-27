@@ -4,7 +4,7 @@ import { checkRunPlace } from "../../../server/src/factory/default-place";
 import { runModelName, runOf } from "../lib/run";
 import { RunLine } from "./RunSettings";
 import { monthReset, monthState } from "../lib/hosted";
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { isHarnessId, MACHINE_HARNESS_IDS, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -192,7 +192,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [effortChoice, setEffort] = useState(draft?.effort ?? "");
 	// Where it runs: undefined until chosen; null is this platform.
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
-	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" || draft?.harness === "codex" ? draft.harness : null);
+	const [harnessChoice, setHarness] = useState<HarnessId | null>(isHarnessId(draft?.harness) ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [sizeChoice, setSizeChoice] = useState<HostedSize | null>(null);
 	const [open, setOpen] = useState<Picker | null>(null);
@@ -803,7 +803,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	if (chosenMachine) {
 		const here = harnessesHere(chosenMachine);
 		for (const { id } of here) agentButtons.push({ id, reason: machineProblem });
-		for (const id of ["claude", "opencode", "codex"] as const) {
+		for (const id of MACHINE_HARNESS_IDS) {
 			if (here.some(h => h.id === id)) continue;
 			const hosts = mine.filter(m => why(m) === null && harnessesHere(m).some(h => h.id === id));
 			if (hosts.length) agentButtons.push({ id, reason: `On ${hosts.map(machineLabel).join(", ")}: choose that machine first` });
@@ -902,7 +902,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			<>
 				{agentSwitch}
 				{providerTabs}
-				{(["claude", "opencode", "codex"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+				{MACHINE_HARNESS_IDS.map(id => catalogs[id].error && <p key={id} role="status">
 					{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
 				</p>)}
 				{harnessProblem ? <p className="tone-warn" role="status">{harnessProblem}</p> : null}

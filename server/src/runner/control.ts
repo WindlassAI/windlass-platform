@@ -37,7 +37,7 @@
  */
 import { createHash, createPublicKey } from "node:crypto";
 import { endpointShape, helloFields, removalFields, welcomeFields } from "./frame-auth.js";
-import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
+import { MACHINE_HARNESS_IDS, type HarnessOptions, type MachineProbe, type PlatformConnection } from "../contract.js";
 import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 import { MAX_STORE_BYTES, type StoreCaps } from "../sandbox/store-limits.js";
@@ -271,7 +271,7 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 export function boundedCodexOptions(options: HarnessOptions) {
 	return options.models.length <= 32 && Buffer.byteLength(JSON.stringify(options)) <= 16 * 1024;
 }
-const harnessId = oneOf("claude", "opencode", "codex");
+const harnessId = oneOf(...MACHINE_HARNESS_IDS);
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const catalogShape = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
 const catalog = is<Of<typeof catalogShape>>(v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)));

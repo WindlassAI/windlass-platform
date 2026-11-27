@@ -16,7 +16,7 @@
  *
  * Pure: nothing here touches the DOM, the clock or the network.
  */
-import type { AcpContext, AcpUpdate, HarnessId, MachineSummary, ModelList, SessionSummary } from "@contract";
+import { HARNESS_IDS, type AcpContext, type AcpUpdate, type HarnessId, type MachineSummary, type ModelList, type SessionSummary } from "@contract";
 import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBlock, ToolState, TurnView } from "./timeline";
 import { cleanModelName } from "./models";
 import { harnessName } from "../../../server/src/sandbox/harnesses.js";
@@ -25,7 +25,7 @@ import { harnessName } from "../../../server/src/sandbox/harnesses.js";
 export const ACP_MESSAGE = "acp";
 
 /** Each harness by the name the screens give it: the server's, from its record (`harnessName`). */
-export const HARNESS_NAMES: Record<HarnessId, string> = Object.fromEntries((["windlass", "claude", "opencode", "codex"] as const satisfies readonly HarnessId[]).map((id) => [id, harnessName(id)])) as Record<HarnessId, string>;
+export const HARNESS_NAMES: Record<HarnessId, string> = Object.fromEntries(HARNESS_IDS.map((id) => [id, harnessName(id)])) as Record<HarnessId, string>;
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {

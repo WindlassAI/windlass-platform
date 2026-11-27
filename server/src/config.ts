@@ -288,7 +288,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type AccessRules, readAccessRules } from "./access.js";
-import { QUESTION_TIMEOUT_MS } from "./contract.js";
+import { MACHINE_HARNESS_IDS, QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
 import type { FactoryLimits, MachinesInfo } from "./contract.js";
@@ -835,7 +835,7 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	try {
 		const report = JSON.parse(raw);
 		if (report?.image !== image || !Array.isArray(report.harnesses)) return undefined;
-		return (["claude", "opencode", "codex"] as const).filter(id => report.harnesses.includes(id));
+		return MACHINE_HARNESS_IDS.filter(id => report.harnesses.includes(id));
 	} catch { return undefined; }
 }
 

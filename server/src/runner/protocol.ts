@@ -16,7 +16,7 @@ import { forwardHost, forwardPlaceholder, validProofKey } from "../../../sandbox
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
-import { MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
+import { MACHINE_HARNESS_IDS, MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
 import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
 import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
@@ -55,7 +55,7 @@ export const MACHINE_PROFILES = ["docker-hardened", "docker-windlass-sandbox"] a
 export type MachineProfile = typeof MACHINE_PROFILES[number];
 export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
-const harness = optional(oneOf("claude", "opencode", "codex"));
+const harness = optional(oneOf(...MACHINE_HARNESS_IDS));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
 const forwardKey = object({ provider: oneOf(...MODEL_PROVIDERS),

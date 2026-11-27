@@ -208,7 +208,16 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
-export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
+/** Every agent the platform runs; the canonical list (`HarnessId`). Per-agent facts live in sandbox/harnesses.ts. */
+export const HARNESS_IDS = ["windlass", "claude", "opencode", "codex"] as const;
+export type HarnessId = typeof HARNESS_IDS[number];
+/** The agents a machine (or a hosted ACP sandbox) runs: every harness but Windlass. */
+export const MACHINE_HARNESS_IDS = ["claude", "opencode", "codex"] as const satisfies readonly HarnessId[];
+export type MachineHarnessId = typeof MACHINE_HARNESS_IDS[number];
+
+export function isHarnessId(value: unknown): value is HarnessId {
+	return (HARNESS_IDS as readonly unknown[]).includes(value);
+}
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
 export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review" | "file_repo_setup" | "file_repo_setup_review";

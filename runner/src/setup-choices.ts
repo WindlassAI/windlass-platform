@@ -1,13 +1,15 @@
 // The wizard persists setup choices as defaults and converts them to runner flags.
 import { DEFAULT_STORE_LIMITS, parseStoreSize } from "../../server/src/sandbox/store-limits.js";
+import { MACHINE_HARNESS_IDS } from "../../server/src/contract.js";
+import { machineHarnesses } from "../../server/src/sandbox/harnesses.js";
 import type { MachineHarness } from "./policy.js";
 
-export const HARNESSES = ["claude", "opencode", "codex"] as const satisfies readonly MachineHarness[];
+export const HARNESSES = MACHINE_HARNESS_IDS satisfies readonly MachineHarness[];
 export function isMachineHarness(id: unknown): id is MachineHarness {
 	return HARNESSES.some(harness => harness === id);
 }
 
-export const HARNESS_LABELS: Record<MachineHarness, string> = { claude: "Claude Code", opencode: "OpenCode", codex: "Codex" };
+export const HARNESS_LABELS: Record<MachineHarness, string> = { claude: machineHarnesses.claude.name, opencode: machineHarnesses.opencode.name, codex: machineHarnesses.codex.name };
 export const PRESET_DOMAINS = "@npm,@pypi,@github";
 
 export interface NetworkChoice {
