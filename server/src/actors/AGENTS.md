@@ -55,6 +55,7 @@ Helpers inside `agentSession` (`./agent-session/`):
 
 - `./agent-session/state.ts` defines `SessionMeta`, `ActiveTurn`, `HeldSecrets`, `SessionVars` and the `Ctx` every module takes.
 - `./agent-session/common.ts` holds `TurnProblem`, `ReviewRefused`, `takeSandbox`, `busy`, `within` and other shared helpers.
+- `./agent-session/turn.ts` holds the phases of one turn (`startTurn`, `openTurnSandbox`, `choosePrompt`, `runAcpAgent`/`runWindlassAgent`, `closeTurn`, `settleAfterTurn`); `executeTurn` in `./agent-session.ts` calls them in order. Phases share locals through `TurnScope` and reach back into the main file only through `TurnHooks`.
 - `./agent-session/timeline.ts` owns `serial`, `writeMeta` and batched timeline inserts.
 - `./agent-session/questions.ts` asks and recalls turn questions and server approvals.
 - `./agent-session/publish.ts` handles the panel's publish, pull request state and the agent's push and fetch requests.
