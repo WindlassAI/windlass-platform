@@ -38,7 +38,7 @@ import { criticSessionId } from "../factory/feature-ids.js";
 import { contextAtPlace, partRun, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
-import { branchFor } from "../github/publish.js";
+import { branchFor } from "../codehost/branch.js";
 import {
 	featureBranch,
 	subtaskBranch,

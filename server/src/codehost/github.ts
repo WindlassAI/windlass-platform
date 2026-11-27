@@ -1,8 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { githubConfig } from "../config.js";
-import type { GithubApp, TokenScope } from "../github/app.js";
+import { GithubError, type GithubApp, type TokenScope } from "../github/app.js";
 import { readCi, rerunJobs } from "../github/ci.js";
 import { edge, type Delivery } from "../github/events.js";
+import { refHead } from "../github/feature.js";
 import { parseGithubJson } from "../github/ids.js";
 import { openFromPushed, type StoredRepository } from "../github/publish.js";
 import { listRepositories, type StoredConnection } from "../github/repos.js";
@@ -49,6 +50,15 @@ export function githubCodeHost(app: GithubApp): CodeHost<StoredConnection, Store
 				what: "close the pull request",
 			});
 		},
+
+		hasBranch: (token, owner, name, branch) =>
+			refHead(app, token, owner, name, branch).then(
+				() => true,
+				(error: unknown) => {
+					if (error instanceof GithubError && error.status === 404) return false;
+					throw error;
+				},
+			),
 
 		readCi: (target, options) => readCi(app, target, options),
 		jobLog: app.jobLog.bind(app),

@@ -75,19 +75,6 @@ function pullBody(
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
 
-/** `windlass/<the title in a few words>-<the end of the session's id>`: named for the session, and unlike any other session's. */
-export function branchFor(title: string, sessionId: string): string {
-	const words = title
-		.normalize("NFKD")
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, 40)
-		.replace(/-+$/g, "");
-	const end = sessionId.replace(/[^A-Za-z0-9]/g, "").slice(-6);
-	return `windlass/${words === "" ? "agent" : words}-${end}`;
-}
-
 /** The address GitHub credits a user's commits by, when the user keeps their own private. */
 export function authorOf(connection: StoredConnection): { name: string; email: string } {
 	return {
