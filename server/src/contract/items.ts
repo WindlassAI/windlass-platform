@@ -391,10 +391,11 @@ export interface ItemAgent {
 }
 
 /** How a work item was filed. The tracker sources file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear";
+export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear" | "jira";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
+	jira?: undefined;
 	issue: { number: number; url: string; author: string; trusted: boolean };
 	sender: string;
 	linear?: undefined;
@@ -402,13 +403,22 @@ export interface GithubIssueOrigin {
 
 /** Linear provenance is separate from the GitHub PR binding. The event sender and issue author may differ. */
 export interface LinearIssueOrigin {
+	jira?: undefined;
 	/** `trusted`: the issue creator's id matches the user who connected the workspace; whoever added the label does not make another person's text trusted. */
 	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
 	sender: string;
 	issue?: undefined;
 }
 
-export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
+/** Jira text is always third-party, even when the consenting account wrote it. */
+export interface JiraIssueOrigin {
+	jira: { id: string; identifier: string; url: string; author: string; trusted: false };
+	sender: string;
+	issue?: undefined;
+	linear?: undefined;
+}
+
+export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin | JiraIssueOrigin;
 
 export interface ItemSummary {
 	resolved?: import("../factory/resolve-run.js").ResolvedRun;
@@ -432,7 +442,7 @@ export interface ItemSummary {
 	place: SandboxPlace;
 	/** How the item was filed. */
 	source: ItemSource;
-	/** The issue it was filed from: null unless `source` is "github" or "linear" (a GitHub issue's origin has `issue`, a Linear issue's has `linear`). */
+	/** The source issue; null for items not filed through issue intake. */
 	origin: ItemOrigin | null;
 	state: ItemState;
 	/** Set exactly when `state` is "waiting". */

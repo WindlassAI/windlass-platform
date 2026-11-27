@@ -77,9 +77,12 @@ import {
 } from "./github-item.js";
 import {
 	filedFromIssue,
+	filedFromJira,
 	filedFromLinear,
 	recentSubject,
 	type IssueBinding,
+	type JiraBinding,
+	type JiraCommentAction,
 	type LinearBinding,
 } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
@@ -181,10 +184,11 @@ export interface ItemMeta {
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
-	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Never set for a Linear item. */
+	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Only set for a GitHub item. */
 	github?: IssueBinding;
 	/** The Linear issue it was filed from: the destination for its progress updates. */
 	linear?: LinearBinding;
+	jira?: JiraBinding;
 	criticSessionId?: string;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
@@ -228,6 +232,7 @@ interface Stored {
 }
 
 interface ItemVars {
+	jiraRetry?: Promise<boolean>;
 	featureCi?: Partial<Record<PreviewSlot, { key: string; reading: Promise<Preview> }>>;
 	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
@@ -272,9 +277,11 @@ type FeedbackEffect =
 	| { kind: "feedback_ready"; key: "pending"; at: number }
 	| { kind: "feedback_ack"; key: string }
 	| { kind: "feedback_comment"; key: string; run: number; who: string };
+type JiraEffect = { kind: "jira_comment" } & JiraCommentAction;
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect =
 	| { kind: "review_comment"; key: string; pr: number; parts?: { id: string; label: string }[] }
+	| JiraEffect
 	| { kind: "poll_branch"; key: string; at: number; repo?: string }
 	| ({ kind: "linear_write" } & LinearWrite)
 	| BlueprintEffect
@@ -343,7 +350,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
-		origin: meta.github?.origin ?? meta.linear?.origin ?? null,
+		origin: meta.github?.origin ?? meta.linear?.origin ?? meta.jira?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
 		question:
@@ -802,6 +809,19 @@ function linearEffects(
 	return writes.map(write => ({ kind: "linear_write", ...write }));
 }
 
+function filingNote(meta: ItemMeta) {
+	if (meta.github) return filedFromIssue(meta.github.origin);
+	if (meta.linear) return filedFromLinear(meta.linear.origin);
+	if (meta.jira) return filedFromJira(meta.jira.origin);
+	return `Filed from ${meta.source === "api" ? "the API" : "the web app"}.`;
+}
+
+async function activateJiraIssue(c: Pick<Ctx, "client">, uid: string, item: string, binding: JiraBinding) {
+	const site = c.client().jiraSite.get([binding.siteId], { params: serviceParams() });
+	if (!(await site.internalActivateIssue(binding.origin.jira.id, uid, item, binding.generation)))
+		throw new UserError("A newer item has been filed for this Jira issue.", { code: "item_conflict" });
+}
+
 type CheckReceipt = {
 	kind: "check_recorded";
 	at: number;
@@ -951,6 +971,13 @@ async function take(
 			effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
+	if (stored.meta.jira) {
+		const pr = next.pr?.url,
+			url = itemUrl(next.id);
+		if (!before.pr && pr) effects.push({ kind: "jira_comment", key: "opened", itemUrl: url, pr });
+		if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled"))
+			effects.push({ kind: "jira_comment", key: next.state, itemUrl: url, pr });
+	}
 	const sibling =
 		fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0]
 			? fact.repo
@@ -1084,7 +1111,7 @@ async function take(
 						if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
 							await prepareCompletedCheck(tx, next, effect, handoff);
 						await tx.execute(
-							`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`,
+							`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" || effect.kind === "jira_comment" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`,
 							rowId(effect),
 							JSON.stringify(effect),
 							"at" in effect && effect.at !== undefined ? effect.at : 0,
@@ -1352,7 +1379,11 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 			msg: "an effect of the item could not be performed; it is tried again",
 			effect: row.id,
 			inSeconds: wait / 1000,
-			error: row.id.startsWith("linear_write:") ? "linear_write_retry" : describeError(error),
+			error: row.id.startsWith("jira_comment:")
+				? "jira_comment_retry"
+				: row.id.startsWith("linear_write:")
+					? "linear_write_retry"
+					: describeError(error),
 		});
 		await queued(c, () =>
 			c.db.execute(
@@ -2405,7 +2436,12 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "linear_write" && ["start", "review_opened", "review_handover"].includes(effect.key))
 		return !ENDED.has(item.state);
-	if (effect.kind === "review_comment" || effect.kind === "issue_comment" || effect.kind === "linear_write")
+	if (
+		effect.kind === "review_comment" ||
+		effect.kind === "issue_comment" ||
+		effect.kind === "linear_write" ||
+		effect.kind === "jira_comment"
+	)
 		return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
@@ -3252,16 +3288,29 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
-	if (effect.kind === "linear_write") {
-		const { workspaceId, teamId, origin } = meta.linear!;
+	if (effect.kind === "jira_comment" || effect.kind === "linear_write") {
 		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", row.id)).length) return true;
-		const posted = await userActor(c, meta.uid).internalLinearWrite({
-			workspaceId,
-			teamId,
-			issueId: origin.linear.id,
-			itemId: item.id,
-			write: effect,
-		});
+		const owner = userActor(c, meta.uid);
+		let posted: boolean;
+		if (effect.kind === "jira_comment") {
+			const { siteId, projectId, origin } = meta.jira!;
+			posted = await owner.internalJiraWrite({
+				siteId,
+				projectId,
+				issueId: origin.jira.id,
+				itemId: item.id,
+				action: effect,
+			});
+		} else {
+			const { workspaceId, teamId, origin } = meta.linear!;
+			posted = await owner.internalLinearWrite({
+				workspaceId,
+				teamId,
+				issueId: origin.linear.id,
+				itemId: item.id,
+				write: effect,
+			});
+		}
 		if (posted) await c.db.execute("INSERT OR IGNORE INTO issue_actions VALUES(?)", row.id);
 		return true;
 	}
@@ -4407,6 +4456,10 @@ export const workItem = actor({
 				scheduleBranchPolls(effects, input.item, item, input.meta.createdAt);
 				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
+			if (input.meta.jira) {
+				await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
+				effects.push({ kind: "jira_comment", key: "filed", itemUrl: itemUrl(item.id) });
+			}
 			await c.db.transaction(
 				async tx => {
 					if (input.meta.github) {
@@ -4427,11 +4480,7 @@ export const workItem = actor({
 							at: input.meta.createdAt,
 							by: input.startedBy ?? "platform",
 							step: null,
-							said: input.meta.github
-								? filedFromIssue(input.meta.github.origin)
-								: input.meta.linear
-									? filedFromLinear(input.meta.linear.origin)
-									: `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.`,
+							said: filingNote(input.meta),
 						} satisfies ItemEvent),
 					);
 					for (const event of events)
@@ -4703,6 +4752,8 @@ export const workItem = actor({
 		},
 		internalSummary: async (c): Promise<ItemSummary> => {
 			requireService(c);
+			// A site probe after retry authorization must see the committed transition.
+			if (c.vars.jiraRetry) await c.vars.jiraRetry.catch(() => {});
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			return indexedSummary(c, c.vars.stored);
 		},
@@ -4823,7 +4874,17 @@ export const workItem = actor({
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved")
 						await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
-				changed = await take(c, fact);
+				if (fact.kind === "retry" && stored.meta.jira && canRetry(stored.item)) {
+					if (c.vars.jiraRetry) throw new UserError("A retry is already in progress.", { code: "item_conflict" });
+					c.vars.jiraRetry = activateJiraIssue(c, stored.meta.uid, stored.item.id, stored.meta.jira).then(() =>
+						take(c, fact),
+					);
+					try {
+						changed = await c.vars.jiraRetry;
+					} finally {
+						delete c.vars.jiraRetry;
+					}
+				} else changed = await take(c, fact);
 				if (approving && c.vars.stored?.item.featurePlan?.status === "proposed" && changed)
 					throw new PlanError("The plan settings changed. Review the new version before approving.");
 			} catch (error) {

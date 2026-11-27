@@ -1,4 +1,4 @@
-/** GitHub, GitLab and Linear connections, repositories, pull requests and publishing. */
+/** GitHub, GitLab, Linear and Jira connections, repositories, pull requests and publishing. */
 
 /** Account, installation and repository IDs are numbers through MAX_SAFE_INTEGER, then decimal strings. */
 export type GithubId = number | string;
@@ -80,6 +80,43 @@ export interface LinearMapping {
 
 export interface LinearTeamList {
 	teams: LinearTeam[];
+}
+
+/** Browser-visible Jira connection metadata. Tokens and hook credentials stay with the service. */
+export interface JiraSite {
+	id: string;
+	name: string;
+	url: string;
+}
+
+export interface JiraConnection {
+	user: { id: string; name: string };
+	sites: JiraSite[];
+	/** Null until the owner chooses an authorized site. */
+	site: JiraSite | null;
+	connectedAt: number;
+}
+
+export type JiraStatus =
+	| { state: "off" }
+	| { state: "disconnected" }
+	| { state: "connected"; connection: JiraConnection };
+
+export interface JiraMapping {
+	siteId: string;
+	projectId: string;
+	repository: { id: GithubId; owner: string; name: string };
+	savedAt: number;
+}
+
+export interface JiraProject {
+	id: string;
+	key: string;
+	name: string;
+	mapping: JiraMapping | null;
+}
+export interface JiraProjectList {
+	projects: JiraProject[];
 }
 
 /** A repository the connection covers and the connected GitHub user can open. */

@@ -390,8 +390,8 @@ const FEATURES: Array<{ label: string; of(plan: PlanInfo, period: BillingPeriod)
 	{ label: "The Factory", of: () => "All of it: plan first, checks, CI fixes, review" },
 	{ label: "Features over two repositories", of: plan => plan.crossRepo },
 	{
-		label: "Items filed from GitHub or Linear",
-		of: plan => `${count(plan.githubItemsPerDay)} a day, GitHub and Linear together`,
+		label: "Items filed from issues",
+		of: plan => `${count(plan.githubItemsPerDay)} a day across GitHub, Linear and Jira`,
 	},
 	{
 		label: "Past the included minutes",

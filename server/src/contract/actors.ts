@@ -34,6 +34,8 @@ import type {
 	GithubRepositoryList,
 	GithubStatus,
 	LinearStatus,
+	JiraStatus,
+	JiraProjectList,
 	LinearTeamList,
 	PublishMessage,
 	PublishResult,
@@ -115,6 +117,15 @@ export interface UserActions {
 	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
 	/** Forgets the Linear connection and every mapping; nothing is filed from Linear after it. Items already filed stay. */
 	disconnectLinear(): Promise<LinearStatus>;
+	/** Jira Cloud 3LO; completion lists authorized sites without exposing the grant. */
+	jira(): Promise<JiraStatus>;
+	jiraConnect(input: { origin: string }): Promise<{ url: string }>;
+	jiraComplete(ticket: string): Promise<JiraStatus>;
+	jiraSelectSite(siteId: string): Promise<JiraStatus>;
+	jiraProjects(): Promise<JiraProjectList>;
+	saveJiraMapping(input: { siteId: string; projectId: string; repositoryId: GithubId }): Promise<JiraProjectList>;
+	removeJiraMapping(input: { siteId: string; projectId: string }): Promise<JiraProjectList>;
+	disconnectJira(): Promise<JiraStatus>;
 	/** Search owner/name, newest push first. Use fresh after changing an installation's repository access. */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;

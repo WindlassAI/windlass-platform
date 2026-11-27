@@ -6,7 +6,7 @@ GitHub is the default. For a connected GitLab project, file a single item [from 
 
 The Factory has the same repository rail as **Agents**, with its search, owners and foot. There, a repository's ring counts its work items in progress and the amber count what needs you; choosing one shows only its work items. A repository with no work item is dimmer; choose it to file one on it.
 
-Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub, GitLab or Linear: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
+Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub, GitLab, Linear or Jira: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
 
 A work item runs in one of two ways:
 
@@ -121,7 +121,7 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 `windlass-quick` (Linear does not allow a colon in a plain label name) selects **Quick**. The existing `windlass:quick` spelling also selects **Quick**. A plain `windlass` label selects **Plan first** by default. As on GitHub, a `bug` label selects **Quick** on a qualifying issue. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
-**Placement and limits.** The item resolves its place and agent as any item does. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
+**Placement and limits.** The item resolves its place and agent as any item does. GitHub, Linear and Jira issues share one daily limit, including drafts and filings in progress. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 
 **Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
@@ -130,6 +130,14 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 Windlass attaches the pull request and comments when it opens, at handover, and when the item merges, fails or is cancelled. These comments include the PR link when available. At PR open or handover, Windlass moves the issue to **In Review** if the team has a Started state with that exact name and the move is forward. A merge moves the issue to a Completed state. Giving up or cancelling leaves the status for you to decide. Windlass preserves completed and canceled issues' statuses and only updates issues still in their mapped team. The item continues if Linear is unavailable. If you connected Linear before Windlass requested the `write` scope, reconnect to grant it.
 
 Removing a label, unassigning, editing or closing the Linear issue leaves the item as filed. To stop it, cancel it in Windlass. After the item ends, a new qualifying event on the active issue can file another item.
+
+### From a Jira issue
+
+Connect Jira Cloud and map a project to a writable GitHub repository in [Settings](/docs/settings#jira-cloud). If Jira is missing, ask the operator to enable work items and [configure the Jira app](https://github.com/WindlassAI/windlass-platform/blob/main/docs/configuration.md#jira-cloud).
+
+To try it, add `windlass` to an open issue or assign it to the account that connected Jira. Creating an issue with either also files a draft. Use `windlass-quick` for Quick mode. A qualifying Bug or issue labelled `bug` also uses Quick. Windlass quotes the issue text for you to review before starting the draft.
+
+Jira receives a comment linking to the draft, another when the PR opens, and a final outcome with the PR link when available. The issue keeps its Jira status. Only one item is active per site and issue, even after a project changes owners. A fresh trigger after it ends can file another.
 
 ### From the API
 
@@ -604,11 +612,11 @@ The Factory page lists your items by what you must do:
 
 A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
-Filter it with **repo** and **from**: filed from the web, the API, a GitHub, GitLab or Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
+Filter it with **repo** and **from**: filed from the web, the API, a GitHub, GitLab, Linear or Jira issue. The filters are kept in the address, as `?repository=` and `?from=`.
 
 ## Limits
 
-When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Machine turns use the runner's slots and do not count against hosted sandbox limits. GitHub and Linear intake share a daily filing limit. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Machine turns use the runner's slots and do not count against hosted sandbox limits. GitHub, Linear and Jira intake share a daily filing limit. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
@@ -616,7 +624,7 @@ When a Factory turn reaches a limit of this platform, the item waits and shows t
 | Tokens per item, cost-weighted | 2,000,000 |
 | Hosted sandbox time per item | 2 hours |
 | A feature | its subtasks' budgets and one item's for itself |
-| Items filed from GitHub and Linear together per UTC day, drafts among them | 20 |
+| Items filed from GitHub, Linear and Jira together per UTC day, drafts among them | 20 |
 | Daily model tokens across items and interactive sessions | Unlimited |
 
 When an item reaches its own budget, it pauses and asks you for more: see [When the budget is used](#when-the-budget-is-used). The operator's item budget applies to newly created items.

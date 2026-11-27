@@ -745,6 +745,43 @@ export function linearClientSecret(env: NodeJS.ProcessEnv = process.env): string
 	return secret === "" ? null : secret;
 }
 
+/** Keep the client secret out of enumerable configuration. */
+export const jiraClientSecret = () => process.env.WLP_JIRA_CLIENT_SECRET?.trim();
+export function jiraConfig(env: NodeJS.ProcessEnv = process.env) {
+	const required = ["WLP_JIRA_CLIENT_ID", "WLP_JIRA_CLIENT_SECRET"];
+	const missing = required.filter(name => !env[name]?.trim());
+	if (missing.length) return { app: null, missing: missing.length === required.length ? [] : missing };
+	const clientId = env.WLP_JIRA_CLIENT_ID!.trim();
+	if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new Error("WLP_JIRA_CLIENT_ID is not a client id");
+	const address = (name: string, fallback: string) => {
+		const url = URL.parse(env[name]?.trim() || fallback);
+		const local = url && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+		if (
+			!url ||
+			!(url.protocol === "https:" || (local && url.protocol === "http:")) ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash
+		) {
+			throw new Error(`${name} must be an HTTPS URL (or HTTP on loopback) without credentials, query or fragment`);
+		}
+		return url.href;
+	};
+	return {
+		app: {
+			clientId,
+			authUrl: address("WLP_JIRA_AUTH_URL", "https://auth.atlassian.com").replace(/\/+$/, ""),
+			apiUrl: address("WLP_JIRA_API_URL", "https://api.atlassian.com").replace(/\/+$/, ""),
+			redirectUrl: address(
+				"WLP_JIRA_REDIRECT_URL",
+				`${env.WLP_PUBLIC_URL?.trim().replace(/\/+$/, "") || `http://localhost:${config.httpPort}`}/jira/callback`,
+			),
+		},
+		missing: [],
+	};
+}
+
 /** A day: the longest a Rivet Cloud cluster issues a token for. */
 const MAX_CONNECTION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 

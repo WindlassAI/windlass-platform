@@ -63,13 +63,14 @@ import { githubIntake } from "./github-intake.js";
 import {
 	fileGitlabIssue,
 	type GitlabTrigger,
-	fileLinearIssue,
+	fileTrackerIssue,
 	inIntakeQueue,
 	INTAKE_SOURCES,
 	intakeScope,
 	linearSources,
+	type SiteJiraFiling,
 } from "./issue-intake.js";
-import type { Intake, IntakeTrigger, LinearFiled, LinearFiling } from "../factory/intake.js";
+import type { Intake, IntakeTrigger, TrackerFiled, LinearFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
@@ -242,7 +243,7 @@ const KEYED = "work item";
 /** The action the turn queue's schedule fires (factory-e2e.ts checks it is registered under this name). */
 export const QUEUE_ACTION = "internalTurnQueue";
 
-/** The key of a creation in `ItemsState.created`: an item filed from an issue (GitHub's or Linear's) is in a scope of its own, apart from the web's and the API's. */
+/** The key of a creation in `ItemsState.created`: an item filed from an issue is in a scope of its own, apart from the web's and the API's. */
 const scopedKey = (intake: boolean, key: string) => (intake ? intakeScope(key) : "user:" + key);
 
 export async function loadItems(db: RawAccess): Promise<ItemsState> {
@@ -846,7 +847,7 @@ async function makeItem(
 	},
 ): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
-	const { github, linear, gitlab } = intake ?? {};
+	const { github, linear, gitlab, jira } = intake ?? {};
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (intake && input.repositories)
 		throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -864,7 +865,9 @@ async function makeItem(
 			: `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
-	const context: RunContext = child?.context ?? (await savedContext(c, profile, `${gitlab ? "gitlab" : "github"}:${input.repository.id}`, makeSession));
+	const context: RunContext =
+		child?.context ??
+		(await savedContext(c, profile, `${gitlab ? "gitlab" : "github"}:${input.repository.id}`, makeSession));
 	const role = child?.role ?? (input.mode === "orchestrate" ? "planner" : "builder");
 	if (!child) {
 		const offered = hostedSizesForPlan(
@@ -963,6 +966,7 @@ async function makeItem(
 			source,
 			github,
 			...(linear && { linear }),
+			...(jira && { jira }),
 			createdAt: now,
 			activityAt: now,
 			verdict: null,
@@ -1011,6 +1015,7 @@ async function makeItem(
 				? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)]
 				: [],
 			linear ? linearSources(linear.origin) : [],
+			jira ? [untrustedWords.jira(jira.origin.jira.identifier, jira.origin.jira.author)] : [],
 		);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
@@ -1080,17 +1085,17 @@ async function fileItem(
 	let attempt: Promise<ItemSummary>;
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
-		// What a Linear item's key stands for is the issue's filing, not the text it had when the first attempt was made: an attempt that finishes an interrupted one is the same.
-		const submission = submissionOf(
-			idempotencyKey,
-			intake?.gitlab
-				? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
-				: intake?.linear
-					? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+		// Retrying a tracker reservation finishes the same generation even after the issue text changes.
+		const identity = intake?.gitlab
+			? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
+			: intake?.linear
+				? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+				: intake?.jira
+					? { jira: intake.jira.origin.jira.id, siteId: intake.jira.siteId, generation: intake.jira.generation }
 					: intake
 						? { asked, github: intake.github }
-						: asked,
-		);
+						: asked;
+		const submission = submissionOf(idempotencyKey, identity);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
 		const made = c.vars.items.created.get(key);
@@ -2014,7 +2019,7 @@ export const itemActions = {
 	},
 	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
-		// All installations share this user's budget, and so does Linear: one queue. The durable claim makes interruption replayable.
+		// All trackers share this user's budget: one queue. The durable claim makes interruption replayable.
 		return inIntakeQueue(c, () =>
 			githubIntake(
 				c,
@@ -2024,15 +2029,15 @@ export const itemActions = {
 			),
 		);
 	},
-	/**
-	 * Files a Linear issue the platform has validated, on the repository its team is mapped to (`fileLinearIssue`): in the queue, under the cap and
-	 * through the reservations of `internalGithubIntake`, and as an item with its Linear provenance and no GitHub issue. The answer says what happened.
-	 */
-	internalLinearIntake(c: ItemsCtx, filing: LinearFiling, makeSession: MakeSession): Promise<LinearFiled> {
+	internalTrackerIntake(
+		c: ItemsCtx,
+		filing: LinearFiling | SiteJiraFiling,
+		makeSession: MakeSession,
+	): Promise<TrackerFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () =>
-			fileLinearIssue(c, filing, (profile, made) =>
-				fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding }),
+			fileTrackerIssue(c, filing, githubItemId, (profile, input, intake) =>
+				fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake),
 			),
 		);
 	},

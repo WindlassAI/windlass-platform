@@ -44,7 +44,7 @@ import {
 	isHostedSize,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
-import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
+import type { BlockedNetwork, NetworkBlockedItem, PullRequestInfo } from "../contract.js";
 import { githubApp } from "../github/app.js";
 import { materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";

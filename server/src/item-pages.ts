@@ -36,7 +36,7 @@ export class ItemPageProblem extends Error {
 }
 
 const ENDED: ReadonlySet<ItemSummary["state"]> = new Set(["done", "failed", "cancelled"]);
-const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github", "gitlab", "linear"]);
+const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github", "gitlab", "linear", "jira"]);
 
 /** A page as asked for, checked: the cursor, the limit, and what it keeps. */
 export interface CleanPage {
@@ -76,7 +76,7 @@ export function cleanItemPage(raw: unknown): CleanPage | null {
 	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository))
 		throw new ItemPageProblem("Name the repository by GitHub's id for it.");
 	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"]))
-		throw new ItemPageProblem("Filed from is web, api, github or linear.");
+		throw new ItemPageProblem("Filed from is web, api, github, linear or jira.");
 	return {
 		before,
 		limit,

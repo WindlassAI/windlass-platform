@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockClient } from "../api/mock";
 import { loadAuth, saveAuth } from "../lib/authStore";
+import { lastAppHref, navigate, pageFrom, rememberAppPage } from "../lib/router";
 import { AppProvider, useApp } from "../state/app";
 import { Machines } from "./Machines";
 import { Settings } from "./Settings";
@@ -241,7 +242,7 @@ describe("Integrations in Settings", () => {
 	) {
 		const { url, redirectPrefix } = await client.login.start(provider);
 		const auth = await client.login.finish(
-			redirectPrefix + "?code=linear&state=" + new URL(url).searchParams.get("state"),
+			redirectPrefix + "?code=tracker&state=" + new URL(url).searchParams.get("state"),
 		);
 		saveAuth("mock", auth);
 		history.replaceState(null, "", "/settings" + hash);
@@ -434,5 +435,79 @@ describe("Integrations in Settings", () => {
 		const off = await open(createMockClient({ pace: 0, linear: false }));
 		expect(section(off.host)).toBeNull();
 		off.close();
+	}, 15_000);
+
+	it("redeems the Jira ticket once, searches writable repositories, and manages the named mapping", async () => {
+		const client = createMockClient({ pace: 0 }),
+			first = await open(client);
+		const section = (host: HTMLElement) => host.querySelector<HTMLElement>("section[aria-labelledby='settings-jira']")!;
+		const assign = vi.fn();
+		try {
+			vi.stubGlobal("location", {
+				assign,
+				origin: "http://localhost",
+				pathname: "/settings",
+				search: "?mock=1",
+				hash: "",
+			});
+			await press(section(first.host), "Connect Jira…");
+		} finally {
+			vi.unstubAllGlobals();
+			first.close();
+		}
+		const landing = new URL(assign.mock.calls[0]![0]);
+		expect(await client.user(first.auth).jira()).toEqual({ state: "disconnected" });
+		history.replaceState(null, "", landing.pathname + landing.search + landing.hash);
+		rememberAppPage();
+		expect(lastAppHref()).toBe("/settings?mock=1");
+		navigate({ name: "docs", slug: "settings" });
+		expect(pageFrom()?.href).toBe("/settings?mock=1");
+		const reopened = createMockClient({ pace: 0 }),
+			user = reopened.user.bind(reopened);
+		const complete = vi.fn((ticket: string) => user(first.auth).jiraComplete(ticket));
+		vi.spyOn(reopened, "user").mockImplementation(auth => {
+			const api = user(auth);
+			return {
+				...api,
+				jiraComplete: complete,
+				githubRepositories: async query => {
+					const list = await api.githubRepositories(query);
+					return query ? list : { ...list, repositories: [], more: true };
+				},
+			};
+		});
+		const screen = await open(reopened, landing.search + landing.hash),
+			scope = section(screen.host);
+		try {
+			expect(complete).toHaveBeenCalledTimes(1);
+			expect(location.hash).toBe("");
+			await choose(scope.querySelector("select")!, "site-acme");
+			await press(scope, "Connect site");
+			await screen.settle();
+			expect(scope.textContent).toContain("Connected to Acme");
+			const [project, repo] = scope.querySelectorAll("select");
+			await choose(project!, "10001");
+			expect(repo!.querySelector('option[value="7101"]')).toBeNull();
+			const search = scope.querySelector<HTMLInputElement>('input[type="search"]')!;
+			await act(async () => {
+				Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "harbor");
+				search.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await vi.waitFor(async () => {
+				await screen.settle();
+				expect(repo!.textContent).toContain("acme/harbor");
+			});
+			await choose(repo!, "7101");
+			await press(scope, "Map project");
+			expect(scope.querySelector("li")?.textContent).toContain("Engineering (ENG)acme/harbor");
+			await press(scope, "Remove the mapping of Engineering");
+			expect(scope.querySelector("li")?.textContent).toContain("Not mapped");
+			vi.spyOn(window, "confirm").mockReturnValue(true);
+			await press(scope.querySelector("h3")!, "Disconnect Jira…");
+			expect(scope.textContent).toContain("Connect Jira…");
+		} finally {
+			screen.close();
+			vi.restoreAllMocks();
+		}
 	}, 15_000);
 });

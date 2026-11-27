@@ -45,7 +45,7 @@ export type Route =
 
 /** How a work item was filed, as the Factory page filters by it. */
 export type ItemSource = ItemSummary["source"];
-export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github", "gitlab", "linear"];
+export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github", "gitlab", "linear", "jira"];
 
 /** The views of a chosen repository beside its overview, each at its own address. */
 export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as const;
@@ -160,14 +160,15 @@ export function href(route: Route): string {
 
 const LAST_APP_PAGE = "wlp.lastAppPage";
 
+const navigationHash = () => (/^#(?:github|linear|jira)(?:-error)?=/.test(location.hash) ? "" : location.hash);
+
 export function rememberAppPage(): void {
 	const page = parseRoute(location.pathname).name;
 	if (page === "docs" || page === "notfound" || page === "mock-authorize") return;
 	try {
 		// Login and integration callbacks can carry one-time credentials.
 		const search = page === "signin" ? new URL(href({ name: "signin" }), location.origin).search : location.search;
-		const hash = /^#(?:github|linear)(?:-error)?=/.test(location.hash) ? "" : location.hash;
-		sessionStorage.setItem(LAST_APP_PAGE, location.pathname + search + hash);
+		sessionStorage.setItem(LAST_APP_PAGE, location.pathname + search + navigationHash());
 	} catch {
 		// Storage may be disabled.
 	}
@@ -227,7 +228,7 @@ function entryState(): Record<string, unknown> {
  */
 export function navigate(route: Route, options: { replace?: boolean } = {}): void {
 	const target = href(route);
-	const current = here();
+	const current = location.pathname + location.search + navigationHash();
 	if (target === current) return;
 	if (route.name === "docs") rememberAppPage();
 	if (options.replace) history.replaceState({ from: entryState().from }, "", target);

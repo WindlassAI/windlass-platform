@@ -1261,12 +1261,12 @@ const readFirst = (item: Pick<ItemView, "state" | "origin">) =>
 	item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
-	const { url, author, tracker } = originIssue(origin);
+	const { url, author, tracker, label } = originIssue(origin);
 	return (
 		<span className="item-origin">
 			from{" "}
 			<a href={url} target="_blank" rel="noreferrer" title={tracker}>
-				{origin.issue ? `#${origin.issue.number}` : origin.linear.identifier}
+				{label}
 			</a>{" "}
 			by {author}
 		</span>
@@ -1573,15 +1573,11 @@ export function Item({ page }: { page: ItemPage }) {
 					) : (
 						<span>
 							from{" "}
-							{view.source === "api"
-								? "the API"
-								: view.source === "github"
-									? "GitHub"
-									: view.source === "gitlab"
-										? "GitLab"
-										: view.source === "linear"
-											? "Linear"
-											: "the web"}
+							{
+								{ api: "the API", github: "GitHub", gitlab: "GitLab", linear: "Linear", jira: "Jira", web: "the web" }[
+									view.source
+								]
+							}
 						</span>
 					)}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>

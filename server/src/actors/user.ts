@@ -124,6 +124,9 @@ import {
 	type UsageNumbers,
 	type UserProfile,
 } from "../contract.js";
+import * as jira from "./user-jira.js";
+import type { JiraItemWrite } from "./internal.js";
+import type { JiraDelivery } from "../jira/webhook.js";
 import {
 	LINEAR_TABLES,
 	type LinearItemWrite,
@@ -1870,6 +1873,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			for (const table of jira.JIRA_TABLES) await db.execute(table);
 			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
 			await db.execute(GITHUB_SYNC_TABLE);
@@ -2020,6 +2024,8 @@ export const user = actor({
 	}),
 
 	createVars: loadUserState,
+	// Actions do not receive the handshake request. Retain its origin for OAuth ticket redemption.
+	createConnState: c => ({ origin: c.request?.headers.get("origin") ?? null }),
 
 	events: {
 		machineHost: event<MachineHostUpdate>({ canSubscribe: c => maySubscribe(c) }),
@@ -2304,6 +2310,30 @@ export const user = actor({
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) =>
 			itemActions.internalGithubIntake(c, input, itemSession(c)),
 
+		...jira.jiraSettingsActions,
+		internalJiraCallback: (c, nonce: string, origin: string, code: string | null, hash: string) => {
+			requireServiceFor(c, "call");
+			return jira.stageGrant(c, nonce, origin, code, hash);
+		},
+		internalJiraSite: c => {
+			requireServiceFor(c, "call");
+			return jira.selectedSite(c);
+		},
+		internalJiraRenew: c => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			return jira.renewJiraWebhooks(c);
+		},
+		internalJiraWrite: (c, input: JiraItemWrite) => {
+			requireServiceFor(c, "call");
+			return jira.writeJiraItem(c, input);
+		},
+		internalJiraDelivery: (c, delivery: JiraDelivery, digest: string) => {
+			requireServiceFor(c, "call");
+			return jira.fileJiraDelivery(c, delivery, digest, filing =>
+				itemActions.internalTrackerIntake(c, filing, itemSession(c)),
+			);
+		},
+
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);
 			return linearStatus(c);
@@ -2346,7 +2376,7 @@ export const user = actor({
 		},
 		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {
 			requireServiceFor(c, "call");
-			return fileLinearDelivery(c, delivery, filing => itemActions.internalLinearIntake(c, filing, itemSession(c)));
+			return fileLinearDelivery(c, delivery, filing => itemActions.internalTrackerIntake(c, filing, itemSession(c)));
 		},
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: itemActions.actOnItem,

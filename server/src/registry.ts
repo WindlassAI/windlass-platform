@@ -14,6 +14,7 @@ import { billingCustomers } from "./billing/customer-index.js";
 import { accountIdentities } from "./actors/account-identities.js";
 import { gitlabInbox } from "./actors/gitlab-inbox.js";
 import { userGitlab } from "./actors/user-gitlab.js";
+import { jiraSite } from "./actors/jira-site.js";
 import { linearWorkspace } from "./actors/linear-workspace.js";
 import { login } from "./actors/login.js";
 import { user } from "./actors/user.js";
@@ -37,6 +38,7 @@ export const registry = setup({
 		linearWorkspace,
 		userGitlab,
 		gitlabInbox,
+		jiraSite,
 	},
 	// The native HTTP listener bounds the body before copying it into a JavaScript Request.
 	serverless: { maxStartPayloadBytes: 3 * 1024 * 1024 },

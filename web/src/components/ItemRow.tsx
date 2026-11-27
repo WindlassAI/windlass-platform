@@ -417,6 +417,7 @@ export function ItemRow({
 }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
+	const origin = item.origin && originIssue(item.origin);
 	const running =
 		!asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
@@ -454,25 +455,21 @@ export function ItemRow({
 							</a>
 						</span>
 					) : null}
-					{item.origin ? (
+					{origin ? (
 						<span>
 							<a
 								className="item-pull"
-								href={originIssue(item.origin).url}
+								href={origin.url}
 								target="_blank"
 								rel="noreferrer"
-								aria-label={
-									item.origin.issue
-										? `Issue #${item.origin.issue.number} on GitHub`
-										: `Issue ${item.origin.linear.identifier} on Linear`
-								}
+								aria-label={`Issue ${origin.label} on ${origin.tracker}`}
 							>
-								{originIssue(item.origin).label}
+								{origin.tracker === "GitHub" ? `issue ${origin.label}` : origin.label}
 								<ExternalIcon size={10} />
 							</a>
 						</span>
 					) : null}
-					{ci && item.origin && !originIssue(item.origin).trusted ? <span>from an outside author</span> : null}
+					{origin && !origin.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>

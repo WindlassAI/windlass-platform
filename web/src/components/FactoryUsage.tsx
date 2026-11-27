@@ -41,9 +41,9 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 						</dd>
 					</div>
 					<div>
-						<dt>Items from GitHub and Linear</dt>
+						<dt>Items from issues</dt>
 						<dd className="factory-limit-text">
-							{count(value.githubItemsPerDay)} per UTC day, shared by GitHub and Linear, drafts among them
+							{count(value.githubItemsPerDay)} per UTC day, shared by GitHub, Linear and Jira, including drafts
 						</dd>
 					</div>
 					<div>

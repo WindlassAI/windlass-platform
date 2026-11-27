@@ -183,6 +183,14 @@ export interface UserApi
 			| "deleteSetupNote"
 			| "setGuideCheck"
 			| "runReadiness"
+			| "jira"
+			| "jiraConnect"
+			| "jiraComplete"
+			| "jiraSelectSite"
+			| "jiraProjects"
+			| "saveJiraMapping"
+			| "removeJiraMapping"
+			| "disconnectJira"
 		> {
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;

@@ -46,6 +46,7 @@ export const SOURCE_WORD: Record<ItemSource, string> = {
 	github: "GitHub issue",
 	gitlab: "GitLab issue",
 	linear: "Linear issue",
+	jira: "Jira issue",
 };
 
 const IN_PROGRESS: ItemState[] = ["working", "queued", "waiting"];

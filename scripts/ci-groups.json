@@ -249,7 +249,7 @@
         "scripts/issue-intake-fixture.ts",
         "server/src/github/**",
         "server/src/factory/**",
-        "server/src/actors/{github-item,github-intake,github-inbox,github-repository,github-account,user-github,work-item,user-items}.ts",
+        "server/src/actors/{issue-intake,github-item,github-intake,github-inbox,github-repository,github-account,user-github,work-item,user-items}.ts",
         "server/src/index.ts",
         "server/src/registry.ts",
         "scripts/github-standin.ts",
@@ -300,6 +300,25 @@
       "checks": {
         "linear-protocol": "tsx ../scripts/linear-protocol-check.ts",
         "linear": "tsx ../scripts/linear-check.ts"
+      }
+    },
+    "jira": {
+      "timeout": 20,
+      "paths": [
+        "server/src/jira/**",
+        "server/src/factory/**",
+        "server/src/github/**",
+        "server/src/linear/webhook.ts",
+        "server/src/{access,actor-errors,auth,client,config,contract,http-limits,index,item-pages,registry,repo-secrets,repository-defaults,signatures,submissions,tokens,user-limits}.ts",
+        "server/src/signin/seal.ts",
+        "server/src/actors/user/**",
+        "server/src/actors/{jira-site,user-jira,issue-intake,github-intake,github-item,github-inbox,github-repository,github-account,user-github,internal,user-items,user,work-item}.ts",
+        "scripts/{check-listeners,issue-intake-fixture,login-http}.ts",
+        "scripts/{github,jira}-standin.ts",
+        "scripts/jira-check.ts"
+      ],
+      "checks": {
+        "jira": "tsx ../scripts/jira-check.ts"
       }
     },
     "sandbox-docker": {

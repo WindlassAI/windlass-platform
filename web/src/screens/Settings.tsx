@@ -7,6 +7,7 @@ import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
 import { GitlabSettings, useGitlabSettings } from "../components/GitlabSettings";
 import { LinearSettings } from "../components/LinearSettings";
+import { JiraSettings } from "../components/JiraSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
@@ -118,6 +119,7 @@ export function Settings() {
 						<GithubSettings />
 						<GitlabSettings connection={gitlab} />
 						{info?.items ? <LinearSettings /> : null}
+						{info?.items ? <JiraSettings /> : null}
 						{info?.items ? <ApiTokens /> : null}
 					</SettingsGroup>
 				) : null}
