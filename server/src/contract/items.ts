@@ -1,7 +1,7 @@
 /** Work items: lists, runs, budgets, questions, verdicts, plans and actions. */
 
 import type { HarnessId, IdempotencyKey, SandboxPlace, SandboxProfileId } from "../contract.js";
-import type { GithubId, SessionRepository } from "./github.js";
+import type { GithubId, RepoAddress, SessionRepository } from "./github.js";
 import type { HostedSize } from "./hosted-sizes.js";
 import type { CredentialSource } from "./machines.js";
 import type { CheckStatus, Verified, VerifiedFlag } from "./repository.js";
@@ -23,8 +23,7 @@ export interface ItemListPage {
 	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
 	limit?: number;
 	ended?: boolean;
-	/** The repository's address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
-	repository?: GithubId | null;
+	repository?: RepoAddress | null;
 	source?: ItemSource | null;
 }
 
@@ -33,8 +32,7 @@ export const ITEM_FEED_ENDED = 25;
 
 /** Per repository and filing source. Display names come from its newest filed item. */
 export interface ItemCount {
-	/** The repository's address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
-	repository: GithubId;
+	repository: RepoAddress;
 	owner: string;
 	name: string;
 	source: ItemSource;

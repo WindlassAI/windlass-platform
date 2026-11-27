@@ -69,7 +69,7 @@ import {
 } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
 import { gitlabItemHost, gitlabCi, gitlabItem, prepareGitlabMerge } from "./gitlab-item.js";
-import { capabilitiesOf } from "../codehost/capabilities.js";
+import { hostCaps } from "../codehost/capabilities.js";
 import type { ItemHost } from "../codehost/item.js";
 import { keyOf } from "../codehost/ref.js";
 import { GitlabError } from "../gitlab/app.js";
@@ -1473,7 +1473,7 @@ const reviewHeadSubject = (r: Pick<RequestedReview, "repositoryId" | "pr" | "hea
 async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 	const changed = await queued(c, async () => {
 		const stored = await load(c.db);
-		if (!stored || !capabilitiesOf(stored.meta.repository.provider).feedback) return false;
+		if (!stored || !hostCaps(stored.meta.repository.provider).feedback) return false;
 		const primary =
 			stored.meta.repository.id === notice.repositoryId &&
 			stored.item.pr?.number === notice.pr &&
@@ -1767,7 +1767,7 @@ function githubItem(hub: Awaited<ReturnType<typeof github>>): ItemHost {
 			app.withToken(installationId, { repositoryId, permissions: { metadata: "read", ...permissions } }, step),
 		ownComment: comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]",
 		acknowledge: key => app.acknowledgeFeedback(installationId, { id: repositoryId, owner, name }, key),
-		caps: capabilitiesOf("github"),
+		caps: hostCaps("github"),
 		webhooks: githubConfig().pollFallback,
 	};
 }
@@ -3079,7 +3079,7 @@ async function observePush(
 }
 
 async function readBranchPush(c: Ctx, item: FactoryItem, meta: ItemMeta, repo?: string) {
-	if (!capabilitiesOf(meta.repository.provider).pushEvents) return false;
+	if (!hostCaps(meta.repository.provider).pushEvents) return false;
 	const hub = await github(c, meta, "read", repo ? repoOf(item, repo) : undefined);
 	const branch = itemBranch(item, meta);
 	const head = await hub.app
@@ -3544,7 +3544,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		}
 		case "verified_check":
-			if (capabilitiesOf(meta.repository.provider).verdict !== "check-run") return true;
+			if (hostCaps(meta.repository.provider).verdict !== "check-run") return true;
 			// A handoff or cancellation can replace a pending row after the due scan.
 			if (!(await c.db.execute("SELECT 1 FROM effects WHERE id=? AND effect=?", row.id, row.effect)).length)
 				return true;
@@ -3787,7 +3787,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			});
 		case "register":
 		case "forget":
-			if (capabilitiesOf(meta.repository.provider).hooks !== "app") return true; // The owner's index wakes these items.
+			if (hostCaps(meta.repository.provider).hooks !== "app") return true; // The owner's index wakes these items.
 			return updateDirectory(c, meta, effect);
 		case "deliver": {
 			if (effect.to === "critic") {
@@ -4983,7 +4983,7 @@ export const workItem = actor({
 		): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			if (
-				capabilitiesOf(c.vars.stored?.meta.repository.provider).verdict !== "check-run" ||
+				hostCaps(c.vars.stored?.meta.repository.provider).verdict !== "check-run" ||
 				input.repositoryId !== c.vars.stored?.meta.repository.id ||
 				input.installationId !== (await binding(c))
 			)

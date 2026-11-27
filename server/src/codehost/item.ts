@@ -1,5 +1,5 @@
 import type { CiTarget } from "./ci.js";
-import type { HostCapabilities } from "./capabilities.js";
+import type { HostCaps } from "./capabilities.js";
 import type { CodeHost, Pull } from "./types.js";
 
 /**
@@ -24,7 +24,7 @@ export interface ItemHost {
 	/** The project's web address, for links a GitHub address would get wrong. */
 	webUrl?: string;
 	/** What the host offers beyond `CodeHost`. Callers branch on these, not on the provider. */
-	caps: HostCapabilities;
+	caps: HostCaps;
 	/** Changes reach the item through webhooks, so its polls can be sparse. */
 	webhooks: boolean;
 }
