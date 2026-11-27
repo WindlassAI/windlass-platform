@@ -619,6 +619,12 @@ export async function openSandbox(
 		}
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
+		// The earlier session's copied agent session is only this one's once restored here: on shared agent data it is still the earlier session's own.
+		if (meta.copiedSession && !(await privateSessionData(meta, layer.sandboxes, id))) {
+			meta.windlassSessionId = null;
+			meta.backup = null;
+		}
+		meta.copiedSession = undefined;
 		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
 			// Restore memory before starting the agent in its replacement sandbox.
 			if (!capabilitiesOf(meta.harness).backups || !(await restoreBackup(c, meta, turn, handle, layer))) {
@@ -628,7 +634,9 @@ export async function openSandbox(
 					c,
 					turn,
 					"info",
-					"The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.",
+					meta.handoff
+						? "The earlier session's memory could not be restored here, so the agent starts with an account of that session instead."
+						: "The agent's memory of the conversation went with the old sandbox, so it starts this turn without it.",
 				);
 			}
 		}

@@ -11,7 +11,7 @@
  * a secret for as long as it lasts: never logged, never part of an error, an event or an answer.
  *
  *   s3.ts        any store that speaks the S3 protocol (Cloudflare R2, AWS S3, MinIO, ...): only
- *                signed links, HEAD, ranged GET and DELETE
+ *                signed links, HEAD, ranged GET, DELETE and a copy inside the bucket
  *   stand-in.ts  the same in memory or in a directory, for the tests and the fake sandbox layer
  */
 
@@ -47,6 +47,12 @@ export interface ObjectStore {
 	readStart(key: string, bytes: number): Promise<Uint8Array | null>;
 	/** Removes the object. A no-op when there is none. Throws `ObjectStoreError` when the store could not be told. */
 	remove(key: string): Promise<void>;
+	/**
+	 * Copies the object at `fromKey` to `toKey` inside the store, replacing whatever `toKey` held; its
+	 * bytes pass through no server. False when `fromKey` has no object. Throws `ObjectStoreError` when the
+	 * store could not be told.
+	 */
+	copy(fromKey: string, toKey: string): Promise<boolean>;
 }
 
 /**

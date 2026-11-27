@@ -25,7 +25,7 @@
 import assert from "node:assert/strict";
 import { SandboxWindlass } from "../server/src/sandbox/turn.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -66,7 +66,9 @@ import {
 	META,
 	RESTARTED_NOTICE,
 	capReached,
+	hardeningRefusal,
 } from "../server/src/sandbox/e2b/sandboxes.js";
+import { GUEST_HARDENING_SCRIPT, HARDENING_MARK } from "../server/src/sandbox/e2b/guest-hardening.js";
 import { RESTARTED_COMMAND, restartShellResult, resumePrompt } from "../server/src/actors/turn-resume.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
@@ -192,6 +194,11 @@ function world(
 }
 
 const callsOf = (fake: FakeE2b, name: string) => fake.calls.filter(call => call.startsWith(`${name} `));
+/** The provider's hardening script (guest-hardening.ts), as a machine saw it. */
+const hardening = (entry: { command: string }) => entry.command.includes(HARDENING_MARK);
+/** The root commands a machine saw other than the hardening script. */
+const rootsBesidesHardening = (commands: Array<{ command: string; options: E2bCommandOptions }>) =>
+	commands.filter(entry => entry.options.root && !hardening(entry));
 
 // ---------------------------------------------------------------------------------------------
 // The provider on the in-memory client
@@ -823,7 +830,9 @@ await section("suspend, resume, destroy", async () => {
 		"a resumed sandbox is tidied first, once one command shows it answers: a Windlass a cut-off turn left is looked for, and its token file removed",
 		machine.commands[0]?.command === "true" &&
 			machine.commands[0].options.root === true &&
-			machine.commands[1]?.command === "wlp-run tags-of windlass" &&
+			hardening(machine.commands[1] ?? { command: "" }) &&
+			machine.commands[1].options.root === true &&
+			machine.commands[2]?.command === "wlp-run tags-of windlass" &&
 			machine.commands.some(entry => entry.command === `rm -f -- ${path} ${path}.tmp`),
 		machine.commands.map(entry => entry.command).join(" | "),
 	);
@@ -894,6 +903,210 @@ await section("suspend, resume, destroy", async () => {
 					line.includes("the files in its workspace and its Windlass session are lost"),
 			),
 		noPause.lines.join(" | "),
+	);
+});
+
+await section("hardening", async () => {
+	// E2B's base system lets any user of the guest become root (sshd that lets root in, empty passwords): the
+	// provider takes that away as root at every create, resume and restart, before anything of a session's runs.
+	const syntax = spawnSync("sh", ["-n", "-c", GUEST_HARDENING_SCRIPT], { encoding: "utf8" });
+	expect("the hardening script is valid sh", syntax.status === 0, syntax.stderr);
+	expect(
+		"it locks root and user, masks the ssh and rpcbind units and checks port 22 and empty passwords",
+		GUEST_HARDENING_SCRIPT.startsWith(HARDENING_MARK) &&
+			/for name in root user /.test(GUEST_HARDENING_SCRIPT) &&
+			/passwd -l "\$name"/.test(GUEST_HARDENING_SCRIPT) &&
+			/ssh\.socket ssh\.service .*rpcbind\.socket rpcbind\.service/.test(GUEST_HARDENING_SCRIPT) &&
+			/:0016\$/.test(GUEST_HARDENING_SCRIPT) &&
+			/PermitRootLogin no/.test(GUEST_HARDENING_SCRIPT),
+	);
+
+	const w = world();
+	const id = await w.make();
+	const machine = w.machines.get(id)!;
+	const firstOther = machine.commands.findIndex(entry => !hardening(entry));
+	expect(
+		"create: the first command in a new sandbox is the hardening script, as root, and it runs once",
+		hardening(machine.commands[0] ?? { command: "" }) &&
+			machine.commands[0].options.root === true &&
+			machine.commands.filter(hardening).length === 1 &&
+			firstOther === 1,
+		machine.commands.map(entry => entry.command.slice(0, 40)).join(" | "),
+	);
+
+	machine.commands.length = 0;
+	const again = await w.sandboxes.connect(id);
+	expect(
+		"a connect to a running sandbox this process hardened since it started does not run it again",
+		again !== undefined && !machine.commands.some(hardening),
+		machine.commands.map(entry => entry.command.slice(0, 40)).join(" | "),
+	);
+	const release = await (again as E2bSandboxHandle).holdForTurn();
+	await (again as E2bSandboxHandle).run("echo mid-turn");
+	await release();
+	expect("nor does a turn's hold or a command in the turn", !machine.commands.some(hardening));
+
+	// Another server, or this one after a restart: it has not seen the sandbox hardened, so it hardens it first.
+	const other = e2bSandboxes(w.fake, SETTINGS, { log: () => {}, now: () => w.clock.now, sleep: async () => {} });
+	machine.commands.length = 0;
+	await other.connect(id);
+	expect(
+		"a connect from a process that has not hardened it runs the script right after the probe",
+		machine.commands[0]?.command === "true" && hardening(machine.commands[1] ?? { command: "" }),
+		machine.commands.map(entry => entry.command.slice(0, 40)).join(" | "),
+	);
+
+	await w.sandboxes.suspend(id);
+	machine.commands.length = 0;
+	await w.sandboxes.connect(id);
+	expect(
+		"resume: the script runs right after the probe, before the leftovers of a cut-off turn are looked for",
+		machine.commands[0]?.command === "true" &&
+			hardening(machine.commands[1] ?? { command: "" }) &&
+			machine.commands[1].options.root === true &&
+			machine.commands[2]?.command === "wlp-run tags-of windlass",
+		machine.commands.map(entry => entry.command.slice(0, 40)).join(" | "),
+	);
+
+	// The plan's hour: the hold pauses and resumes the sandbox before the turn, and hardens it again then.
+	const refreshed = world();
+	const rid = await refreshed.make();
+	const rmachine = refreshed.machines.get(rid)!;
+	const rhandle = (await refreshed.sandboxes.connect(rid)) as E2bSandboxHandle;
+	refreshed.fake.sandboxes.get(rid)!.endAt = Number.MAX_SAFE_INTEGER;
+	refreshed.clock.now += 20 * MINUTE;
+	rmachine.commands.length = 0;
+	const rrelease = await rhandle.holdForTurn();
+	await rrelease();
+	expect(
+		"a pause and resume for the plan's hour hardens it again before the turn",
+		callsOf(refreshed.fake, "pause").length === 1 && rmachine.commands.filter(hardening).length === 1,
+		`${callsOf(refreshed.fake, "pause").length} pauses; ${rmachine.commands.map(entry => entry.command.slice(0, 40)).join(" | ")}`,
+	);
+
+	// A start from the disk boots E2B's base system again: hardened after the reboot, before anything else.
+	class Wedging extends ScriptedMachine {
+		wedged = false;
+		override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+			if (!this.wedged) return super.start(command, options);
+			this.commands.push({ command, options, stdin: "" });
+			return {
+				pid: 9,
+				sendStdin: async () => {},
+				closeStdin: async () => {},
+				wait: () => new Promise(() => {}),
+				disconnect: async () => {},
+				kill: async () => {},
+			};
+		}
+		async rebooted(): Promise<void> {
+			this.wedged = false;
+		}
+	}
+	const wedges = new Map<string, Wedging>();
+	const rebootFake = new FakeE2b({
+		machine: sandboxId => {
+			const made = new Wedging(command =>
+				command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : undefined,
+			);
+			wedges.set(sandboxId, made);
+			return made;
+		},
+	});
+	const rebooting = e2bSandboxes(rebootFake, SETTINGS, { log: () => {}, sleep: async () => {}, probeMs: 50 });
+	const wid = await rebooting.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+	const wmachine = wedges.get(wid)!;
+	wmachine.wedged = true;
+	wmachine.commands.length = 0;
+	const rebooted = (await rebooting.connect(wid)) as E2bSandboxHandle;
+	const probes = wmachine.commands.map(entry =>
+		entry.command === "true" ? "probe" : hardening(entry) ? "harden" : "other",
+	);
+	expect(
+		"restart from disk: the script runs after the probe that shows the rebooted guest answers, before anything else",
+		rebooted.notice === RESTARTED_NOTICE && probes.slice(0, 3).join() === "probe,probe,harden",
+		probes.join(),
+	);
+
+	// Fails closed: a guest the script could not lock down is not used.
+	const refusing = (answer: (command: string) => { exitCode?: number; stdout?: string } | undefined) => {
+		const lines: string[] = [];
+		const machines = new Map<string, ScriptedMachine>();
+		let refuse = false;
+		const fake = new FakeE2b({
+			machine: sandboxId => {
+				const made = imageLike(command => (refuse && hardening({ command }) ? answer(command) : undefined));
+				machines.set(sandboxId, made);
+				return made;
+			},
+		});
+		const sandboxes = e2bSandboxes(fake, SETTINGS, {
+			log: line => lines.push(line),
+			sleep: async () => {},
+			hardeningMs: 50,
+		});
+		return { lines, machines, fake, sandboxes, refuse: () => (refuse = true) };
+	};
+	const bad = refusing(() => ({ exitCode: 1, stdout: "refused: something still listens on port 22\n" }));
+	bad.refuse();
+	const created = await userError(() => bad.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" }));
+	const badId = [...bad.machines.keys()][0] ?? "";
+	expect(
+		"create: a failed check fails the create with words for the person, and the sandbox is killed",
+		created === hardeningRefusal("refused: something still listens on port 22") &&
+			bad.fake.sandboxes.size === 0 &&
+			bad.machines.get(badId)?.commands.length === 1 &&
+			bad.lines.some(line => line.includes(`e2b.sandbox.hardening_failed id=${badId}`)),
+		created ?? "created",
+	);
+
+	const later = refusing(() => ({ exitCode: 1, stdout: "refused: accounts with an empty password remain: user\n" }));
+	const laterId = await later.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+	await later.sandboxes.suspend(laterId);
+	later.refuse();
+	const lmachine = later.machines.get(laterId)!;
+	lmachine.commands.length = 0;
+	const resumed = await userError(() => later.sandboxes.connect(laterId));
+	expect(
+		"resume: a failed check fails the connect, nothing of the session's runs, and the sandbox is paused again",
+		resumed === hardeningRefusal("refused: accounts with an empty password remain: user") &&
+			lmachine.commands.map(entry => (hardening(entry) ? "harden" : entry.command)).join() === "true,harden" &&
+			later.fake.sandboxes.get(laterId)?.state === "paused",
+		`${resumed} | ${lmachine.commands.map(entry => entry.command.slice(0, 40)).join(" | ")}`,
+	);
+	const retry = await userError(() => later.sandboxes.connect(laterId));
+	expect("and the next connect tries again, and fails again while the guest refuses", retry === resumed);
+
+	const silent = refusing(() => ({ exitCode: 0, stdout: "" }));
+	silent.refuse();
+	const said = await userError(() => silent.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" }));
+	expect(
+		"a script that ends well without saying `hardened` counts as a failure",
+		said !== null && said.startsWith("The sandbox was not used") && silent.fake.sandboxes.size === 0,
+		said ?? "",
+	);
+
+	const hanging = refusing(() => undefined);
+	const hangingId = await hanging.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+	const hmachine = hanging.machines.get(hangingId)!;
+	const start = hmachine.start.bind(hmachine);
+	hmachine.start = async (command, options) => {
+		if (!hardening({ command })) return start(command, options);
+		return {
+			pid: 9,
+			sendStdin: async () => {},
+			closeStdin: async () => {},
+			wait: () => new Promise(() => {}),
+			disconnect: async () => {},
+			kill: async () => {},
+		};
+	};
+	await hanging.sandboxes.suspend(hangingId);
+	const hung = await userError(() => hanging.sandboxes.connect(hangingId));
+	expect(
+		"a script that does not end in time counts as a failure",
+		hung === hardeningRefusal("the script did not end within 0.05 s"),
+		hung ?? "",
 	);
 });
 
@@ -1795,7 +2008,7 @@ await section("network modes", async () => {
 		"open: the sandbox is made without a network option and without a network mark, as before",
 		openBox?.network === null &&
 			!(META.network in (openBox?.metadata ?? {})) &&
-			!(opened.machines.get(openId)?.commands ?? []).some(entry => entry.options.root),
+			rootsBesidesHardening(opened.machines.get(openId)?.commands ?? []).length === 0,
 	);
 	await opened.sandboxes.connect(openId);
 	expect("open: a connect asks nothing more of E2B", callsOf(opened.fake, "updateNetwork").length === 0);
@@ -1809,10 +2022,11 @@ await section("network modes", async () => {
 		JSON.stringify(box?.network),
 	);
 	const commands = w.machines.get(id)?.commands ?? [];
-	const first = commands[0];
+	const first = commands[1];
 	expect(
-		"restricted: before anything else runs in it, the names are pinned as root, every allowed host and nothing else",
-		first !== undefined &&
+		"restricted: before anything else runs in it, the guest is hardened and then the names are pinned as root, every allowed host and nothing else",
+		hardening(commands[0] ?? { command: "" }) &&
+			first !== undefined &&
 			first.options.root === true &&
 			first.command.includes("wlp-network") &&
 			first.command.includes(" wlp-network restricted 1.1.1.1 ") &&
@@ -1822,7 +2036,7 @@ await section("network modes", async () => {
 	);
 	expect(
 		"restricted: no command of a session's runs as root",
-		commands.filter(entry => entry.options.root).length === 1,
+		rootsBesidesHardening(commands).length === 1 && commands.filter(hardening).length === 1,
 	);
 	w.fake.calls.length = 0;
 	await w.sandboxes.connect(id);
@@ -1834,9 +2048,15 @@ await section("network modes", async () => {
 			(w.machines.get(id)?.commands ?? [])
 				.filter(entry => entry.options.root)
 				.map(entry =>
-					entry.command === "true" ? "probe" : entry.command.includes("wlp-network") ? "names" : entry.command,
+					entry.command === "true"
+						? "probe"
+						: hardening(entry)
+							? "hardening"
+							: entry.command.includes("wlp-network")
+								? "names"
+								: entry.command,
 				)
-				.join() === "names,probe,names",
+				.join() === "hardening,names,probe,names",
 		updates.join(" | "),
 	);
 	await w.sandboxes.suspend(id);
@@ -1936,7 +2156,7 @@ await section("network modes", async () => {
 		"a repository's hosts are allowed from the sandbox's first command, beside the deployment's",
 		allowOut.includes("registry.example.com") &&
 			restricted.hosts.every(host => allowOut.includes(host)) &&
-			(listed?.commands.find(entry => entry.options.root)?.command.includes(" registry.example.com") ?? false),
+			(rootsBesidesHardening(listed?.commands ?? [])[0]?.command.includes(" registry.example.com") ?? false),
 		allowOut.join(","),
 	);
 	r.fake.calls.length = 0;
@@ -2191,6 +2411,17 @@ await section("the template", async () => {
 			`${users.at(-1)} | ${workdirs.at(-1)}`,
 		);
 		expect("the line that only keeps a container alive is left out", !/sleep/.test(text));
+		const step = /^RUN echo ([A-Za-z0-9+/=]+) \| base64 -d \| sh$/.exec(
+			lines.filter(line => line.startsWith("RUN ")).at(-1) ?? "",
+		);
+		expect(
+			"its last step hardens the guest after E2B's provisioning: the provider's script, run as root",
+			step !== null && Buffer.from(step[1], "base64").toString("utf8") === GUEST_HARDENING_SCRIPT,
+			lines
+				.filter(line => line.startsWith("RUN "))
+				.at(-1)
+				?.slice(0, 80),
+		);
 	} finally {
 		rmSync(context, { recursive: true, force: true });
 	}

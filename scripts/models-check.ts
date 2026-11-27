@@ -40,6 +40,7 @@ import {
 	checkEffort,
 	chosenModel,
 	standInModels,
+	turnEffort,
 } from "../server/src/account-models.js";
 import type { ModelList } from "../server/src/contract.js";
 import { WindlassSignIns, parseModels } from "../server/src/signin/commands.js";
@@ -155,6 +156,28 @@ function problem(step: () => unknown): string | null {
 				"bad_effort: gpt-7-nova takes no reasoning effort. Leave the effort at its default." &&
 			problem(() => checkEffort(account, "gpt-6-luna", 3)) !== null,
 	);
+	{
+		// A session's turns, each starting from the effort the one before it left (SessionMeta.effort).
+		let session: string | null = null;
+		const turn = (asked: unknown, model: string) => (session = turnEffort(asked, session, model, account));
+		const named = turn("medium", "gpt-6-luna");
+		const kept = turn(undefined, "gpt-6-luna");
+		const cleared = turn(null, "gpt-6-luna");
+		turn("low", "gpt-6-luna");
+		const switched = turn(undefined, "gpt-7-nova");
+		expect(
+			"a turn's effort is kept for the next unless it names another, null is the default, and a model that does not take it drops it",
+			named === "medium" && kept === "medium" && cleared === null && switched === null,
+			plain({ named, kept, cleared, switched }),
+		);
+		expect(
+			"an effort a prompt names is still refused where its model does not take it; an unchecked one is passed on",
+			problem(() => turnEffort("high", "low", "gpt-6-luna", account)) ===
+				"bad_effort: The effort for gpt-6-luna must be one of: low, medium" &&
+				turnEffort("", "low", "gpt-6-luna", account) === null &&
+				turnEffort(undefined, "high", "gpt-6-luna", null) === "high",
+		);
+	}
 	expect(
 		"of a model the list does not have nothing is said: that one is Windlass's to refuse",
 		problem(() => checkEffort(account, "gpt-5-old", "extreme")) === null,

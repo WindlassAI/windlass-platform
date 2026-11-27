@@ -16,6 +16,7 @@ import { deploymentSize, resolveRun, type RunContext } from "../factory/resolve-
 import { checkRunPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type {
 	AccountDefaultsPatch,
+	ContinueSessionInput,
 	CredentialSource,
 	ItemPlaceDefaults,
 	RepositoryDefaultsPatch,
@@ -309,7 +310,17 @@ import {
 	wakeEnvironments,
 	type EnvironmentHost,
 } from "./user-environments.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SessionCreateInput, ActorClient } from "./internal.js";
+import type {
+	Continuation,
+	ContinuedFrom,
+	EnvironmentBuildOrigin,
+	EnvironmentBuildReport,
+	ForkSource,
+	SessionCreateInput,
+	ActorClient,
+} from "./internal.js";
+import { continuedInput, copyAgentSession } from "./continue-session.js";
+import { errorText } from "../util.js";
 import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
@@ -1051,13 +1062,91 @@ async function sessionHostedSize(
 	return selected ?? deploymentSize(offered, item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 }
 
+/** What `continueSession` hands `makeSession` beside the settings: the new session's id, made first for the copy's key, and what it carries over. */
+interface ContinuedSession {
+	sessionId: string;
+	effort: string | null;
+	continuation: Omit<Continuation, "from"> & { from: Omit<ContinuedFrom, "base"> };
+}
+
+/** `continueSession`: a new session with the earlier one's settings and memory, on a new branch from `base`. */
+async function continueFrom(
+	c: CreateCtx,
+	profile: UserProfile,
+	input: ContinueSessionInput,
+	submission: Submission | null,
+): Promise<SessionSummary> {
+	const parent = c.vars.sessions.get(input.id);
+	if (!parent) throw new UserError("That agent does not exist.", { code: "session_not_found" });
+	if (parent.item || parent.readiness || parent.environmentBuild)
+		throw (
+			itemSessionRefusal(c, parent) ??
+			new UserError("Only your own agents can be continued in a new pull request.", { code: "item_session" })
+		);
+	if (!parent.repository)
+		throw new UserError(
+			"This agent has no repository from your GitHub connection, so there is no pull request to continue.",
+			{
+				code: "no_repository",
+			},
+		);
+	let source: ForkSource;
+	try {
+		// The actor is the caller's own: its key holds the caller's uid.
+		source = await sessionActor(c, profile.uid, parent.id).internalForkSource();
+	} catch (error) {
+		if (isSessionGone(error)) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+		const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as {
+			group?: unknown;
+			code?: unknown;
+			message?: unknown;
+		};
+		if (group === "user" && typeof code === "string" && typeof message === "string")
+			throw new UserError(message, { code });
+		throw clientError(c.log, error, "The agent could not be continued. Try again.");
+	}
+	const stacked = input.stack === true;
+	if (stacked && !source.pushedBranch)
+		throw new UserError("This agent has not pushed a branch yet, so there is nothing to stack on.", {
+			code: "not_pushed",
+		});
+	const sessionId = `s_${randomBytes(8).toString("hex")}`;
+	const copy = await copyAgentSession(await getLayer(), profile.uid, parent.id, sessionId, source);
+	try {
+		return await makeSession(c, profile, continuedInput(source, stacked), submission, undefined, {
+			continued: {
+				sessionId,
+				effort: source.effort,
+				continuation: {
+					from: { id: parent.id, title: source.title, pull: source.pull, stacked },
+					copy,
+					// Kept beside a copy: should the copy not come back in the new sandbox, the agent still learns what came before.
+					handoff: source.handoff,
+					tainted: source.tainted,
+					secretRequestBlocked: source.secretRequestBlocked,
+				},
+			},
+		});
+	} catch (error) {
+		if (copy)
+			await (await getLayer()).backups
+				?.remove({ uid: profile.uid, sessionId })
+				.catch(removal => console.warn(`[wlp] backup.remove_failed session=${sessionId}: ${errorText(removal)}`));
+		throw error;
+	}
+}
+
 async function makeSession(
 	c: CreateCtx,
 	profile: UserProfile,
 	input: CreateSessionInput,
 	submission: Submission | null,
 	item?: ItemSessionInput,
-	{ build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"] } = {},
+	{
+		build,
+		readiness,
+		continued,
+	}: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"]; continued?: ContinuedSession } = {},
 ): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
@@ -1248,7 +1337,7 @@ async function makeSession(
 			...(item.planCritic && { planCritic: true as const }),
 		};
 		summary = {
-			id: readiness?.attempt ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
+			id: readiness?.attempt ?? item?.sessionId ?? continued?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title,
 			place,
 			harness,
@@ -1283,6 +1372,10 @@ async function makeSession(
 			...(item ? { item: { id: item.itemId, ...itemRole, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(build && { environmentBuild: true as const }),
 			...(readiness && { readiness: true as const }),
+			...(continued && {
+				effort: continued.effort,
+				continuedFrom: { id: continued.continuation.from.id, title: continued.continuation.from.title },
+			}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
 			...(item
@@ -1310,6 +1403,15 @@ async function makeSession(
 			...(build && { environmentBuild: build }),
 			...(readiness && { readiness }),
 			...(hostedSize && { hostedSize }),
+			// The clone and the pull request's base follow `repo.branch`: the default branch, or the stacked-on session's.
+			...(continued &&
+				repo && {
+					effort: continued.effort,
+					continuation: {
+						...continued.continuation,
+						from: { ...continued.continuation.from, base: repo.branch },
+					},
+				}),
 			title: summary.title,
 			titleIsTyped: !item && (givenTitle !== null || !!readiness || !!build),
 			place: summary.place,
@@ -2427,6 +2529,27 @@ export const user = actor({
 				if (session) return session;
 				// Being decided, or new: every attempt that arrives until the session is made or refused ends as this one does.
 				attempt = c.vars.creating.run(submission, KEYED, () => makeSession(c, profile, input, submission));
+			} catch (error) {
+				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
+				throw error;
+			}
+			return await attempt;
+		},
+
+		continueSession: async (c, input: ContinueSessionInput): Promise<SessionSummary> => {
+			const profile = requireUser(c);
+			if (typeof input !== "object" || input === null || typeof input.id !== "string")
+				throw new UserError("Choose the agent to continue.", { code: "bad_input" });
+			if (input.stack !== undefined && input.stack !== null && typeof input.stack !== "boolean")
+				throw new UserError("Say whether to start from the agent's branch.", { code: "bad_input" });
+			let attempt: Promise<SessionSummary>;
+			try {
+				const submission = submissionOf(input.idempotencyKey, { continue: input.id, stack: input.stack === true });
+				if (submission === null) return await continueFrom(c, profile, input, null);
+				const made = c.vars.created.get(submission.key);
+				const session = made && isRepeat(made, submission, KEYED) ? c.vars.sessions.get(made.id) : undefined;
+				if (session) return session;
+				attempt = c.vars.creating.run(submission, KEYED, () => continueFrom(c, profile, input, submission));
 			} catch (error) {
 				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
 				throw error;

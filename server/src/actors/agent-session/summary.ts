@@ -16,6 +16,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		profile: meta.profile,
 		...(meta.hostedSize && { hostedSize: meta.hostedSize }),
 		model: meta.model,
+		effort: meta.effort ?? null,
 		mode: meta.mode,
 		availableModes: meta.availableModes,
 		repoUrl: meta.repoUrl,
@@ -53,6 +54,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.readiness && { readiness: true as const }),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
+		...(meta.continuedFrom && { continuedFrom: { id: meta.continuedFrom.id, title: meta.continuedFrom.title } }),
 	};
 }
 

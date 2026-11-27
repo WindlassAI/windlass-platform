@@ -53,7 +53,7 @@ import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/hosted-network
 import { BaseMergeConflict, describePull, openFromPushed } from "../github/publish.js";
 import { GithubProblem, resolveBoundRepository } from "../github/repos.js";
 import { runPlace } from "../factory/resolve-run.js";
-import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
+import { ModelProblem, chosenModel, standInModels, turnEffort } from "../account-models.js";
 import type { SandboxHandle, TurnCheckpoint } from "../sandbox/api.js";
 import { MachineUnreachable, machineActor } from "../sandbox/runner-layer.js";
 import { forgetConversation, migrateJournal, readCheckpoint, readConversation } from "../runner/journal.js";
@@ -80,6 +80,7 @@ import {
 	modelKeyActor,
 	grantIsValid,
 	secretsActor,
+	type ForkSource,
 	type SessionCreateInput,
 	userActor,
 } from "./internal.js";
@@ -157,6 +158,7 @@ import type { Ctx, SessionMeta, ActiveTurn, PromptAnswer, FeedbackPrompt, Sessio
 import { runnerLink, layerOf, durableTurns, isRunnerSocket } from "./agent-session/runner.js";
 import { publish, summaryOf, report } from "./agent-session/summary.js";
 import { removeBackup } from "./agent-session/workspace.js";
+import { continuationMeta, forkSource } from "./agent-session/continuation.js";
 import {
 	TurnProblem,
 	githubConnection,
@@ -1085,7 +1087,8 @@ async function startPrompt(
 			code: "turn_running",
 		});
 
-	const effort = input.effort === undefined || input.effort === null || input.effort === "" ? null : input.effort;
+	// Absent keeps the session's effort; null or "" is the model's default. Held against the turn's model below.
+	let effort = turnEffort(input.effort, meta.effort ?? null, meta.model, null);
 
 	// Nothing was awaited since the check above, so this prompt is the only one past it.
 	c.vars.accepting = true;
@@ -1128,7 +1131,8 @@ async function startPrompt(
 							(meta.turns === 0 &&
 								model !== models.defaultModel &&
 								!models.models.find(m => m.id === model)?.efforts.length));
-					if (!checkOnSelection || typeof effort !== "string" || effort.length > 64) checkEffort(models, model, effort);
+					if (!checkOnSelection || typeof effort !== "string" || effort.length > 64)
+						effort = turnEffort(input.effort, meta.effort ?? null, model, models);
 				}
 			} catch (error) {
 				if (error instanceof ModelProblem) throw new UserError(error.message, { code: error.code });
@@ -1215,6 +1219,7 @@ async function startPrompt(
 		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.model = model;
+		meta.effort = effort;
 		meta.status = "starting";
 		delete meta.pauseNow;
 		meta.updatedAt = now;
@@ -1404,6 +1409,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		// Accepted. From here to the transaction nothing is awaited.
 		const now = Date.now();
 		delete meta.secretRequest;
+		meta.effort = effort;
 		meta.turns = turn;
 		meta.status = "starting";
 		delete meta.pauseNow;
@@ -1855,6 +1861,7 @@ export const agentSession = actor({
 				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions) }),
 				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
+				effort: input.origin?.effort ?? (!input.origin && typeof input.effort === "string" ? input.effort : null),
 				repoUrl: typeof input.repoUrl === "string" ? input.repoUrl : null,
 				repo: typeof input.repo === "object" && input.repo !== null ? input.repo : null,
 				publishUnasked: typeof input.repo === "object" && input.repo !== null && input.publishUnasked === true,
@@ -1885,6 +1892,7 @@ export const agentSession = actor({
 							},
 						}
 					: {}),
+				...(!input.origin && input.continuation && continuationMeta(input.continuation)),
 			};
 			await c.db.execute("INSERT OR REPLACE INTO meta (id, data) VALUES (1, ?)", JSON.stringify(meta));
 		} catch (error) {
@@ -3183,6 +3191,12 @@ export const agentSession = actor({
 		internalSummary: (c): SessionSummary => {
 			requireService(c);
 			return summaryOf(liveMeta(c));
+		},
+
+		/** Only `user` asks, for a session of its own (`continueSession`): the actor's key holds the user's id. */
+		internalForkSource: async (c): Promise<ForkSource> => {
+			requireService(c);
+			return await forkSource(c, liveMeta(c));
 		},
 
 		internalAssessRepository: async (

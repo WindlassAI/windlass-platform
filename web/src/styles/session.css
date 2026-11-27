@@ -20,20 +20,44 @@
 	.app-fixed .nav-back {
 		max-width: 20ch;
 	}
+	/*
+	 * The crumb's parts share one row with the end's, so where the bar is short the title gives way three
+	 * times as fast as the facts on the right, and the back link, the pill and the buttons keep their size.
+	 */
+	.app-fixed .crumb {
+		display: contents;
+	}
+	.app-fixed .trail {
+		flex: 0 3 auto;
+	}
+}
+/* With the facts there to give way, the title keeps a few words. */
+@media (min-width: 1281px) {
+	.app-fixed .trail {
+		min-width: 16ch;
+	}
 }
 @media (max-width: 1600px) {
 	.app-fixed .trail-step:not(.trail-section):not(.trail-here):not(:nth-last-child(2)) {
 		display: none;
 	}
 }
-/* Below a wide screen, its section's name stands for the tabs. */
-@media (max-width: 1100px) {
+/* Below a wide screen, its section's name stands for the tabs, and the title has their room. */
+@media (max-width: 1440px) {
 	.app-fixed > .topbar .topbar-tabs {
 		display: none;
 	}
 	.app-fixed > .topbar .topbar-section {
 		display: inline-flex;
 	}
+	/* The section's button names the section, so the trail does not. */
+	.app-fixed .trail-section {
+		display: none;
+	}
+}
+/* A step before the title keeps a few letters and an ellipsis, never just its first one. */
+.app-fixed .trail-step:not(.trail-section):not(.trail-here) {
+	min-width: 7ch;
 }
 .app-fixed > .topbar .topbar-middle {
 	gap: 12px;
@@ -69,26 +93,32 @@
 }
 .crumb-end {
 	display: flex;
-	flex: none;
+	flex: 0 1 auto;
 	align-items: center;
 	gap: 6px;
 	margin-left: auto;
 	min-width: 0;
 }
+.crumb-end > :not(.crumb-facts) {
+	flex: none;
+}
+/* What runs the session, cut short with an ellipsis where the bar has no room for all of it. */
 .crumb-facts {
-	display: flex;
-	align-items: center;
+	flex: 0 1 auto;
 	min-width: 0;
 	margin-right: 6px;
+	overflow: hidden;
 	font-size: var(--text-12);
 	color: var(--ink-faint);
 	white-space: nowrap;
+	text-overflow: ellipsis;
 }
 .crumb-facts > :not(:last-child)::after {
 	content: "·";
 	margin: 0 0.5em;
 }
 .crumb-facts .crumb-place {
+	display: inline;
 	padding: 0;
 	border: 0;
 	background: none;
@@ -163,6 +193,14 @@
 	.app-fixed > .topbar .topbar-docs,
 	.crumb-facts {
 		display: none;
+	}
+	/* Without the facts nothing in the end can give way. */
+	.crumb-end {
+		flex: none;
+	}
+	/* The title takes all that is left. */
+	.app-fixed .trail-here {
+		min-width: 0;
 	}
 }
 

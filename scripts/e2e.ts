@@ -1518,6 +1518,9 @@ async function main(server: Server | null): Promise<void> {
 			second[0].kind === "user" && second.at(-1)?.kind === "turn.ended",
 			"turn 2 does not run from its user item to its turn.ended",
 		);
+		// A prompt that names no effort keeps the one turn 1 chose.
+		const [secondPrompt] = second;
+		assert(secondPrompt?.kind === "user" && secondPrompt.effort === "low", `turn 2's prompt is ${plain(secondPrompt)}`);
 		assert(
 			!second.some(item => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")),
 			"turn 2 created a sandbox again",
@@ -1532,6 +1535,7 @@ async function main(server: Server | null): Promise<void> {
 			snapshot.summary.turns === 2 && snapshot.summary.title === watch.summaries[0].title,
 			"turns or title are off",
 		);
+		assert(snapshot.summary.effort === "low", `the session's effort is ${plain(snapshot.summary.effort)}`);
 		const sessionIds = new Set(
 			second.flatMap(item =>
 				item.kind === "windlass" && typeof item.event.sessionId === "string" ? [item.event.sessionId] : [],
@@ -1549,7 +1553,8 @@ async function main(server: Server | null): Promise<void> {
 	// (A second prompt during a turn used to be refused here. It steers the turn now: see the steering checks.)
 	await check("a snapshot taken mid-turn carries what streamed; stop() ends the turn as interrupted", async () => {
 		const deltasBefore = watch.deltas.length;
-		const { turn, steered } = await watch.conn.prompt({ text: "Fix the failing test (slow)" });
+		// Null is the model's default, chosen: the session forgets turn 1's effort.
+		const { turn, steered } = await watch.conn.prompt({ text: "Fix the failing test (slow)", effort: null });
 		assert(turn === 3 && steered === false, `prompt() returned ${plain({ turn, steered })}`);
 
 		// A client that connects now must be able to catch up: what streamed so far is in `pending`.
@@ -1576,10 +1581,10 @@ async function main(server: Server | null): Promise<void> {
 			watch.summaries.some(summary => summary.status === "stopping"),
 			"status never became stopping",
 		);
-		assert(
-			watch.items.filter(item => item.turn === 3 && item.kind === "user").length === 1,
-			"turn 3 has more than its one user item",
-		);
+		const userItems = watch.items.filter(item => item.turn === 3 && item.kind === "user");
+		assert(userItems.length === 1, "turn 3 has more than its one user item");
+		const [thirdPrompt] = userItems;
+		assert(thirdPrompt?.kind === "user" && thirdPrompt.effort === null, "turn 3 did not run at the default effort");
 		const after = await sessionHandle.snapshot();
 		assert(
 			after.pending.length === 0 &&
@@ -5817,6 +5822,7 @@ const GITHUB_CHECKS = [
 	"a repository's page: what is saved for it by GitHub's id, defaults saved field by field and at once, what GitHub says of it now, and all of it deleted in one step",
 	"open pull request: the platform pushes the session's branch and opens it, with one line in the timeline",
 	"push changes goes to the same pull request, with one line in the timeline",
+	"continue in a new pull request: a new session with the same settings, on the default branch or stacked on the pushed one, linked to the first, whose agent is told what came before",
 	"a repository's checks: saved as one list, run before a turn ends, said on the turn's closing item, and written into the pull request's description with every push",
 	"nothing is pushed while a turn runs, or for a session with no repository of the connection",
 	"a user who may only read a repository is told so, and nothing is pushed in their name",
@@ -5849,6 +5855,7 @@ async function githubChecks(
 		page,
 		opening,
 		pushing,
+		continuing,
 		verifying,
 		blocked,
 		readOnly,
@@ -5857,6 +5864,7 @@ async function githubChecks(
 		disconnecting,
 		secrets,
 	] = GITHUB_CHECKS as [
+		string,
 		string,
 		string,
 		string,
@@ -6440,6 +6448,80 @@ async function githubChecks(
 				`after a merge the result is ${plain(again.state.pullRequest)}`,
 			);
 			return `"${line}"; merged at GitHub is seen; the next push opened #2`;
+		});
+
+		await check(continuing, async () => {
+			assert(watch, "no session");
+			const user = userOf(alice);
+			const parent = await sessionOf(alice, sessionId).snapshot();
+			await refused(() => user.continueSession({ id: "s_none" }), "session_not_found");
+			await refused(() => userOf(bob).continueSession({ id: sessionId }), "session_not_found");
+			const pasted = await user.createSession({ profile: profile as never, title: "No repository" });
+			await refused(() => user.continueSession({ id: pasted.id }), "no_repository");
+			await refused(() => user.continueSession({ id: pasted.id, stack: true }), "no_repository");
+			// A turn that runs: nothing is continued from under it.
+			const { turn: running } = await watch.conn.prompt({ text: "Write a short program" });
+			await refused(() => user.continueSession({ id: sessionId }), "turn_running");
+			await watch.untilEnded(running);
+
+			const child = await user.continueSession({ id: sessionId, idempotencyKey: "continue-harbor" });
+			const again = await user.continueSession({ id: sessionId, idempotencyKey: "continue-harbor" });
+			const stacked = await user.continueSession({ id: sessionId, stack: true });
+			assert(again.id === child.id && stacked.id !== child.id && child.id !== sessionId, "the same key made another");
+			const same = (one: SessionSummary) =>
+				one.harness === parent.summary.harness &&
+				one.model === parent.summary.model &&
+				(one.effort ?? null) === (parent.summary.effort ?? null) &&
+				one.mode === parent.summary.mode &&
+				one.profile === parent.summary.profile &&
+				plain(one.place) === plain(parent.summary.place) &&
+				one.repository?.id === harbor.id &&
+				one.pullRequest === null &&
+				plain(one.continuedFrom) === plain({ id: sessionId, title: parent.summary.title });
+			assert(same(child) && same(stacked), `the new sessions are ${plain([child, stacked])}`);
+			assert(
+				child.repository?.branch === "main" && stacked.repository?.branch === branch,
+				`they start from ${child.repository?.branch} and ${stacked.repository?.branch}`,
+			);
+			const listed = await user.listSessions();
+			assert(
+				listed.filter(one => one.continuedFrom?.id === sessionId).length === 2 &&
+					listed.find(one => one.id === sessionId)?.continuedFrom === undefined,
+				"the user's list does not link them",
+			);
+
+			// The fake layer keeps no copy: the agent starts a new conversation, given an account of the first.
+			const next = new Watch(client, alice.profile.uid, child.id, alice.token);
+			try {
+				const { turn } = await next.conn.prompt({ text: "Write a short program" });
+				const ended = await next.untilEnded(turn);
+				assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+				const texts = next.items.flatMap(item => (item.kind === "platform" ? [item.text] : []));
+				assert(texts.includes("Cloning ada/harbor at main"), `the timeline says ${plain(texts)}`);
+				assert(
+					texts.includes(
+						"The agent does not have the earlier session's memory, so its first prompt includes an account of that session.",
+					),
+					`no line about the account: ${plain(texts)}`,
+				);
+				const snapshot = await sessionOf(alice, child.id).snapshot();
+				assert(
+					snapshot.windlassSessionId !== null && snapshot.windlassSessionId !== parent.windlassSessionId,
+					`the new session's agent session is ${snapshot.windlassSessionId}, the first's ${parent.windlassSessionId}`,
+				);
+				const first = await sessionOf(alice, sessionId).snapshot();
+				assert(
+					first.summary.pullRequest?.number === parent.summary.pullRequest?.number &&
+						first.summary.turns === parent.summary.turns + 1,
+					"the first session changed",
+				);
+			} finally {
+				await next.conn.dispose().catch(() => undefined);
+			}
+			await user.deleteSession(pasted.id);
+			await user.deleteSession(stacked.id);
+			await user.deleteSession(child.id);
+			return `${child.id} on main and ${stacked.id} on ${branch}, both from ${sessionId}; refused: unknown, another user's, no repository, a running turn`;
 		});
 
 		await check(verifying, async () => {

@@ -198,7 +198,7 @@ async function main(): Promise<number> {
 		info(`Windlass's data directory after the turn (snapshots/ left out): ${(await files(first.handle)).join(", ")}`);
 		if (session === "" || timedOut) return;
 
-		const saved = await backups.save(first.handle, owner);
+		const saved = await backups.save(first.handle, owner, { harness: "windlass", sessionId: session });
 		const size = await store.size(key);
 		expect(
 			"the microVM packs Windlass's session and uploads it to the real bucket through a signed link",
@@ -206,7 +206,7 @@ async function main(): Promise<number> {
 			saved.outcome === "saved" ? `${saved.backup.size} bytes in ${saved.ms} ms` : JSON.stringify(saved),
 		);
 		if (saved.outcome !== "saved" || timedOut) return;
-		const again = await backups.save(first.handle, owner);
+		const again = await backups.save(first.handle, owner, { harness: "windlass", sessionId: session });
 		expect(
 			"a second save replaces the object, and the same files make the same archive",
 			again.outcome === "saved" && again.backup.sha256 === saved.backup.sha256,
@@ -231,7 +231,10 @@ async function main(): Promise<number> {
 			(await files(second.handle)).length === 0,
 			`${second.id} in ${second.ms} ms`,
 		);
-		const restored = await backups.restore(second.handle, owner, saved.backup, session);
+		const restored = await backups.restore(second.handle, owner, saved.backup, {
+			harness: "windlass",
+			sessionId: session,
+		});
 		const arrived = await files(second.handle);
 		expect(
 			"the microVM downloads the copy through a signed link, checks it and unpacks it",
@@ -254,7 +257,7 @@ async function main(): Promise<number> {
 				!two.created,
 			`${two.outcome} in ${two.ms} ms, session ${two.result.windlassSessionId}, seq ${two.first}..${two.last} after ${one.first}..${one.last}; ${two.result.failure?.message ?? ""}`,
 		);
-		const after = await backups.save(second.handle, owner);
+		const after = await backups.save(second.handle, owner, { harness: "windlass", sessionId: session });
 		expect(
 			"and its end is saved in turn",
 			after.outcome === "saved" && after.backup.sha256 !== saved.backup.sha256,

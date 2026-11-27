@@ -404,6 +404,8 @@ export interface RunTurnInput {
 	/** Ordered Windlass events followed by one cli.summary aggregating all executions, including late steered messages. */
 	onEvent?: (event: WindlassEvent) => void;
 	onAcpUpdate?: (update: AcpUpdate) => void;
+	/** The session has no title of its own or generated yet: an ACP turn that ended well waits briefly for the agent's (`AcpQuirks.titleWaitMs`). */
+	wantsTitle?: boolean;
 	/** The turn waits for an answer. Withdrawal ignores late answers; rejection or a missing handler declines the call. */
 	onQuestion?: (question: TurnQuestion, signal: AbortSignal) => Promise<TurnAnswer>;
 	/** Ask once per waiting definition per turn, serially. Pre-prompt questions hold the turn. Rejecting or omitting the callback leaves the server stopped. */
@@ -578,11 +580,19 @@ export interface AccessTokens {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A copy of Windlass's session data, kept outside the sandbox
+// A copy of an agent's session data, kept outside the sandbox
 // ---------------------------------------------------------------------------------------------
 
 export interface BackupOwner {
 	uid: string;
+	sessionId: string;
+}
+
+/** The agent's own session a copy is of: whose files are packed (session-files.ts), and the id they are named by. */
+export interface BackupAgentSession {
+	/** Windlass's for none, as `capabilitiesOf`. */
+	harness?: HarnessId;
+	/** The agent's session id (`SessionMeta.windlassSessionId`). */
 	sessionId: string;
 }
 
@@ -596,7 +606,7 @@ export interface SavedBackup {
 
 export type BackupSaveResult =
 	| { outcome: "saved"; backup: SavedBackup; ms: number }
-	/** Windlass has no session in this sandbox yet: there is nothing to copy. */
+	/** The agent has no session in this sandbox yet: there is nothing to copy. */
 	| { outcome: "empty" }
 	/** Oversize archives leave the previous copy intact. */
 	| { outcome: "too_large"; size: number; limit: number }
@@ -606,24 +616,30 @@ export type BackupSaveResult =
 export type BackupRestoreResult =
 	| { outcome: "restored"; ms: number }
 	| { outcome: "missing" }
-	/** The copy could not be fetched, is not the one that was saved, or does not hold the Windlass session. `reason` is for a log. */
+	/** The copy could not be fetched, is not the one that was saved, or does not hold the agent's session. `reason` is for a log. */
 	| { outcome: "failed"; reason: string };
 
 /** Only copy between turns, with session files closed. Signed URLs move archives directly between the sandbox and the bucket. */
 export interface SessionBackups {
 	/** The largest archive that is kept, in bytes. */
 	readonly maxBytes: number;
-	/** Packs Windlass's session data in the sandbox and has the sandbox upload it, replacing the session's earlier copy. Never throws. */
-	save(sandbox: SandboxHandle, owner: BackupOwner): Promise<BackupSaveResult>;
-	/** Verify size, hash and expected Windlass session before restoring. Returns failure as a result. */
+	/** Packs the agent's session data in the sandbox and has the sandbox upload it, replacing the session's earlier copy. Never throws. */
+	save(sandbox: SandboxHandle, owner: BackupOwner, session: BackupAgentSession): Promise<BackupSaveResult>;
+	/** Verify size, hash, what the archive holds and the expected agent session before restoring. Returns failure as a result. */
 	restore(
 		sandbox: SandboxHandle,
 		owner: BackupOwner,
 		saved: SavedBackup,
-		windlassSessionId: string,
+		session: BackupAgentSession,
 	): Promise<BackupRestoreResult>;
 	/** Removes the session's copy. A no-op when there is none. Throws when the store could not be told. */
 	remove(owner: BackupOwner): Promise<void>;
+	/**
+	 * Copies one session's copy to another's name inside the store, replacing what was there; the archive
+	 * passes through neither the server nor a sandbox. False when `from` has no copy. Throws when the
+	 * store could not be told.
+	 */
+	copy(from: BackupOwner, to: BackupOwner): Promise<boolean>;
 	/** The name of the session's object in the bucket, for a log. */
 	keyOf(owner: BackupOwner): string;
 }

@@ -462,6 +462,7 @@ export function createRivetClient(
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),
 			createSession: input => act("createSession", input),
+			continueSession: input => act("continueSession", input),
 			renameSession: (id, title) => act("renameSession", id, title),
 			deleteSession: id => act("deleteSession", id),
 			gitlab: () => gitlab("gitlab"),

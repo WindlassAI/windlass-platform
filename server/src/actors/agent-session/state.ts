@@ -32,7 +32,14 @@ import type { UnfinishedSetup } from "../../setup-command.js";
 import type { Attempts, Submission } from "../../submissions.js";
 import type { VerificationLog } from "../../verified.js";
 import type { HoldReport, OpenStretch, PendingAsk } from "../../usage.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SealedSecrets, SessionCreateInput } from "../internal.js";
+import type {
+	ContinuedFrom,
+	EnvironmentBuildOrigin,
+	EnvironmentBuildReport,
+	Handoff,
+	SealedSecrets,
+	SessionCreateInput,
+} from "../internal.js";
 import type { AgentAsk, AgentReport } from "../../agent-publish.js";
 import type { Judgment } from "../../factory/readiness.js";
 import type { PlanReview } from "../../factory/autonomy.js";
@@ -73,9 +80,13 @@ export interface SessionMeta {
 	title: string;
 	/** Set by a person at creation or rename. Absent on older sessions. */
 	titleIsTyped?: boolean;
+	/** An agent has titled the session (`generatedSessionTitle`): its turns stop waiting for one. Absent on older sessions. */
+	titleGenerated?: boolean;
 	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
+	/** The effort its turns run at unless a prompt names another; null is the model's default. Absent on older sessions. */
+	effort?: string | null;
 	mode: string;
 	availableModes: SessionSummary["availableModes"];
 	/** The last few turns' start times (start-times.ts), oldest first. Absent on sessions that have had no turn since. */
@@ -181,6 +192,12 @@ export interface SessionMeta {
 	report?: (AgentReport & { run: number }) | null;
 	// A paused turn resumes with the same turn number and accumulated running time.
 	run?: TurnRun | null;
+	/** Set for a session made to continue another (`continueSession`); `told` once its agent was told so (`platformNotes`). */
+	continuedFrom?: ContinuedFrom & { told?: boolean };
+	/** An account of the earlier session for the first turn whose agent does not remember it (`sessionHandoff`); cleared once told. */
+	handoff?: Handoff | null;
+	/** `windlassSessionId` is a copy of the earlier session's agent session: it becomes this session's only by a restore into a sandbox whose agent data is its own. */
+	copiedSession?: boolean;
 }
 
 /** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */

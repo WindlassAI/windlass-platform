@@ -296,8 +296,9 @@
  * Further in: the way back, a labelled chip that names where it leads, then the page's trail from its
  * section, quieter, with › between its steps and the page itself in ink.
  */
+/* It keeps its words: the trail gives way before it does. */
 .nav-back {
-	flex: 0 1 auto;
+	flex: none;
 	gap: 5px;
 	min-width: 0;
 	max-width: 24ch;
@@ -324,13 +325,15 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+/* Cut off where it has no more room; the padding keeps a link's hover and focus inside the cut. */
 .trail {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 	min-width: 0;
-	margin: 0;
-	padding: 0;
+	margin: -2px -4px;
+	padding: 2px 4px;
+	overflow: hidden;
 	list-style: none;
 }
 .trail-step {
@@ -347,9 +350,10 @@
 .trail-step.trail-section {
 	flex: none;
 }
+/* A long title is cut short with an ellipsis, down to a few words, before anything else gives way. */
 .trail-here {
-	flex: 0 0 auto;
-	min-width: 0;
+	flex: 0 1 auto;
+	min-width: 8ch;
 	max-width: 44ch;
 }
 .trail-here .crumb-title {

@@ -220,13 +220,17 @@ export async function wholeTask(
 			unsandboxed: item.row.unsandboxed,
 		};
 	}
+	return sessionWholeTask(await taskTimeline(c, turn), turn, active.resume?.held ?? []);
+}
+
+/** The timeline items up to turn `turn` that a reconstruction of the task reads (turn-resume.ts), the unwritten ones written first. */
+export async function taskTimeline(c: Ctx, turn: number): Promise<TimelineItem[]> {
 	await serial(c, () => writeItems(c)).catch(() => undefined);
 	const rows = await c.db.execute<{ item: string }>(
 		"SELECT item FROM timeline WHERE turn <= ? AND (kind IN ('user', 'turn.ended') OR (kind = 'windlass' AND json_extract(item, '$.event.type') IN ('text.ended', 'workspace.changes')) OR (kind = 'acp' AND json_extract(item, '$.update.sessionUpdate') = 'agent_message_chunk')) ORDER BY seq",
 		turn,
 	);
-	const timeline = rows.map(row => JSON.parse(row.item) as TimelineItem);
-	return sessionWholeTask(timeline, turn, active.resume?.held ?? []);
+	return rows.map(row => JSON.parse(row.item) as TimelineItem);
 }
 
 // Treat a crashed active turn as interrupted. Keep its recorded progress and cap repeated crash resumes.

@@ -33,6 +33,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { createPortal } from "react-dom";
 import { setPanelHidden, setPublishFeedback, usePanelHidden, usePublishRequests } from "../state/sessionChrome";
+import { ContinueButton, stackChoice } from "./ContinueSession";
 import { Dialog } from "./Dialog";
 import {
 	BranchIcon,
@@ -579,6 +580,7 @@ export function PullRequestSection({
 					</button>
 				</>
 			)}
+			{reviewer || summary.item ? null : <ContinueButton summary={summary} stack={stackChoice(pull, state)} />}
 			{reviewer ? (
 				<p className="panel-empty gh-item-note">{REVIEWER_PUBLISHES_NOTHING}</p>
 			) : summary.item ? (
