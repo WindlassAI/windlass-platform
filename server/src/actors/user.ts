@@ -105,7 +105,7 @@ import { scanCiHistory } from "../github/ci-history.js";
 import { scanRepoSetup } from "../github/setup-checks.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { BuildStartRefused, buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, wakeEnvironments, type EnvironmentHost } from "./user-environments.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SessionCreateInput } from "./internal.js";
+import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SessionCreateInput, ActorClient } from "./internal.js";
 import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
@@ -586,8 +586,7 @@ export function cleanRepoUrl(raw: unknown): string | null {
 
 interface CreateCtx extends UserCtx, ModelsCtx {
 	log: { error(entry: unknown): void };
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
+	client(): ActorClient;
 }
 
 const KEYED = "agent";

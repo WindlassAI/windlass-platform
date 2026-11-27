@@ -3,11 +3,12 @@ import type { GithubId } from "../contract.js";
 import type { StoredConnection, StoredInstallation } from "../github/repos.js";
 import { MAX_GITHUB_ACCOUNTS } from "../github/state.js";
 import { updateGithubAccount } from "./github-account.js";
+import type { ActorClient } from "./internal.js";
 
 type Ctx = {
 	db: RawAccess;
 	vars: { github: StoredConnection | null; githubWriting: Promise<void> };
-	client(): any;
+	client(): ActorClient;
 	schedule: { after(duration: number, action: string, ...args: unknown[]): Promise<string> };
 };
 

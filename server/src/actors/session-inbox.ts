@@ -32,7 +32,7 @@ import type { Fact, ReviewerInput } from "../factory/types.js";
 import { readWork } from "../github/git.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
-import { itemActor, userActor } from "./internal.js";
+import { itemActor, userActor, type ActorClient } from "./internal.js";
 import { taskKind } from "../factory/readiness-track.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 
@@ -157,8 +157,7 @@ interface InboxCtx {
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void };
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
+	client(): ActorClient;
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 

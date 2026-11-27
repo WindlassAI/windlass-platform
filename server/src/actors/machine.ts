@@ -11,7 +11,7 @@ import { isMachineIdName, machineLabel, sandboxSlots, type MachineSummary, MACHI
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, welcomeCapabilities, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
-import { grantIsValid, isSessionGone, sessionActor } from "./internal.js";
+import { grantIsValid, isSessionGone, sessionActor, type ActorClient } from "./internal.js";
 
 const minimum = () => config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
 const SEEN_INTERVAL = 3 * 60_000;
@@ -30,7 +30,7 @@ interface Ctx {
 	db: RawAccess; vars: Vars; key: string[];
 	schedule: { at(timestamp: number, action: string, ...args: number[]): Promise<string>; list(): Promise<Array<{ action: string; runAt: number }>> };
 	// Actor references are resolved through this node's registry.
-	client(): any;
+	client(): ActorClient;
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
 type Row = { protocol: number; name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };

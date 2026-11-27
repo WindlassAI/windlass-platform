@@ -9,7 +9,7 @@ import { environmentFailure } from "../factory/check-environment.js";
 import { plannerReadiness } from "../factory/readiness.js";
 import { newAgent } from "../factory/budget.js";
 import { networkBody, unionNetwork } from "../blocked-network.js";
-import type { NetworkReceipt } from "./internal.js";
+import type { NetworkReceipt, ActorClient } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
@@ -133,8 +133,7 @@ interface Ctx {
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
+	client(): ActorClient;
 	keepAwake<T>(promise: Promise<T>): Promise<T>;
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }

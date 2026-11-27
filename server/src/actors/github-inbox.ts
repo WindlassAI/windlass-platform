@@ -13,6 +13,7 @@ import { internalConnection, requireServiceFor, serviceParams } from "../auth.js
 import { githubConfig } from "../config.js";
 import { githubApp, GithubError } from "../github/app.js";
 import { isAddressed, githubIdKey, type Delivery } from "../github/events.js";
+import type { ActorClient } from "./internal.js";
 
 // https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
 // Redeliveries have "the same" delivery GUID. This is the inbox primary key.
@@ -27,7 +28,7 @@ const CLOCK_SKEW = 60_000;
 const STATE_KEPT = 7 * DAY;
 type Vars = { writing: Promise<unknown>; draining: boolean; drainAgain: boolean };
 type Ctx = {
-	key: string[]; db: RawAccess; vars: Vars; client(): any;
+	key: string[]; db: RawAccess; vars: Vars; client(): ActorClient;
 	keepAwake<T>(work: Promise<T>): Promise<T>;
 	schedule: { at(time: number, action: string): Promise<string>; cancel(id: string): Promise<boolean> };
 };

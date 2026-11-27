@@ -283,10 +283,15 @@ export interface ItemInternal {
 	internalFact(fact: Fact): Promise<void>;
 }
 
-interface HasClient {
-	// The registry's type is not named here: actors that call each other would make it circular.
-	// biome-ignore lint/suspicious/noExplicitAny: see above
-	client(): any;
+/**
+ * The actor client as actors see it (`c.client()`). Untyped on purpose: naming the registry's type here would make
+ * actors that call each other circular. Use this alias instead of a bare `any` so the escape hatch stays in one place.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: see above
+export type ActorClient = any;
+
+export interface HasClient {
+	client(): ActorClient;
 }
 
 function creationSubject(kind: string, key: readonly string[]): string {

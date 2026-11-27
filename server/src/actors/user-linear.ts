@@ -33,7 +33,7 @@ import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
 import { createClient } from "rivetkit/client";
-import { isActorGone } from "./internal.js";
+import { isActorGone, type ActorClient } from "./internal.js";
 import type { ItemsState } from "./user-items.js";
 
 export const LINEAR_TABLES = [
@@ -87,7 +87,7 @@ export interface LinearCtx {
 		linearWriteRetryAt?: number;
 		claimingTeams?: Set<{ workspaceId: string; teamId: string }>;
 	};
-	client(): any;
+	client(): ActorClient;
 	log: { error(entry: unknown): void; warn(entry: unknown): void };
 }
 

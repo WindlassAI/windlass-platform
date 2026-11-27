@@ -91,7 +91,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { hostedSizesForPlan } from "../billing/plans.js";
 import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
-import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
+import { createItemActor, isSessionGone, itemActor, sessionActor, type ActorClient } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { itemMachines, launchPlace, machineModelLists } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
@@ -221,8 +221,7 @@ export interface ItemsCtx {
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };
 	broadcast(name: string, ...args: unknown[]): void;
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
+	client(): ActorClient;
 	keepAwake<T>(promise: Promise<T>): Promise<T>;
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 	conn?: { params: unknown } | null;

@@ -5,6 +5,7 @@ import { db } from "rivetkit/db";
 import { githubIdKey } from "../github/events.js";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import type { StoredConnection } from "../github/repos.js";
+import type { ActorClient } from "./internal.js";
 
 type Link = { uid: string; login: string; installations: GithubId[]; at: number };
 
@@ -55,14 +56,14 @@ export const githubAccount = actor({
 });
 
 /** Returns the ids linked: an installation removed since `readAt` (or at all, without it) is left out. */
-export async function setGithubInstallations(c: { client(): any }, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> {
+export async function setGithubInstallations(c: { client(): ActorClient }, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> {
 	return await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids, readAt);
 }
 
 /** Revoke removed installations before committing the user's change and admit new ones only after.
  * An interrupted grant is repaired from the saved connection on wake. Returns the installations the
  * directory refused because they were removed, which the caller drops from the connection. */
-export async function updateGithubAccount(c: { client(): any }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>, refresh = false, readAt?: number): Promise<GithubId[]> {
+export async function updateGithubAccount(c: { client(): ActorClient }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>, refresh = false, readAt?: number): Promise<GithubId[]> {
 	let ids = next?.webhookLinked ? next.installations.map(i => i.id) : [];
 	if (previous?.webhookLinked) {
 		const retained = previous.installations.filter(i => ids.includes(i.id));
