@@ -73,7 +73,67 @@ function pullBody(
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
 
-/** `windlass/<the title in a few words>-<the end of the session's id>`: named for the session, and unlike any other session's. */
+/** The title as whole words of a branch name, at most `max` characters: "Fix the failing add test…" → "fix-the-failing-add-test". */
+export function branchWords(title: string, max = 40): string {
+	const words = title
+		.normalize("NFKD")
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter(word => word !== "");
+	let joined = "";
+	for (const word of words) {
+		const next = joined === "" ? word : `${joined}-${word}`;
+		if (next.length > max) break;
+		joined = next;
+	}
+	// One word longer than the limit is cut rather than dropped.
+	return joined === "" ? (words[0]?.slice(0, max) ?? "") : joined;
+}
+
+/** The branch a standalone agent's title asks for, before GitHub is asked whether it is free. */
+export const wantedBranch = (title: string) => `windlass/${branchWords(title) || "agent"}`;
+
+/**
+ * A standalone agent's branch: `windlass/<the title in whole words>`, or with "-2", "-3"… after it when
+ * GitHub already has that branch, so that a push never lands on another agent's branch.
+ */
+export async function freeBranch(title: string, taken: (name: string) => Promise<boolean>): Promise<string> {
+	const wanted = wantedBranch(title);
+	for (let n = 1; n <= 20; n++) {
+		const name = n === 1 ? wanted : `${wanted}-${n}`;
+		if (!(await taken(name))) return name;
+	}
+	throw new Error(`GitHub already has ${wanted} and 19 more like it.`);
+}
+
+/** Whether the repository has a branch of exactly this name. Another refusal from GitHub is thrown. */
+export async function branchTaken(
+	app: GithubApp,
+	connection: StoredConnection,
+	repository: SessionRepository,
+	name: string,
+): Promise<boolean> {
+	const resolved = await resolveRepository(app, connection, repository.id, "read");
+	return app.withToken(
+		resolved.installation.id,
+		{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
+		token =>
+			refHead(app, token, resolved.repository.owner, resolved.repository.name, name).then(
+				() => true,
+				(error: unknown) => {
+					if (error instanceof GithubError && error.status === 404) return false;
+					throw error;
+				},
+			),
+		{ revokeAfter: true },
+	);
+}
+
+/**
+ * `windlass/<the title in a few words>-<the end of the session's id>`: the branch of a work item's agent,
+ * which its item names the same way (work-item.ts `itemBranch`), and of a session that pushed before
+ * `freeBranch`. Also the name when GitHub cannot be asked which names are free.
+ */
 export function branchFor(title: string, sessionId: string): string {
 	const words = title
 		.normalize("NFKD")
