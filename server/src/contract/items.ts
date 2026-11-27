@@ -6,6 +6,7 @@ import type { HostedSize } from "./hosted-sizes.js";
 import type { CredentialSource } from "./machines.js";
 import type { CheckStatus, Verified, VerifiedFlag } from "./repository.js";
 import type { ItemReport, ItemReview, PartScreenshots, ReviewRecommendation } from "./reviews.js";
+import type { SourceId } from "../sources/types.js";
 
 /** How many work items a page holds when it does not say, and at most (`listItems`). */
 export const ITEM_PAGE_DEFAULT = 25;
@@ -390,8 +391,8 @@ export interface ItemAgent {
 	fiveHour: { first: number; latest: number } | null;
 }
 
-/** How a work item was filed. The tracker sources file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear" | "jira" | "slack";
+/** How a work item was filed: on the web, through the API, or from a work source (sources/types.ts). */
+export type ItemSource = "web" | "api" | SourceId;
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {

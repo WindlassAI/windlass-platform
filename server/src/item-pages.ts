@@ -26,6 +26,7 @@ import {
 	ITEM_PAGE_MAX,
 } from "./contract.js";
 import { isGithubId } from "./github/ids.js";
+import { SOURCE_IDS } from "./sources/types.js";
 
 /** Thrown for a page that cannot be read; `message` is fit to show. */
 export class ItemPageProblem extends Error {
@@ -36,15 +37,7 @@ export class ItemPageProblem extends Error {
 }
 
 const ENDED: ReadonlySet<ItemSummary["state"]> = new Set(["done", "failed", "cancelled"]);
-const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set([
-	"web",
-	"api",
-	"github",
-	"gitlab",
-	"linear",
-	"jira",
-	"slack",
-]);
+const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", ...SOURCE_IDS]);
 
 /** A page as asked for, checked: the cursor, the limit, and what it keeps. */
 export interface CleanPage {

@@ -35,19 +35,14 @@ import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository } from "../github/repos.js";
-import { QUICK_LABELS } from "../linear/webhook.js";
+import { CONNECTORS } from "../sources/registry.js";
+import { SOURCE_IDS } from "../sources/types.js";
 import { accountLimits } from "../user-limits.js";
 import { gitlabAccess, isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
 /** The sources of an item filed from an issue: the ones that share the queue, the cap and the reservations. */
-export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set([
-	"github",
-	"gitlab",
-	"linear",
-	"jira",
-	"slack",
-]);
+export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(SOURCE_IDS);
 
 /** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for external intake (their keys differ in form). */
 export const intakeScope = (key: string) => "intake:" + key;
@@ -223,7 +218,12 @@ export async function fileTrackerIssue(
 		mode,
 		reason: modeReason,
 		refusal,
-	} = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", QUICK_LABELS);
+	} = issueMode(
+		"",
+		labels,
+		process.env.WLP_FACTORY_ORCHESTRATE !== "0",
+		CONNECTORS[jira ? "jira" : "linear"].caps.quickLabels,
+	);
 	const resumed = resuming && (await existingItem(c, uid, resuming.id));
 	if (refusal) return { kind: "refused", reason: refusal };
 	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, tracker);
@@ -270,7 +270,7 @@ export async function fileTrackerIssue(
 
 /** The sources of a turn's text that a Linear item carries when its issue is someone else's. */
 export const linearSources = (origin: { linear: { identifier: string; author: string; trusted: boolean } }) =>
-	origin.linear.trusted ? [] : [untrustedWords.linear(origin.linear.identifier, origin.linear.author)];
+	origin.linear.trusted ? [] : [untrustedWords.source("linear", origin.linear.identifier, origin.linear.author)];
 
 export type GitlabTrigger = Extract<GitlabDelivery, { event: "issue" | "note" }>;
 
@@ -303,7 +303,7 @@ export async function fileGitlabIssue(
 	const { open, resuming, generation } = filings(c, gitlabBase(projectId, iid));
 	if (open) return open;
 	const key = gitlabBase(projectId, iid) + generation;
-	const sources = [untrustedWords.gitlabIssue(iid)];
+	const sources = [untrustedWords.source("gitlab", `#${iid}`)];
 	let body = text(issue.description);
 	if (delivery.event === "note") {
 		const noteId = decimalId(delivery.noteId);
