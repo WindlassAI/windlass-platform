@@ -267,8 +267,11 @@ export interface UserInternal {
 	): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
 
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
-	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
-	internalRemoveBackupLater(sessionId: string): Promise<void>;
+	/**
+	 * Takes over removing a deleted session's copy, which the session could not do itself: from the
+	 * bucket, or, with `machineId`, by recording it with that machine's actor (machine-backups.ts).
+	 */
+	internalRemoveBackupLater(sessionId: string, machineId?: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
 	internalAcquireRun(
 		sessionId: string,
