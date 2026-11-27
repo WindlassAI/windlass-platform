@@ -9,17 +9,18 @@ Follow [Set up](#set-up) once, then run these from the repository root.
 
 - `corepack pnpm -s typecheck` typechecks all workspaces in parallel.
 - `corepack pnpm -s typecheck:serial` typechecks one workspace at a time, for small machines.
+- `corepack pnpm -s format` formats with Biome; CI fails on unformatted files.
 - `corepack pnpm -s lint` runs the Biome lint; `corepack pnpm -s lint:fix` applies its safe fixes.
 
 tsc is incremental: each workspace keeps its build info in node_modules/.cache/tsc inside that workspace.
-Biome only lints (its formatter is off, see `biome.json`). Match the existing style by hand:
-tabs, double quotes, semicolons; long lines are fine.
+Biome formats and lints (`biome.json`): tabs, double quotes, semicolons, 120 columns.
+Run the formatter before committing; editors with the Biome extension do it on save.
 
 ## Key files
 
 - `package.json` defines the typecheck, lint and test scripts.
 - `pnpm-workspace.yaml` lists the workspace packages: `server`, `runner` and `web`.
-- `biome.json` holds the lint rules and the files they skip.
+- `biome.json` holds the format settings, lint rules and the files they skip.
 
 ## Architecture map
 

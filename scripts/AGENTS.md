@@ -69,4 +69,4 @@ Each check parses its own filter, so the semantics differ. Copy the exact case n
 
 ## See also
 
-[Testing](../docs/testing.md) lists prerequisites. [Light CI](../.github/workflows/ci.yml) runs the documentation check, the Biome lint and typechecks.
+[Testing](../docs/testing.md) lists prerequisites. [Light CI](../.github/workflows/ci.yml) runs the documentation check, the Biome format and lint check and typechecks.
