@@ -22,7 +22,6 @@ import { LinkCallback, SignIn } from "./screens/SignIn";
 import { Usage } from "./screens/Usage";
 import { Workspace, type Selection } from "./screens/Workspace";
 import { LANDING_TITLE } from "./site/content";
-import { Landing } from "./site/Landing";
 import { useApp } from "./state/app";
 import { useSession } from "./state/hooks";
 
@@ -250,7 +249,7 @@ export function App() {
 		);
 	}
 
-	if (route.name === "home" && !auth) return <Landing onToggleTheme={toggleTheme} />;
+	if (route.name === "home" && !auth) return <SignIn theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (route.name === "signin" || !auth) {
 		// While the redirect above is on its way, the sign-in screen is the right thing to show.
