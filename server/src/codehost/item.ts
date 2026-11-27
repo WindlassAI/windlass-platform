@@ -1,13 +1,6 @@
 import type { CiTarget } from "./ci.js";
+import type { HostCaps } from "./capabilities.js";
 import type { CodeHost, Pull } from "./types.js";
-
-/** What an item's code host offers beyond `CodeHost`. Callers branch on these, not on the provider. */
-export interface HostCapabilities {
-	/** App check runs, review requests and the installation's feedback reconciliation (GitHub). */
-	checkRuns: boolean;
-	/** Changes reach the item through webhooks, so its polls can be sparse. */
-	webhooks: boolean;
-}
 
 /**
  * An item's repository as the owner's connection reaches it now, in one shape for every code host. Resolve it for
@@ -30,5 +23,8 @@ export interface ItemHost {
 	acknowledge(key: string): Promise<void>;
 	/** The project's web address, for links a GitHub address would get wrong. */
 	webUrl?: string;
-	capabilities: HostCapabilities;
+	/** What the host offers beyond `CodeHost`. Callers branch on these, not on the provider. */
+	caps: HostCaps;
+	/** Changes reach the item through webhooks, so its polls can be sparse. */
+	webhooks: boolean;
 }

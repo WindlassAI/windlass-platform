@@ -18,7 +18,8 @@
  * Where the deployment runs no second review (`PlatformInfo.items.reviewer`), one line under the
  * heading says so and no row says a word of it.
  */
-import { type GithubId, type ItemState, type ItemSummary } from "@contract";
+import { type ItemState, type ItemSummary, type RepoAddress } from "@contract";
+import { repoAddress } from "../../../server/src/codehost/ref";
 import { useId, useRef, type ReactNode } from "react";
 import { RailFrame, RepoRail, useRailFold, useSearchKey, type RailChoice } from "../components/Rail";
 import { RailFoot, useHostedUsage } from "../components/RailFoot";
@@ -79,11 +80,11 @@ export function progressCount(progress: readonly ItemSummary[], children: readon
 /** The items the filters leave: on one repository, filed one way. */
 export function filterItems(
 	list: readonly ItemSummary[],
-	filters: { repository?: GithubId; from?: ItemSource },
+	filters: { repository?: RepoAddress; from?: ItemSource },
 ): ItemSummary[] {
 	return list.filter(
 		item =>
-			(filters.repository === undefined || String(item.repository.id) === String(filters.repository)) &&
+			(filters.repository === undefined || String(repoAddress(item.repository)) === String(filters.repository)) &&
 			(filters.from === undefined || item.source === filters.from),
 	);
 }
@@ -92,15 +93,17 @@ export function filterItems(
 function repositoriesOf(
 	list: readonly ItemSummary[],
 	counted: ReturnType<typeof feedRepositories>,
-): Array<{ id: GithubId; name: string; items: number }> {
+): Array<{ id: RepoAddress; name: string; items: number }> {
 	const found = new Map(counted.map(repository => [String(repository.id), repository]));
-	for (const item of list)
-		if (!found.has(String(item.repository.id)))
-			found.set(String(item.repository.id), {
-				id: item.repository.id,
+	for (const item of list) {
+		const id = repoAddress(item.repository);
+		if (!found.has(String(id)))
+			found.set(String(id), {
+				id,
 				name: repositoryName(item.repository),
-				items: list.filter(one => String(one.repository.id) === String(item.repository.id)).length,
+				items: list.filter(one => String(repoAddress(one.repository)) === String(id)).length,
 			});
+	}
 	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -268,7 +271,7 @@ export function Factory({
 	filters,
 	items,
 }: {
-	filters: { repository?: GithubId; from?: ItemSource };
+	filters: { repository?: RepoAddress; from?: ItemSource };
 	items: ItemsState;
 }) {
 	const { platform } = useApp();
@@ -299,7 +302,7 @@ export function Factory({
 	const shownCount = shown === null ? 0 : shown.length - groups.ended.length + endedCount;
 	const repositories = repositoriesOf(list ?? [], feedRepositories(items.feed));
 	const filtered = filters.repository !== undefined || filters.from !== undefined;
-	const choose = (next: { repository?: GithubId; from?: ItemSource }) => {
+	const choose = (next: { repository?: RepoAddress; from?: ItemSource }) => {
 		navigate({ name: "factory", ...next }, { replace: true });
 	};
 	const chosenRepository =
@@ -599,7 +602,7 @@ export function railCounts(list: readonly ItemSummary[]): { needs: number; progr
 export function factoryRail(rail: Rail, items: readonly ItemSummary[]): Rail {
 	const by = new Map<string, ItemSummary[]>();
 	for (const item of items) {
-		const key = String(item.repository.id);
+		const key = String(repoAddress(item.repository));
 		by.set(key, [...(by.get(key) ?? []), item]);
 	}
 	const tally = (list: readonly ItemSummary[]) => {

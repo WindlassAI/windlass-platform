@@ -192,7 +192,8 @@ export interface UserInternal {
 		report: import("../factory/readiness.js").Judgment | string | null,
 		diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null,
 	): Promise<void>;
-	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
+	/** `key`: the repository's `repoKey` (GitHub's bare id still reads as its key). */
+	internalReadinessLevel(key: string | GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	/** Service call: true when posted (including a replay), false for a permanent decline. Throw to retry. */
 	internalJiraWrite(input: JiraItemWrite): Promise<boolean>;
 	internalSlackIntake(
@@ -225,7 +226,8 @@ export interface UserInternal {
 		observation: import("../provider-usage.js").UsageObservation,
 	): Promise<void>;
 
-	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
+	/** `key`: the repository's `repoKey` (GitHub's bare id still reads as its key). */
+	internalRepositoryAutonomy(key: string | GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
 	internalPlacementInventory(
 		repositories: Record<string, GithubId>,

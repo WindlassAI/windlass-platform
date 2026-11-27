@@ -153,6 +153,12 @@ export interface GithubBranchList {
 export const HOST_IDS = ["github", "gitlab"] as const;
 export type HostId = (typeof HOST_IDS)[number];
 
+/**
+ * What a link, a filter or a count names a repository by (`repoAddress` in codehost/ref.ts): GitHub's id for one on
+ * the deployment's own GitHub, as links always have, and its key (`gitlab:<id>`) for any other.
+ */
+export type RepoAddress = GithubId | `${HostId}:${string}`;
+
 /** What a session was launched on, when it was picked from the user's code host connection. */
 export interface SessionRepository {
 	provider: HostId;
@@ -165,6 +171,11 @@ export interface SessionRepository {
 	private: boolean;
 	/** The repository's page: "https://github.com/owner/name". */
 	url: string;
+	/**
+	 * The host's base URL, for a repository on another instance than the deployment's own for its host. Absent for
+	 * the deployment's own instance, which every repository is on today (codehost/ref.ts).
+	 */
+	instance?: string;
 }
 
 /** The pull request of a session, as GitHub last described it to the platform. */

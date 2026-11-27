@@ -4,9 +4,10 @@
  * a session by its ID, a work item by its ID, the Factory page with its filters, and the public docs. A reload stays on
  * the same screen; `?mock=1` is carried from one address to the next.
  */
+import { readRepoAddress } from "../../../server/src/codehost/ref.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import { SOURCE_IDS } from "../../../server/src/sources/types.js";
-import type { GithubId, ItemSummary } from "@contract";
+import type { GithubId, ItemSummary, RepoAddress } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { routeLabel } from "./nav";
 
@@ -37,7 +38,7 @@ export type Route =
 	/** A work item: where it is, what it waits for, what it asks, its verdicts and its cost. */
 	| { name: "item"; id: string }
 	/** Every work item across repositories, by what its person must do: `repository` and `from` filter it (`?repository=`, `?from=`). */
-	| { name: "factory"; repository?: GithubId; from?: ItemSource }
+	| { name: "factory"; repository?: RepoAddress; from?: ItemSource }
 	/** The mock's stand-in for OpenAI's sign-in page. */
 	| { name: "mock-authorize" }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
@@ -77,7 +78,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/") return { name: "home" };
 	if (path === "/factory") {
 		const query = new URLSearchParams(search);
-		const repository = githubId(query.get("repository") ?? "");
+		const repository = readRepoAddress(query.get("repository") ?? "");
 		const from = ITEM_SOURCES.find(source => source === query.get("from"));
 		return { name: "factory", ...(repository !== null ? { repository } : {}), ...(from ? { from } : {}) };
 	}

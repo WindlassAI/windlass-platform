@@ -25,7 +25,7 @@
  * rules on their own.
  */
 
-import { isGithubId } from "./github/ids.js";
+import { readRepoKey } from "./codehost/ref.js";
 import { type GithubId, MAX_SETUP_COMMAND_CHARS, SETUP_OUTPUT_CHARS } from "./contract.js";
 
 /** How many repositories one user may have a setup command for; the ones saved longest ago go first. */
@@ -44,10 +44,9 @@ export interface SetupProject {
 	label: string;
 }
 
-/** The key of a repository of a GitHub connection, by GitHub's id for it. Null for anything that is not such an id. */
+/** The key of a repository (`repoKey`), from the key or from GitHub's id for it. Null for anything else. */
 export function setupProjectKey(repositoryId: unknown): string | null {
-	if (typeof repositoryId === "string" && /^gitlab:[1-9][0-9]{0,18}$/.test(repositoryId)) return repositoryId;
-	return isGithubId(repositoryId) ? `github:${repositoryId}` : null;
+	return readRepoKey(repositoryId);
 }
 
 /**
