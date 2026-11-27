@@ -13,7 +13,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { MachineHostUpdate, MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
-import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, machineKeyFingerprint, parseConnection, parseServerFrame, PRINTS_KEY_RUNNER_VERSION, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
+import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, machineKeyFingerprint, parseConnection, PRINTS_KEY_RUNNER_VERSION, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
 const refused = (p: Promise<unknown>, code: string) => assert.rejects(p, e => (e as { code?: string }).code === code);

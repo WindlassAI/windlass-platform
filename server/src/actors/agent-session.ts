@@ -125,7 +125,7 @@ import { readSecrets, sessionRedactor } from "./agent-session/secrets.js";
 import { usesScreenshotImage, childSetupSeed } from "./agent-session/setup.js";
 import { metered, takeHold, removeSandbox, noteSandbox, closeMeter, useOf, meterAfterTurn, armIdle, holdSandbox, settleWokenAsk, wakeMeter, sleepMeter, leaveUsage, idleCheck, releasePlace } from "./agent-session/meter.js";
 import { openSandbox, destroySessionSandboxes, copyWorkspace, refreshSandbox, workspaceView, readFiles, readDiff, sweepSandboxes } from "./agent-session/sandbox.js";
-import { agentPush, agentFetchBase, brief, agentPublish, unpushedWork, evidenceOf, checkPull, publishStateOf, cleanMessage, publishingSettled, PUBLISH_WAIT_MS, verifiedLine, PublishRefused, publishBlocked, publishSession, testSessionBase } from "./agent-session/publish.js";
+import { agentPush, agentFetchBase, agentPublish, unpushedWork, evidenceOf, checkPull, publishStateOf, cleanMessage, publishingSettled, PUBLISH_WAIT_MS, verifiedLine, PublishRefused, publishBlocked, publishSession, testSessionBase } from "./agent-session/publish.js";
 import { heartbeat, wholeTask, pauseTurn, machinePaused, staleOnline, armResumeCheck, MACHINE_RECHECK_MS, originalPrompt, newRun, markPausing, resumesTurns, crashPause, stalePause } from "./agent-session/pause.js";
 
 export { acpRecorder } from "./agent-session/timeline.js";

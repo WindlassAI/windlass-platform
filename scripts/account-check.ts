@@ -49,7 +49,7 @@ import {
 import { PUBLISH_SERVER } from "../server/src/agent-publish.js";
 import { MAX_ACCOUNT_SECRETS, MAX_PERSONAL_SERVERS, MAX_SERVER_DEFINITION_BYTES, type SandboxProfile } from "../server/src/contract.js";
 import { PERSONAL_SERVERS_TABLE, SERVER_KEYS, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, definitionReads, deleteServer, isReservedServerName, listedServer, readServers } from "../server/src/personal-servers.js";
-import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, secretReach, setupEnvironment } from "../server/src/repo-secrets.js";
+import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, setupEnvironment } from "../server/src/repo-secrets.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { personalServerReach, serverQuestionWords } from "../server/src/server-question.js";
 import { createSealer } from "../server/src/signin/seal.js";

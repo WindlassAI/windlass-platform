@@ -4,7 +4,6 @@ import { within } from "./command.js";
 import { untrustedSource } from "../factory/untrusted.js";
 import { callArguments } from "../agent-publish.js";
 import { CALL_AFTER_TURN, CALL_UNKNOWN, platformToolDeclarations, runPlatformTool, turnPlatformTools, type PlatformToolHandler } from "../platform-tools.js";
-import { config } from "../config.js";
 import { reportedModelUsage } from "../usage.js";
 import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";

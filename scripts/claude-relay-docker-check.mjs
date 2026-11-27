@@ -4,7 +4,7 @@ import { checkIsolation } from '../fixtures/claude-relay/isolation.mjs';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AcpConnection, LineSplitter } from '../server/src/sandbox/acp.ts';

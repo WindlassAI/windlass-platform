@@ -121,10 +121,8 @@ import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent }
 import { definitionReads, isReservedServerName } from "./personal-servers.js";
 import { WINDLASS_CONFIG_FILE } from "./windlass-config.js";
 import {
-	type AccessToken,
 	type AccessTokens,
 	type ChatgptAccount,
-	type ChatgptLogins,
 	type CreateSandboxInput,
 	type ExecOptions,
 	type ExecResult,

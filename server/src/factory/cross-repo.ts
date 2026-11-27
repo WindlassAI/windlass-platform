@@ -19,7 +19,7 @@ import { MAX_TITLE_CHARS } from "../contract.js";
 import { commentText } from "./review.js";
 import { featureBranch } from "../github/feature.js";
 import { untrustedWords } from "./untrusted.js";
-import type { ChoiceId, Effect, Fact, FactoryItem, FeatureRepoState, IntegrationRun, ItemState, QuestionKind, Run, StepKind, Wait } from "./types.js";
+import type { ChoiceId, Effect, Fact, FactoryItem, FeatureRepoState, ItemState, QuestionKind, Run, StepKind, Wait } from "./types.js";
 
 /** Whether the item is a cross-repo feature. */
 export const crossRepo = (item: Pick<FactoryItem, "repos">): boolean => (item.repos?.length ?? 0) > 1;

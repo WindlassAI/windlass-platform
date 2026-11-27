@@ -13,7 +13,6 @@ import {
 import type { MachineProfile } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
 import { Executor } from "./docker-executor.js";
-import { cleanClaudeOutput } from "./claude-output.js";
 import { Session } from "./session.js";
 import { RunnerError, VERSION, origin, storePair } from "./state.js";
 

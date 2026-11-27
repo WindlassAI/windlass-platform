@@ -24,7 +24,7 @@ import { type SignInCommands, type TokenAnswer, WindlassSignIns } from "../serve
 import { ActorSignInDirectory, errorOf, problemOf, tokenSubject } from "../server/src/signin/directory.js";
 import { memorySignIns } from "../server/src/signin/facade.js";
 import { SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
-import { type SignInMaterial, accountOf, cleanMaterial } from "../server/src/signin/material.js";
+import { type SignInMaterial, cleanMaterial } from "../server/src/signin/material.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
 
