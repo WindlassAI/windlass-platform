@@ -12,6 +12,8 @@ Start with the area guide below before editing its code. Paths are repository-ro
 - `server/src/repo-setup/` validates setup guides and prepares setup changes; see `server/src/repo-setup/AGENTS.md`.
 - `server/src/sandbox/` provisions workspaces and runs turns; see `server/src/sandbox/AGENTS.md`. The E2B provider has its own guide, `server/src/sandbox/e2b/AGENTS.md`.
 - `server/src/linear/` connects Linear workspaces and files issues as items; see `server/src/linear/AGENTS.md`.
+- `server/src/jira/` holds Jira Cloud OAuth, site discovery and signed dynamic webhooks; `server/src/actors/jira-site.ts` keeps the filings.
+- `server/src/slack/` verifies Slack requests, connects workspaces, and posts item threads, plans and questions.
 - `server/src/runner/` is the server side of the machine runner protocol; see `server/src/runner/AGENTS.md`.
 - `server/src/signin/` runs harness sign-ins and seals their credentials; see `server/src/signin/AGENTS.md`.
 - `server/src/billing/` holds plans, metering and the payment provider; see `server/src/billing/AGENTS.md`.
@@ -133,6 +135,9 @@ Use that map rather than assuming one folder selects only one group.
 | GitHub linking/publishing and event delivery | `scripts/github-check.ts`, `scripts/webhook-check.ts` | `rules`, `webhook`; Docker publishing in `sandbox-docker` |
 | Repository setup and readiness | `scripts/readiness-check.ts` | `rules` (check key `repo-setup`) |
 | Sandbox relay and Docker behaviour | `scripts/model-relay-route-check.ts`, `scripts/sandbox-check.ts` | `rules`, `sandbox-docker` |
+| GitLab and the code-host interface | `scripts/gitlab-protocol-check.ts`, `scripts/gitlab-check.ts`, `scripts/codehost-check.ts` | `rules`, `gitlab` |
+| Jira intake | `scripts/jira-check.ts` | `jira` |
+| Slack intake | `scripts/slack-check.ts`, `server/src/slack/blocks.test.ts` | `slack` |
 
 For example, run this installation-linking section from the repository root (`server/src/github/AGENTS.md`):
 
