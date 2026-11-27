@@ -3,7 +3,8 @@
 // Creation requires the user actor’s grant for this item.
 
 import { randomUUID } from "node:crypto";
-import { performSlackWrite, slackEffects, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import { performSlackWrite, slackEffects, SLACK_QUESTIONS, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import { slackMayAnswer } from "../slack/blocks.js";
 import type { SlackBinding } from "../factory/intake.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, mergeKindAllowed, type TaskKind } from "../factory/readiness-track.js";
@@ -850,12 +851,14 @@ async function take(
 		issue,
 		overflow,
 		secret,
+		slackUser,
 	}: {
 		secret?: RequestedSecretSave;
 		overflow?: string[];
 		baseSha?: string | null;
 		nudged?: boolean;
 		issue?: Pick<ObservedIssue, "subject" | "by" | "said">;
+		slackUser?: string;
 	} = {},
 ): Promise<boolean> {
 	// Order outside facts (including cancellation and GitHub events) after a claimed answer.
@@ -984,7 +987,7 @@ async function take(
 		if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled"))
 			effects.push({ kind: "jira_comment", key: next.state, itemUrl: url, pr });
 	}
-	if (stored.meta.slack) effects.push(...slackEffects(before, next));
+	if (stored.meta.slack) effects.push(...slackEffects(before, next, fact, slackUser));
 	const sibling =
 		fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0]
 			? fact.repo
@@ -1394,9 +1397,9 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 				? "slack_write_retry"
 				: row.id.startsWith("jira_comment:")
 					? "jira_comment_retry"
-				: row.id.startsWith("linear_write:")
-					? "linear_write_retry"
-					: describeError(error),
+					: row.id.startsWith("linear_write:")
+						? "linear_write_retry"
+						: describeError(error),
 		});
 		await queued(c, () =>
 			c.db.execute(
@@ -3307,9 +3310,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (effect.kind === "slack_write") {
 		const binding = meta.slack!;
 		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
-		await performSlackWrite(c.db, binding, item.id, effect, (message, thread) =>
-			workspace.internalPost(binding.channelId, binding.generation, message, thread),
-		);
+		await performSlackWrite(c.db, binding, item.id, effect, {
+			read: () => viewOf(c),
+			post: (message, thread) =>
+				workspace.internalPost(binding.channelId, binding.generation, message, thread, { uid: meta.uid, id: item.id }),
+			update: (ts, message) => workspace.internalUpdate(binding.channelId, binding.generation, ts, message),
+		});
 		return true;
 	}
 	if (effect.kind === "jira_comment" || effect.kind === "linear_write") {
@@ -4371,6 +4377,15 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 	}
 }
 
+/** A Slack button answers only the question it was posted for, with a choice Slack may offer. */
+function slackRefusal(item: FactoryItem, fact: Fact, question: string) {
+	const open = item.question;
+	if (open?.id !== question) throw new UserError("This question is no longer open.", { code: "item_conflict" });
+	const choice = fact.kind === "approve_plan" ? "approve" : fact.kind === "answer" ? fact.choice : null;
+	if (!choice || !slackMayAnswer(open, choice))
+		throw new UserError("Answer this question in Windlass.", { code: "item_conflict" });
+}
+
 const CONFLICT: Record<ItemAction["kind"], string> = {
 	update_feature: "The feature cannot be updated at this step.",
 	cancel_subtask: "This subtask is no longer running.",
@@ -4404,6 +4419,7 @@ export const workItem = actor({
 			await db.execute(FEATURE_CI_CACHE);
 			await db.execute(CHECKS_TABLE);
 			await db.execute(SLACK_RECEIPTS);
+			await db.execute(SLACK_QUESTIONS);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
 			await db.execute(FEEDBACK_TABLE);
@@ -4850,12 +4866,16 @@ export const workItem = actor({
 		},
 
 		/** A person's action (`UserActions.actOnItem`), by `by` ("person:<uid>"). Refused with `item_conflict` when it changes nothing. */
-		internalAct: async (c, input: { action: ItemAction; by: string }): Promise<ItemView> => {
+		internalAct: async (
+			c,
+			input: { action: ItemAction; by: string; slack?: { user: string; question: string } },
+		): Promise<ItemView> => {
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			if (c.vars.savingSecret) throw new UserError("The secret is being saved.", { code: "item_conflict" });
 			const fact = factOf(input?.action, String(input?.by), Date.now());
+			if (input.slack) slackRefusal(stored.item, fact, input.slack.question);
 			let changed: boolean;
 			try {
 				if (fact.kind === "update_feature" || (fact.kind === "answer" && fact.choice === "update_feature")) {
@@ -4903,14 +4923,14 @@ export const workItem = actor({
 				if (fact.kind === "retry" && stored.meta.jira && canRetry(stored.item)) {
 					if (c.vars.jiraRetry) throw new UserError("A retry is already in progress.", { code: "item_conflict" });
 					c.vars.jiraRetry = activateJiraIssue(c, stored.meta.uid, stored.item.id, stored.meta.jira).then(() =>
-						take(c, fact),
+						take(c, fact, { slackUser: input.slack?.user }),
 					);
 					try {
 						changed = await c.vars.jiraRetry;
 					} finally {
 						delete c.vars.jiraRetry;
 					}
-				} else changed = await take(c, fact);
+				} else changed = await take(c, fact, { slackUser: input.slack?.user });
 				if (approving && c.vars.stored?.item.featurePlan?.status === "proposed" && changed)
 					throw new PlanError("The plan settings changed. Review the new version before approving.");
 			} catch (error) {

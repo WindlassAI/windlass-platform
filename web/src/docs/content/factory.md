@@ -145,6 +145,12 @@ In a [mapped channel](/docs/settings#slack), send `@Windlass Fix the setup guide
 
 The item uses your saved defaults and shares the daily limit with GitHub, Linear and Jira issues. Windlass posts item links in the mention’s thread when a plan or question needs you, a pull request opens, or work ends. For a slash command, follow the thread under the bot’s acknowledgement.
 
+In the thread, a plan has **Approve**, **Request changes** and **Open in Windlass**. **Request changes** asks what should change and sends your words with the request for a revised plan, as on the web. A question has one button for each choice that needs no more input. Only the Slack member linked to the item’s owner can press them. Others get a private note and nothing changes. Once a question is answered, in Slack or on the web, its message shows the answer and loses its buttons. A button from an older question is refused.
+
+A plan with open questions, or with parts that run an agent that works without asking, is approved in Windlass. Requests for secrets and questions that quote the agent link to Windlass. Windlass never posts the agent’s own words or check output to Slack.
+
+A mention in an item’s thread files nothing. If a question is open, its owner can reply with a choice’s label, such as `@Windlass Give up`. Anything else gets a private link to the item.
+
 ### From the API
 
 Make a token under **Settings** › **API tokens** › **New token…**. Give it **File work items**, **Read work items** or both. Copy its value when it is shown: it is not shown again.

@@ -198,6 +198,12 @@ export interface UserInternal {
 	internalSlackIntake(
 		filing: import("../factory/intake.js").SlackFiling,
 	): Promise<import("../factory/intake.js").TrackerFiled>;
+	internalSlackAct(input: import("./user-items.js").SlackAnswer): Promise<void>;
+	internalSlackReply(input: {
+		id: string;
+		text: string;
+		slackUser: string;
+	}): Promise<import("./user-items.js").SlackReply>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: {
@@ -474,7 +480,8 @@ export interface ItemInternal {
 	/** Each report and review that filed screenshots, the newest first: what its feature's page gathers. */
 	internalScreenshotSets(): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]>;
 	internalMergeGitlab(reviewedHead: string): Promise<ItemView>;
-	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;
+	/** `slack`: pressed in Slack by that member, for that question only. */
+	internalAct(input: { action: ItemAction; by: string; slack?: { user: string; question: string } }): Promise<ItemView>;
 	/** A fact about the item's turn; resolves once it is stored. */
 	internalFact(fact: Fact): Promise<void>;
 }

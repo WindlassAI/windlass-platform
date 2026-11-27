@@ -2338,6 +2338,8 @@ export const user = actor({
 		...slackSettingsActions,
 		internalSlackIntake: (c, filing: import("../factory/intake.js").SlackFiling) =>
 			itemActions.internalSlackIntake(c, filing, itemSession(c)),
+		internalSlackAct: itemActions.internalSlackAct,
+		internalSlackReply: itemActions.internalSlackReply,
 
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);

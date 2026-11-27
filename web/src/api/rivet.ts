@@ -552,6 +552,7 @@ export function createRivetClient(
 			slackComplete: ticket => act("slackComplete", ticket),
 			saveSlackMapping: input => act("saveSlackMapping", input),
 			removeSlackMapping: channelId => act("removeSlackMapping", channelId),
+			setSlackDetails: input => act("setSlackDetails", input),
 			disconnectSlack: () => act("disconnectSlack"),
 			linkSlack: ticket => act("linkSlack", ticket),
 			unlinkSlack: teamId => act("unlinkSlack", teamId),

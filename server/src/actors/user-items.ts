@@ -85,6 +85,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
+import { slackChoices } from "../slack/blocks.js";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage, listedItems } from "../item-pages.js";
 import {
 	API_TOKEN_WINDOW_MS,
@@ -114,6 +115,7 @@ import {
 	type ApiTokenScope,
 	type CreateItemInput,
 	type CreateSessionInput,
+	type ChoiceId,
 	type FactoryLimits,
 	type ItemAction,
 	type ItemSummary,
@@ -466,6 +468,56 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 		await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
 	c.broadcast("items", feedOf(c.vars.items));
 	if (releaseAt(summary) !== releaseAt(held)) queueChanged(c);
+}
+
+// The one path for a person's action, from the web or from Slack.
+async function act(
+	c: ItemsCtx,
+	uid: string,
+	id: string,
+	action: ItemAction,
+	slack?: { user: string; question: string },
+): Promise<ItemView> {
+	enabled();
+	knownItem(c, id);
+	const view = await itemActor(c, uid, id).internalAct({ action, by: `person:${uid}`, ...(slack && { slack }) });
+	await noteItem(c, view);
+	return view;
+}
+
+/** A Slack button or reply. `version`: the plan the Approve button was posted with. */
+export interface SlackAnswer {
+	id: string;
+	question: string;
+	choice: ChoiceId;
+	version?: number;
+	note?: string;
+	slackUser: string;
+}
+export type SlackReply = { kind: "answered" } | { kind: "choices"; labels: string[] } | { kind: "none" };
+const words = (text: string) =>
+	text
+		.toLowerCase()
+		.replace(/_/g, " ")
+		.replace(/[^\p{L}\p{N} ]/gu, "")
+		.replace(/\s+/g, " ")
+		.trim();
+
+function slackOwner(c: ItemsCtx): UserProfile {
+	const { profile } = c.vars;
+	if (!profile || !mayUse(profile, config.access))
+		throw new UserError("This account cannot act on work items here.", { code: "item_not_found" });
+	return profile;
+}
+
+// Approve is the web's version-bound approval. Every other choice is the web's answer to that question.
+function slackAct(c: ItemsCtx, input: SlackAnswer) {
+	const { uid } = slackOwner(c);
+	const action: ItemAction =
+		input.choice === "approve" && input.version !== undefined
+			? { kind: "approve_plan", version: input.version }
+			: { kind: "answer", question: input.question, choice: input.choice, ...(input.note && { note: input.note }) };
+	return act(c, uid, input.id, action, { user: input.slackUser, question: input.question });
 }
 
 function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
@@ -2197,14 +2249,37 @@ export const itemActions = {
 
 	actOnItem: async (c: ItemsCtx, input: { id: string; action: ItemAction }): Promise<ItemView> => {
 		const profile = requireUser(c);
-		enabled();
-		knownItem(c, input?.id);
-		const view = await itemActor(c, profile.uid, input.id).internalAct({
-			action: input.action,
-			by: `person:${profile.uid}`,
+		return await attachmentStates(c, await act(c, profile.uid, input?.id, input?.action));
+	},
+
+	/** A press in the item's Slack thread, by the member linked to this account. */
+	internalSlackAct: async (c: ItemsCtx, input: SlackAnswer): Promise<void> => {
+		requireServiceFor(c, "call");
+		await slackAct(c, input);
+	},
+
+	/** A mention in the item's thread: the owner's answer when it names a choice of the open question. */
+	internalSlackReply: async (
+		c: ItemsCtx,
+		input: { id: string; text: string; slackUser: string },
+	): Promise<SlackReply> => {
+		requireServiceFor(c, "call");
+		slackOwner(c);
+		knownItem(c, input.id);
+		const view = await itemActor(c, c.key[0], input.id).internalView();
+		const choices = view.question ? slackChoices(view.question, view.plan) : [];
+		if (!view.question || !choices.length) return { kind: "none" };
+		const wanted = words(input.text);
+		const choice = choices.find(ch => words(ch.label) === wanted || words(ch.id) === wanted);
+		if (!choice) return { kind: "choices", labels: choices.map(ch => ch.label) };
+		await slackAct(c, {
+			id: input.id,
+			question: view.question.id,
+			choice: choice.id,
+			version: view.plan?.version,
+			slackUser: input.slackUser,
 		});
-		await noteItem(c, view);
-		return await attachmentStates(c, view);
+		return { kind: "answered" };
 	},
 
 	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.

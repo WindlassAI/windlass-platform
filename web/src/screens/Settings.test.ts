@@ -538,6 +538,16 @@ describe("Integrations in Settings", () => {
 			await press(card, "Map channel");
 			await screen.settle();
 			expect(card.querySelector('[aria-label="Mapped channels"]')?.textContent).toContain("acme/harbor");
+			// A private repository's plans stay out of the channel until the owner allows them.
+			const details = () =>
+				card.querySelector<HTMLInputElement>('[aria-label="Mapped channels"] input[type="checkbox"]')!;
+			expect(details().checked).toBe(false);
+			details().click();
+			await screen.settle();
+			expect(details().checked).toBe(true);
+			expect(
+				((await client.user(screen.auth).slack()) as { mappings: { details: boolean }[] }).mappings[0]!.details,
+			).toBe(true);
 			await press(card, "Change mapping for harbor-engineering");
 			await choose(card.querySelector('[aria-label="Repository"]')!, "7102");
 			await press(card, "Map channel");

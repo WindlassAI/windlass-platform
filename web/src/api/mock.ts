@@ -1553,8 +1553,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					slackKey("mappings"),
 					JSON.stringify([
 						...mappings().filter(m => m.channel.id !== channelId),
-						{ channel, repository: { id, owner: login, name } },
+						{ channel, repository: { id, owner: login, name }, details: !repository.private },
 					]),
+				);
+				return status();
+			},
+			async setSlackDetails({ channelId, details }) {
+				owner();
+				keep(
+					slackKey("mappings"),
+					JSON.stringify(mappings().map(m => (m.channel.id === channelId ? { ...m, details } : m))),
 				);
 				return status();
 			},

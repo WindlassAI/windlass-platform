@@ -81,8 +81,13 @@ export const slackSettingsActions = {
 	saveSlackMapping: action(async (c, input: { channelId: string; repositoryId: GithubId }) => {
 		const ws = await owner(c), app = githubApp(), connection = c.vars.github;
 		if (!connection || !app) throw new UserError("Connect GitHub first.", { code: "github_not_connected" });
-		const { id, owner: login, name } = (await resolveRepository(app, connection, input.repositoryId, "write")).described;
-		await ws.internalMap(c.key[0], input.channelId, { id, owner: login, name });
+		const { id, owner: login, name, private: hidden } = (await resolveRepository(app, connection, input.repositoryId, "write")).described;
+		// A private repository's plans stay out of the channel until the owner allows them.
+		await ws.internalMap(c.key[0], input.channelId, { id, owner: login, name }, !hidden);
+		return status(c);
+	}),
+	setSlackDetails: action(async (c, input: { channelId: string; details: boolean }) => {
+		await (await owner(c)).internalDetails(c.key[0], input.channelId, input.details === true);
 		return status(c);
 	}),
 	removeSlackMapping: action(async (c, id: string) => {
