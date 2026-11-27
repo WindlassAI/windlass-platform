@@ -118,6 +118,8 @@ export interface LinearBinding {
 export interface GitlabBinding {
 	project: import("../contract.js").SessionRepository;
 	iid: string;
+	/** The issue's nth filing: an ended item lets it be filed again. */
+	generation: number;
 	sources: string[];
 }
 export type Intake = { github: IssueBinding; linear?: undefined; gitlab?: undefined }

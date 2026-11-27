@@ -72,8 +72,25 @@ export function intakeInput(task: { title: string; body: string; acceptance: str
 
 export const isEnded = (item: Pick<ItemSummary, "state">) => item.state === "done" || item.state === "failed" || item.state === "cancelled";
 
+const linearBase = (issueId: string) => `linear:${issueId}:`;
 /** The key of a Linear issue's nth filing. Reserved with the same table as GitHub's, and told apart from them by its form. */
-export const linearKey = (issueId: string, generation: number) => `linear:${issueId}:${generation}`;
+export const linearKey = (issueId: string, generation: number) => linearBase(issueId) + generation;
+/** A GitLab issue's filings are keyed like Linear's: this base, then the generation. */
+const gitlabBase = (projectId: string, iid: string) => `gitlab:${projectId}:${iid}:`;
+
+/**
+ * An issue's filings from the keys `<base><generation>`: those the index holds, and one the index does not yet (an
+ * interrupted filing). `open` is the item still running, `resuming` an interrupted filing to finish, and `generation`
+ * the one this filing takes: an ended item lets the issue be filed again.
+ */
+function filings(c: ItemsCtx, base: string) {
+	const prefix = intakeScope(base);
+	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
+	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
+	const held = last && c.vars.items.items.get(last.id);
+	const resuming = last && !held ? last : undefined;
+	return { open: last && held && !isEnded(held) ? last.id : undefined, resuming, generation: resuming?.generation ?? (last?.generation ?? 0) + 1 };
+}
 
 /**
  * Files a Linear issue as a work item on its team's repository, in the queue and under the cap that GitHub's intake uses.
@@ -103,15 +120,9 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	if (issue.closed) return { kind: "ignored", why: "The issue is closed in Linear." };
 	const uid = profile.uid;
 
-	// The issue's earlier filings, from the keys: those the index holds, and one the index does not yet (an interrupted filing).
-	const prefix = intakeScope(`linear:${issue.id}:`);
-	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
-	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
-	const held = last && c.vars.items.items.get(last.id);
-	if (last && held && !isEnded(held)) return { kind: "exists", itemId: last.id };
-	const resuming = last && !held ? last : undefined;
+	const { open, resuming, generation } = filings(c, linearBase(issue.id));
+	if (open) return { kind: "exists", itemId: open };
 	if (trigger.lapsed && !resuming) return { kind: "ignored", why: "The issue no longer has what qualified it." };
-	const generation = resuming?.generation ?? (last?.generation ?? 0) + 1;
 
 	if (!config.items) return { kind: "refused", reason: refusals.off };
 	const app = githubApp(), connection = c.vars.github;
@@ -167,9 +178,9 @@ export async function fileGitlabIssue(c: ItemsCtx, delivery: GitlabTrigger,
 	};
 	const issue = await get(path);
 	if (!issue || issue.state !== "opened" || decimalId(issue.iid) !== iid || decimalId(issue.project_id) !== projectId) return null;
-	const key = `gitlab:${projectId}:${iid}`;
-	const previous = c.vars.items.created.get(intakeScope(key));
-	if (previous && c.vars.items.items.has(previous.id)) return previous.id;
+	const { open, resuming, generation } = filings(c, gitlabBase(projectId, iid));
+	if (open) return open;
+	const key = gitlabBase(projectId, iid) + generation;
 	const sources = [untrustedWords.gitlabIssue(iid)];
 	let body = text(issue.description);
 	if (delivery.event === "note") {
@@ -181,12 +192,12 @@ export async function fileGitlabIssue(c: ItemsCtx, delivery: GitlabTrigger,
 		if (/^feature(?:\s|$)/i.test(words)) return null;
 		if (words) { body += `\n\nGitLab note:\n${words}`; sources.push(untrustedWords.gitlabNote(noteId)); }
 	} else if (!Array.isArray(issue.labels) || !issue.labels.includes("windlass")) return null;
-	if (await quotaRefusal(c, previous?.id, "GitLab")) return null;
+	if (await quotaRefusal(c, resuming?.id, "GitLab")) return null;
 	const author = record(issue.author);
 	const { task } = taskOfText({ title: text(issue.title), body, fallbackTitle: `Issue #${iid}`, from: `From GitLab issue #${iid}. ${project.url}/-/issues/${iid}`,
 		by: linearName(author.username), tracker: "GitLab", trusted: false, note: "" });
 	const input = intakeInput(task, "single", project, decimalId(author.id) === viewer, key);
-	const item = await file(profile, input, { project, iid, sources });
+	const item = await file(profile, input, { project, iid, generation, sources });
 	// Acknowledgement is best effort: failure to react must never undo a successful filing.
 	const host = gitlabCodeHost(app, { id: viewer, project, accessToken: async () => token });
 	await host.react(token, project, delivery.event === "note" ? { kind: "issue_comment", id: `${iid}:${delivery.noteId}` } : { kind: "issue", id: iid }, "eyes").catch(() => undefined);

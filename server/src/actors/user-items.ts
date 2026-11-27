@@ -583,7 +583,7 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
 		// What a Linear item's key stands for is the issue's filing, not the text it had when the first attempt was made: an attempt that finishes an interrupted one is the same.
-		const submission = submissionOf(idempotencyKey, intake?.gitlab ? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid } : intake?.linear ? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation } : intake ? { asked, github: intake.github } : asked);
+		const submission = submissionOf(idempotencyKey, intake?.gitlab ? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation } : intake?.linear ? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation } : intake ? { asked, github: intake.github } : asked);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
 		const made = c.vars.items.created.get(key);

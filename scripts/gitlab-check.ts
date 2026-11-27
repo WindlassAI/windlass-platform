@@ -163,6 +163,18 @@ async function intakeChecks(sections: string[], fixture: GitlabStandin, client: 
 				await dispatch("Merge Request Hook", { object_kind: "merge_request", project: { id: p.id }, object_attributes: { iid: mr.iid, action: "merge", last_commit: { id: head } } });
 				await until("merged item", async () => (await user.item(row.id)).state === "done");
 				console.log("PASS intake: pushed branch, merge request, green CI and owner-authorized merge");
+				await dispatch(event, label);
+				const relabelled = await until("a new item for the issue after its item was done", async () => (await user.listItems()).find(i => i.title === target.title && i.id !== row.id));
+				assert.equal(relabelled.state, "draft");
+			}
+			if (via === "note") {
+				await user.actOnItem({ id: row.id, action: { kind: "cancel" } });
+				await pollUntil(30_000)("cancelled item", async () => (await user.item(row.id)).state === "cancelled");
+				await dispatch(event, body);
+				const again = await pollUntil(20_000)("a new item after the issue's item was cancelled", async () => (await user.listItems()).find(i => i.title === target.title && i.id !== row.id));
+				await dispatch(event, body);
+				assert.deepEqual((await user.listItems()).filter(i => i.title === target.title).map(i => i.id).sort(), [row.id, again.id].sort());
+				console.log("PASS intake: an issue whose item ended is filed again, once");
 			}
 			const turn = { agent: "windlass" as const, untrusted: kept.untrusted, unsandboxed: false };
 			assert.equal(untrustedTurn({ ...turn, profile: "docker-windlass-sandbox" }).kind, "marked");
