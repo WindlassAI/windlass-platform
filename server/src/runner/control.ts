@@ -461,6 +461,8 @@ const report = object({
 	modelRelay: optional(boolean),
 	/** A resumed conversation keeps its processes, output and relay leases through the grace (`resumable-conversation`). */
 	resumableConversation: optional(boolean),
+	/** The runner keeps copies of its sessions' agent sessions on the machine (`session-backups`, sandbox/machine-backups.ts). */
+	sessionBackups: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(

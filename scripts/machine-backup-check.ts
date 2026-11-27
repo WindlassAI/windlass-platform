@@ -168,6 +168,12 @@ async function capability(): Promise<void> {
 			parseServerFrame(JSON.stringify({ kind: "forget-backup", sessionId: "../x" })) === null &&
 			parseRunnerFrame(JSON.stringify({ kind: "backup-forgotten", sessionId: "a b" })) === null,
 	);
+	const plain = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 1, sandboxes: [] };
+	expect(
+		"a newer runner's report with sessionBackups is one the server reads (it is not refused as a bad frame)",
+		parseRunnerFrame(JSON.stringify({ ...plain, sessionBackups: true })) !== null &&
+			parseRunnerFrame(JSON.stringify(plain)) !== null,
+	);
 	const owner = { uid: "u_owner", sessionId: "s_0123456789abcdef" };
 	const sha = "a".repeat(64);
 	expect(
