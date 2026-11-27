@@ -1436,10 +1436,11 @@ async function claudeChecks(
 						assert((await seen.conn.prompt({ text: value })).steered, "the fixture did not accept the steer");
 						await seen.untilEnded(steering.turn);
 						const saved = await seen.conn.snapshot();
-						const expected = ("Check [secret:HARBOR_KEY] [secret:HARBOR_KEY] " + "x".repeat(220)).slice(0, 200);
+						// Cut to 80 characters at the last whole word, the run of x's is too long to keep.
+						const expected = "Check [secret:HARBOR_KEY] [secret:HARBOR_KEY]…";
 						assert(
 							saved.summary.title === expected,
-							"generated title was not single-line, redacted and bounded to 200 characters",
+							`generated title was not single-line, redacted and bounded to 80 characters: "${saved.summary.title}"`,
 						);
 						const content = JSON.stringify([saved, seen.items, seen.deltas]);
 						assert(

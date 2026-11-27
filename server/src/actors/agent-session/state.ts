@@ -73,6 +73,8 @@ export interface SessionMeta {
 	title: string;
 	/** Set by a person at creation or rename. Absent on older sessions. */
 	titleIsTyped?: boolean;
+	/** An agent has titled the session (`generatedSessionTitle`): its turns stop waiting for one. Absent on older sessions. */
+	titleGenerated?: boolean;
 	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;

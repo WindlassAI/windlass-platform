@@ -404,6 +404,8 @@ export interface RunTurnInput {
 	/** Ordered Windlass events followed by one cli.summary aggregating all executions, including late steered messages. */
 	onEvent?: (event: WindlassEvent) => void;
 	onAcpUpdate?: (update: AcpUpdate) => void;
+	/** The session has no title of its own or generated yet: an ACP turn that ended well waits briefly for the agent's (`AcpQuirks.titleWaitMs`). */
+	wantsTitle?: boolean;
 	/** The turn waits for an answer. Withdrawal ignores late answers; rejection or a missing handler declines the call. */
 	onQuestion?: (question: TurnQuestion, signal: AbortSignal) => Promise<TurnAnswer>;
 	/** Ask once per waiting definition per turn, serially. Pre-prompt questions hold the turn. Rejecting or omitting the callback leaves the server stopped. */

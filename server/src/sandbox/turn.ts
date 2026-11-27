@@ -1172,13 +1172,8 @@ class Turn {
 	// ---- what the engine sends ----
 
 	private notification(method: string, params: Record<string, unknown>): void {
-		if (method === "session/update" && this.session !== null && params.sessionId === this.session && !this.sealed) {
-			const update = params.update as { sessionUpdate?: unknown; title?: unknown } | null;
-			if (update?.sessionUpdate === "session_info_update" && typeof update.title === "string") {
-				this.input.onAcpUpdate?.({ sessionUpdate: "session_info_update", title: update.title });
-			}
-			return;
-		}
+		// Windlass's ACP titles include its first-line fallback; the generated title comes as `session.renamed` (`event`).
+		if (method === "session/update") return;
 		if (method === EXT.mcpChanged) {
 			if (params.sessionId === this.session) this.serversSaid(params);
 			return;
@@ -1215,7 +1210,11 @@ class Turn {
 			data.titlePrompt.trim()
 		)
 			this.titleDeadline = Date.now() + 35_000;
-		if (event.type === "session.renamed") this.resolveTitle();
+		if (event.type === "session.renamed") {
+			if (data.generated === true && typeof data.title === "string")
+				this.input.onAcpUpdate?.({ sessionUpdate: "session_info_update", title: data.title });
+			this.resolveTitle();
+		}
 		if ((event.type === "inbox.delivered" || event.type === "inbox.cancelled") && typeof data.messageId === "string") {
 			this.delivered.add(data.messageId);
 			this.undelivered.delete(data.messageId);

@@ -122,11 +122,26 @@ class Engine {
 						.join(""),
 				);
 				if (text.includes("(session title)")) {
+					// As Windlass does: its first-line fallback over ACP, which the platform ignores, then the generated title.
 					this.send({
 						method: "session/update",
 						params: {
 							sessionId: this.session,
-							update: { sessionUpdate: "session_info_update", title: "Inspect the files" },
+							update: { sessionUpdate: "session_info_update", title: "Read the repo (fallback)" },
+						},
+					});
+					this.send({
+						method: "_windlass/event",
+						params: {
+							sessionId: this.session,
+							event: {
+								type: "session.renamed",
+								v: 1,
+								data: { title: "Inspect the files", generated: true },
+								sessionId: this.session,
+								seq: RECORDED.length + 1,
+								time: Date.now(),
+							},
 						},
 					});
 				}

@@ -861,7 +861,7 @@ async function initialize(client: Client) {
 			mcpCapabilities: { http: true, sse: true, acp: true },
 			sessionCapabilities: { options: {}, resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
 		},
-		_meta: { steering: { supported: true } },
+		_meta: { steering: { supported: true }, "windlass-platform/noTitles": true },
 		authMethods: [
 			{
 				id: "claude-login",
@@ -1117,6 +1117,7 @@ async function clientCheck(state: string) {
 		| "without-auto"
 		| "adapter-default"
 		| "config-modes"
+		| "late-title"
 		| "codex-signed-out" = "normal";
 	const configMode = (currentValue: string) => ({
 		id: "agent-mode",
@@ -1170,6 +1171,8 @@ async function clientCheck(state: string) {
 						delete frame.result.agentCapabilities.loadSession;
 					}
 					if (variant === "wrong-version") frame.result.protocolVersion = 2;
+					// A real adapter titles its session after the turn, unlike the fixture.
+					if (variant === "late-title") delete frame.result._meta["windlass-platform/noTitles"];
 				}
 				if (frame.result?.modes && variant === "load")
 					frame.result.modes.availableModes = [
@@ -1230,6 +1233,17 @@ async function clientCheck(state: string) {
 							update: { sessionUpdate: "notice", text: "after prompt reply" },
 						},
 					});
+				if (variant === "late-title" && frame.result?.stopReason) {
+					const sessionId = lastSessionId;
+					setTimeout(
+						() =>
+							emit({
+								method: "session/update",
+								params: { sessionId, update: { sessionUpdate: "session_info_update", title: "Late title" } },
+							}),
+						300,
+					);
+				}
 				if (variant === "load" && frame.result?.sessionId)
 					emit({
 						method: "session/update",
@@ -1612,6 +1626,22 @@ async function clientCheck(state: string) {
 		assert(!methods.includes("session/set_mode"));
 	}
 	ok("config-only modes use the reported current mode and reapply a saved mode on resume");
+	variant = "late-title";
+	const lateTitles = async (wantsTitle: boolean) => {
+		const seen: AcpUpdate[] = [];
+		const began = Date.now();
+		const result = await harness.runTurn(handle, { prompt: "usage", wantsTitle, onAcpUpdate: u => seen.push(u) });
+		assert.equal(result.failure, null);
+		return {
+			titled: seen.some(u => u.sessionUpdate === "session_info_update" && u.title === "Late title"),
+			ms: Date.now() - began,
+		};
+	};
+	const waited = await lateTitles(true);
+	assert(waited.titled, "the title sent after the turn reached the session");
+	assert(waited.ms < 10_000, `waited ${waited.ms} ms, not the whole wait`);
+	assert.equal((await lateTitles(false)).titled, false);
+	ok("a turn that wants a title waits for the one the adapter sends after the turn, and only then");
 	variant = "wrong-version";
 	methods.length = 0;
 	const wrongVersion = await harness.runTurn(handle, { prompt: "plain" });
