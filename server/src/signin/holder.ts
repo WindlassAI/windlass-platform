@@ -36,6 +36,7 @@ import { NOT_SIGNED_IN, TOKEN_VALID_FOR_MS, windlassDuration } from "../sandbox/
 import type { SignInCommands, TokenAnswer } from "./commands.js";
 import { type SignInMaterial, accountOf, cleanMaterial, sameMaterial, signInOnly } from "./material.js";
 import { SealError, type Sealer } from "./seal.js";
+import { errorText } from "../util.js";
 
 /** What a user's store holds about the sign-in. Nothing in it is readable without the key but the two flags. */
 export interface StoredSignIn {
@@ -156,7 +157,7 @@ export class SignInHolder {
 		try {
 			material = signInOnly(parse(this.options.sealer.open("user", this.uid, sealed)));
 		} catch (error) {
-			throw new Error(`the sign-in handed over for user ${this.uid} was refused: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(`the sign-in handed over for user ${this.uid} was refused: ${errorText(error)}`);
 		}
 		const account = accountOf(material);
 		if (account === null) throw new SandboxUserError("This sign-in is not finished yet.");
@@ -248,7 +249,7 @@ export class SignInHolder {
 			this.unsaved = null;
 		} catch (error) {
 			this.unsaved = { ...row };
-			const reason = error instanceof Error ? error.message : String(error);
+			const reason = errorText(error);
 			this.log(`[wlp] sign-in.save_failed uid=${this.uid}: the sign-in was refreshed and could not be saved (${reason}); no token of it is handed out until it is, and the save is tried again at the next request`);
 			throw new Error(`the refreshed sign-in could not be saved: ${reason}`);
 		}

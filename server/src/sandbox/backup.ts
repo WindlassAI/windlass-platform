@@ -81,6 +81,7 @@ import { backupConfig } from "../config.js";
 import type { ObjectStore } from "../bucket/store.js";
 import type { BackupOwner, BackupRestoreResult, BackupSaveResult, SandboxHandle, SavedBackup, SessionBackups } from "./api.js";
 import { DATA_DIR, NAME, randomId } from "./provider.js";
+import { errorText } from "../util.js";
 
 /** How long a signed link lasts: long enough for a slow upload of the largest archive, short enough to be worth little. */
 export const LINK_TTL_MS = 5 * 60 * 1000;
@@ -180,7 +181,7 @@ function answerOf(stdout: string): string | null {
 	return /^(packed \d+ [0-9a-f]{64}|empty|too_large \d+|changed|http \d{3}|curl \d+|size \d+|hash [0-9a-f]{64}|contents|unpack|no_session|restored)$/.test(line) ? line : null;
 }
 
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 300);
+const messageOf = (error: unknown) => errorText(error).replace(/\s+/g, " ").trim().slice(0, 300);
 
 export interface SandboxSessionBackupsOptions {
 	/** The largest archive that is kept, in bytes. */

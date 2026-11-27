@@ -147,6 +147,7 @@ import type { Ctx, SessionMeta, HeldSecrets, ActiveTurn, WorkspaceCopy, PublishA
 import { runnerLink, layerOf, machineOf, durableTurns, isRunnerSocket } from "./agent-session/runner.js";
 import { publish, repositoryOf, summaryOf, report } from "./agent-session/summary.js";
 import { restoreBackup, platformNotes, saveBackup, removeBackup } from "./agent-session/workspace.js";
+import { shellQuote } from "../util.js";
 
 export { acpRecorder } from "./agent-session/timeline.js";
 
@@ -248,9 +249,6 @@ function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], u
 	void persist(c);
 }
 
-function shellQuote(text: string): string {
-	return `'${text.replace(/'/g, `'\\''`)}'`;
-}
 
 // Status must avoid the workspace index lock while the agent runs Git.
 export const STATUS_COMMAND = `${WORKSPACE_GIT_START}\ngit --no-optional-locks status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all`;

@@ -62,6 +62,7 @@ import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { SECRET_TOOL, ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
 import { config } from "./config.js";
 import type { RunTurnInput, TurnPublishRequest } from "./sandbox/api.js";
+import { isRecord } from "./util.js";
 
 export const PLAN_REVIEW_TOOL = "file_plan_review";
 export const PLAN_TOOL = "file_plan";
@@ -193,7 +194,6 @@ export const PLATFORM_MCP_SERVER = Object.freeze({ type: "acp", name: PUBLISH_SE
 /** An inner MCP outcome, as an `mcp/message` response carries it. */
 export type McpOutcome = { result: Record<string, unknown> } | { error: { code: number; message: string } };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const mcpError = (code: number, message: string): McpOutcome => ({ error: { code, message } });
 
 /**
@@ -225,8 +225,8 @@ export class PlatformMcpServer {
 	/** One `mcp/message` request's params. Resolves with the outcome the response carries; never rejects. */
 	async handle(params: Record<string, unknown>, signal: AbortSignal): Promise<McpOutcome> {
 		if (params.serverId !== PLATFORM_MCP_SERVER_ID) return mcpError(-32602, "No such server on this connection.");
-		const inner = isObject(params.params) ? params.params : {};
-		const meta = isObject(inner._meta) ? inner._meta : {};
+		const inner = isRecord(params.params) ? params.params : {};
+		const meta = isRecord(inner._meta) ? inner._meta : {};
 		if (meta[META_VERSION] !== MCP_PROTOCOL_VERSION) return mcpError(-32022, "Unsupported protocol version");
 		switch (params.method) {
 			case "server/discover":

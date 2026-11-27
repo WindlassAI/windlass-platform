@@ -28,6 +28,7 @@
 
 import { windlassProvider } from "./sandbox/harnesses.js";
 import type { ModelChoice, ModelList } from "./contract.js";
+import { errorText } from "./util.js";
 
 /** What Windlass listed for an account: its models, and the one a session starts on when none is named. */
 export interface ListedModels {
@@ -189,7 +190,7 @@ export class AccountModels {
 			return list;
 		} catch (error) {
 			this.failed = { generation, at: Date.now() };
-			this.log(`[wlp] models.list_failed uid=${this.options.uid}: ${error instanceof Error ? error.message : String(error)}; the ${this.kept?.generation === generation ? "list kept from before" : "stand-in"} is served, and Windlass is asked again in ${Math.round(this.retryMs / 1000)} s at the earliest`);
+			this.log(`[wlp] models.list_failed uid=${this.options.uid}: ${errorText(error)}; the ${this.kept?.generation === generation ? "list kept from before" : "stand-in"} is served, and Windlass is asked again in ${Math.round(this.retryMs / 1000)} s at the earliest`);
 			return null;
 		}
 	}

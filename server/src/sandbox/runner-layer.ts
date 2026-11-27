@@ -43,6 +43,7 @@ import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { forwardKeyLease } from "./relay-leases.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
+import { errorText } from "../util.js";
 
 /** The raw socket's path: `agentSession.get([uid, sessionId]).webSocket(RUNNER_SOCKET)` on the runner's side. */
 export const RUNNER_SOCKET = "runner";
@@ -402,7 +403,7 @@ export class RunnerLink {
 			if (!answer.ok && !this.closed) this.unreachable(answer.reason === "offline" ? "offline" : "removed");
 		} catch (error) {
 			// Asked again on the cadence; the deadline answers whoever waits.
-			if (!this.closed) console.warn(`[wlp] runner.attach_unanswered session=${this.who.sessionId} machine=${this.who.machineId}: ${error instanceof Error ? error.message : String(error)}`);
+			if (!this.closed) console.warn(`[wlp] runner.attach_unanswered session=${this.who.sessionId} machine=${this.who.machineId}: ${errorText(error)}`);
 		} finally {
 			this.inviting = false;
 		}

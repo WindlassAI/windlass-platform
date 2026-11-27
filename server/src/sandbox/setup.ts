@@ -31,6 +31,7 @@
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { sandboxConnectionLost, type SandboxHandle, type Sandboxes } from "./api.js";
 import { isTurnSandbox, sweepSessionProcesses } from "./provider.js";
+import { errorText } from "../util.js";
 
 export interface SetupRun {
 	command: string;
@@ -97,7 +98,7 @@ export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Pr
 		// The layer's own sandboxes are held; another one (the tests' in-memory layer) has nothing that stops by itself.
 		if (isTurnSandbox(sandbox)) release = await sandbox.holdForTurn();
 	} catch (error) {
-		return failed(`The sandbox could not be kept running for it: ${error instanceof Error ? error.message : String(error)}`, error);
+		return failed(`The sandbox could not be kept running for it: ${errorText(error)}`, error);
 	}
 	let outcome: SetupResult;
 	try {
@@ -122,7 +123,7 @@ export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Pr
 		else if (result.timedOut) outcome = { state: "timed_out", exitCode: null, durationMs, problem: null };
 		else outcome = { state: result.exitCode === 0 ? "succeeded" : "failed", exitCode: result.exitCode, durationMs, problem: null };
 	} catch (error) {
-		outcome = failed(`The sandbox could not run it: ${error instanceof Error ? error.message : String(error)}`, error);
+		outcome = failed(`The sandbox could not run it: ${errorText(error)}`, error);
 	}
 	try {
 		await stopLeftoverSetup(sandbox);

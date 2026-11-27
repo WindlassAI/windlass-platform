@@ -41,6 +41,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { AccessToken } from "../sandbox/api.js";
 import { ACCESS_TOKEN_FILE_ENV, tokenFileContent } from "../sandbox/handoff.js";
 import { MATERIAL_FILES, MAX_MATERIAL_FILE_BYTES, type SignInMaterial, cleanMaterial } from "./material.js";
+import { errorText } from "../util.js";
 
 export interface LoginCommand {
 	/** What follows `windlass login`: `["start", "--no-browser"]`, `["finish"]`, `["token", "--json", "--valid-for", "20m"]`. */
@@ -181,7 +182,7 @@ export class LocalLoginRunner implements LoginRunner {
 			return await step(dir, env);
 		} finally {
 			await rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
-				this.log(`[wlp] sign-in.tmp_left dir=${dir}: the private directory of a sign-in command could not be removed (${error instanceof Error ? error.message : String(error)}); remove it by hand`);
+				this.log(`[wlp] sign-in.tmp_left dir=${dir}: the private directory of a sign-in command could not be removed (${errorText(error)}); remove it by hand`);
 			});
 		}
 	}

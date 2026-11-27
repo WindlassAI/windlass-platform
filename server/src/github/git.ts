@@ -8,6 +8,7 @@ import type { WorkDiff } from "../verified.js";
 import { GithubProblem } from "./problem.js";
 import { redact } from "./redact.js";
 import { SAFE_FLAGS, TRANSPORT_FLAGS } from "./git-flags.js";
+import { errorText, shellQuote } from "../util.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
 // A reference clone that receives nothing for this long is abandoned for a plain clone.
@@ -20,9 +21,6 @@ const PROBE_TIMEOUT_MS = 20 * 1000;
 
 const SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-function shellQuote(text: string): string {
-	return `'${text.replace(/'/g, `'\\''`)}'`;
-}
 
 /** A branch name git and GitHub would accept, as far as it matters for a command line. */
 export function isBranchName(name: unknown): name is string {
@@ -743,7 +741,7 @@ async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: 
 		result = await sandbox.run(script, { ...(options.gitUser ? { gitUser: true, cwd: "/" } as const : {}), stdin: options.stdin, timeoutMs: options.timeoutMs, signal: options.signal });
 	} catch (error) {
 		// Whatever the sandbox layer says of a command it could not run, it does not say with the token in it.
-		throw new Error(redact(error instanceof Error ? error.message : String(error), secrets));
+		throw new Error(redact(errorText(error), secrets));
 	}
 	const marks = markers(result.stdout);
 	if (result.aborted) return { ok: false, failure: "aborted", said: "", marks };

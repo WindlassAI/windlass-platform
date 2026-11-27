@@ -40,6 +40,7 @@ import { registry } from "./registry.js";
 import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
 import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
+import { errorText } from "./util.js";
 
 const debug = debuglog("wlp");
 process.on("unhandledRejection", (reason) => {
@@ -119,7 +120,7 @@ if (windlassProblem) {
 	process.exit(1);
 }
 // Windlass's model relay of hosted Docker (docs/model-relay.md): on with the image's Windlass 0.7.1 or later, and what a stopped server left removed.
-if (layer.sandboxes.prepareModelRelay) console.log(await layer.sandboxes.prepareModelRelay().catch((error: unknown) => `[wlp] model_relay: could not be prepared (${error instanceof Error ? error.message : String(error)})`));
+if (layer.sandboxes.prepareModelRelay) console.log(await layer.sandboxes.prepareModelRelay().catch((error: unknown) => `[wlp] model_relay: could not be prepared (${errorText(error)})`));
 // Its route for E2B answers only on the relay's own hostname (WLP_MODEL_RELAY_URL), which serves nothing else.
 const relayHost = config.modelRelay.on ? config.modelRelay.url?.host ?? null : null;
 if (config.sandbox === "e2b" && config.modelRelay.on && relayHost === null) console.log("[wlp] model_relay: WLP_MODEL_RELAY_URL is not set, so E2B turns are handed their access token in the sandbox; the platform's public host is never opened to E2B sandboxes in its place");

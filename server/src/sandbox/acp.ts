@@ -9,6 +9,7 @@
  */
 
 import { limitError } from "../provider-usage.js";
+import { errorText } from "../util.js";
 
 /** A request the other side answered with an error, or one that could not be answered at all. */
 export class AcpError extends Error {
@@ -207,7 +208,7 @@ export class AcpConnection {
 			const result = await this.handlers.request(method, params, controller.signal);
 			this.send({ jsonrpc: "2.0", id, result: result ?? null });
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = errorText(error);
 			this.send({ jsonrpc: "2.0", id, error: { code: error instanceof MethodNotFound ? -32601 : -32603, message } });
 		} finally {
 			if (this.incoming.get(id) === entry) this.incoming.delete(id);

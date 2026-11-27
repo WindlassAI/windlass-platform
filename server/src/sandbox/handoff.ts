@@ -11,6 +11,7 @@
  */
 
 import { type AccessToken, SandboxUserError } from "./api.js";
+import { errorText } from "../util.js";
 
 /** The variable that names the file Windlass reads its access token from. */
 export const ACCESS_TOKEN_FILE_ENV = "WINDLASS_ACCESS_TOKEN_FILE";
@@ -184,7 +185,7 @@ export class SignInRefreshError extends Error {
 	}
 }
 
-const sentence = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim().replace(/[.\s]+$/, "");
+const sentence = (error: unknown) => errorText(error).trim().replace(/[.\s]+$/, "");
 
 /** Why no token could be had from the token source, as `RunTurnResult.failure`. The kind of error decides, which the token source made from Windlass's code. */
 export function tokenSourceFailure(error: unknown): Failure {

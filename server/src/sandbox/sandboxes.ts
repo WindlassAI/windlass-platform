@@ -21,6 +21,7 @@ import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
 import { type DockerModelRelay, type DockerTurnRelay, MODEL_RELAY_WINDLASS } from "./model-relay.js";
 import { readsModelRelay } from "../model-relay-url.js";
 import { probeImage } from "./tokens.js";
+import { sleep } from "../util.js";
 
 const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
 
@@ -48,7 +49,6 @@ export interface DockerProcess extends SandboxProcess {
 	pauseOutput(paused: boolean): void;
 }
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Starts a stopped sandbox container. Docker resolves a mirror's volume-subpath again here.

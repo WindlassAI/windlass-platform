@@ -42,6 +42,7 @@ import { DEFAULT_SNAPSHOT_LIMITS, offeredSize } from "../hosted-settings.js";
 import { describeUsage, estimatedCostUsd, pricePerSecond } from "./pricing.js";
 import { type E2bNetwork, withHosts, DNS_LOG, DNS_LOG_BYTES, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig } from "./network.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
+import { errorText } from "../../util.js";
 
 /** The metadata keys of a sandbox of the platform. */
 export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network", size: "wlp_size", environmentBuild: "wlp_environment_build" } as const;
@@ -97,7 +98,7 @@ const METRICS_LAST = 20;
 /** The guest's own count of processes its kernel killed for memory, and its memory: read as root, a fixed script. */
 const GUEST_MEMORY_SCRIPT = `awk '/^oom_kill /{k=$2} END{print "oom_kill", k+0}' /proc/vmstat; awk '/^MemTotal:/{print "total_kib", $2}' /proc/meminfo`;
 
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+const messageOf = (error: unknown) => errorText(error).replace(/\s+/g, " ").trim();
 
 /** What this server knows of a sandbox it has used: for the turn's hold and for the line about what it cost. Nothing another server needs. */
 interface Known {

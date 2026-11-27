@@ -14,6 +14,7 @@ import { PlatformChecks } from "./platform-checks.js";
 import { StepCounter } from "./platform-steps.js";
 
 import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, SANDBOX_ESCAPE_REFUSED, sandboxEscapeNote } from "./codex-modes.js";
+import { errorText } from "../util.js";
 
 function unsupported(input: RunTurnInput): string | undefined {
 	if (input.servers?.length) return "servers";
@@ -274,7 +275,7 @@ export class AcpHarness implements Harness {
 		let ended = null as { reason: string; message: string } | null;
 		// Codex: the model's errors in this prompt (`codexModelError`), and the agent's text since the last of them.
 		let modelError = null as { status?: number; final: boolean } | null;
-		let errorText = "";
+		let modelErrorText = "";
 		let run: SandboxProcess | undefined;
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		// "checking": a prompt was answered with `end_turn` and the platform runs the repository's checks (platform-checks.ts), maybe to prompt again.
@@ -314,9 +315,9 @@ export class AcpHarness implements Harness {
 				if (profile.id === "codex" && phase === "running") {
 					const error = update.sessionUpdate === "session_info_update" ? codexModelError(update) : null;
 					if (error) {
-						if (modelError === null) errorText = "";
+						if (modelError === null) modelErrorText = "";
 						modelError = { status: error.status ?? modelError?.status, final: error.final || modelError?.final === true };
-					} else if (modelError && update.sessionUpdate === "agent_message_chunk") errorText = (errorText + text(object(update.content).text)).slice(-2000);
+					} else if (modelError && update.sessionUpdate === "agent_message_chunk") modelErrorText = (modelErrorText + text(object(update.content).text)).slice(-2000);
 					else if (update.sessionUpdate !== "session_info_update" && update.sessionUpdate !== "usage_update") modelError = null;
 				}
 				// The agent's first output after the prompt: text, thinking, or a tool call.
@@ -551,7 +552,7 @@ export class AcpHarness implements Harness {
 				// Codex answered `end_turn` after its model's requests failed, having done nothing: the provider's failure is the turn's.
 				const failedModel = modelError?.final && steps.steps === 0 && !(acp.tokens && acp.tokens.inputTokens + acp.tokens.outputTokens > 0) ? modelError : null;
 				if (acp.stopReason === "end_turn" && failedModel) {
-					const said = redactor.text(errorText.trim()).slice(0, 500);
+					const said = redactor.text(modelErrorText.trim()).slice(0, 500);
 					const status = failedModel.status;
 					const reason = status === 429 ? "usage_limit" : status === 401 ? "harness_signed_out" : status !== undefined && status >= 400 && status < 500 ? "provider_rejected" : "provider_unavailable";
 					result.failure = { reason, message: reason === "usage_limit" ? "The provider's usage or rate limit was reached."
@@ -574,7 +575,7 @@ export class AcpHarness implements Harness {
 				const info = profile.id === "codex" && error instanceof AcpError ? error.codexErrorInfo : undefined;
 				const status = Object.values(object(info)).map(v => object(v).httpStatusCode).find(Number.isInteger);
 				const signedOut = error instanceof AcpError && (profile.signedOutCodes.includes(error.code) || info === "unauthorized" || status === 401);
-				const said = error instanceof Error ? error.message : String(error);
+				const said = errorText(error);
 				const invalid = phase === "running" && error instanceof AcpError && error.code === -32602;
 				// OpenCode wraps provider messages as JSON-RPC internal errors and omits the HTTP status.
 				const openCodePromptError = profile.id === "opencode" && phase === "running" && error instanceof AcpError && error.code === -32603;
@@ -611,7 +612,7 @@ export class AcpHarness implements Harness {
 				if (!result.failure && !input.signal?.aborted && (!end || end.code !== 0)) result.failure = { reason: "engine", message: redactor.text(end?.error?.message || `${profile.name} ended unexpectedly.`) };
 				try { await handle.sweep(run.tag); }
 				catch (error) {
-					if (!result.failure && !input.signal?.aborted) result.failure = { reason: "engine", message: redactor.text(error instanceof Error ? error.message : String(error)) };
+					if (!result.failure && !input.signal?.aborted) result.failure = { reason: "engine", message: redactor.text(errorText(error)) };
 				}
 			}
 			rpc.end("The turn has ended.");

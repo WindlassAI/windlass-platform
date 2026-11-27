@@ -20,6 +20,7 @@ import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnS
 import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
 import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import { errorText, sleep } from "../util.js";
 
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
 
@@ -98,7 +99,6 @@ const DEFINITION_TIMEOUT_MS = 10_000;
 
 const STREAMED = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface TurnOptions {
 	/** Command serving ACP on stdio. Defaults to windlass acp. */
@@ -405,7 +405,7 @@ class Turn {
 			if (input.signal?.aborted) this.abort();
 			// Before anything is started in it: from here to the end of `finally` the provider keeps the sandbox running.
 			release = await sandbox.holdForTurn().catch((error: unknown) => {
-				this.failure = { reason: "engine", message: `the sandbox could not be kept running for the turn: ${error instanceof Error ? error.message : String(error)}` };
+				this.failure = { reason: "engine", message: `the sandbox could not be kept running for the turn: ${errorText(error)}` };
 				return null;
 			});
 			if (release !== null && input.reattach !== undefined) {
@@ -548,7 +548,7 @@ class Turn {
 				await sweepSessionProcesses(this.sandbox, this.tokenFile?.path);
 				if (this.abortRequested) return false;
 			} catch (error) {
-				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${errorText(error)}` };
 				return false;
 			}
 		}
@@ -567,7 +567,7 @@ class Turn {
 		const setupError = [stopped, script, agent].find(result => result.status === "rejected");
 		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
 		if (broken !== null) {
-			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
+			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${errorText(broken)}` };
 			return false;
 		}
 		if (token.status === "rejected") {
@@ -888,7 +888,7 @@ class Turn {
 					const admitted = await this.peer.request<{ messageId?: unknown }>(EXT.steer, { sessionId: this.session, prompt: [{ type: "text", text }] });
 					if (typeof admitted?.messageId === "string" && !this.delivered.has(admitted.messageId)) this.undelivered.add(admitted.messageId);
 				} catch (error) {
-					throw this.over ? ended() : new Error(error instanceof Error ? error.message : String(error));
+					throw this.over ? ended() : new Error(errorText(error));
 				} finally {
 					this.steersInFlight -= 1;
 					this.check();
@@ -900,7 +900,7 @@ class Turn {
 					const result = await this.peer.request<{ stopped?: unknown; message?: unknown }>(EXT.cancelCall, { sessionId: this.session, callId, messageId });
 					return { stopped: result?.stopped === true, message: typeof result?.message === "string" ? result.message : null };
 				} catch (error) {
-					throw this.over ? ended() : new Error(error instanceof Error ? error.message : String(error));
+					throw this.over ? ended() : new Error(errorText(error));
 				}
 			},
 		};
@@ -1031,7 +1031,7 @@ class Turn {
 			this.personal = new Set(personal.map((server) => server.name));
 			this.unasked = this.taintSeen ? new Set() : new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
-			if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${missed}`);
+			if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${errorText(error)}), so ${missed}`);
 		}
 	}
 
@@ -1190,7 +1190,7 @@ class Turn {
 			await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
 		} catch (error) {
 			if (!(error instanceof AcpError && error.reason === "closed")) {
-				this.notes.push(`[platform] Windlass did not say which MCP servers of the project wait for approval (${error instanceof Error ? error.message : String(error)}); none was asked about`);
+				this.notes.push(`[platform] Windlass did not say which MCP servers of the project wait for approval (${errorText(error)}); none was asked about`);
 			}
 			return;
 		}
@@ -1271,7 +1271,7 @@ class Turn {
 		try {
 			answer = await this.peer.request<{ approved?: unknown } | null>(EXT.mcpApprove, { sessionId: this.session, name: question.name, fingerprint: question.fingerprint }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
 		} catch (error) {
-			return { state: "refused", reason: error instanceof Error ? error.message : String(error) };
+			return { state: "refused", reason: errorText(error) };
 		}
 		// No such server waited: the definition changed after the question was put.
 		if (answer?.approved !== true) return { state: "changed" };
@@ -1470,7 +1470,7 @@ class Turn {
 	}
 
 	private failureOf(error: unknown, fallback = "engine"): Failure {
-		if (!(error instanceof AcpError)) return { reason: "engine", message: error instanceof Error ? error.message : String(error) };
+		if (!(error instanceof AcpError)) return { reason: "engine", message: errorText(error) };
 		// The engine is gone, or did not answer: its last words say more than "closed".
 		if (error.reason === "closed" || error.reason === "timeout") return { reason: "engine", message: `${error.message}${this.lastWords()}` };
 		// ACP's own codes carry no reason of Windlass's.
@@ -1492,7 +1492,7 @@ class Turn {
 			const ms = this.startTimeoutMs;
 			return `the engine process did not start within ${ms < 10_000 ? (ms / 1000).toFixed(1) : String(Math.round(ms / 1000))} s; giving up`;
 		}
-		return `the engine process did not answer as expected: ${error instanceof Error ? error.message : String(error)}`;
+		return `the engine process did not answer as expected: ${errorText(error)}`;
 	}
 
 	private lastWords(): string {

@@ -39,6 +39,7 @@ import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import { unavailableSecretName, validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
+import { isRecord } from "./util.js";
 
 export { PUBLISH_SERVER } from "./personal-server-definition.js";
 
@@ -320,10 +321,9 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 	];
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A call's input as the platform reads it: an object, or none. Windlass checked it against the schema, which is the declaration's and asks for little. */
-export const callArguments = (input: unknown): Record<string, unknown> => (isObject(input) ? input : {});
+export const callArguments = (input: unknown): Record<string, unknown> => (isRecord(input) ? input : {});
 
 /** A builder report after the host tool has checked and cleaned every field. */
 export interface AgentReport {

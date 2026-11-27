@@ -9,6 +9,7 @@ import type { E2bClient, E2bSandboxInfo } from "./client.js";
 import { describeUsage, type RateCard } from "./pricing.js";
 import { HOSTED_SIZE_SPECS } from "../../contract.js";
 import { META, sandboxSize } from "./sandboxes.js";
+import { errorText } from "../../util.js";
 
 export interface CleanupReport {
 	found: E2bSandboxInfo[];
@@ -44,7 +45,7 @@ export async function cleanupDeployment(client: E2bClient, deployment: string, o
 				await client.kill(info.sandboxId);
 				report.killed.push(info.sandboxId);
 			} catch (error) {
-				const reason = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+				const reason = errorText(error).replace(/\s+/g, " ").trim();
 				report.failed.push({ sandboxId: info.sandboxId, reason });
 				outcome = `could not be killed (${reason})`;
 			}

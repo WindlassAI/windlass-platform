@@ -14,6 +14,7 @@ import { config } from "./config.js";
 import type { UserProfile } from "./contract.js";
 import { SandboxUserError } from "./sandbox/api.js";
 import { type Caller, issueServiceToken, verifyToken } from "./tokens.js";
+import { errorText } from "./util.js";
 
 interface HasRequest {
 	request?: Request;
@@ -150,6 +151,6 @@ export function clientError(log: { debug?: (entry: unknown) => void; error: (ent
 
 /** A short, single-paragraph rendering of an error for a timeline message. */
 export function describeError(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = errorText(error);
 	return message.replace(/\s+/g, " ").trim().slice(0, 600) || "unknown error";
 }

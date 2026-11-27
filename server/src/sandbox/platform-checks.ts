@@ -40,6 +40,7 @@ import { outputTail } from "../verified.js";
 import { environmentFailure } from "../factory/check-environment.js";
 import { shellQuote } from "./provider.js";
 import { sandboxConnectionLost, type SandboxHandle } from "./api.js";
+import { errorText } from "../util.js";
 
 /** How many times one turn's agent is sent back with failing checks (the factory's `RULES.gateRounds`). */
 export const PLATFORM_CHECK_ROUNDS = 2;
@@ -250,7 +251,7 @@ export class PlatformChecks {
 			const status: CheckStatus = got.aborted ? "interrupted" : got.timedOut ? "timed_out" : got.exitCode === 0 ? "passed" : "failed";
 			return { ...base, status, exitCode: got.exitCode, durationMs: Date.now() - startedAt, output: kept, startError: "" };
 		} catch (error) {
-			const said = (this.options.redactor ?? NO_REDACTION).text(error instanceof Error ? error.message : String(error));
+			const said = (this.options.redactor ?? NO_REDACTION).text(errorText(error));
 			return { ...base, status: this.options.signal?.aborted || (building && sandboxConnectionLost(error)) ? "interrupted" : "could_not_start", exitCode: null, durationMs: Date.now() - startedAt, output: kept, startError: said.slice(0, 400) || "The sandbox could not run the command." };
 		}
 	}

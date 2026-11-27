@@ -1,4 +1,5 @@
 import { feedbackWords } from "./feedback.js";
+import { isRecord } from "../util.js";
 /** The report tool's trust boundary. The page reads these strings as text. Only platform records supply facts and links. */
 import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type SandboxPlace, type SandboxProfile, type WindlassEvent, type ItemReview, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
 import { type AgentReport, CONTROL, REPORT_TAKEN } from "../agent-publish.js";
@@ -34,7 +35,6 @@ type Refusal = { ok: false; problems: string[] };
 type CheckedReview = Refusal | { ok: true; recommendation: ReviewRecommendation; blocks: ReviewBlock[]; records: ReviewRecord[]; shots: ShotRequest[]; notes: string[] };
 
 const number = (n: number) => n.toLocaleString("en-US");
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function rawProblem(input: unknown, name: "review" | "report"): string | null {
 	try {
@@ -131,14 +131,14 @@ const blockFields = {
 export function checkReview(input: unknown, context: ReviewContext): CheckedReview {
 	const raw = rawProblem(input, "review");
 	if (raw) return { ok: false, problems: [raw] };
-	if (!isObject(input)) return { ok: false, problems: ["the review must be an object"] };
+	if (!isRecord(input)) return { ok: false, problems: ["the review must be an object"] };
 	const read = new Fields(context.redactor);
 	read.keys(input, "review", ["recommendation", "blocks"]);
 	const recommendation = read.choice(input.recommendation, "recommendation", ["approve", "changes_requested", "needs_person"]);
 	const filed = read.list(input.blocks, "blocks", "blocks", limit.blocks);
 	const counts = { summary: 0, finding: 0, risk: 0, question: 0, excerpt: 0, screenshot: 0 };
 	for (const block of filed) {
-		if (isObject(block) && typeof block.kind === "string" && Object.hasOwn(counts, block.kind)) counts[block.kind as keyof typeof counts]++;
+		if (isRecord(block) && typeof block.kind === "string" && Object.hasOwn(counts, block.kind)) counts[block.kind as keyof typeof counts]++;
 	}
 	// Count first so a ninth screenshot's quota survives even when every screenshot is refused.
 	read.count("blocks", "findings", counts.finding, limit.findings);
@@ -161,7 +161,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 	const notFixed: string[] = [];
 
 	function location(value: unknown, field: string, excerpt: boolean): ReviewLocation {
-		if (!isObject(value)) {
+		if (!isRecord(value)) {
 			read.problem(field, "must be a location");
 			return { path: "" };
 		}
@@ -179,7 +179,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 		const at: ReviewLocation = { path, side: value.side === undefined ? "head" : read.choice(value.side, `${field}.side`, ["head", "base"]) };
 		if (value.lines === undefined && !excerpt) return at;
 		const range = `${field}.lines`;
-		if (!isObject(value.lines)) {
+		if (!isRecord(value.lines)) {
 			read.problem(range, "must give a start and end line");
 			return at;
 		}
@@ -197,7 +197,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 	}
 
 	function reference(value: unknown, field: string): ReviewRef {
-		if (!isObject(value)) {
+		if (!isRecord(value)) {
 			read.problem(field, "must be a reference");
 			return { ref: "" };
 		}
@@ -217,7 +217,7 @@ export function checkReview(input: unknown, context: ReviewContext): CheckedRevi
 
 	for (const [index, block] of filed.entries()) {
 		const field = `blocks[${index}]`;
-		if (!isObject(block)) {
+		if (!isRecord(block)) {
 			read.problem(field, "must be an object");
 			continue;
 		}
@@ -314,7 +314,7 @@ export class ReviewCommands {
 			} catch { /* Malformed inputs supply no evidence. */ }
 		}
 		if (event.type !== "tool.settled" || !this.called.has(ref)) return;
-		const exit = isObject(data.display) ? data.display.exitCode : null;
+		const exit = isRecord(data.display) ? data.display.exitCode : null;
 		const output = textOf(typeof data.output === "string" ? data.output : "", this.redactor);
 		this.ended.set(ref, { kind: "command", ref, command: this.called.get(ref)!, exitCode: typeof exit === "number" ? exit : null,
 			outcome: typeof data.outcome === "string" ? this.redactor.text(data.outcome).slice(0, 80) : "unknown", tail: output.trimEnd().split("\n").slice(-20).join("\n").slice(-1200) });
@@ -330,7 +330,7 @@ type FilingResult = { answer: string; retryFree?: boolean; filing?: Filing };
 
 export async function fileReview(input: unknown, context: ReviewContext, base: string, head: string, screenshots: boolean,
 	fileAt: (path: string, sha: string) => Promise<string>, upload: UploadShots | null, unavailable = upload ? NO_REPO_SHOTS : "This deployment does not store screenshots. File without screenshots."): Promise<FilingResult> {
-	if (!screenshots && isObject(input) && Array.isArray(input.blocks) && input.blocks.some(block => isObject(block) && block.kind === "screenshot")) {
+	if (!screenshots && isRecord(input) && Array.isArray(input.blocks) && input.blocks.some(block => isRecord(block) && block.kind === "screenshot")) {
 		return { answer: "Not filed: " + unavailable };
 	}
 	const checked = checkReview(input, context);
@@ -376,7 +376,7 @@ export async function fileReview(input: unknown, context: ReviewContext, base: s
 export function reportOf(input: unknown, redactor: TextRedactor): Refusal | { ok: true; report: AgentReport; shots: ShotRequest[] } {
 	const raw = rawProblem(input, "report");
 	if (raw) return { ok: false, problems: [raw] };
-	if (!isObject(input)) return { ok: false, problems: ["the report must be an object"] };
+	if (!isRecord(input)) return { ok: false, problems: ["the report must be an object"] };
 	const read = new Fields(redactor);
 	read.keys(input, "report", ["title", "description", "concerns", "look_at", "screenshots"]);
 	const title = read.text(input.title, "title", MAX_PUBLISH_TITLE_CHARS);

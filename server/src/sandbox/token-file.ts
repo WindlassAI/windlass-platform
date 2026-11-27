@@ -46,6 +46,7 @@ import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js"
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
 import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../model-relay-url.js";
 import { DATA_DIR, type KeyReference, type KeyTurnRelay, type TakeRelayRequest, type TurnModelRelay, type TurnSandbox } from "./provider.js";
+import { errorText } from "../util.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -183,13 +184,13 @@ export class TokenFile {
 				this.relay = await this.sandbox.modelRelay();
 				this.relayMs = Date.now() - began;
 			} catch (error) {
-				throw new TokenFileError(`the model relay could not be started: ${error instanceof Error ? error.message : String(error)}`);
+				throw new TokenFileError(`the model relay could not be started: ${errorText(error)}`);
 			}
 			// A stop that came while the lease was being opened did not see it.
 			if (this.stopped) await this.relay.close();
 		}
 		const written = await this.write(token).catch((error: unknown) => {
-			throw new TokenFileError(error instanceof Error ? error.message : String(error));
+			throw new TokenFileError(errorText(error));
 		});
 		if (!written) return;
 		this.log(`[wlp] token.handed sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
@@ -213,7 +214,7 @@ export class TokenFile {
 			this.relay = this.sandbox.resumeRelay(relay);
 		}
 		const written = await this.write(token).catch((error: unknown) => {
-			throw new TokenFileError(error instanceof Error ? error.message : String(error));
+			throw new TokenFileError(errorText(error));
 		});
 		if (!written) return;
 		this.log(`[wlp] token.handed_again sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn taken up after a restart was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
@@ -283,7 +284,7 @@ export class TokenFile {
 			this.refused = error instanceof SandboxUserError ? this.refused + 1 : 0;
 			const retryInMs = this.refused === 0 ? this.retryMs : Math.min(this.retryMs * 2 ** (this.refused - 1), Math.max(this.retryMs, REFUSED_RETRY_MAX_MS));
 			const left = this.expiresAt - Date.now();
-			const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+			const message = errorText(error).replace(/\s+/g, " ").trim();
 			this.log(`[wlp] token.replace_failed ${who}: the turn's access token file could not be replaced (${message}); the token in it ${left > 0 ? `lasts ${Math.ceil(left / 1000)} s more` : "has expired"}; trying again in ${Math.round(retryInMs / 1000)} s`);
 			this.schedule(retryInMs);
 		}

@@ -34,8 +34,8 @@
 
 import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type Verified, type VerifiedCheck, type VerifiedFlag, type WindlassEvent } from "./contract.js";
 import type { TurnChecks } from "./sandbox/api.js";
+import { isRecord } from "./util.js";
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const STATUSES: readonly CheckStatus[] = ["passed", "failed", "timed_out", "could_not_start", "interrupted"];
 

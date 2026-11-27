@@ -20,6 +20,7 @@
  */
 import type { RawAccess } from "rivetkit/db";
 import type { ConversationRecord, ServerChannel, Unsaved } from "./channel.js";
+import { errorText } from "../util.js";
 
 type Db = Pick<RawAccess, "execute">;
 
@@ -108,7 +109,7 @@ export class OutgoingJournal {
 		try {
 			await this.db.transaction(tx => writeOutgoing(tx, u), { name: "runner.outgoing" });
 		} catch (error) {
-			this.log(`[wlp] runner.journal_failed: the conversation could not be stored, so it cannot outlive this server (${error instanceof Error ? error.message : String(error)})`);
+			this.log(`[wlp] runner.journal_failed: the conversation could not be stored, so it cannot outlive this server (${errorText(error)})`);
 		}
 		channel.saved(u);
 	}

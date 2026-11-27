@@ -74,6 +74,7 @@ import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotRequest, type Snapshot
 import type { E2bClient, E2bSnapshotInfo } from "./client.js";
 import { type E2bSettings, templateFor } from "./config.js";
 import type { HostedSize } from "../../contract.js";
+import { errorText } from "../../util.js";
 
 /** The metadata keys a sandbox of a snapshot lookup carries (beside sandboxes.ts `META`). */
 export const SNAP_META = {
@@ -279,7 +280,7 @@ export class E2bSnapshots {
 
 	async remove(row: SnapshotRow, why: string): Promise<void> {
 		const removed = await this.client.deleteSnapshot(row.id).catch((error: unknown) => {
-			this.log(`[wlp] e2b.snapshot.remove_failed name=${row.name}: ${error instanceof Error ? error.message : String(error)}`);
+			this.log(`[wlp] e2b.snapshot.remove_failed name=${row.name}: ${errorText(error)}`);
 			return false;
 		});
 		if (removed) this.log(`[wlp] e2b.snapshot.removed name=${row.name}: ${why}`);
