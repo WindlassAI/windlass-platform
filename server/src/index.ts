@@ -19,7 +19,7 @@ import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { loginResponse } from "./login-route.js";
 import { runnerResponse } from "./runner-routes.js";
-import { CONNECT_PATH, connectResponse } from "./connect-route.js";
+import { CONNECT_ROUTE_PATHS, connectResponse } from "./connect-route.js";
 import { INSTALL_SCRIPT_PATH, installScriptResponse } from "./install-script.js";
 import { modelRelayRoute } from "./model-relay-route.js";
 import { apiRoute } from "./api-routes.js";
@@ -229,7 +229,7 @@ async function route(request: Request): Promise<Response> {
 	if (pathname.startsWith("/platform/login/")) return loginResponse(request, pathname.slice("/platform/login/".length));
 	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname))
 		return runnerResponse(request);
-	if (pathname === CONNECT_PATH) return connectResponse(request);
+	if (CONNECT_ROUTE_PATHS.includes(pathname)) return connectResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	if (pathname === INSTALL_SCRIPT_PATH) return installScriptResponse(request);
 	const api = await apiRoute(request);

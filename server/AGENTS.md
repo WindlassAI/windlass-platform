@@ -39,7 +39,7 @@ Entry, wiring and HTTP routes (dispatched from `server/src/index.ts`):
 - `server/src/login-route.ts` serves the `/platform/login/` steps; `server/src/platform-login.ts` runs the Google and GitHub OAuth exchange.
 - `server/src/runner-routes.ts` serves machine pairing, pair polling and runner connection requests.
 - `server/src/install-script.ts` serves `GET /install.sh` for machine installs.
-- `server/src/connect-route.ts` serves `POST /platform/connect`, where the connect command hands a plan's token over with a one-time code.
+- `server/src/connect-route.ts` serves `/platform/connect/start`, `/poll` and `/platform/connect`: the connect command (`cli/`) opens a request, waits for the user to approve its code on the web page, then hands a plan's token over once.
 - `server/src/platform-info.ts` serves `/platform/info` and `/platform/connection` with cached deployment facts.
 - `server/src/model-relay-route.ts` is the credential boundary for E2B and forwarded Docker model requests; `server/src/model-relay-url.ts` parses `WLP_MODEL_RELAY_URL`.
 - `server/src/web.ts` serves the built web app when `WLP_WEB_DIR` is set.

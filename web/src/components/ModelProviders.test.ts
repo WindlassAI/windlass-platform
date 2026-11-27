@@ -52,7 +52,15 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
 		expect(state("claude-plan")).toBe("not connected");
 		await press(row("claude-plan"), "Connect");
-		expect(row("claude-plan").querySelector("code")?.textContent).toMatch(/ connect claude --code wl_[0-9A-Z]{16}$/);
+		expect(row("claude-plan").querySelector(".claude-plan-command code")?.textContent).toBe(
+			"npx @windlassai/cli connect claude",
+		);
+		// The terminal's code is approved on the connect page; the row turns green on its own once the plan arrives.
+		await client.user(auth).approvePlanConnect("KQ2M-8XF4");
+		for (let i = 0; i < 40 && state("claude-plan") !== "connected"; i++)
+			await act(async () => void (await new Promise(r => setTimeout(r, 200))));
+		expect(state("claude-plan")).toBe("connected");
+		expect(row("claude-plan").textContent).toContain("you@example.com · Max");
 		expect(state("openai")).toBe("no key");
 
 		await press(row("openai"), "Add key");

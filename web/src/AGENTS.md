@@ -46,6 +46,7 @@ Run one command from the repository root.
 - Change the client interface and both adapters together when adding an action. [Contract](../../server/src/contract.ts) supplies the shared shapes.
 - Rebuild a feed from a fresh snapshot after reconnect. Events broadcast during the disconnect are lost.
 - Add behaviour pages under [docs content](./docs/content/) and register them in the page list so the UI can find them.
+- The connect page (`./screens/Connect.tsx`), opened by the CLI with the code in its query, is the one page that brings a signed-out visitor back after sign-in (`returnAfterSignIn` in `./lib/router.ts`).
 
 ## See also
 

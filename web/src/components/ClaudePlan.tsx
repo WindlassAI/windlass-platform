@@ -3,22 +3,21 @@ import { useEffect, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED } from "../state/hooks";
 
-// The connect command's package name is not settled yet; this is the one place the page names it.
-const CONNECT_COMMAND = "npx windlass connect";
+/** The command a terminal runs to connect a Claude plan (the `cli/` package); the connect page names it too. */
+export const CONNECT_COMMAND = "npx @windlassai/cli connect claude";
 const POLL_MS = 2_000;
 
-type Pending = { code: string; expiresAt: number; since: number | null };
-
 /**
- * The Claude plan row: a one-time code and the command that runs `claude setup-token` on the user's own
- * computer and hands the token to the platform. The row watches for the plan to arrive.
+ * The Claude plan row: the command that, on the user's own computer, asks them to approve its code here and then
+ * hands the token `claude setup-token` prints to the platform. After Connect the row watches for the plan to arrive.
  */
 export function ClaudePlan() {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [allowed, setAllowed] = useState(false);
 	const [plan, setPlan] = useState<ModelPlanStatus | null>(null);
-	const [pending, setPending] = useState<Pending | null>(null);
+	/** Set by Connect: the plan's `addedAt` then, so a new or replaced plan ends the wait. */
+	const [waiting, setWaiting] = useState<{ since: number | null } | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -38,36 +37,28 @@ export function ClaudePlan() {
 					() => undefined,
 				);
 		void read();
-		if (!pending) return () => void (live = false);
+		if (!waiting) return () => void (live = false);
 		const timer = setInterval(read, POLL_MS);
 		return () => {
 			live = false;
 			clearInterval(timer);
 		};
-	}, [client, auth, pending]);
+	}, [client, auth, waiting]);
 
-	// The plan arrived (or was replaced) since the code was shown: stop waiting and let the pickers know.
+	// The plan arrived (or was replaced) since Connect: stop waiting and let the pickers know.
 	useEffect(() => {
-		if (pending && plan && plan.addedAt !== pending.since) {
-			setPending(null);
+		if (waiting && plan && plan.addedAt !== waiting.since) {
+			setWaiting(null);
 			window.dispatchEvent(new Event(PROVIDERS_CHANGED));
 		}
-	}, [pending, plan]);
+	}, [waiting, plan]);
 
 	if (!allowed) return null;
 
-	async function start() {
-		setBusy(true);
+	function connect() {
 		setError(null);
-		try {
-			const issued = await client.user(auth).startPlanConnect("anthropic");
-			setPending({ ...issued, since: plan?.addedAt ?? null });
-			setCopied(false);
-		} catch (failure) {
-			setError(explain(failure));
-		} finally {
-			setBusy(false);
-		}
+		setCopied(false);
+		setWaiting({ since: plan?.addedAt ?? null });
 	}
 
 	async function disconnect() {
@@ -84,8 +75,6 @@ export function ClaudePlan() {
 		}
 	}
 
-	const command = pending && `${CONNECT_COMMAND} claude --code ${pending.code}`;
-	const expired = pending !== null && pending.expiresAt <= Date.now();
 	const connected = plan?.ok === true;
 	return (
 		<li className="usage-kept-row provider-row claude-plan" data-provider="claude-plan">
@@ -96,23 +85,26 @@ export function ClaudePlan() {
 						{connected ? `Connected as ${plan.account ?? "your Claude account"}` : "Use your Claude Pro or Max plan"}
 					</span>
 				</p>
-				{command ? (
+				{waiting ? (
 					<div className="claude-plan-connect">
-						<p className="field-note">Run this in a terminal. It opens claude.ai so you can approve.</p>
+						<p className="field-note">
+							Run this in a terminal on your computer. It opens a page here to approve, then runs{" "}
+							<code>claude setup-token</code>.
+						</p>
 						<div className="claude-plan-command">
-							<code>{command}</code>
+							<code>{CONNECT_COMMAND}</code>
 							<button
 								type="button"
 								className="button button-outline button-small"
 								onClick={() => {
-									void navigator.clipboard?.writeText(command).then(() => setCopied(true));
+									void navigator.clipboard?.writeText(CONNECT_COMMAND).then(() => setCopied(true));
 								}}
 							>
 								{copied ? "Copied" : "Copy"}
 							</button>
 						</div>
 						<p className="field-note" role="status">
-							{expired ? "This code expired." : "Waiting for you to approve…"}
+							Waiting for your plan…
 						</p>
 					</div>
 				) : null}
@@ -126,18 +118,13 @@ export function ClaudePlan() {
 				{connected ? "connected" : "not connected"}
 			</span>
 			<div className="provider-actions">
-				{pending && !expired ? (
-					<button type="button" className="button button-quiet button-small" onClick={() => setPending(null)}>
+				{waiting ? (
+					<button type="button" className="button button-quiet button-small" onClick={() => setWaiting(null)}>
 						Cancel
 					</button>
 				) : connected ? (
 					<>
-						<button
-							type="button"
-							className="button button-outline button-small"
-							disabled={busy}
-							onClick={() => void start()}
-						>
+						<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
 							Reconnect
 						</button>
 						<button
@@ -150,13 +137,8 @@ export function ClaudePlan() {
 						</button>
 					</>
 				) : (
-					<button
-						type="button"
-						className="button button-outline button-small"
-						disabled={busy}
-						onClick={() => void start()}
-					>
-						{expired ? "New code" : "Connect"}
+					<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
+						Connect
 					</button>
 				)}
 			</div>

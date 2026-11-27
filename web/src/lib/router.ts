@@ -39,6 +39,8 @@ export type Route =
 	| { name: "factory"; repository?: GithubId; from?: ItemSource }
 	/** The mock's stand-in for OpenAI's sign-in page. */
 	| { name: "mock-authorize" }
+	/** Approves the connect command's request in a terminal: `code` is the one the terminal shows (`?code=`). */
+	| { name: "connect"; code?: string }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
 	| { name: "docs"; slug: string; section?: string }
 	| { name: "notfound" };
@@ -88,6 +90,10 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
 	if (path === "/mock/authorize") return { name: "mock-authorize" };
+	if (path === "/connect") {
+		const code = new URLSearchParams(search).get("code");
+		return code ? { name: "connect", code } : { name: "connect" };
+	}
 	if (path === "/docs") return { name: "docs", slug: "" };
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
 	if (docs?.[1]) return { name: "docs", slug: docs[1] };
@@ -137,6 +143,8 @@ function pathOf(route: Route): string {
 			return "/factory";
 		case "mock-authorize":
 			return "/mock/authorize";
+		case "connect":
+			return "/connect";
 		case "docs":
 			return route.slug === "" ? "/docs" : `/docs/${route.slug}`;
 		case "notfound":
@@ -149,6 +157,7 @@ export function href(route: Route): string {
 	const query = new URLSearchParams();
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
+	if (route.name === "connect" && route.code) query.set("code", route.code);
 	if (mock !== null) query.set("mock", mock);
 	const fragment =
 		(route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section
@@ -181,6 +190,31 @@ export function lastAppHref(): string {
 		// A fresh tab or unavailable storage falls back to the app's home.
 	}
 	return href({ name: "home" });
+}
+
+const AFTER_SIGNIN = "wlp.afterSignIn";
+
+/** The connect page sends a signed-out visitor to sign in; this keeps the page (and its code) to come back to. */
+export function returnAfterSignIn(): void {
+	try {
+		sessionStorage.setItem(AFTER_SIGNIN, location.pathname + location.search);
+	} catch {
+		// Storage may be disabled: the visitor lands on the home page and runs the command again.
+	}
+}
+
+/** The page kept by `returnAfterSignIn`, once; null when there is none. Only the connect page is taken back to. */
+export function takeReturnAfterSignIn(): Route | null {
+	try {
+		const saved = sessionStorage.getItem(AFTER_SIGNIN);
+		sessionStorage.removeItem(AFTER_SIGNIN);
+		if (!saved?.startsWith("/")) return null;
+		const url = new URL(saved, location.origin);
+		const route = parseRoute(url.pathname, url.search);
+		return url.origin === location.origin && route.name === "connect" ? route : null;
+	} catch {
+		return null;
+	}
 }
 
 const listeners = new Set<() => void>();

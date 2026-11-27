@@ -1,6 +1,7 @@
 /** The account's settings, secrets, model providers and API tokens. */
 
 import type { SandboxProfileId } from "../contract.js";
+import type { PlanProvider } from "./connect.js";
 import type { RepositoryAutonomy, RepositoryDefaults, SecretReach, SecretScope } from "./repository.js";
 
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
@@ -98,20 +99,6 @@ export interface ModelProviderStatus {
 
 /** A failed check leaves the key saved and returns a message safe to display. */
 export type ModelProviderCheck = ModelProviderStatus & { message?: string };
-
-/** Subscription plans a user can connect, by the provider that serves them: a Claude plan for now. */
-export const PLAN_PROVIDERS = ["anthropic"] as const;
-export type PlanProvider = (typeof PLAN_PROVIDERS)[number];
-export const PLAN_NAMES: Record<PlanProvider, string> = { anthropic: "Claude plan" };
-
-export function isPlanProvider(value: unknown): value is PlanProvider {
-	return (PLAN_PROVIDERS as readonly unknown[]).includes(value);
-}
-
-/** A Claude plan is connected with the long-lived token `claude setup-token` prints. */
-export function validPlanToken(provider: PlanProvider, token: unknown): token is string {
-	return typeof token === "string" && { anthropic: /^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$/ }[provider].test(token);
-}
 
 export interface ModelPlanStatus {
 	provider: PlanProvider;

@@ -1024,6 +1024,12 @@ function takenUnder<Answer>(
 	return first.answer;
 }
 
+/** The mock checks a connect code's shape only: any well-formed code stands for a terminal waiting on it. */
+function mockConnectCode(userCode: string): void {
+	if (!/^[0-9A-HJKMNP-TV-Z]{4}-?[0-9A-HJKMNP-TV-Z]{4}$/i.test(userCode.trim()))
+		throw new PlatformError("user", "That is not a connect code. It looks like KQ2M-8XF4.", { reason: "bad_input" });
+}
+
 type SavedDefaults = AccountDefaults & { updatedAt: number };
 
 interface World {
@@ -6082,15 +6088,26 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async modelPlans() {
 				return { allowed: true, plans: structuredClone([...world().account.plans.values()]) };
 			},
-			// The mock has no connect command: the plan connects itself a few seconds after the code is shown.
-			async startPlanConnect(provider) {
+			// The mock has no terminal: approving a code connects the plan a few seconds later, as the command would.
+			async approvePlanConnect(userCode) {
+				await latency(200);
+				mockConnectCode(userCode);
 				const plans = world().account.plans;
 				setTimeout(() => {
 					const at = now();
-					plans.set(provider, { provider, account: "you@example.com · Max", addedAt: at, checkedAt: at, ok: true });
+					plans.set("anthropic", {
+						provider: "anthropic",
+						account: "you@example.com · Max",
+						addedAt: at,
+						checkedAt: at,
+						ok: true,
+					});
 					machinesChanged(auth);
-				}, 4_000);
-				return { code: "wl_7KQ2M8XF4R0ABCDE", expiresAt: now() + 10 * 60_000 };
+				}, 3_000);
+			},
+			async denyPlanConnect(userCode) {
+				await latency(200);
+				mockConnectCode(userCode);
 			},
 			async removeModelPlan(provider) {
 				world().account.plans.delete(provider);

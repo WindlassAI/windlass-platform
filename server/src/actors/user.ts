@@ -3584,7 +3584,8 @@ export const user = actor({
 		internalCredential: (c, ref: unknown, nonce: string) => credentialActions.internalCredential(c, ref, nonce),
 
 		modelPlans: c => credentialActions.modelPlans(c),
-		startPlanConnect: (c, provider: PlanProvider) => credentialActions.startPlanConnect(c, provider),
+		approvePlanConnect: (c, userCode: string) => credentialActions.approvePlanConnect(c, userCode),
+		denyPlanConnect: (c, userCode: string) => credentialActions.denyPlanConnect(c, userCode),
 		removeModelPlan: async (c, provider: PlanProvider) => {
 			await credentialActions.removeModelPlan(c, provider);
 			await credentialsChanged(c);

@@ -5,8 +5,9 @@
  */
 
 import { UserError } from "rivetkit";
-import { modelKeyCaller, planConnectCaller } from "../actors/internal.js";
-import { requireServiceFor, requireUser } from "../auth.js";
+import type { ConnectDecision } from "../actors/connect-codes.js";
+import { type HasClient, modelKeyCaller, planConnectCaller } from "../actors/internal.js";
+import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import {
 	isModelProvider,
 	type CredentialRef,
@@ -16,7 +17,7 @@ import {
 } from "../contract.js";
 import type { DefaultsDb } from "../repository-defaults.js";
 import { serverSealer } from "../signin/seal.js";
-import { connectCodeDigest, issueConnectCode, connectTransitSubject } from "./connect-code.js";
+import { connectCodeDigest, connectTransitSubject } from "./connect-code.js";
 import { keyGeneration, MODEL_PROVIDER_TABLES, providerStatuses, savedKey, savedModelKeys } from "./keys.js";
 import type { HostedCredential } from "../sandbox/harnesses.js";
 import {
@@ -62,30 +63,44 @@ function saved(db: DefaultsDb, uid: string, ref: Saved) {
 	return ref.plan ? savedPlan(db, uid, planProviderOf(ref.provider)) : savedKey(db, uid, ref.provider);
 }
 
+async function decideConnect(c: HasClient, uid: string, userCode: unknown, approve: boolean): Promise<void> {
+	const digest = connectCodeDigest.ofUserCode(userCode);
+	if (!digest) throw new UserError("That is not a connect code. It looks like KQ2M-8XF4.", { code: "bad_input" });
+	const decided: ConnectDecision = await c
+		.client()
+		.connectCodes.getOrCreate(["codes"], { params: serviceParams() })
+		.internalDecide(digest, uid, approve);
+	if (decided === "rate_limited")
+		throw new UserError("Too many codes did not match. Wait ten minutes, then run the command again.", {
+			code: "rate_limited",
+		});
+	if (decided === "not_found")
+		throw new UserError("That code expired or was already used. Run the command in your terminal again.", {
+			code: "connect_code_not_found",
+		});
+}
+
 export const credentialActions = {
 	async modelPlans(c: Context): Promise<ModelPlans> {
 		const { uid } = requireUser(c);
 		return { allowed: plansAllowed(uid), plans: await planStatuses(c.db) };
 	},
-	/** A one-time code for the connect command, which hands the plan's token to this user. */
-	async startPlanConnect(
-		c: Context & Parameters<typeof issueConnectCode>[0],
-		raw: PlanProvider,
-	): Promise<{ code: string; expiresAt: number }> {
+	/** Approves the connect request whose code the user's terminal shows: that terminal may now hand over its token. */
+	async approvePlanConnect(c: Context & HasClient, userCode: unknown): Promise<void> {
 		const { uid } = requireUser(c);
-		const provider = planProviderOf(raw);
 		if (!plansAllowed(uid))
 			throw new UserError("Connecting a plan is not available on this account.", { code: "plans_off" });
-		const issued = await issueConnectCode(c, uid, provider);
-		if (!issued)
-			throw new UserError("Too many connect codes are open. Use one, or wait ten minutes.", { code: "rate_limited" });
-		return issued;
+		await decideConnect(c, uid, userCode, true);
+	},
+	async denyPlanConnect(c: Context & HasClient, userCode: unknown): Promise<void> {
+		const { uid } = requireUser(c);
+		await decideConnect(c, uid, userCode, false);
 	},
 	async removeModelPlan(c: Context, raw: PlanProvider): Promise<void> {
 		requireUser(c);
 		await removePlan(c.db, planProviderOf(raw));
 	},
-	/** The connect route hands over a plan's token, sealed for this user and the code it redeemed. */
+	/** The connect route hands over a plan's token, sealed for this user and the request it took. */
 	async internalConnectPlan(c: Context, raw: PlanProvider, digest: string, sealed: string): Promise<ModelPlanStatus> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, planConnectCaller(uid));

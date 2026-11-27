@@ -870,6 +870,7 @@ function readHttpLimits() {
 		runnerPoll: perMinute("WLP_RUNNER_POLLS_PER_MINUTE", 240),
 		runnerConnection: perMinute("WLP_RUNNER_CONNECTIONS_PER_MINUTE", 120),
 		connect: perMinute("WLP_CONNECT_PER_MINUTE", 30),
+		connectPoll: perMinute("WLP_CONNECT_POLLS_PER_MINUTE", 240),
 	};
 }
 

@@ -16,6 +16,18 @@ An item's own choice comes first, then the repository's, then yours, then the de
 
 **Connect**, on the ChatGPT plan row under Models, opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
 
+### Connect your Claude plan
+
+Where the platform offers it, the **Claude plan** row under Models lets hosted Claude Code run on your Claude Pro or Max plan instead of an API key. Choose **Connect**, then run the command it shows in a terminal on your own computer:
+
+```sh
+npx @windlassai/cli connect claude
+```
+
+The command shows a code and opens a Windlass page in your browser. Check that the page shows the same code, then choose **Approve**; choose **Deny** if you did not just run the command yourself. After you approve, the command runs `claude setup-token` (installing Claude Code through npx if needed). Sign in to Claude there, and the command hands the token it prints to your account. Windlass checks it with Anthropic, keeps it encrypted, and shows the account it belongs to, for example "Connected as a@b.com · Max". The token never enters a sandbox, and the command does not save it. Codes expire after ten minutes. **Reconnect** replaces the token and **Disconnect** removes it; turns already running on the old one stop at their next model request.
+
+For a self-hosted platform, add `--platform https://your-platform` to the command.
+
 In **Settings → Model keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
 These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” under the agent on the Machines page. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.

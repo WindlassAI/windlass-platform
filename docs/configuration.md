@@ -36,7 +36,7 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_TOKEN_ENDPOINT` | optional private route to the same engine for issuing those tokens (default `WLP_PUBLIC_ENDPOINT`); no query string or fragment |
 | `WLP_CONNECTION_TOKEN_TTL_MS` | how long such a token lasts (default one hour; from one minute to 24 hours) |
 | `WLP_CLIENT_IP_HEADER` | the header a trusted ingress writes with the client's address; unset, no per-address limit applies ([operating.md, "Public HTTP rate limits"](operating.md#public-http-rate-limits)) |
-| `WLP_API_ADDRESS_PER_MINUTE`, `WLP_API_TOKEN_PER_MINUTE`, `WLP_API_FAILURES_PER_MINUTE`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE`, `WLP_RUNNER_POLLS_PER_MINUTE`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE` | the public HTTP rate limits (defaults 240, 60, 12, 30, 240 and 120 a minute; each from 1 to 1,000,000). [operating.md](operating.md#public-http-rate-limits) says what each covers |
+| `WLP_API_ADDRESS_PER_MINUTE`, `WLP_API_TOKEN_PER_MINUTE`, `WLP_API_FAILURES_PER_MINUTE`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE`, `WLP_RUNNER_POLLS_PER_MINUTE`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE`, `WLP_CONNECT_PER_MINUTE`, `WLP_CONNECT_POLLS_PER_MINUTE` | the public HTTP rate limits (defaults 240, 60, 12, 30, 240, 120, 30 and 240 a minute; each from 1 to 1,000,000). [operating.md](operating.md#public-http-rate-limits) says what each covers |
 
 ## Sign-ins
 

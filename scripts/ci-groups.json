@@ -52,7 +52,7 @@
         "scripts/e2b-network-standin.mjs",
         "server/src/billing/**",
         "scripts/dodo-fake.ts",
-        "scripts/{access,account,billing,attachments,backup,connection,harness,models,model-providers,model-plans,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard}-check.ts",
+        "scripts/{access,account,billing,attachments,backup,connection,harness,models,model-providers,model-plans,plan-relay,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard}-check.ts",
         "server/src/factory/untrusted.ts",
         "server/src/actors/session-inbox.ts",
         "sandbox/relay/**",
@@ -64,7 +64,8 @@
         "server/src/factory/placement.ts",
         "server/src/snapshot-places.ts",
         "scripts/workflow-lint.ts",
-        "scripts/runner-signin-check.ts"
+        "scripts/runner-signin-check.ts",
+        "cli/**"
       ],
       "checks": {
         "access": "tsx ../scripts/access-check.ts",
@@ -76,6 +77,8 @@
         "models": "tsx ../scripts/models-check.ts",
         "model-providers": "tsx ../scripts/model-providers-check.ts",
         "model-plans": "tsx ../scripts/model-plans-check.ts",
+        "cli": "node --test ../cli/test/token.test.ts ../cli/test/connect.test.ts",
+        "plan-relay": "tsx --test ../scripts/plan-relay-check.ts",
         "stored-data": "tsx ../scripts/stored-data-check.ts",
     "network": "tsx ../scripts/network-check.ts",
         "repository": "tsx ../scripts/repository-check.ts",
