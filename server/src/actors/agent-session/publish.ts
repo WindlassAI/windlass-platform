@@ -45,6 +45,9 @@ import {
 	type StoredRepository,
 	hasUnpushedWork,
 	branchFor,
+	branchTaken,
+	freeBranch,
+	wantedBranch,
 	refreshPull,
 	type PublishEvidence,
 	fetchBase,
@@ -210,7 +213,7 @@ export async function publishStateOf(c: Ctx, meta: SessionMeta): Promise<Publish
 	return {
 		repository: repositoryOf(repo),
 		pullRequest: meta.pull ?? null,
-		branch: meta.publishBranch ?? branchFor(meta.title, meta.sessionId),
+		branch: shownBranch(meta),
 		changes,
 		draft,
 		blocked: publishBlocked(c, meta),
@@ -289,6 +292,31 @@ export async function testSessionBase(
 	}
 }
 
+/**
+ * The branch the session pushes to: the one it pushed to before; a work item's agent's, named as its item
+ * names it; else a branch named for the title that GitHub does not have yet. Where GitHub cannot say which
+ * names are free, the title with the end of the session's id, as before.
+ */
+async function branchOf(
+	c: Ctx,
+	meta: SessionMeta,
+	app: NonNullable<ReturnType<typeof githubApp>>,
+	repo: StoredRepository,
+): Promise<string> {
+	if (meta.publishBranch) return meta.publishBranch;
+	const fallback = branchFor(meta.title, meta.sessionId);
+	if (meta.origin?.kind === "item") return fallback;
+	const connection = await githubConnection(c, meta);
+	if (!connection) return fallback;
+	return freeBranch(meta.title, name => branchTaken(app, connection, repo, name)).catch(() => fallback);
+}
+
+/** What the push dialog names before the first push: `branchOf` without asking GitHub. */
+function shownBranch(meta: SessionMeta): string {
+	if (meta.publishBranch) return meta.publishBranch;
+	return meta.origin?.kind === "item" ? branchFor(meta.title, meta.sessionId) : wantedBranch(meta.title);
+}
+
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
 export const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
@@ -361,7 +389,7 @@ export async function publishSession(
 	noteSandbox(c, meta, "running");
 	// Pushing uses the sandbox: the idle times count from here, and again from when it is done.
 	markUsed(c, meta);
-	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
+	const branch = await branchOf(c, meta, app, repo);
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
@@ -600,7 +628,7 @@ export async function agentPublish(
 	if (repo?.provider === "gitlab") return "Use push for this repository. The work item opens its GitLab merge request.";
 	if (!repo || !app)
 		return "Not published. This session has no repository of the user's GitHub connection to publish to.";
-	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
+	const branch = await branchOf(c, meta, app, repo);
 	const checked = publishRequest(
 		request.arguments,
 		{ branch, base: repo.branch },
@@ -748,7 +776,7 @@ export async function agentPush(
 	if (!repo || (!app && repo.provider !== "gitlab"))
 		return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
 	if (active.closed || c.vars.turn !== active) return "Not pushed. The turn this call was made in has ended.";
-	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
+	const branch = await branchOf(c, meta, app, repo);
 	const checked = pushRequest(
 		request.arguments,
 		{ branch, title: meta.title },

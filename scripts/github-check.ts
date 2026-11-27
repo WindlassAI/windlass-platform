@@ -887,6 +887,18 @@ await section("publish: a pull request is opened, then the same branch is update
 			publish.branchFor("  ", "s_ffff000011112222") === "windlass/agent-112222",
 		BRANCH,
 	);
+	const taken = new Set(["windlass/add-csv-export", "windlass/add-csv-export-2"]);
+	const free = await publish.freeBranch("Add CSV export", async name => taken.has(name));
+	expect(
+		"a standalone agent's branch is its title in whole words, numbered past the branches GitHub has",
+		publish.branchWords("Run the whole test suite and fix the flaky ones") === "run-the-whole-test-suite-and-fix-the" &&
+			publish.branchWords("Supercalifragilisticexpialidocious-and-then-some-more-words") ===
+				"supercalifragilisticexpialidocious-and" &&
+			publish.branchWords("x".repeat(50)) === "x".repeat(40) &&
+			publish.wantedBranch(" … ") === "windlass/agent" &&
+			free === "windlass/add-csv-export-3",
+		free,
+	);
 	const sandbox = localSandbox("publish");
 	const repository = stored(harbor, adaInstallation);
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
