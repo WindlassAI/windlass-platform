@@ -76,7 +76,7 @@ import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVe
 import { getLayer } from "../layer.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, sessionCapabilities } from "../sandbox/harnesses.js";
+import { capabilitiesOf, hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness, machineHarnesses, initialHarnessModels, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { MODEL_PROVIDER_TABLES, modelProviderActions, providerStatuses } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -613,15 +613,20 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	const size = item?.size ?? input.size ?? 1;
 	const harness = input.harness === undefined ? "windlass" : input.harness;
 	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
-	if (harness !== "windlass") {
+	// The ACP agent's record; null for Windlass.
+	const acp = machineHarness(harness);
+	const caps = capabilitiesOf(harness);
+	// An ACP agent whose modes its profile decides, as far as the machine probed them (Codex's, codex-modes.ts).
+	const profileModes = acp?.capabilities.modes === "profile";
+	if (acp) {
 		const notForItems = item ? itemHarnessProblem(harness) : null;
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
-		const agent = place.kind === "hosted" ? hostedHarness(harness) : machineHarnesses[harness];
+		const agent = place.kind === "hosted" ? hostedHarness(acp.id) : acp;
 		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${[...new Set(agent.profiles.map(isolationName))].join(" or ")} isolation here.`, { code: "bad_input" });
 		const profileProblem = item ? itemProfileProblem(harness, input.profile) : null;
 		if (profileProblem) throw new UserError(profileProblem, { code: "bad_input" });
 		// Its publish comes over MCP, which any process in the container may reach (platform-tools.ts): it asks every time.
-		if (input.publishUnasked) throw new UserError(publishAsksEveryTime(harnessName(harness)), { code: "bad_input" });
+		if (input.publishUnasked) throw new UserError(publishAsksEveryTime(acp.name), { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -670,15 +675,15 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
-		if (harness !== "windlass" && machine && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		if (acp && machine && !offered) throw new UserError(`This machine does not offer ${acp.name}.`, { code: "bad_input" });
 		if (item?.payer && offered && item.payer !== (offered.source ?? "machine"))
 			throw new UserError("The selected payer changed before launch. Restore it or choose a new placement.", { code: "bad_input" });
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
-		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
+		const signedOut = item && acp && offered ? itemSignInMessage(acp, machine?.name ?? "your machine", offered.signIn) : null;
 		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
-		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in"
+		const itemSignIn = item && acp?.itemTokens === "sign-in"
 			? (machine ? offered?.method : "api-key") : undefined;
-		const methodProblem = item && machine && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
+		const methodProblem = item && machine && acp ? itemSignInMethodProblem(acp, machine?.name ?? "your machine", offered?.method) : null;
 		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
 		const hostedSize = place.kind === "hosted" ? await sessionHostedSize(c, input.hostedSize, repo ? setupKeyOf(repo.id) : null, item) : undefined;
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
@@ -687,28 +692,31 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (!chosen.available) {
 			throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
 		}
-		if (!machine && harness !== "windlass" && !chosen.platformKeys) throw new UserError("This hosted profile has no configured Settings-key relay.", { code: "profile_unavailable" });
+		// A hosted ACP agent runs only on Settings keys (`hostedHarness`).
+		if (!machine && acp && !chosen.platformKeys) throw new UserError("This hosted profile has no configured Settings-key relay.", { code: "profile_unavailable" });
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
 		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id).catch(() => null) : undefined;
 		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s current model list could not be read. Try again.", { code: "bad_input" });
-		const providers = place.kind === "hosted" && harness !== "windlass" ? await providerStatuses(c.db) : undefined;
+		// A hosted agent's own model list comes from the Settings keys' checks (`hostedCatalog`).
+		const providers = place.kind === "hosted" && caps.models === "harness" ? await providerStatuses(c.db) : undefined;
 		const options = providers ? hostedCatalog(harness, providers.filter(p => p.ok)) : availableCatalog(catalog ?? undefined, offered);
-		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
+		// Where its commands run in its own sandbox, the machine must have probed that sandbox's modes.
+		if (profileModes && acp.sandboxedOn.includes(chosen.id) && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
-		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, machine ? offered?.modes ?? [] : undefined) : options?.modes);
+		const modes = initialSessionModes(chosen.id, harness, !!item, profileModes ? codexModes(chosen.id, machine ? offered?.modes ?? [] : undefined) : options?.modes);
 		if (input.mode !== undefined) {
-			if (typeof input.mode !== "string" || !input.mode.trim() || ((harness === "windlass" || harness === "codex") && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
+			if (typeof input.mode !== "string" || !input.mode.trim() || (caps.modes === "profile" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
 		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
-		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
+		const models = caps.models === "harness" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options && machine ? "bad_input" : undefined);
-		if (providers && harness !== "windlass" && !hostedProvider(harness, model, providers.filter(p => p.ok).map(p => p.provider)))
+		if (providers && acp && !hostedProvider(acp.id, model, providers.filter(p => p.ok).map(p => p.provider)))
 			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
-		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
+		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, caps.models === "harness"));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -754,14 +762,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
 			// An item's session takes its profile's mode for its agent in the actor (`itemModeOf`): none is passed for it.
-			...(!item && { mode: harness === "codex" ? modes.mode : input.mode }),
-			...(harness === "codex" && {codexModes:modes.availableModes}),
+			...(!item && { mode: profileModes ? modes.mode : input.mode }),
+			...(profileModes && {codexModes:modes.availableModes}),
 			...(options && {harnessOptions:options}),
 			model,
 			repoUrl,
 			repo,
 			publishUnasked: repo !== null && input.publishUnasked === true,
-			demo: harness === "windlass" && profile.demo,
+			demo: caps.demo && profile.demo,
 			createdAt: now,
 		}).catch(async (error: unknown) => {
 			// An item's session has an id derived from its item's: one that exists is the one an earlier try made.

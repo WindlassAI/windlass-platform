@@ -11,9 +11,10 @@ import { audit, showLog } from "./audit.js";
 import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
-import { changeProviderLogin, installedProvider, terminalQuestion } from "./opencode-login.js";
-import { changeCodexLogin, codexLogin } from "./codex-login.js";
+import { claudeSignIn } from "./harness-login.js";
+import { installedProvider, terminalQuestion } from "./opencode-login.js";
+import { codexLogin } from "./codex-login.js";
+import { MACHINE_HARNESSES } from "./machine-harnesses.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
 import { HARNESSES, HARNESS_LABELS, isMachineHarness } from "./setup-choices.js";
 import { setupWizard, signInForSetup, wantsWizard } from "./setup-run.js";
@@ -92,7 +93,7 @@ async function main() {
 	const opencode = !!values.harness?.includes("opencode");
 	const agents = [...new Set(values.harness ?? [])];
 	const agent = positionals[1] as MachineHarness;
-	if (values.provider && !(agent === "opencode" && command === "login")) throw new RunnerError("Use --provider with login opencode.");
+	if (values.provider && !(isMachineHarness(agent) && MACHINE_HARNESSES[agent].takesProvider && command === "login")) throw new RunnerError("Use --provider with login opencode.");
 	// Setup without --harness is the wizard; it takes one section name, such as setup network.
 	const wizard = command === "setup" && wantsWizard(values);
 	const validCommand = auth ? positionals.length === 2 && isMachineHarness(agent)
@@ -131,7 +132,7 @@ async function main() {
 	process.on("SIGINT", stop); process.on("SIGTERM", stop);
 	try {
 		if (auth) {
-			const changeLogin = agent === "codex" ? changeCodexLogin : agent === "opencode" ? changeProviderLogin : changeClaudeLogin;
+			const { changeLogin, signedOut } = MACHINE_HARNESSES[agent];
 			const label = HARNESS_LABELS[agent];
 			const paired = loadPair();
 			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to " + label + ".");
@@ -142,7 +143,7 @@ async function main() {
 				for (const identity of [paired.current, ...paired.previous]) {
 					try {
 						await changeLogin(new Executor(identity, limits), false, abort.signal);
-						console.log(`${identity.machineId} ${label}: ${agent === "codex" ? "signed out on this machine; OpenAI-side revocation not available." : "signed out."}`);
+						console.log(`${identity.machineId} ${label}: ${signedOut}`);
 					} catch (error) {
 						console.error(`${identity.machineId} ${label}: ${category(error)}`);
 						process.exitCode = 1;

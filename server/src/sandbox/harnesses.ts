@@ -63,6 +63,12 @@ export interface HarnessCapabilities {
 	planMode: boolean;
 	/** A scripted model for a demo session (`Windlass.demoScript`). */
 	demo: boolean;
+	/**
+	 * Who decides the modes a session may be put in: the sandbox profile ("profile": Windlass's approval, Codex's
+	 * sandbox in codex-modes.ts), so a chosen mode is checked against that list before launch; a fixed list it is
+	 * launched with until it reports its own ("launch", Claude's `CLAUDE_LAUNCH_MODES`); or only its own report ("agent").
+	 */
+	modes: "profile" | "launch" | "agent";
 }
 
 /** The platform's tools by name (platform-tools.ts); literal here so that this file imports nothing of the server's. */
@@ -75,7 +81,7 @@ export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review", "file_plan_review", "file_repo_setup", "file_repo_setup_review"),
 	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
 	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
-	signIn: ["chatgpt", "platform-key"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
+	signIn: ["chatgpt", "platform-key"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true, modes: "profile",
 });
 
 /**
@@ -87,7 +93,7 @@ const ACP_BASE: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
 	platformTools: tools(), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
 	checks: "platform", envLists: false, sessionHome: false, usage: "context", models: "harness",
-	signIn: ["machine", "platform-key"] as const, backups: false, steps: "platform", untrustedMarker: "none", planMode: false, demo: false,
+	signIn: ["machine", "platform-key"] as const, backups: false, steps: "platform", untrustedMarker: "none", planMode: false, demo: false, modes: "agent",
 });
 
 const acpCapabilities = (own: Partial<HarnessCapabilities>): HarnessCapabilities => Object.freeze({ ...ACP_BASE, ...own });
@@ -148,7 +154,7 @@ export const CLAUDE: AcpProfile = {
 	// Offered where the adapter is not root (the container's agent user is uid 1000) and the managed settings do not disable it.
 	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "sign-in", itemSignIns: ["subscription", "api-key"], items: true, subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
-	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, modes: "launch" }),
 	keyProviders: ["anthropic"],
 };
 
@@ -175,8 +181,8 @@ export const CODEX: AcpProfile = {
 	items: true, subtasks: false,
 	// Its image's wlp-acp-mcp serves the platform's MCP server on the one URL its requirements.toml allows; an older
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
-	// chosen per prompt.
-	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true }),
+	// chosen per prompt. Its modes are the profile's (codex-modes.ts).
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true, modes: "profile" }),
 	keyProviders: ["openai"],
 };
 

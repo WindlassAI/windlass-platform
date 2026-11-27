@@ -14,7 +14,7 @@ import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { tmpName } from "../../server/src/sandbox/docker.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
-import { ensureRelay, prepareRelay, openCodeCredentials, localProviders, relaySocketVolume, keyRelayUrl, openHarnessKey, endHarnessLeases, removeRelay, stopLegacyClaude } from "./claude-relay.js";
+import { ensureRelay, prepareRelay, localProviders, relaySocketVolume, openHarnessKey, endHarnessLeases, removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { probeHarnessOptions } from "./harness-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -33,6 +33,8 @@ import { probeImage } from "../../server/src/sandbox/tokens.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, checkBubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
 import { localSizing } from "./sizing.js";
+import { harnessOfRaw, MACHINE_HARNESSES, SESSION_NAME } from "./machine-harnesses.js";
+import { isMachineHarness } from "./setup-choices.js";
 const legacyLoginLabel = LABEL + ".claude-login=1";
 import { cleanClaudeOutput } from "./claude-output.js";
 import { claudeLoginGeneration, dockerReason, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
@@ -186,15 +188,19 @@ export class Executor extends MachineDocker {
 		if (c?.command) return false;
 		return (await box.run(refreshReadyClone(spare.url, c?.branch, c?.commit), { timeoutMs: 10_000 })).exitCode === 0;
 	}
+	/** Each machine harness's pinned image and provider, set only when the runner was started with it. */
+	private installed(harness: MachineHarness) {
+		return {
+			claude: { pin: this.claudePin, provider: this.claudeProvider },
+			codex: { pin: this.codexPin, provider: this.codexProvider },
+			opencode: { pin: this.opencodePin, provider: this.opencodeProvider },
+		}[harness];
+	}
 	private providerFor(harness?: MachineHarness) {
-		return harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : harness === "claude" ? this.claudeProvider! : this.provider;
+		return harness ? this.installed(harness).provider! : this.provider;
 	}
 	private relayNonce(raw: string) {
 		return dockerOutput(["inspect", "-f", `{{index .Config.Labels "${LABEL}.relay-session"}}`, containerName(raw)]).then(value => value.trim());
-	}
-
-	private machineLogin(harness: MachineHarness) {
-		return harness === "codex" ? codexLogin(this) ?? undefined : harness === "opencode" ? currentProvider(this) ?? undefined : undefined;
 	}
 
 	openTurnKey(raw: string, harness: MachineHarness, forward: ForwardedKeyLease) {
@@ -205,14 +211,14 @@ export class Executor extends MachineDocker {
 
 	turnCredentials(raw: string, harness: MachineHarness, keys: Partial<Record<ModelProvider, string>>) {
 		return withLoginVolume(this, async (): Promise<{ env: Record<string, string>; close?: () => Promise<void> }> => {
-			if (harness === "claude" && keys.anthropic) return { env: { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } };
-			if (harness === "codex" && keys.openai) return { env: { WLP_SESSION_BEARER: keys.openai } };
-			const login = this.machineLogin(harness);
-			if (!login && harness !== "claude" && !Object.keys(keys).length) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
+			const record = MACHINE_HARNESSES[harness];
+			const env = record.keyEnv(keys);
+			if (env) return { env };
+			const login = record.machineLogin(this) ?? undefined;
+			if (!login && record.needsLogin && !Object.keys(keys).length) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
 			const nonce = await this.relayNonce(raw);
 			if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
-			if (harness === "opencode") return openCodeCredentials(this, nonce, login, keys);
-			return prepareRelay(this, login, nonce);
+			return record.credentials(this, nonce, login, keys);
 		});
 	}
 
@@ -412,25 +418,18 @@ export class Executor extends MachineDocker {
 	}
 	prepareClaudeRelay() { return prepareRelay(this); }
 	requireHarness(profile: Profile, harness: MachineHarness = "claude") {
-		if (harness === "codex") {
-			if (!this.codexPin) throw new Refusal("Start the runner with --harness codex.");
-			if (profile !== "docker-hardened" && !(profile === bubblewrap && this.codexInner)) throw new Refusal(innerModesReason);
-			return;
-		}
-		if (harness === "opencode") {
-			if (!this.opencodeProvider) throw new Refusal("Start the runner with --harness opencode.");
-			if (profile !== "docker-hardened") throw new Refusal("OpenCode requires the docker-hardened profile.");
-			return;
-		}
-		if (!this.claudeProvider) throw new Refusal("Claude Code is not turned on on this machine: start the runner with --harness claude.");
-		if (profile !== "docker-hardened") throw new Refusal("Claude Code requires the docker-hardened profile.");
+		const record = MACHINE_HARNESSES[harness];
+		// The pin and the provider are set together (constructor).
+		if (!this.installed(harness).provider) throw new Refusal(record.notEnabled);
+		if (profile !== "docker-hardened" && !(record.innerProfile && profile === bubblewrap && this.codexInner)) throw new Refusal(record.profileRefusal);
 	}
 	async prepareHarness(profile: Profile, harness: MachineHarness = "claude") {
 		this.requireHarness(profile, harness);
-		if (harness === "codex") return this.ensureImage(this.codexPin);
-		if (harness === "opencode") return this.ensureImage(this.opencodePin);
-		try { await this.ensureImage(this.claudePin); }
-		catch { throw new Refusal("The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude."); }
+		const { pin } = this.installed(harness);
+		const missing = MACHINE_HARNESSES[harness].missingImage;
+		if (!missing) return this.ensureImage(pin);
+		try { await this.ensureImage(pin); }
+		catch { throw new Refusal(missing); }
 	}
 	private async refreshLogin() {
 		if (this.codexPin) {
@@ -590,15 +589,18 @@ export class Executor extends MachineDocker {
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
 			const [name, state, labelSession, profile, harness, egress, relay, size] = line.split("|");
-			const raw = /^wlp-session-((?:(?:claude|opencode|codex)-)?[a-f0-9]{12})$/.exec(name)?.[1];
+			const raw = SESSION_NAME.exec(name)?.[1];
 			const claim = raw && labelSession === SPARE_SESSION ? claimFor(read(this.claimFile(raw))) : undefined;
 			const sessionId = claim?.session ?? labelSession;
 			if (raw && labelSession === SPARE_SESSION && !claim && !this.spares.owns(raw)) this.unbound.add(raw);
 			if (onlySession && sessionId !== onlySession) continue;
-			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (raw.startsWith("opencode-") !== (harness === "opencode")) || (raw.startsWith("codex-") !== (harness === "codex")) || (harness && harness !== "claude" && harness !== "opencode" && harness !== "codex") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
+			const prefixed = raw && harnessOfRaw(raw);
+			// A name's prefix and its harness label agree; only Claude's older sandboxes have its label without the prefix.
+			const harnessMatches = !harness ? !prefixed : isMachineHarness(harness) && (prefixed ? prefixed === harness : MACHINE_HARNESSES[harness].unprefixedNames);
+			if (!raw || !harnessMatches || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
-			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" || harness === "opencode" || harness === "codex" ? { harness: harness as MachineHarness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
+			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(isMachineHarness(harness) ? { harness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
 			this.boxes.set(id, Object.assign(box, { egress, claim, size: Number(size) || 1, legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {

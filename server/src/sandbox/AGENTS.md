@@ -27,7 +27,7 @@ Turns and harnesses
 - `./turn.ts` holds `SandboxWindlass`, the provider-independent Windlass turn over ACP: prompts, host tools, approvals, redaction, credential revocation and sweep.
 - `./harness.ts` defines the `Harness` interface, `WindlassHarness` and the per-session choice of harness.
 - `./harnesses.ts` holds `HarnessCapabilities`, `WINDLASS_CAPABILITIES`, the `AcpProfile` records `CLAUDE`, `OPENCODE`, `CODEX`, plus `keyProviders`, `usesAccountModels`, `capabilitiesOf` and the item and sign-in problem sentences.
-- `./acp-harness.ts` runs a Claude Code, OpenCode or Codex turn over ACP and refuses inputs its record lacks (`unsupported`).
+- `./acp-harness.ts` runs a Claude Code, OpenCode or Codex turn over ACP and refuses inputs its record lacks (`unsupported`). Each agent's protocol quirks are in its `QUIRKS` table.
 - `./acp.ts` is one end of a JSON-RPC 2.0 ACP connection, independent of Docker and sessions.
 - `./acp-options.ts` reads model, effort and mode choices out of ACP config options.
 - `./codex-modes.ts` lists Codex session modes per profile and refuses sandbox escapes on `docker-windlass-sandbox`.

@@ -34,6 +34,7 @@ Docker and sandboxes:
 
 - `./docker-executor.ts` executes a pairing's sandbox operations through Docker, serialising lifecycle changes and touching only pairing-owned resources.
 - `./policy.ts` pins images, labels and allowed profiles (`MachineHarness`, `Profile`).
+- `./machine-harnesses.ts` holds one record per machine harness (`MACHINE_HARNESSES`): profile refusals, sign-in, turn credentials, denied hosts and relay ports. Read it instead of comparing harness ids.
 - `./sizing.ts` turns flags and host resources into slot capacity and store limits.
 - `./warm-spares.ts` builds and claims pre-created sandboxes (`WarmSpares`, `SpareSpec`).
 - `./memory-events.ts` reads a container's cgroup memory events to detect out-of-memory.
