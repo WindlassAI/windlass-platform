@@ -20,6 +20,22 @@
 	.app-fixed .nav-back {
 		max-width: 20ch;
 	}
+	/*
+	 * The crumb's parts share one row with the end's, so where the bar is short the title gives way three
+	 * times as fast as the facts on the right, and the back link, the pill and the buttons keep their size.
+	 */
+	.app-fixed .crumb {
+		display: contents;
+	}
+	.app-fixed .trail {
+		flex: 0 3 auto;
+	}
+}
+/* With the facts there to give way, the title keeps a few words. */
+@media (min-width: 1281px) {
+	.app-fixed .trail {
+		min-width: 16ch;
+	}
 }
 @media (max-width: 1600px) {
 	.app-fixed .trail-step:not(.trail-section):not(.trail-here):not(:nth-last-child(2)) {
@@ -69,26 +85,32 @@
 }
 .crumb-end {
 	display: flex;
-	flex: none;
+	flex: 0 1 auto;
 	align-items: center;
 	gap: 6px;
 	margin-left: auto;
 	min-width: 0;
 }
+.crumb-end > :not(.crumb-facts) {
+	flex: none;
+}
+/* What runs the session, cut short with an ellipsis where the bar has no room for all of it. */
 .crumb-facts {
-	display: flex;
-	align-items: center;
+	flex: 0 1 auto;
 	min-width: 0;
 	margin-right: 6px;
+	overflow: hidden;
 	font-size: var(--text-12);
 	color: var(--ink-faint);
 	white-space: nowrap;
+	text-overflow: ellipsis;
 }
 .crumb-facts > :not(:last-child)::after {
 	content: "·";
 	margin: 0 0.5em;
 }
 .crumb-facts .crumb-place {
+	display: inline;
 	padding: 0;
 	border: 0;
 	background: none;
@@ -163,6 +185,17 @@
 	.app-fixed > .topbar .topbar-docs,
 	.crumb-facts {
 		display: none;
+	}
+	/* Without the facts nothing in the end can give way. */
+	.crumb-end {
+		flex: none;
+	}
+	/* The title takes the section's room (the open tab, or the section's button, names it), and all that is left. */
+	.app-fixed .trail-section {
+		display: none;
+	}
+	.app-fixed .trail-here {
+		min-width: 0;
 	}
 }
 
