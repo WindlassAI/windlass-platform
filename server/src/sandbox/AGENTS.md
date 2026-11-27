@@ -61,7 +61,8 @@ Credentials, network and data
 - `./handoff.ts` describes the ChatGPT sign-in hand-off in words and numbers.
 - `./hosted-network.ts` holds the hosted allow-list rules (`MAX_HOSTS`, `isHostName`, presets).
 - `./hosted-settings.ts` reads the `WLP_HOSTED_` settings, falling back to the older `WLP_E2B_` names (`hostedName`).
-- `./backup.ts` copies Windlass session data to an object store for providers that can run a shell command.
+- `./backup.ts` copies an agent's session data to an object store for providers that can run a shell command; it knows no agent's paths.
+- `./session-files.ts` describes, per agent whose record has `backups`, which files make up one session (`SessionFiles`, `sessionFilesOf`).
 - `./session-data.ts` decides whether a session's Windlass data lives and dies with its sandbox.
 - `./setup.ts` runs a repository's setup command beside Windlass, outside its command sandbox.
 - `./attach.ts` moves private screenshot copies and single objects out of a sandbox.

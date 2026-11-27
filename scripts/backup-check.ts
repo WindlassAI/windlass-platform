@@ -39,9 +39,19 @@ import { S3ObjectStore, type S3Settings } from "../server/src/bucket/s3.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { ObjectStoreError, type ObjectStore } from "../server/src/bucket/store.js";
 import { backupConfig } from "../server/src/config.js";
-import type { WindlassEvent } from "../server/src/contract.js";
+import { HARNESS_IDS, type HarnessId, type WindlassEvent } from "../server/src/contract.js";
 import type { ExecOptions, ExecResult, SandboxHandle, ScriptedModel } from "../server/src/sandbox/api.js";
-import { BACKUP_ENV, LINK_TTL_MS, SandboxSessionBackups } from "../server/src/sandbox/backup.js";
+import {
+	BACKUP_ENV,
+	LINK_TTL_MS,
+	SandboxSessionBackups,
+	findCommand,
+	packScript,
+	restoreScript,
+	sessionFilesEnv,
+} from "../server/src/sandbox/backup.js";
+import { capabilitiesOf } from "../server/src/sandbox/harnesses.js";
+import { WINDLASS_SESSION_FILES, sessionFilesOf } from "../server/src/sandbox/session-files.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 import { sleep } from "./check-wait.js";
 import { Report } from "./check-report.js";
@@ -118,6 +128,20 @@ async function standIn(name: string, make: (now: () => number) => StandInObjectS
 			store.use(put.url, "PUT", body).status === 403 &&
 			get.expiresAt === 1_060_000,
 	);
+	const copyKey = "sessions/u2/s_1.tgz";
+	expect(
+		`${name}: a copy inside the store gives the other key the same bytes, and a copy of nothing is false`,
+		(await store.copy(key, copyKey)) === true &&
+			store.use((await store.linkToGet(copyKey, { ttlMs: 60_000 })).url, "GET").body?.equals(body) === true &&
+			(await store.copy("sessions/u1/none.tgz", "sessions/u2/none.tgz")) === false &&
+			(await store.size("sessions/u2/none.tgz")) === null,
+	);
+	const copyRefused = await store.copy(key, "sessions/../other").then(
+		() => "copied",
+		(error: unknown) => (error instanceof ObjectStoreError ? "refused" : "another error"),
+	);
+	expect(`${name}: a copy to a key that would leave its place is refused`, copyRefused === "refused");
+	await store.remove(copyKey);
 	await store.remove(key);
 	const again = await store.linkToGet(key, { ttlMs: 60_000 });
 	expect(
@@ -241,6 +265,39 @@ async function signer(): Promise<void> {
 		"remove() is a signed DELETE",
 		(await asked.remove("test.txt").then(() => true)) && seen.at(-1)?.method === "DELETE",
 	);
+	answers.push(() => new Response("<CopyObjectResult><ETag>x</ETag></CopyObjectResult>", { status: 200 }));
+	const copied = await asked.copy("sessions/u1/s_1.tgz", "sessions/u2/s_2.tgz").catch(() => "threw");
+	const copyAsk = seen.at(-1);
+	expect(
+		"copy() is a signed PUT of the destination naming its source in the bucket, with no body",
+		copied === true &&
+			copyAsk?.method === "PUT" &&
+			copyAsk.url === "https://examplebucket.s3.amazonaws.com/sessions/u2/s_2.tgz" &&
+			copyAsk.headers["x-amz-copy-source"] === "/examplebucket/sessions/u1/s_1.tgz" &&
+			/SignedHeaders=host;x-amz-content-sha256;x-amz-copy-source;x-amz-date,/.test(copyAsk.headers.authorization),
+		`${copyAsk?.method} ${copyAsk?.url}`,
+	);
+	answers.push(() => new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }));
+	answers.push(
+		() => new Response(`<Error><Code>InternalError</Code><Key>${example.accessKeyId}</Key></Error>`, { status: 200 }),
+	);
+	answers.push(() => new Response("<Error><Code>NoSuchBucket</Code></Error>", { status: 404 }));
+	const missing = await asked.copy("a", "b");
+	const late = await asked.copy("a", "b").then(
+		() => "copied",
+		(error: unknown) => (error instanceof ObjectStoreError ? error.message : String(error)),
+	);
+	const noBucket = await asked.copy("a", "b").then(
+		() => "copied",
+		(error: unknown) => (error instanceof ObjectStoreError ? error.message : String(error)),
+	);
+	expect(
+		"a copy of nothing is false; a copy that fails in a 200 answer, or in a missing bucket, is an error told by its code alone",
+		missing === false &&
+			late === "the bucket answered 200 (InternalError) to COPY" &&
+			noBucket === "the bucket answered 404 (NoSuchBucket) to COPY",
+		`${missing}; ${late}; ${noBucket}`,
+	);
 	const shown = `${inspect(asked, { depth: 5, showHidden: true })} ${JSON.stringify(asked)} ${String(asked)}`;
 	expect(
 		"printing the store shows none of its settings",
@@ -325,6 +382,7 @@ class ScriptedSandbox implements SandboxHandle {
 
 async function scripted(): Promise<void> {
 	const owner = { uid: "user-1", sessionId: "s_0123456789abcdef" };
+	const windlass = { harness: "windlass", sessionId: "ses_abc123" } as const;
 	const hash = sha256("an archive");
 	const store = new StandInObjectStore();
 	const backups = new SandboxSessionBackups(store, { maxBytes: 1000, prefix: "staging/" });
@@ -339,7 +397,7 @@ async function scripted(): Promise<void> {
 		const fetched = store.use(linkOf(options), "GET");
 		return { stdout: fetched.status === 200 ? "restored\n" : `http ${fetched.status}\n` };
 	});
-	const saved = await backups.save(honest, owner);
+	const saved = await backups.save(honest, owner, windlass);
 	expect(
 		"a save packs, signs a link for exactly that size, has the sandbox upload, and reports what was saved",
 		saved.outcome === "saved" &&
@@ -358,7 +416,7 @@ async function scripted(): Promise<void> {
 			upload.options.env?.[BACKUP_ENV.size] === "10" &&
 			honest.asked[0].options.env?.[BACKUP_ENV.max] === "1000",
 	);
-	const restored = await backups.restore(honest, owner, { size: 10, sha256: sha256(archive), at: 0 }, "ses_abc123");
+	const restored = await backups.restore(honest, owner, { size: 10, sha256: sha256(archive), at: 0 }, windlass);
 	const restoreEnv = honest.asked[2].options.env ?? {};
 	expect(
 		"a restore signs a link to download and tells the sandbox the size, the hash and the session to look for",
@@ -373,13 +431,34 @@ async function scripted(): Promise<void> {
 	expect(
 		"remove takes the object away, and a restore then finds no copy",
 		(await store.size(key)) === null &&
-			(await backups.restore(honest, owner, { size: 10, sha256: sha256(archive), at: 0 }, "ses_abc123")).outcome ===
+			(await backups.restore(honest, owner, { size: 10, sha256: sha256(archive), at: 0 }, windlass)).outcome ===
 				"missing",
 	);
 
+	const other = { uid: "user-2", sessionId: "s_fedcba9876543210" };
+	const sourced = await backups.save(honest, owner, windlass);
+	const copied = await backups.copy(owner, other);
+	const copyOfNothing = await backups.copy({ uid: "user-1", sessionId: "s_none" }, other);
+	const badCopy = await backups.copy(owner, { uid: "../x", sessionId: "s_1" }).then(
+		() => "copied",
+		() => "refused",
+	);
+	expect(
+		"a session's copy is copied to another session's name in the store; a copy of nothing is false; a name that could not be a key is refused",
+		sourced.outcome === "saved" &&
+			copied &&
+			(await store.size("staging/sessions/user-2/s_fedcba9876543210.tgz")) === 10 &&
+			!copyOfNothing &&
+			badCopy === "refused",
+	);
+	await backups.remove(owner);
+	await backups.remove(other);
+	// The save above is not one the checks below count.
+	honest.asked.splice(4);
+
 	const answers = async (stdout: Record<string, string>, extra: Partial<ExecResult> = {}) => {
 		const sandbox = new ScriptedSandbox(step => ({ stdout: stdout[step] ?? "", ...extra }));
-		return { save: await backups.save(sandbox, owner), sandbox };
+		return { save: await backups.save(sandbox, owner, windlass), sandbox };
 	};
 	const empty = await answers({ pack: "empty\n" });
 	expect(
@@ -419,11 +498,11 @@ async function scripted(): Promise<void> {
 			? { stdout: `packed 10 ${hash}\n` }
 			: { stdout: `curl: (6) could not resolve ${linkOf(options)}\n`, stderr: linkOf(options), exitCode: 6 },
 	);
-	const echoed = await backups.save(echo, owner);
+	const echoed = await backups.save(echo, owner, windlass);
 	const broken = new ScriptedSandbox(() => {
 		throw new Error("the command was: curl wlp-stand-in://bucket/secret-link");
 	});
-	const thrown = await backups.save(broken, owner);
+	const thrown = await backups.save(broken, owner, windlass);
 	const slow = await answers({ pack: "" }, { timedOut: true, exitCode: null });
 	expect(
 		"a step that prints something else, cannot be run or takes too long is a failed save, and what the sandbox printed is not repeated",
@@ -441,7 +520,7 @@ async function scripted(): Promise<void> {
 			new ScriptedSandbox(() => ({ stdout: `${answer}\n` })),
 			owner,
 			{ size: 10, sha256: hash, at: 0 },
-			"ses_abc123",
+			windlass,
 		);
 		return result.outcome === "failed" ? result.reason : result.outcome;
 	};
@@ -454,12 +533,311 @@ async function scripted(): Promise<void> {
 			(await said("http 404")) === "missing" &&
 			/http 500/.test(await said("http 500")),
 	);
-	const unusable = await backups.restore(honest, owner, { size: 10, sha256: "not a hash", at: 0 }, "ses_abc123");
-	const badName = await backups.save(honest, { uid: "../other", sessionId: "s_1" });
+	const before = honest.asked.length;
+	const notCopied = await backups.save(honest, owner, { harness: "claude", sessionId: "ses_abc123" });
+	const foreignId = await backups.save(honest, owner, { harness: "windlass", sessionId: "0b5e-not-windlass" });
+	const notRestored = await backups.restore(
+		honest,
+		owner,
+		{ size: 10, sha256: hash, at: 0 },
+		{
+			harness: "codex",
+			sessionId: "ses_abc123",
+		},
+	);
+	expect(
+		"an agent whose sessions are not copied, or an id that is not the agent's own, reaches no sandbox",
+		notCopied.outcome === "failed" &&
+			foreignId.outcome === "failed" &&
+			notRestored.outcome === "failed" &&
+			honest.asked.length === before,
+	);
+	honest.asked.splice(before);
+	const unusable = await backups.restore(honest, owner, { size: 10, sha256: "not a hash", at: 0 }, windlass);
+	const badName = await backups.save(honest, { uid: "../other", sessionId: "s_1" }, windlass);
 	expect(
 		"a record that is not one, or an owner whose name could not be a key, reaches no sandbox and no store",
 		unusable.outcome === "failed" && badName.outcome === "failed" && honest.asked.length === 4,
 	);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The agents' session files, and Windlass's copy as it was before they were described per agent
+// ---------------------------------------------------------------------------------------------
+
+// Frozen copies of backup.ts's Windlass scripts before #133, for the check that Windlass's copy is unchanged.
+const BEFORE_HELD = "^(sessions/[^/]+\\.db(-wal)?|blobs/[0-9a-f][0-9a-f]/[^/]+|memory/.+\\.(md|json|jsonl))$";
+const BEFORE_PACK = [
+	"set -euo pipefail",
+	"umask 077",
+	'cd "$WLP_BACKUP_DATA"',
+	"rm -f /tmp/.wlp-backup-*",
+	'list="$WLP_BACKUP_PACK.list"',
+	"{",
+	"  if [ -d sessions ]; then find sessions -maxdepth 1 -type f \\( -name '*.db' -o -name '*.db-wal' \\) -print0; fi",
+	"  if [ -d blobs ]; then find blobs -mindepth 2 -maxdepth 2 -type f -path 'blobs/[0-9a-f][0-9a-f]/*' ! -name '.*' -print0; fi",
+	"  if [ -d memory ]; then find memory -type f \\( -name '*.md' -o -name '*.json' -o -name '*.jsonl' \\) ! -name '.*' -print0; fi",
+	'} | LC_ALL=C sort -z > "$list"',
+	'if ! grep -qz "^sessions/" "$list"; then rm -f "$list"; echo empty; exit 0; fi',
+	'raw=$(xargs -0 -r stat -c %s < "$list" | awk \'{ sum += $1 } END { printf "%.0f", sum }\')',
+	'if [ "$raw" -gt $((WLP_BACKUP_MAX * 10)) ]; then rm -f "$list"; echo "too_large $raw"; exit 0; fi',
+	'tar --null --no-recursion -T "$list" -cf - | gzip -n > "$WLP_BACKUP_PACK"',
+	'rm -f "$list"',
+	'size=$(stat -c %s "$WLP_BACKUP_PACK")',
+	'if [ "$size" -gt "$WLP_BACKUP_MAX" ]; then rm -f "$WLP_BACKUP_PACK"; echo "too_large $size"; exit 0; fi',
+	'echo "packed $size $(sha256sum < "$WLP_BACKUP_PACK" | cut -d" " -f1)"',
+].join("\n");
+const BEFORE_RESTORE = [
+	"set -u",
+	"umask 077",
+	`trap 'rm -f -- "$WLP_BACKUP_PACK"' EXIT`,
+	`code=$(curl -q -s -K - -o "$WLP_BACKUP_PACK" -w '%{http_code}' --connect-timeout 15 --max-time "$WLP_BACKUP_SECONDS" --retry 2 --retry-delay 1 --retry-max-time "$WLP_BACKUP_SECONDS" 2>/dev/null) || { echo "curl $?"; exit 0; }`,
+	'if [ "$code" != 200 ]; then echo "http $code"; exit 0; fi',
+	'size=$(stat -c %s "$WLP_BACKUP_PACK")',
+	'if [ "$size" != "$WLP_BACKUP_SIZE" ]; then echo "size $size"; exit 0; fi',
+	'hash=$(sha256sum < "$WLP_BACKUP_PACK" | cut -d" " -f1)',
+	'if [ "$hash" != "$WLP_BACKUP_SHA256" ]; then echo "hash $hash"; exit 0; fi',
+	`names=$(tar -tzf "$WLP_BACKUP_PACK" 2>/dev/null) || { echo unpack; exit 0; }`,
+	`if printf '%s\\n' "$names" | grep -qvE '${BEFORE_HELD}'; then echo contents; exit 0; fi`,
+	'mkdir -p "$WLP_BACKUP_DATA" && tar -xzf "$WLP_BACKUP_PACK" -C "$WLP_BACKUP_DATA" --no-same-owner --no-same-permissions 2>/dev/null || { echo unpack; exit 0; }',
+	'if [ ! -f "$WLP_BACKUP_DATA/sessions/$WLP_BACKUP_SESSION.db" ]; then echo no_session; exit 0; fi',
+	"echo restored",
+].join("\n");
+
+/** A `curl` for the restore scripts: whatever the link, it "downloads" `$WLP_CHECK_ARCHIVE` and answers 200. */
+const FAKE_CURL = [
+	"#!/bin/sh",
+	'out=""',
+	'while [ $# -gt 0 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done',
+	"cat > /dev/null",
+	'cp "$WLP_CHECK_ARCHIVE" "$out" && printf 200',
+].join("\n");
+
+/** Runs a script with bash as a sandbox would, in a directory of its own instead of /tmp. */
+function bash(script: string, env: Record<string, string>, scratch: string, stdin = ""): string {
+	const local = script.replaceAll("rm -f /tmp/.wlp-backup-*", `rm -f ${scratch}/.wlp-backup-*`);
+	const result = spawnSync("bash", ["-c", local], {
+		env: { PATH: `${join(scratch, "bin")}:${process.env.PATH ?? ""}`, ...env },
+		input: stdin,
+		encoding: "utf8",
+	});
+	return `${result.stdout.trim().split("\n").pop() ?? ""}|${result.status}`;
+}
+
+/** Every file under `dir`, as relative paths, sorted. */
+function tree(dir: string): string {
+	const found = spawnSync("sh", ["-c", 'cd "$1" && find . -type f | LC_ALL=C sort', "sh", dir], { encoding: "utf8" });
+	return found.stdout.trim().replace(/\n/g, ",");
+}
+
+async function sessionFiles(): Promise<void> {
+	const table = (["windlass", ...HARNESS_IDS.filter(id => id !== "windlass")] as HarnessId[]).map(id => ({
+		id,
+		backups: capabilitiesOf(id).backups,
+		files: sessionFilesOf(id),
+	}));
+	expect(
+		"an agent has a description of its session files exactly when its record says its sessions are copied",
+		table.every(row => row.backups === (row.files !== null)),
+		table.map(row => `${row.id}: ${row.backups ? "copied" : "not copied"}`).join(", "),
+	);
+	expect(
+		"only Windlass's sessions are copied for now",
+		table
+			.filter(row => row.backups)
+			.map(row => row.id)
+			.join(",") === "windlass",
+	);
+	const hostile = [
+		"",
+		"ses_",
+		"ses_a/b",
+		"ses_*",
+		"ses_a b",
+		"ses_$(id)",
+		"ses_a;b",
+		"../ses_a",
+		"ses_a\nses_b",
+		"-ses_a",
+	];
+	for (const row of table) {
+		const files = row.files;
+		if (files === null) continue;
+		expect(
+			`${row.id}: its id pattern takes no id a glob, a regex or a shell would read as more than a name`,
+			hostile.every(id => !new RegExp(files.id).test(id)),
+		);
+		expect(
+			`${row.id}: its patterns hold no space, and every rule searches a plain folder`,
+			![files.present, files.held, files.proof].some(pattern => /\s/.test(pattern)) &&
+				files.copied.every(rule => findCommand(rule).startsWith(`if [ -d ${rule.under} ]`)),
+		);
+	}
+	expect(
+		"a rule that would search outside the data directory, or pass a find option, is refused",
+		["..", "a/../..", "-delete", "/etc", "a b"].every(under => {
+			try {
+				findCommand({ under });
+				return false;
+			} catch {
+				return true;
+			}
+		}),
+	);
+	const idRule = findCommand({ under: "projects", minDepth: 2, maxDepth: 2, names: ["<id>.jsonl"] });
+	expect(
+		"an <id> in a rule's pattern is the checked session id from the environment, never text in the script",
+		idRule ===
+			`if [ -d projects ]; then find projects -mindepth 2 -maxdepth 2 -type f -name "$${BACKUP_ENV.session}".jsonl -print0; fi`,
+		idRule,
+	);
+
+	// Windlass, as it was.
+	const windlass = WINDLASS_SESSION_FILES;
+	const pack = packScript(windlass);
+	const beforeFinds = BEFORE_PACK.split("\n").filter(line => line.includes("find "));
+	const nowFinds = pack.split("\n").filter(line => line.includes("find "));
+	expect(
+		"Windlass: the files listed for a copy are the ones listed before, to the character",
+		nowFinds.join("\n") === beforeFinds.join("\n") && nowFinds.length === 3,
+		nowFinds.join(" | "),
+	);
+	const session = "ses_abc123";
+	const env = sessionFilesEnv({ harness: "windlass", sessionId: session })?.env ?? {};
+	expect(
+		"Windlass: the root, the names a restore takes and the proof are the ones of before",
+		windlass.root === DATA_DIR &&
+			env[BACKUP_ENV.data] === DATA_DIR &&
+			env[BACKUP_ENV.held] === BEFORE_HELD &&
+			env[BACKUP_ENV.proof] === `sessions/${session}.db` &&
+			env[BACKUP_ENV.present] === "^sessions/" &&
+			sessionFilesEnv({ sessionId: session })?.files === windlass,
+		JSON.stringify(env),
+	);
+	expect(
+		"an id that is not the agent's own, or an agent whose sessions are not copied, gets no description",
+		sessionFilesEnv({ harness: "windlass", sessionId: "not-a-windlass-id" }) === null &&
+			sessionFilesEnv({ harness: "windlass", sessionId: "ses_a/../b" }) === null &&
+			table.filter(row => !row.backups).every(row => sessionFilesEnv({ harness: row.id, sessionId: session }) === null),
+	);
+
+	// The scripts themselves, before and now, on the same files with this machine's bash, find, tar and gzip.
+	const scratch = mkdtempSync(join(tmpdir(), "wlp-backup-files-"));
+	try {
+		spawnSync("mkdir", ["-p", join(scratch, "bin")]);
+		writeFileSync(join(scratch, "bin", "curl"), FAKE_CURL, { mode: 0o755 });
+		const data = join(scratch, "data");
+		const layouts: Record<string, string> = {
+			"no data at all": "mkdir -p data",
+			"only what is never copied": `mkdir -p data/sessions data/wake && echo x > data/sessions/${session}.db-shm && echo x > data/wake/wake.db && echo x > data/auth.json`,
+			"a whole directory": [
+				"mkdir -p data/sessions/sub data/blobs/ab data/blobs/zz data/blobs/ab/deeper data/memory/user/deep data/wake data/snapshots/h data/spill data/approvals",
+				`echo db > data/sessions/${session}.db && echo wal > data/sessions/${session}.db-wal && echo shm > data/sessions/${session}.db-shm`,
+				"echo x > data/sessions/ses_other.db && echo x > data/sessions/.hidden.db && echo x > data/sessions/ses_x.db-lock && echo x > data/sessions/ses_x.db-holder && echo x > data/sessions/sub/nested.db",
+				"echo png > data/blobs/ab/0123 && echo x > data/blobs/ab/.tmp-1 && echo x > data/blobs/zz/nothex && echo x > data/blobs/ab/deeper/f && echo x > data/blobs/top",
+				"echo n > data/memory/user/m_1.md && echo j > data/memory/user/deep/a.json && echo l > data/memory/b.jsonl && echo x > data/memory/user/.lock && echo x > data/memory/user/.h.md && echo x > data/memory/user/notes.txt",
+				"echo x > data/wake/wake.db && echo x > data/index.db && echo x > data/access-token-1.json && echo x > data/auth.json && echo x > data/host-id && echo x > data/snapshots/h/HEAD && echo x > data/spill/o.txt && echo x > data/approvals/a.json",
+			].join(" && "),
+		};
+		for (const [name, layout] of Object.entries(layouts)) {
+			spawnSync("sh", ["-c", `rm -rf data && ${layout}`], { cwd: scratch });
+			const answers: string[] = [];
+			const archives: Buffer[] = [];
+			for (const script of [BEFORE_PACK, pack]) {
+				const archive = join(scratch, `.wlp-backup-${archives.length}.tgz`);
+				answers.push(
+					bash(
+						script,
+						{ ...env, [BACKUP_ENV.data]: data, [BACKUP_ENV.pack]: archive, [BACKUP_ENV.max]: "1000000" },
+						scratch,
+					),
+				);
+				archives.push(answers.at(-1)?.startsWith("packed") ? readFileSync(archive) : Buffer.alloc(0));
+			}
+			expect(
+				`Windlass, ${name}: the pack script answers as before, with the same archive to the byte`,
+				answers[0] === answers[1] && archives[0].equals(archives[1]),
+				`${answers[0]} / ${answers[1]}`,
+			);
+		}
+		const tooLarge = [BEFORE_PACK, pack].map(script =>
+			bash(
+				script,
+				{
+					...env,
+					[BACKUP_ENV.data]: data,
+					[BACKUP_ENV.pack]: join(scratch, ".wlp-backup-big.tgz"),
+					[BACKUP_ENV.max]: "10",
+				},
+				scratch,
+			),
+		);
+		expect(
+			"Windlass: over the limit, as before",
+			tooLarge[0] === tooLarge[1] && tooLarge[0].startsWith("too_large"),
+			tooLarge.join(" / "),
+		);
+		const refused = bash(
+			pack,
+			{
+				...env,
+				[BACKUP_ENV.data]: data,
+				[BACKUP_ENV.session]: "ses_$(id)",
+				[BACKUP_ENV.pack]: join(scratch, ".wlp-backup-x.tgz"),
+				[BACKUP_ENV.max]: "1000000",
+			},
+			scratch,
+		);
+		expect(
+			"the pack script itself refuses a session id that is not the agent's, before it lists anything",
+			refused === "|2",
+			refused,
+		);
+
+		// Restores of archives made here: what each script answers, and what each leaves in a fresh directory.
+		const made: Record<string, string> = {
+			"a copy": `mkdir -p sessions blobs/ab memory/u && echo db > sessions/${session}.db && echo w > sessions/${session}.db-wal && echo p > blobs/ab/0123 && echo n > memory/u/m.md && find sessions blobs memory -type f | tar -czf "$1" --no-recursion -T -`,
+			"a copy with a sign-in in it": `mkdir -p sessions && echo db > sessions/${session}.db && echo x > auth.json && tar -czf "$1" --no-recursion sessions/${session}.db auth.json`,
+			"a copy of another session":
+				'mkdir -p sessions && echo db > sessions/ses_other.db && tar -czf "$1" sessions/ses_other.db',
+			"a copy with a lock in it": `mkdir -p sessions && echo db > sessions/${session}.db && echo x > sessions/${session}.db-lock && tar -czf "$1" --no-recursion sessions/${session}.db sessions/${session}.db-lock`,
+			"a copy of several sessions": `mkdir -p sessions && echo db > sessions/${session}.db && echo db > sessions/ses_sub.db && tar -czf "$1" --no-recursion sessions/${session}.db sessions/ses_sub.db`,
+			"a copy with a folder entry": `mkdir -p sessions && echo db > sessions/${session}.db && tar -czf "$1" sessions`,
+			"not an archive": 'echo nonsense > "$1"',
+		};
+		for (const [name, recipe] of Object.entries(made)) {
+			const work = mkdtempSync(join(scratch, "make-"));
+			const archive = join(scratch, "fetched.tgz");
+			spawnSync("sh", ["-c", recipe, "sh", archive], { cwd: work });
+			const bytes = readFileSync(archive);
+			const results = [BEFORE_RESTORE, restoreScript(windlass)].map((script, index) => {
+				const into = join(scratch, `restored-${index}`);
+				rmSync(into, { recursive: true, force: true });
+				const answer = bash(
+					script,
+					{
+						...env,
+						[BACKUP_ENV.data]: into,
+						[BACKUP_ENV.pack]: join(scratch, `.wlp-backup-r${index}.tgz`),
+						[BACKUP_ENV.size]: String(bytes.length),
+						[BACKUP_ENV.sha256]: sha256(bytes),
+						[BACKUP_ENV.seconds]: "5",
+						WLP_CHECK_ARCHIVE: archive,
+					},
+					scratch,
+					'url = "https://example.invalid/x"\n',
+				);
+				return `${answer} [${tree(into)}]`;
+			});
+			expect(
+				`Windlass, ${name}: the restore script answers as before and unpacks the same files`,
+				results[0] === results[1],
+				results.join(" / "),
+			);
+		}
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -673,6 +1051,7 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 			.filter(line => line !== "");
 	const owner = { uid: "check", sessionId: `s_${run}` };
 	const key = backups.keyOf(owner);
+	const agent = (sessionId: string) => ({ harness: "windlass", sessionId }) as const;
 
 	try {
 		const first = await sandbox("a");
@@ -684,7 +1063,8 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 			tools.stdout.trim().startsWith("9"),
 			tools.stdout.trim().replace("\n", ", "),
 		);
-		const before = await backups.save(first, owner);
+		// Before there is a session there is no id: Windlass's copy names none, so any of its pattern does.
+		const before = await backups.save(first, owner, agent("ses_none"));
 		expect(
 			"before Windlass has a session there is nothing to copy, and nothing is uploaded",
 			before.outcome === "empty" && (await store.size(key)) === null,
@@ -709,7 +1089,7 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 		);
 		const there = await files(first);
 		info(`Windlass's data directory after one turn (snapshots/ left out): ${there.join(", ")}`);
-		const saved = await backups.save(first, owner);
+		const saved = await backups.save(first, owner, agent(session));
 		const size = await store.size(key);
 		expect(
 			"the sandbox packs Windlass's session and uploads it to the bucket by itself",
@@ -725,7 +1105,7 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 		if (saved.outcome !== "saved") return;
 
 		const tiny = new SandboxSessionBackups(store, { maxBytes: 2000, prefix });
-		const over = await tiny.save(first, owner);
+		const over = await tiny.save(first, owner, agent(session));
 		expect(
 			"over the limit nothing is uploaded, and the earlier copy is left as it is",
 			over.outcome === "too_large" && over.size > 2000 && (await store.size(key)) === saved.backup.size,
@@ -738,7 +1118,7 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 			second,
 			owner,
 			{ ...saved.backup, sha256: sha256("another archive") },
-			session,
+			agent(session),
 		);
 		expect(
 			"a copy whose hash is not the one the session recorded is not unpacked",
@@ -747,13 +1127,13 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 				(await files(second)).length === 0,
 			JSON.stringify(wrongHash),
 		);
-		const wrongSession = await backups.restore(await sandbox("c"), owner, saved.backup, "ses_0000000000000000");
+		const wrongSession = await backups.restore(await sandbox("c"), owner, saved.backup, agent("ses_0000000000000000"));
 		expect(
 			"a copy that does not hold the Windlass session is a failed restore",
 			wrongSession.outcome === "failed" && /does not hold the Windlass session/.test(wrongSession.reason),
 			JSON.stringify(wrongSession),
 		);
-		const restored = await backups.restore(second, owner, saved.backup, session);
+		const restored = await backups.restore(second, owner, saved.backup, agent(session));
 		const arrived = await files(second);
 		expect(
 			"the second sandbox downloads the copy and unpacks it",
@@ -800,13 +1180,13 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 			killed.result.failure?.reason === "engine" && wal.includes(`sessions/${session}.db-wal`),
 			`${killed.result.failure?.reason}; ${wal.join(", ")}`,
 		);
-		const again = await backups.save(second, owner);
+		const again = await backups.save(second, owner, agent(session));
 		if (again.outcome !== "saved") {
 			expect("the session is saved again, with its write-ahead log", false, JSON.stringify(again));
 			return;
 		}
 		const third = await sandbox("d");
-		const back = await backups.restore(third, owner, again.backup, session);
+		const back = await backups.restore(third, owner, again.backup, agent(session));
 		const carried = await files(third);
 		const three = await turn(third, "And now?", { responses: [answer("Still here.")] }, session);
 		expect(
@@ -836,7 +1216,12 @@ async function realSandboxes(settings: S3Settings, store: ObjectStore, prefix: s
 			const put = await store.linkToPut(key, { size: bad.length, ttlMs: LINK_TTL_MS });
 			const sent = curl(put.url, ["-T", join(dir, "bad.tgz"), "-o", "/dev/null"]);
 			const fourth = await sandbox("e");
-			const refused = await backups.restore(fourth, owner, { size: bad.length, sha256: sha256(bad), at: 0 }, session);
+			const refused = await backups.restore(
+				fourth,
+				owner,
+				{ size: bad.length, sha256: sha256(bad), at: 0 },
+				agent(session),
+			);
 			expect(
 				"an archive that holds anything but what a copy holds is not unpacked at all",
 				sent === "200" &&
@@ -889,6 +1274,7 @@ async function main(): Promise<number> {
 	});
 	await section("the S3 store, without a network", signer);
 	await section("the backups, on a scripted sandbox", scripted);
+	await section("the agents' session files, and Windlass's copy as before", sessionFiles);
 
 	const settings = withBucket ? bucketSettings() : null;
 	if (withBucket && settings === null) {

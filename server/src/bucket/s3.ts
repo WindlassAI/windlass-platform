@@ -1,6 +1,6 @@
 /**
- * `ObjectStore` on the S3 protocol. It uses presigned PUT and GET, and server-side HEAD, ranged GET
- * and DELETE of one object, all signed
+ * `ObjectStore` on the S3 protocol. It uses presigned PUT and GET, and server-side HEAD, ranged GET,
+ * DELETE and CopyObject of one object, all signed
  * with AWS Signature Version 4. No SDK: the signature is a few HMACs (node:crypto), and a server must
  * not grow a dependency for it. Changing the provider is changing the settings (config.ts,
  * "The bucket").
@@ -143,6 +143,24 @@ export class S3ObjectStore implements ObjectStore {
 		await response.arrayBuffer().catch(() => undefined);
 	}
 
+	async copy(fromKey: string, toKey: string): Promise<boolean> {
+		// CopyObject: a PUT of the destination naming its source, signed with the rest of the request's headers.
+		const source = `/${encode(this.#settings.bucket)}/${checkKey(fromKey).split("/").map(encode).join("/")}`;
+		const response = await this.request("PUT", toKey, { "x-amz-copy-source": source });
+		// Only the status and the store's error code are read: as in `refused`, the rest may name the key's id.
+		// S3 may answer 200 and still fail the copy, with the failure in the body.
+		const body = await response.text().catch(() => "");
+		const failed = /<Error>/.test(body);
+		const code = failed ? /<Code>([A-Za-z0-9]{1,64})<\/Code>/.exec(body)?.[1] : undefined;
+		if (code === "NoSuchKey" || (response.status === 404 && code === undefined)) return false;
+		if (!response.ok || failed)
+			throw new ObjectStoreError(
+				`the bucket answered ${response.status}${code === undefined ? "" : ` (${code})`} to COPY`,
+				response.status,
+			);
+		return true;
+	}
+
 	private path(key: string): string {
 		return `${this.#base}/${checkKey(key).split("/").map(encode).join("/")}`;
 	}
@@ -205,7 +223,7 @@ export class S3ObjectStore implements ObjectStore {
 
 	/** A request of the server's own, with the signature in its `Authorization` header and no body. */
 	private async request(
-		method: "HEAD" | "DELETE" | "GET",
+		method: "HEAD" | "DELETE" | "GET" | "PUT",
 		key: string,
 		extra: Record<string, string> = {},
 	): Promise<Response> {

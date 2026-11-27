@@ -57,7 +57,10 @@ export async function restoreBackup(
 		return false;
 	}
 	try {
-		const restored = await backups.restore(sandbox, { uid: meta.uid, sessionId: meta.sessionId }, saved, session);
+		const restored = await backups.restore(sandbox, { uid: meta.uid, sessionId: meta.sessionId }, saved, {
+			harness: meta.harness,
+			sessionId: session,
+		});
 		if (restored.outcome !== "restored") {
 			console.warn(
 				`[wlp] backup.restore_failed session=${meta.sessionId} turn=${turn}: ${restored.outcome === "missing" ? "the bucket has no copy of the session" : restored.reason}`,
@@ -110,7 +113,11 @@ export async function saveBackup(
 	// Windlass's log only grows: what was too large is not packed again to find that out.
 	if (stopped && backups.maxBytes <= stopped.limit) return;
 	try {
-		const saved = await backups.save(sandbox, { uid: meta.uid, sessionId: meta.sessionId });
+		const saved = await backups.save(
+			sandbox,
+			{ uid: meta.uid, sessionId: meta.sessionId },
+			{ harness: meta.harness, sessionId: session },
+		);
 		if (saved.outcome === "saved") {
 			meta.backup = { windlassSessionId: session, ...saved.backup, turn };
 			meta.backupStopped = null;
