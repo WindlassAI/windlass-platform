@@ -238,6 +238,7 @@ export function rotatePlanToken(
 	return {
 		env: relay.env,
 		placeholder: relay.placeholder,
+		...(relay.lease !== undefined && { lease: relay.lease }),
 		close: async () => {
 			stopped = true;
 			clearTimeout(timer);

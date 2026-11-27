@@ -7,7 +7,9 @@
 //                                     plan's wire (claude-plan, chatgpt-plan) and the agent whose routes it allows
 //   {token}                           later: replaces the token; requests that start after it carry the new one
 //   {took, ok}                        the platform's answer to a request it was asked to count
-// It writes {listening: port} once it can take requests, {take: n} for each request to count,
+// On a paired machine the first line also names `socket`, a Unix socket path in the relay's socket volume: it listens
+// there instead, behind the turn's forwarder, which writes its nonce first (server/src/sandbox/model-relay.ts `openPlan`).
+// It writes {listening: port} once it can take requests (port 0 on a socket), {take: n} for each request to count,
 // {handed: true} after a replaced token, and {seen: {status, headers, code, resetsAt}} for what the provider said of
 // the plan's health (every error, a success at most every SEEN_OK_MS). Standard input closing ends it.
 const net = require("node:net");
@@ -23,6 +25,8 @@ const WIRES = ["claude-plan", "chatgpt-plan"];
 const NONCE = "0".repeat(32);
 const TOKEN = /^[\x21-\x7e]{16,4096}$/;
 const PLACEHOLDER = /^wlp-plan\.[A-Za-z0-9_-]{43}$/;
+// A machine's relay listens in its socket volume (/workspace/plan-<nonce>.sock); the checks, in a directory of their own.
+const SOCKET = /^(?:\/[A-Za-z0-9_-]+)+\/plan-[a-f0-9]{32}\.sock$/;
 const COUNT_MS = 30_000;
 const FIRST_MESSAGE_MS = 10_000;
 const SEEN_OK_MS = 15_000;
@@ -103,22 +107,37 @@ function main(input = process.stdin, output = process.stdout, rest = "") {
 			: undefined;
 		const provider = planProvider(state, { upstream, take, seen: fields => say({ seen: fields }) });
 		let relay = null;
+		const path = config.socket;
+		if (path !== undefined && (typeof path !== "string" || !SOCKET.test(path))) return fail("unusable socket path");
 		const server = net.createServer(socket => {
 			if (!relay) return socket.destroy();
-			socket.unshift(Buffer.from(NONCE, "latin1"));
+			// Behind a forwarder the connection starts with the forwarder's own nonce.
+			if (!path) socket.unshift(Buffer.from(NONCE, "latin1"));
 			relay.emit("connection", socket);
 		});
 		server.maxConnections = 64;
 		server.on("error", error => fail("cannot listen: " + (error.code ?? "error")));
-		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address();
+		const ready = () => {
+			const port = path ? 0 : server.address().port;
 			relay = createRelay({
 				provider,
-				host: "127.0.0.1:" + port,
+				// The forwarder's port in the sandbox (runner/src/egress-proxy.mjs `wlp-model-forward`).
+				host: "127.0.0.1:" + (path ? 17893 : port),
 				forward: target?.protocol === "http:" ? http.request : https.request,
 			});
 			say({ listening: port });
-		});
+		};
+		if (path) {
+			try {
+				require("node:fs").rmSync(path, { force: true });
+			} catch {}
+			process.on("exit", () => {
+				try {
+					require("node:fs").rmSync(path, { force: true });
+				} catch {}
+			});
+			server.listen(path, ready);
+		} else server.listen(0, "127.0.0.1", ready);
 		// A sandbox paused past the turn's end and resumed: the wall clock says so, not the timers.
 		setInterval(() => {
 			if (state.expiresAt <= Date.now()) process.exit(0);

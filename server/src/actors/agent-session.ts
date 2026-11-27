@@ -45,6 +45,8 @@ import {
 	SESSION_HOSTED_SIZE,
 	PLAN_ASK,
 	PLAN_LIMITED,
+	type CredentialSource,
+	type HarnessId,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
@@ -353,6 +355,39 @@ function payerCredential(meta: SessionMeta, answer: PayerAnswer, model: string):
 	});
 }
 
+/**
+ * Windlass's unqualified models on a machine whose runner has a plan relay: the ChatGPT plan, pinned like a hosted
+ * turn's, its token handed to the relay on the machine. Not behind `WLP_PLAN_USERS` (`planAllowed`): the requests leave
+ * from the user's machine, with the sign-in Windlass there has always used.
+ */
+async function machineChatgptPlan(c: Ctx, meta: SessionMeta, model: string): Promise<TurnCredential> {
+	if (meta.demo || meta.environmentBuild) return { model };
+	const ref = { provider: "openai", plan: true } as const;
+	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref, true);
+	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
+	return { model, key: { ...ref, generation } };
+}
+
+/**
+ * Whether Pay with decides a plan agent's turn on a machine (`planRelay`: its runner hands a plan's token to a relay
+ * there), as it does hosted. The machine's own sign-in still wins where it is in use: the owner chose it on Machines
+ * (the default) and the agent is signed in there, as Claude Code's login kept on the machine is.
+ */
+export function machinePaysWith(
+	harness: HarnessId,
+	offered: Pick<OfferedHarness, "signIn"> | undefined,
+	source: CredentialSource | null,
+	planRelay: boolean,
+): boolean {
+	if (!planRelay || !PAY_WITH_HARNESSES.includes(harness) || source === "key") return false;
+	return offered?.signIn !== "token";
+}
+
+/**
+ * `planRelay`: the session's machine's runner hands a plan's token to a relay there (its report's `planRelay`); a
+ * plan pays for its turns as hosted (Pay with, and Windlass's ChatGPT plan). Without it a machine's turns use its own
+ * sign-ins or a forwarded key, and Windlass the ChatGPT access token handed to its model relay.
+ */
 export async function turnCredential(
 	c: Ctx,
 	meta: SessionMeta,
@@ -361,6 +396,7 @@ export async function turnCredential(
 	signal?: AbortSignal,
 	pinned?: TurnCredential,
 	keyOnce?: boolean,
+	planRelay = false,
 ): Promise<TurnCredential> {
 	const hosted = meta.place.kind === "hosted";
 	const harness = meta.harness ?? "windlass";
@@ -369,13 +405,18 @@ export async function turnCredential(
 		return chatgptPlanCredential(c, meta, pinned.model);
 	if (pinned) {
 		const key = pinned.key;
-		if (key && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
+		if (key?.plan && meta.place.kind === "machine" && !planRelay)
+			throw new UserError("This machine's runner can no longer pay with the plan for the paused turn.", {
+				code: "harness_signed_out",
+			});
+		if (key && !key.plan && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
 			throw new UserError("This runner cannot relay the Settings key for the paused turn.", {
 				code: "harness_signed_out",
 			});
 		if (key) {
 			const ref = { provider: key.provider, ...(key.plan && { plan: true as const }) };
-			if ((await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref)) !== key.generation)
+			const onMachine = meta.place.kind === "machine";
+			if ((await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref, onMachine)) !== key.generation)
 				throw new UserError(
 					`The ${key.plan ? "plan" : "Settings key"} for this turn changed or was removed. Start a new turn.`,
 					{ code: "harness_signed_out" },
@@ -385,7 +426,10 @@ export async function turnCredential(
 	}
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
-		if (!provider) return hosted ? chatgptPlanCredential(c, meta, model) : { model };
+		if (!provider) {
+			if (hosted) return chatgptPlanCredential(c, meta, model);
+			return planRelay ? machineChatgptPlan(c, meta, model) : { model };
+		}
 		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
@@ -423,6 +467,15 @@ export async function turnCredential(
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", {
 			code: "harness_signed_out",
 		});
+	if (machinePaysWith(harness, offered, source, planRelay)) {
+		const answer = await userActor(c, meta.uid).internalTurnPayer({
+			sessionId: meta.sessionId,
+			model,
+			keyOnce,
+			machine: true,
+		});
+		if (answer) return payerCredential(meta, answer, model);
+	}
 	const itemMachine =
 		meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
 	const problem = offered
@@ -1173,6 +1226,12 @@ async function startPrompt(
 		// A Settings key, or hosted the ChatGPT plan: refused here, before anything is taken.
 		if (caps.events === "windlass" && (windlassProvider(requested) || meta.place.kind === "hosted"))
 			credential = await turnCredential(c, meta, undefined, requested);
+		// On a machine whose runner has a plan relay, Windlass's ChatGPT models pin the plan: refused here, as hosted.
+		else if (caps.events === "windlass" && meta.place.kind === "machine" && !meta.demo && !meta.environmentBuild) {
+			const known = await runnerLink(c, meta.place.machineId).facts();
+			if (known.report?.planRelay === true)
+				credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, undefined, true);
+		}
 		if (
 			caps.events === "windlass" &&
 			meta.windlassSessionId &&
@@ -1223,7 +1282,15 @@ async function startPrompt(
 				throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, { code: "bad_input" });
-			if (offered.signIn === "none") {
+			const planRelay = facts.report?.planRelay === true;
+			const source =
+				planRelay && meta.place.kind === "machine"
+					? await modelKeyActor(c, meta.uid).internalCredentialSource(meta.place.machineId, offered.id)
+					: null;
+			// Pay with decides here as hosted: what pays, or the prompt waits or asks.
+			if (machinePaysWith(offered.id, offered, source, planRelay))
+				credential = await turnCredential(c, meta, offered, model, undefined, undefined, input.payWith === "key", true);
+			else if (offered.signIn === "none") {
 				const keys = offered.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
 				if (
 					withSettingsKeys(

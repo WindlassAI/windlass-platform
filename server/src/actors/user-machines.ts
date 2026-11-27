@@ -202,6 +202,7 @@ export async function listMachines(c: {
 			}),
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
+			...(report?.planRelay && { planRelay: true as const }),
 			...(harnesses && { harnesses }),
 			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),

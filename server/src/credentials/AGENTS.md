@@ -4,7 +4,8 @@ What pays for a user's model requests, kept sealed in the user's actor. A turn p
 (`server/src/contract/account.ts`): a saved Settings key, or with `plan` a connected subscription plan.
 A key never reaches a sandbox: the platform model relay opens the secret for one request (docs/model-relay.md).
 On E2B and Daytona a plan's token is opened at the turn's start and handed on stdin to a relay inside the sandbox
-that runs as another user than the agent's (`openSavedCredential` in `./transit.ts`, `server/src/sandbox/plan-relay.ts`);
+that runs as another user than the agent's (`openSavedCredential` in `./transit.ts`, `server/src/sandbox/plan-relay.ts`),
+and on a paired machine to the same relay in a container on the machine (`openPlan` in `server/src/sandbox/model-relay.ts`);
 an expiring one (a ChatGPT plan's) is handed again before it runs out (`rotatePlanToken` in `server/src/sandbox/token-file.ts`).
 
 Plans, one `model_plan` row each:
@@ -12,7 +13,8 @@ Plans, one `model_plan` row each:
 - `anthropic`, the Claude plan: the token `claude setup-token` prints, sealed here. Hosted Claude Code pays with it.
 - `openai`, the ChatGPT plan: the user's ChatGPT sign-in. Hosted, Windlass's unqualified models and Codex pay with it
   as a pinned plan (`turnCredential` in `server/src/actors/agent-session.ts`) where `WLP_PLAN_USERS` allows; on a
-  paired machine Windlass uses it as the sign-in, ungated (its token handed per turn, `TokenFile`). Its `sealed` and `short_noted` columns belong to
+  paired machine it pays ungated (`planAllowed`): through a plan relay on the machine where its runner names
+  `plan-relay`, else Windlass's token is handed per turn (`TokenFile`). Its `sealed` and `short_noted` columns belong to
   the user actor's `SignInHolder` (`server/src/signin/holder.ts`), which alone opens it, refreshes it one at a time
   and keeps the refresh token. It is connected with the CLI's `connect codex` (`cli/`): Windlass signs in on the
   user's computer and the command uploads its files (`SignInUpload`), which the holder adopts under a new generation. A relay asks for its current access token (the `token` of a `ChatgptPlan`, `./index.ts`).

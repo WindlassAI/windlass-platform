@@ -332,3 +332,47 @@ test("the user actor counts a plan's turns by session for its cap, and a key cho
 	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM pay_once").get()?.n, 0, "used up");
 	assert.equal(kind((await payer.turnPayer(c, "s4", "sonnet", false))!.decision), "wait");
 });
+
+test("on a machine whose runner has a plan relay, Pay with decides a plan agent's turn as hosted; the machine's own sign-in wins where it is in use", async () => {
+	const payer = await import("../server/src/actors/user-payer.js");
+	const { machinePaysWith } = await import("../server/src/actors/agent-session.js");
+	const onMachine = { harness: "claude" as const, place: { kind: "machine" as const, machineId: "desk" } };
+	assert.equal(payer.paysWithRule(onMachine), false, "an older runner: the machine's own sign-in or a forwarded key");
+	assert.equal(payer.paysWithRule(onMachine, true), true);
+	assert.equal(payer.paysWithRule({ ...onMachine, harness: "opencode" }, true), false, "no plan pays for OpenCode");
+	assert.equal(payer.paysWithRule({ harness: "claude", place: { kind: "hosted" } }), true);
+	// Signed in on the machine (Claude Code's login kept there) and the owner left Machines on the machine: that wins.
+	assert.equal(machinePaysWith("claude", { signIn: "token" }, null, true), false);
+	assert.equal(machinePaysWith("claude", { signIn: "token" }, "machine", true), false);
+	assert.equal(machinePaysWith("claude", { signIn: "none" }, null, true), true);
+	assert.equal(machinePaysWith("codex", { signIn: "unknown" }, "machine", true), true);
+	// The owner chose the Settings key for this machine's agent: a forwarded key, as before.
+	assert.equal(machinePaysWith("claude", { signIn: "none" }, "key", true), false);
+	assert.equal(machinePaysWith("claude", { signIn: "none" }, null, false), false, "no plan relay on this runner");
+	assert.equal(machinePaysWith("opencode", { signIn: "none" }, null, true), false);
+});
+
+test("on a machine the ChatGPT plan can pay with plans off for the account; a Claude plan cannot", async () => {
+	process.env.WLP_PLAN_USERS = "someone-else";
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
+	const { usablePlan, planAllowed } = await import("../server/src/credentials/plans.js");
+	const { sql, db } = account();
+	for (const table of CREDENTIAL_TABLES) sql.exec(table);
+	for (const provider of ["anthropic", "openai"])
+		sql.exec(
+			`INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok) VALUES ('${provider}', 'x', 'g-${provider}', NULL, 1, 1, 1)`,
+		);
+	const { config } = await import("../server/src/config.js");
+	const before = config.plans;
+	(config as { plans: unknown }).plans = new Set(["someone-else"]);
+	try {
+		assert.equal(planAllowed("u_off", "openai"), false);
+		assert.equal(planAllowed("u_off", "openai", true), true);
+		assert.equal(planAllowed("u_off", "anthropic", true), false);
+		assert.equal(await usablePlan(db, "u_off", "openai"), null);
+		assert.equal((await usablePlan(db, "u_off", "openai", true))?.generation, "g-openai");
+		assert.equal(await usablePlan(db, "u_off", "anthropic", true), null);
+	} finally {
+		(config as { plans: unknown }).plans = before;
+	}
+});

@@ -3,7 +3,7 @@
 This folder keeps a user's ChatGPT sign-in for Windlass and seals what actors store or pass about it.
 The sign-in is the user's ChatGPT plan: the holder stores it in the plan's `model_plan` row (`server/src/credentials/plans.ts`),
 and hosted Windlass and Codex pay with its access token as a plan where plans are on (`server/src/credentials/AGENTS.md`); a
-paired machine's Windlass is handed it per turn (`AccessTokens`, `TokenFile`).
+paired machine pays with it through a plan relay there, and only a runner without one is handed it per turn (`AccessTokens`, `TokenFile`).
 The platform never reimplements OpenAI's sign-in: it lends the files Windlass saves to `windlass login ...` for one command at a time.
 OpenAI's sign-in takes only a loopback callback, so the sign-in itself happens on the user's computer: the CLI's `connect codex`
 (`cli/src/windlass-login.ts`) runs `windlass login` there and uploads the files to `server/src/connect-route.ts`, which seals them in transit to the user's actor;

@@ -16,7 +16,14 @@ import { forwardHost, forwardPlaceholder, validProofKey } from "../../../sandbox
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
-import { MACHINE_HARNESS_IDS, MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
+import {
+	HARNESS_IDS,
+	MACHINE_HARNESS_IDS,
+	MODEL_PROVIDERS,
+	type RelaySeen,
+	type SandboxProfileId,
+} from "../contract.js";
+import { relaySeenOf } from "../credentials/plan-health.js";
 import type { BackupOwner, CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { PACK_PATH, SESSION } from "../sandbox/backup-names.js";
 import {
@@ -92,6 +99,11 @@ export const PROFILE_DENIED =
 const harness = optional(oneOf(...MACHINE_HARNESS_IDS));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
+/** A plan's token as the plan relay takes it (plan.cjs `TOKEN`). */
+const planToken = is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,4096}$/.test(v));
+/** What a plan relay on the machine saw of the plan's answers between two asks, at most this many (the latest kept). */
+export const MAX_PLAN_SEEN = 32;
+const relaySeen = is<RelaySeen>(v => relaySeenOf(v) !== null);
 const forwardKey = object({
 	// The relay wire (`credentialWire`): a provider, or a plan's `claude-plan` or `chatgpt-plan`.
 	provider: oneOf(...MODEL_PROVIDERS, "claude-plan", "chatgpt-plan"),
@@ -201,6 +213,8 @@ const operations = {
 				/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
 				modelRelay: optional(oneOf(true)),
 				windlassKeyRelay: optional(oneOf(true)),
+				/** Its turns can pay with a plan through a relay on the machine (the plan operations below), said only to a server that named `plan-relay`. */
+				planRelay: optional(oneOf(true)),
 				blockedNetwork: optional(oneOf(true)),
 				memoryEvents: optional(oneOf(true)),
 				/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
@@ -275,6 +289,29 @@ const operations = {
 		nil,
 	],
 	modelRelayClose: [object({ ...sandbox, lease: relayLease }), nil],
+	/**
+	 * A plan-paid turn's relay on the machine, only to a runner whose connect said `planRelay`: the runner starts the
+	 * plan relay (sandbox/relay/plan.cjs) with the plan's token on its standard input, kept in its memory only, and a
+	 * forwarder in the sandbox. `expiresAt` is when it stops by itself. `planRelayToken` replaces the token (a ChatGPT
+	 * plan's, before it expires); `planRelaySeen` takes what the provider said of the plan since the last ask. It ends
+	 * with `modelRelayClose`, the end of its sandbox, or the conversation's.
+	 */
+	planRelay: [
+		object({
+			...sandbox,
+			wire: oneOf("claude-plan", "chatgpt-plan"),
+			harness: oneOf(...HARNESS_IDS),
+			token: planToken,
+			expiresAt: count,
+		}),
+		object({
+			lease: relayLease,
+			placeholder: is<string>(v => typeof v === "string" && /^wlp-plan\.[A-Za-z0-9_-]{43}$/.test(v)),
+			env,
+		}),
+	],
+	planRelayToken: [object({ ...sandbox, lease: relayLease, token: planToken }), nil],
+	planRelaySeen: [object({ ...sandbox, lease: relayLease }), list(relaySeen, MAX_PLAN_SEEN)],
 	/**
 	 * The copies of a session's agent session that the machine keeps (machine-backups.ts), only to a
 	 * runner whose report said `sessionBackups`. The runner holds each in a volume of its own and checks

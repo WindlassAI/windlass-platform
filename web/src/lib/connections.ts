@@ -19,6 +19,7 @@ import {
 	hostedPayer,
 	keyProviders,
 	machineHarness,
+	planProviders,
 	WINDLASS_KEY_PROVIDERS,
 } from "../../../server/src/sandbox/harnesses.js";
 import type { ReportedHarness } from "./acp";
@@ -206,6 +207,10 @@ export function machineCell(harness: HarnessId, machine: MachineSummary, hosted:
 	if (harness === "windlass") return { ...hosted, id, detail: "Same as Hosted" };
 	const entry = machine.harnesses?.find(one => one.id === harness);
 	if (!entry) return { id, state: "absent", label: "Not on this machine", detail: null, action: { kind: "machines" } };
+	// A runner with a plan relay: Pay with decides here as hosted, unless the machine's own sign-in or the key was chosen
+	// (agent-session.ts `machinePaysWith`).
+	if (machine.planRelay && planProviders(harness).length && entry.source !== "key" && entry.signIn !== "token")
+		return { ...hosted, id, detail: hosted.state === "none" ? null : "Same as Hosted" };
 	if (entry.signIn === "none")
 		return { id, state: "none", label: "Sign in needed", detail: null, action: { kind: "machines" } };
 	if (entry.signIn === "unknown")

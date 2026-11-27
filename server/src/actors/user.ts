@@ -3739,9 +3739,10 @@ export const user = actor({
 			return credentialSource(c.db, machineId, harness);
 		},
 		internalHostedCredentials: c => credentialActions.internalHostedCredentials(c),
-		internalCredentialGeneration: (c, ref: unknown) => credentialActions.internalCredentialGeneration(c, ref),
-		internalCredential: (c, ref: unknown, nonce: string) =>
-			credentialActions.internalCredential(c, ref, nonce, chatgptPlan(c)),
+		internalCredentialGeneration: (c, ref: unknown, onMachine?: boolean) =>
+			credentialActions.internalCredentialGeneration(c, ref, onMachine === true),
+		internalCredential: (c, ref: unknown, nonce: string, onMachine?: boolean) =>
+			credentialActions.internalCredential(c, ref, nonce, chatgptPlan(c), onMachine === true),
 
 		modelPlans: c => credentialActions.modelPlans(c),
 		approvePlanConnect: (c, userCode: string, provider: PlanProvider) =>
@@ -3797,13 +3798,13 @@ export const user = actor({
 			console.log(`[wlp] paywith.key_now uid=${c.key[0]} item=${itemId}`);
 			queueChanged(c);
 		},
-		/** Pay with at a hosted turn's start (user-payer.ts); null for a turn the rule does not decide. */
+		/** Pay with at a turn's start (user-payer.ts); null for a turn the rule does not decide. */
 		internalTurnPayer: async (
 			c,
-			input: { sessionId: string; model: string; keyOnce?: boolean },
+			input: { sessionId: string; model: string; keyOnce?: boolean; machine?: boolean },
 		): Promise<PayerAnswer | null> => {
 			requireServiceFor(c, "call");
-			return turnPayer(c, input.sessionId, input.model, input.keyOnce === true);
+			return turnPayer(c, input.sessionId, input.model, input.keyOnce === true, input.machine === true);
 		},
 		/** What a plan's relay saw the provider say of it (credentials/plan-health.ts), while it is at `generation`. */
 		internalObservePlan: async (c, provider: PlanProvider, generation: string, seen: RelaySeen): Promise<void> => {

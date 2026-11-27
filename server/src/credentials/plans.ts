@@ -83,6 +83,14 @@ export function plansAllowed(uid: string): boolean {
 	return config.plans === "all" || config.plans.has(uid);
 }
 
+/**
+ * Whether this user's turns may pay with `provider`'s plan: `WLP_PLAN_USERS`, except the ChatGPT sign-in on the user's
+ * own machine (`onMachine`), whose requests leave from that machine, as Windlass's there always have.
+ */
+export function planAllowed(uid: string, provider: PlanProvider, onMachine = false): boolean {
+	return plansAllowed(uid) || (onMachine && provider === "openai");
+}
+
 export function planProviderOf(raw: unknown): PlanProvider {
 	if (!isPlanProvider(raw)) throw new UserError("Unknown plan.", { code: "bad_provider" });
 	return raw;
@@ -225,8 +233,9 @@ export async function usablePlan(
 	db: DefaultsDb,
 	uid: string,
 	provider: PlanProvider,
+	onMachine = false,
 ): Promise<(ModelPlanStatus & { generation: string }) | null> {
-	if (!plansAllowed(uid)) return null;
+	if (!planAllowed(uid, provider, onMachine)) return null;
 	const [row] = await db.execute<PlanRow & { generation: string }>(
 		`SELECT ${STATUS_COLUMNS}, generation FROM model_plan WHERE provider = ? AND check_ok = 1`,
 		provider,
@@ -240,8 +249,13 @@ export async function removePlan(db: DefaultsDb, provider: Exclude<PlanProvider,
 }
 
 /** The usable plan's generation: a turn pins it without opening the token. Null while plans are off for the user. */
-export async function planGeneration(db: DefaultsDb, uid: string, provider: PlanProvider): Promise<string | null> {
-	if (!plansAllowed(uid)) return null;
+export async function planGeneration(
+	db: DefaultsDb,
+	uid: string,
+	provider: PlanProvider,
+	onMachine = false,
+): Promise<string | null> {
+	if (!planAllowed(uid, provider, onMachine)) return null;
 	const [row] = await db.execute<{ generation: string }>(
 		"SELECT generation FROM model_plan WHERE provider = ? AND check_ok=1",
 		provider,

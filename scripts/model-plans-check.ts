@@ -610,6 +610,15 @@ test("a ChatGPT plan is the sign-in: generation kept across refreshes, the curre
 	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref), null);
 	assert.equal(await credentials.internalCredential(off.relay, ref, hex(), holder), null);
 	assert.ok(!(await credentials.internalHostedCredentials(off.relay)).some(c => c.plan));
+	// On the user's own machine the ChatGPT plan still pays: its requests leave from there (`planAllowed`).
+	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref, true), "g1");
+	const onMachine = (await credentials.internalCredential(off.relay, ref, hex(), holder, true))!;
+	assert.ok(onMachine && !onMachine.includes(access));
+	// A Claude plan does not: the kill switch holds it on machines too (the machine's own Claude login is the fallback).
+	assert.equal(
+		await credentials.internalCredentialGeneration(off.relay, { provider: "anthropic", plan: true }, true),
+		null,
+	);
 	assert.deepEqual(await loadChatgptSignIn(off.context.db), {
 		sealed: "sealed-off",
 		generation: "g1",
@@ -635,10 +644,11 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 	/** The session's resolver over this account's real credential actions, as the user actor serves them. */
 	const resolver = (who: ReturnType<typeof account>, uid: string) => {
 		const actor = {
-			internalCredentialGeneration: (ref: unknown) => credentials.internalCredentialGeneration(who.relay, ref),
+			internalCredentialGeneration: (ref: unknown, onMachine?: boolean) =>
+				credentials.internalCredentialGeneration(who.relay, ref, onMachine),
 		};
 		const ctx = { client: () => ({ user: { get: () => actor } }), vars: {} };
-		return (model: string, extra: object = {}, pinned?: object) =>
+		return (model: string, extra: object = {}, pinned?: object, planRelay = false) =>
 			turnCredential(
 				ctx as never,
 				{ place: { kind: "hosted" }, uid, harness: "windlass", ...extra } as never,
@@ -646,6 +656,8 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 				model,
 				undefined,
 				pinned as never,
+				undefined,
+				planRelay,
 			);
 	};
 	const turn = resolver(a, "plan-check-a");
@@ -690,6 +702,20 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 		key: { provider: "openai", generation: "key-g" },
 	});
 	assert.deepEqual(await offTurn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), { model: "gpt-5.5" });
+	// A machine whose runner has a plan relay pins the ChatGPT plan too, whatever WLP_PLAN_USERS says: it pays from there.
+	const desk = { place: { kind: "machine", machineId: "desk" } };
+	const offPlan = { provider: "openai", plan: true, generation: "g1" };
+	assert.deepEqual(await offTurn("gpt-5.5", desk, undefined, true), { model: "gpt-5.5", key: offPlan });
+	assert.deepEqual(await offTurn("gpt-5.5", desk, { model: "gpt-5.5", key: offPlan }, true), {
+		model: "gpt-5.5",
+		key: offPlan,
+	});
+	// A runner that lost its plan relay since the turn was paused cannot go on with the plan.
+	await assert.rejects(offTurn("gpt-5.5", desk, { model: "gpt-5.5", key: offPlan }), /can no longer pay with the plan/);
+	assert.deepEqual(await offTurn("openai/gpt-5.5", desk, undefined, true), {
+		model: "openai/gpt-5.5",
+		key: { provider: "openai", generation: "key-g" },
+	});
 });
 
 test("the ChatGPT sign-in's old table is copied into the plan once, keeping its generation", async t => {

@@ -160,6 +160,8 @@ export interface TurnHooks {
 		model: string,
 		signal?: AbortSignal,
 		pinned?: TurnCredential,
+		keyOnce?: boolean,
+		planRelay?: boolean,
 	): Promise<TurnCredential>;
 	takeTurnRequest(c: Ctx, meta: SessionMeta, run: TurnRun, active: ActiveTurn): Promise<boolean>;
 	itemTurnStarted(
@@ -452,7 +454,8 @@ function itemSignInRefusal(
 	credential: TurnCredential,
 ) {
 	const machine = machineHarness(meta.harness);
-	if (!machine || !facts.report) return null;
+	// A plan pays through the machine's plan relay: the machine's own sign-in is not asked for.
+	if (!machine || !facts.report || credential.key?.plan) return null;
 	if (!offered) return `This machine does not offer ${machine.name}.`;
 	const effective = withSettingsKeys(offered, credential.key ? [credential.key.provider] : []);
 	return (
@@ -710,19 +713,20 @@ export async function takeCredential(
 	const { meta, active, signal, run } = t;
 	const layer = (t.layer = await layerOf(c, meta));
 	// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
-	const facts =
-		meta.place.kind === "machine" && machineHarness(meta.harness)
-			? await runnerLink(c, meta.place.machineId).facts()
-			: null;
+	const facts = meta.place.kind === "machine" ? await runnerLink(c, meta.place.machineId).facts() : null;
 	const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
+	// Its runner hands a plan's token to a relay on the machine: a plan pays there as hosted.
+	const planRelay = facts?.report?.planRelay === true;
 	const credential =
 		active.credential ??
-		(await t.hooks.turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
-			if (error instanceof PlanWaitError) return planWait(active.item, error);
-			if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
-				throw error;
-			return refuseItemPolicy(active.item, error.message);
-		}));
+		(await t.hooks
+			.turnCredential(c, meta, offered, meta.model, signal, run?.credential, false, planRelay)
+			.catch(error => {
+				if (error instanceof PlanWaitError) return planWait(active.item, error);
+				if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
+					throw error;
+				return refuseItemPolicy(active.item, error.message);
+			}));
 	const { key } = credential;
 	t.itemSignIn = credential.itemSignIn ?? meta.origin?.signIn;
 	t.credential = credential;
@@ -964,7 +968,9 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 				key,
 				takeRequest,
 				openSecret: () =>
-					openSavedCredential(meta.uid, key, (uid, ref, nonce) => modelKeyActor(c, uid).internalCredential(ref, nonce)),
+					openSavedCredential(meta.uid, key, (uid, ref, nonce) =>
+						modelKeyActor(c, uid).internalCredential(ref, nonce, meta.place.kind === "machine"),
+					),
 				// A plan's relay in the sandbox tells what the provider said of the plan's health (credentials/plan-health.ts).
 				...(key.plan &&
 					isPlanProvider(key.provider) && {

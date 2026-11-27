@@ -1,6 +1,7 @@
 /**
- * Pay with at a hosted turn's start, in the user's actor (pay-with.ts `decidePayer` is the rule): which of the
- * connected plan and the saved key pays for a turn of an agent a plan can pay for, or why the turn waits.
+ * Pay with at a turn's start (hosted, or on a machine with a plan relay), in the user's actor (pay-with.ts
+ * `decidePayer` is the rule): which of the connected plan and the saved key pays for a turn of an agent a plan can
+ * pay for, or why the turn waits.
  *
  * The turn queue (user-items.ts `runQueue`) asks first for an item's turn, so an item waits for its plan's reset or for
  * room under the plan's parallel-turn cap before it is given a slot; the session asks again at the turn's start
@@ -71,14 +72,15 @@ export interface PayerContext {
 	at: number;
 }
 
-export async function payerContext(c: ItemsCtx): Promise<PayerContext> {
+/** `onMachine`: for a turn on the user's machine, where the ChatGPT plan pays whatever `WLP_PLAN_USERS` says (`planAllowed`). */
+export async function payerContext(c: ItemsCtx, onMachine = false): Promise<PayerContext> {
 	const uid = c.key[0]!;
 	const [choices, keys, once, anthropic, openai] = await Promise.all([
 		readPayWith(c.db),
 		savedModelKeys(c.db),
 		c.db.execute<{ session: string }>("SELECT session FROM pay_once"),
-		usablePlan(c.db, uid, "anthropic"),
-		usablePlan(c.db, uid, "openai"),
+		usablePlan(c.db, uid, "anthropic", onMachine),
+		usablePlan(c.db, uid, "openai", onMachine),
 	]);
 	return {
 		choices,
@@ -108,9 +110,13 @@ function filerOf(c: ItemsCtx, session: SessionSummary): ItemFiler | undefined {
 	return item?.origin?.filer;
 }
 
-/** Whether Pay with decides this session's turns: hosted, of an agent a plan can pay for. */
-export function paysWithRule(session: Pick<SessionSummary, "place" | "harness">): boolean {
-	return session.place.kind === "hosted" && !!session.harness && PAY_WITH_HARNESSES.includes(session.harness);
+/**
+ * Whether Pay with decides this session's turns: of an agent a plan can pay for, hosted, or on a machine whose runner
+ * hands a plan's token to a relay there (`onMachine`, which the session knows from its runner's report).
+ */
+export function paysWithRule(session: Pick<SessionSummary, "place" | "harness">, onMachine = false): boolean {
+	const placed = session.place.kind === "hosted" || (onMachine && session.place.kind === "machine");
+	return placed && !!session.harness && PAY_WITH_HARNESSES.includes(session.harness);
 }
 
 /** Pay with for one turn of `session`, synchronously from `context`. */
@@ -171,10 +177,11 @@ export async function turnPayer(
 	sessionId: string,
 	model: string,
 	keyOnce: boolean,
+	onMachine = false,
 ): Promise<PayerAnswer | null> {
 	const session = c.vars.sessions.get(sessionId);
-	if (!session || !paysWithRule(session)) return null;
-	const context = await payerContext(c);
+	if (!session || !paysWithRule(session, onMachine)) return null;
+	const context = await payerContext(c, onMachine);
 	const answer = payerOf(c, context, session, sessionModel(session, model), keyOnce);
 	if (answer.ref?.plan && answer.plan) holdPlanTurn(c, answer.plan, sessionId);
 	if (answer.ref && !answer.ref.plan && context.keyOnce.has(sessionId))

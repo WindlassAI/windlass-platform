@@ -27,9 +27,11 @@ export const PLAN_RELAY_LOADER = `let b="";const d=c=>{b+=c;const i=b.indexOf("\
 /** How the relay is started, as the transport user (`StartOptions.gitUser`). */
 export const PLAN_RELAY_ARGV = [GUEST_NODE, "--max-old-space-size=96", "-e", PLAN_RELAY_LOADER];
 
+declare const PLAN_RELAY_SOURCES: string;
 let sources: string | undefined;
-/** The relay's modules as one JSON line, read once from sandbox/relay. */
+/** The relay's modules as one JSON line, read once from sandbox/relay (the runner's bundle carries them). */
 export function planRelaySources(): string {
+	if (typeof PLAN_RELAY_SOURCES === "string") return PLAN_RELAY_SOURCES;
 	sources ??= JSON.stringify(
 		Object.fromEntries(
 			SOURCES.map(name => [name, readFileSync(new URL(`../../../sandbox/relay/${name}`, import.meta.url), "utf8")]),
@@ -62,6 +64,8 @@ export interface PlanRelayOptions extends LocalPlanRelayOptions {
 	requestLimit?: number;
 	/** The relay's checks only: where it sends requests in place of the wire's API host. */
 	upstream?: string;
+	/** A Unix socket to listen on instead of a loopback port (a machine's relay behind the turn's forwarder, plan.cjs `SOCKET`). */
+	socket?: string;
 	startMs?: number;
 }
 
@@ -158,7 +162,7 @@ export async function startPlanRelay(
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 	running.write(`${planRelaySources()}\n`);
 	running.write(
-		`${JSON.stringify({ token, placeholder, expiresAt: options.expiresAt, wire: options.wire, harness: options.harness, upstream: options.upstream })}\n`,
+		`${JSON.stringify({ token, placeholder, expiresAt: options.expiresAt, wire: options.wire, harness: options.harness, upstream: options.upstream, socket: options.socket })}\n`,
 	);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const port = await Promise.race([

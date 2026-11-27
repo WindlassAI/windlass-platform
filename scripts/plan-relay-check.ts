@@ -381,6 +381,69 @@ test("on a ChatGPT plan it takes Windlass's two routes, at the /v1 base Windlass
 	await rotating.close();
 });
 
+test("on a paired machine it listens on its own socket behind the turn's forwarder, which writes its nonce first", async t => {
+	const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { connect } = await import("node:net");
+	const dir = mkdtempSync(`${tmpdir()}/plan-check-`);
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const socket = `${dir}/plan-${"a".repeat(32)}.sock`;
+	const { seen, relay } = await stack(t, undefined, { socket });
+	assert.ok(existsSync(socket));
+	// As runner/src/egress-proxy.mjs `wlp-model-forward` does: the nonce, then the agent's bytes, with its port in Host.
+	const viaForwarder = (bearer: string): Promise<number> =>
+		new Promise((resolve, reject) => {
+			const req = request(
+				{
+					method: "POST",
+					path: "/v1/messages?beta=true",
+					headers: {
+						...CLAUDE_HEADERS,
+						host: "127.0.0.1:17893",
+						authorization: `Bearer ${bearer}`,
+						connection: "close",
+					},
+					createConnection: () => {
+						const conn = connect(socket);
+						conn.write("b".repeat(32));
+						return conn;
+					},
+				},
+				res => {
+					res.resume();
+					res.on("end", () => resolve(res.statusCode ?? 0));
+				},
+			);
+			req.on("error", reject);
+			req.end('{"model":"sonnet"}');
+		});
+	assert.equal(await viaForwarder(relay.placeholder), 200);
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${TOKEN}`);
+	assert.equal(await viaForwarder("wlp-plan." + "x".repeat(43)), 401);
+	await relay.close();
+	for (let i = 0; i < 50 && existsSync(socket); i++) await new Promise(r => setTimeout(r, 20));
+	assert.ok(!existsSync(socket), "its socket goes with it");
+});
+
+test("it refuses a socket path outside the form a machine's relay uses", async () => {
+	const sources = planRelaySources() + "\n";
+	const placeholder = "wlp-plan." + "p".repeat(43);
+	const said = await bare(
+		sources +
+			JSON.stringify({
+				token: TOKEN,
+				placeholder,
+				expiresAt: Date.now() + 60_000,
+				wire: "claude-plan",
+				harness: "claude",
+				socket: "/workspace/../relay.sock",
+			}) +
+			"\n",
+	);
+	assert.equal(said.code, 2);
+	assert.match(said.stderr, /unusable socket path/);
+});
+
 test("it does not start without a token on standard input", async () => {
 	const sources = planRelaySources() + "\n";
 	const placeholder = "wlp-plan." + "p".repeat(43);

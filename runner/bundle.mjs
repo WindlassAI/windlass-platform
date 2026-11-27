@@ -88,6 +88,19 @@ await build({
 		HARNESS_IMAGES: JSON.stringify(harnessImages),
 		CODEX_RELAY_SCRIPT: JSON.stringify(codexRelay.outputFiles[0].text),
 		WINDLASS_RELAY_SCRIPT: JSON.stringify(windlassRelay.outputFiles[0].text),
+		// The plan relay's modules as the loader reads them (server/src/sandbox/plan-relay.ts `planRelaySources`).
+		PLAN_RELAY_SOURCES: JSON.stringify(
+			JSON.stringify(
+				Object.fromEntries(
+					await Promise.all(
+						["server.cjs", "wires.cjs", "windlass.cjs", "plan.cjs"].map(async name => [
+							name,
+							await readFile(new URL(`../sandbox/relay/${name}`, import.meta.url), "utf8"),
+						]),
+					),
+				),
+			),
+		),
 		OPENCODE_RELAY_SCRIPT: JSON.stringify(relay.outputFiles[0].text),
 		CLAUDE_RELAY_SCRIPT: JSON.stringify(claudeRelay.outputFiles[0].text),
 	},

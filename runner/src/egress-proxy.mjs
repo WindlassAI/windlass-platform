@@ -476,8 +476,10 @@ if (process.argv[1] === "wlp-egress-forward") {
 // with the turn's nonce. Only it and the relay mount the relay's socket volume. It says it is ready, in a
 // tmpfs of its own the session cannot reach, only once it holds 127.0.0.1:17893 itself: a process of the
 // session that took the port first makes it exit instead, and the turn fails (server/src/sandbox/model-relay.ts).
+// A plan turn's forwarder names its plan relay's own socket (`plan-<nonce>.sock`) as the third argument.
 if (process.argv[1] === "wlp-model-forward" && /^[0-9a-f]{32}$/.test(process.argv[2] ?? "")) {
-	const server = forward(17893, "/run/wlp-model/socket/relay.sock", process.argv[2]);
+	const plan = /^plan-[0-9a-f]{32}\.sock$/.test(process.argv[3] ?? "") ? process.argv[3] : null;
+	const server = forward(17893, "/run/wlp-model/socket/" + (plan ?? "relay.sock"), process.argv[2]);
 	server.once("error", () => process.exit(3));
 	server.once("listening", () => writeFileSync(MODEL_FORWARD_READY, String(process.pid), { mode: 0o600 }));
 }

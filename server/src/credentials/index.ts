@@ -28,6 +28,7 @@ import {
 	connectPlan,
 	MODEL_PLAN_TABLES,
 	PlanProblem,
+	planAllowed,
 	planGeneration,
 	planRefs,
 	planProviderOf,
@@ -78,11 +79,11 @@ export async function hostedCredentials(db: DefaultsDb, uid: string): Promise<Ho
 }
 
 /** The secret behind a reference and its generation (and a ChatGPT plan's token's expiry), or null when none is saved and usable. */
-function saved(db: DefaultsDb, uid: string, ref: Saved, chatgpt: ChatgptPlan | undefined) {
+function saved(db: DefaultsDb, uid: string, ref: Saved, chatgpt: ChatgptPlan | undefined, onMachine: boolean) {
 	if (!ref.plan) return savedKey(db, uid, ref.provider);
 	const provider = planProviderOf(ref.provider);
 	if (provider !== "openai") return savedPlan(db, uid, provider);
-	return plansAllowed(uid) && chatgpt ? chatgpt.token() : null;
+	return planAllowed(uid, provider, onMachine) && chatgpt ? chatgpt.token() : null;
 }
 
 async function decideConnect(
@@ -208,20 +209,29 @@ export const credentialActions = {
 		const [keys, plans] = await Promise.all([savedModelKeys(c.db), planRefs(c.db, uid)]);
 		return [...keys, ...plans.map(p => ({ ...p, plan: true as const }))];
 	},
-	async internalCredentialGeneration(c: Context, raw: unknown): Promise<string | null> {
+	/** `onMachine`: for a turn on the user's own machine, where the ChatGPT plan pays whatever `WLP_PLAN_USERS` says (`planAllowed`). */
+	async internalCredentialGeneration(c: Context, raw: unknown, onMachine = false): Promise<string | null> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, modelKeyCaller(uid));
 		const ref = savedRefOf(raw);
-		return ref.plan ? planGeneration(c.db, uid, planProviderOf(ref.provider)) : keyGeneration(c.db, ref.provider);
+		return ref.plan
+			? planGeneration(c.db, uid, planProviderOf(ref.provider), onMachine === true)
+			: keyGeneration(c.db, ref.provider);
 	},
 	/** The relay route asks for the secret per request; it is sealed for that request's nonce, for a minute. */
-	async internalCredential(c: Context, raw: unknown, nonce: string, chatgpt?: ChatgptPlan): Promise<string | null> {
+	async internalCredential(
+		c: Context,
+		raw: unknown,
+		nonce: string,
+		chatgpt?: ChatgptPlan,
+		onMachine = false,
+	): Promise<string | null> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, modelKeyCaller(uid));
 		const ref = savedRefOf(raw);
 		if (typeof nonce !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce))
 			throw new UserError("Invalid credential request nonce.", { code: "bad_nonce" });
-		const found = await saved(c.db, uid, ref, chatgpt);
+		const found = await saved(c.db, uid, ref, chatgpt, onMachine === true);
 		return found && sealCredentialTransit(uid, ref, nonce, found);
 	},
 };

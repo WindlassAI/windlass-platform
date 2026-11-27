@@ -138,6 +138,32 @@ describe("a machine's cell", () => {
 		).toMatchObject({ state: "unknown", detail: "timed out" });
 	});
 
+	it("follows Pay with as Hosted on a runner with a plan relay, unless the machine's own sign-in or the key was chosen", () => {
+		const claudeHosted = hostedCell("claude", inputs({ plans: { allowed: true, plans: [plan("anthropic")] } }));
+		const relayed = (entry: NonNullable<MachineSummary["harnesses"]>[number]) =>
+			({ ...machine([entry]), planRelay: true }) as MachineSummary;
+		const entry = { id: "claude" as const, adapter: "a", image: "i" };
+		expect(machineCell("claude", relayed({ ...entry, signIn: "none" }), claudeHosted)).toMatchObject({
+			id: "claude-m_mac",
+			state: claudeHosted.state,
+			label: claudeHosted.label,
+			detail: "Same as Hosted",
+		});
+		// A Claude login kept on the machine wins there.
+		expect(machineCell("claude", relayed({ ...entry, signIn: "token" }), claudeHosted)).toMatchObject({
+			state: "machine",
+		});
+		// No plan pays for OpenCode: its machine logins, as before.
+		expect(machineCell("opencode", relayed({ ...entry, id: "opencode", signIn: "none" }), claudeHosted)).toMatchObject({
+			state: "none",
+			label: "Sign in needed",
+		});
+		// Without the relay (an older runner) the machine's sign-in is still asked for.
+		expect(machineCell("claude", machine([{ ...entry, signIn: "none" }]), claudeHosted)).toMatchObject({
+			label: "Sign in needed",
+		});
+	});
+
 	it("offers the choice of payer only where the runner relays keys and a key of its sign-in's provider is saved", () => {
 		const entry = {
 			id: "claude" as const,

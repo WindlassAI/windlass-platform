@@ -272,11 +272,15 @@ export interface UserInternal {
 	internalPlanStatus(
 		provider: import("../contract.js").PlanProvider,
 	): Promise<import("../contract.js").ModelPlanStatus | null>;
-	/** Pay with at a hosted turn's start (user-payer.ts): what pays, or why the turn waits; null where the rule does not decide. */
+	/**
+	 * Pay with at a turn's start (user-payer.ts): what pays, or why the turn waits; null where the rule does not decide.
+	 * `machine`: the turn runs on the user's machine, whose runner hands a plan's token to a relay there (`plan-relay`).
+	 */
 	internalTurnPayer(input: {
 		sessionId: string;
 		model: string;
 		keyOnce?: boolean;
+		machine?: boolean;
 	}): Promise<import("./user-payer.js").PayerAnswer | null>;
 
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
@@ -624,11 +628,15 @@ export function modelKeyActor(
 	/** What a hosted turn can pay with: checked keys and usable plans, each with its generation. */
 	internalHostedCredentials(): Promise<import("../contract.js").CredentialRef[]>;
 	/** The saved generation of a key, or with `plan` of the connected plan; null when none is usable. */
-	internalCredentialGeneration(ref: Omit<import("../contract.js").CredentialRef, "generation">): Promise<string | null>;
-	/** The secret behind `ref`, sealed for the relay's request `nonce` (`openCredentialTransit`). */
+	internalCredentialGeneration(
+		ref: Omit<import("../contract.js").CredentialRef, "generation">,
+		onMachine?: boolean,
+	): Promise<string | null>;
+	/** The secret behind `ref`, sealed for the relay's request `nonce` (`openCredentialTransit`). `onMachine`: `planAllowed`. */
 	internalCredential(
 		ref: Omit<import("../contract.js").CredentialRef, "generation">,
 		nonce: string,
+		onMachine?: boolean,
 	): Promise<string | null>;
 	/** The models the agent of a turn paid by the plan `ref` reported, kept for that plan while it is at that generation. */
 	internalPlanModels(ref: import("../contract.js").CredentialRef, ids: string[]): Promise<boolean>;

@@ -189,6 +189,10 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    `modelRelayToken` and `modelRelayClose` operations (docs/model-relay.md); without
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
  *   windlass-key-relay  a connect's `windlassKeyRelay`: the runner accepts forwarded Settings-key leases for Windlass
+ *   plan-relay       the report's `planRelay`, a connect's `planRelay`, and the `planRelay`, `planRelayToken` and
+ *                    `planRelaySeen` operations: a plan-paid turn's token is handed to a relay on the machine, kept
+ *                    in its memory only, so the plan's requests leave from the machine (docs/machines.md); without
+ *                    it a machine's turns use its own sign-ins, and Windlass's ChatGPT token goes to its model relay
  *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
  *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
  *   memory-events    a connect's `memoryEvents`: the session can read its container's memory limit and OOM kills
@@ -216,6 +220,7 @@ export const SERVER_CAPABILITIES = [
 	"model-relay",
 	"windlass-key-relay",
 	"harness-key-relay",
+	"plan-relay",
 	"start-times",
 	"store-limits",
 	"sign-in-reason",
@@ -459,6 +464,8 @@ const report = object({
 	blockedNetwork: optional(boolean),
 	/** Windlass's turns can send their model requests through the machine's model relay (docs/model-relay.md). */
 	modelRelay: optional(boolean),
+	/** Plan-paid turns can hand their plan's token to a relay on the machine (`plan-relay`). */
+	planRelay: optional(oneOf(true)),
 	/** A resumed conversation keeps its processes, output and relay leases through the grace (`resumable-conversation`). */
 	resumableConversation: optional(boolean),
 	/** The runner keeps copies of its sessions' agent sessions on the machine (`session-backups`, sandbox/machine-backups.ts). */
@@ -510,6 +517,7 @@ export function reportFor<R extends Report>(report: R, named: readonly string[] 
 		"egress-domains": "egressDomains",
 		"session-volumes": "sessionVolumes",
 		"model-relay": "modelRelay",
+		"plan-relay": "planRelay",
 		"store-limits": "storeLimits",
 		"resumable-conversation": "resumableConversation",
 		"session-backups": "sessionBackups",

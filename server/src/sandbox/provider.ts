@@ -146,6 +146,11 @@ export interface TurnSandbox extends SandboxHandle {
 	localPlanRelay?(token: string, options: LocalPlanRelayOptions): Promise<LocalModelRelay>;
 	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
+	/**
+	 * Takes up a plan relay the runner kept on the machine through a server's restart (a durable link): its token is
+	 * handed again with `hand`, and `close` ends it. `onSeen` gets what it saw of the plan from here on.
+	 */
+	resumePlanRelay?(relay: PlanRelayLease, onSeen?: LocalPlanRelayOptions["onSeen"]): LocalModelRelay;
 }
 
 export type TakeRelayRequest = () => Promise<boolean>;
@@ -153,7 +158,14 @@ export type TakeRelayRequest = () => Promise<boolean>;
 /** What pays for a key-backed turn, and the harness whose routes its lease allows. */
 export type KeyReference = CredentialRef & { harness: HarnessId };
 
-export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close">;
+export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close" | "lease">;
+
+/** A machine's plan relay as a turn's checkpoint records it, for a restarted server to take up (`resumePlanRelay`). No credential. */
+export interface PlanRelayLease {
+	lease: string;
+	placeholder: string;
+	env: Record<string, string>;
+}
 
 /** Only this scoped platform placeholder crosses to a Docker relay. */
 export interface ForwardedKeyLease {

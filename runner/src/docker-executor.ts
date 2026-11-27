@@ -519,6 +519,8 @@ export class Executor extends MachineDocker {
 	modelRelays = false;
 	harnessKeyRelays = false;
 	windlassKeyRelays = false;
+	/** The server named `plan-relay`: plan-paid turns hand their token to a relay on this machine (`openPlan`). */
+	planRelays = false;
 	startTimes = false;
 	blockedNetwork = false;
 	memoryEvents = false;
@@ -1076,7 +1078,9 @@ export class Executor extends MachineDocker {
 		if (harness) {
 			const nonce = await this.relayNonce(raw).catch(() => "");
 			if (nonce) await withLoginVolume(this, () => endHarnessLeases(this, harness, nonce));
-		} else await this.modelRelay.endSandbox(raw).catch(() => {});
+		}
+		// A harness sandbox's plan relay and forwarder are the model relay's too.
+		await this.modelRelay.endSandbox(raw).catch(() => {});
 	}
 
 	private async prepareModelRelay(): Promise<void> {
@@ -1132,6 +1136,8 @@ export class Executor extends MachineDocker {
 			sessionVolumes: true,
 			...(this.sessionBackups && { sessionBackups: true }),
 			modelRelay: this.modelRelayReady,
+			// Taken out for a server that did not name plan-relay (`reportFor`).
+			planRelay: true,
 			egress: this.network.policy.mode,
 			allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
@@ -1476,6 +1482,7 @@ export class Executor extends MachineDocker {
 				...(this.canReseed && { needsSpareSeed: true as const }),
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				...(!box.harness && this.windlassKeyRelays && { windlassKeyRelay: true as const }),
+				...(this.planRelays && { planRelay: true as const }),
 				// A harness uses its credential relay for forwarded platform leases.
 				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady)
 					? { modelRelay: true as const }

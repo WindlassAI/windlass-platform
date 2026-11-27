@@ -51,6 +51,7 @@ Egress:
 Harness sign-in and relays:
 
 - `./claude-relay.ts` provisions harness relays and projects placeholder credentials into sessions.
+- A plan-paid turn's relay (`plan-relay`) is `openPlan` of `DockerModelRelay` in `server/src/sandbox/model-relay.ts`, run from `./session.ts` (`planRelay`, `planRelayToken`, `planRelaySeen`); `planEnv` in `./machine-harnesses.ts` is what Claude Code and Codex get for it.
 - `./harness-login.ts` owns the login volume lock, Claude sign-in state and pasted tokens; `./claude-output.ts` scrubs setup-token text from output.
 - `./codex-login.ts`, `./opencode-login.ts`, `./opencode-import.ts` and `./opencode-providers.ts` handle Codex and OpenCode sign-in and providers.
 - `./harness-options.ts` probes each harness's models and options for the inventory report.
@@ -66,6 +67,7 @@ Setup wizard:
 - Change session wire messages in the shared [protocol](../../server/src/runner/protocol.ts) and control messages in [control](../../server/src/runner/control.ts). Both endpoints import their types and checks; see [server runner guide](../../server/src/runner/AGENTS.md).
 - Scrub harness output before sending or retaining frames. Reconnect can replay output already buffered by the channel.
 - Mount the login volume on the relay, never on the session. The session gets a placeholder bearer for its requests.
+- A plan's token stays in the plan relay's memory: it arrives on the relay's standard input, never in a file, a volume, an argument or an environment.
 - Act only on Docker resources labelled for this pairing.
 - Never unpack or parse a session's copy in the runner; move it as bytes, checked by size and hash, and only for the asking session.
 
