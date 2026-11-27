@@ -30,7 +30,8 @@ import { featureBranch, subtaskBranch, openFeature, refHead, advanceFeatureRef, 
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
-import { gitlabItemHost, gitlabCi, gitlabEyes, prepareGitlabMerge, type GitlabItemHost } from "./gitlab-item.js";
+import { gitlabItemHost, gitlabCi, gitlabItem, prepareGitlabMerge } from "./gitlab-item.js";
+import type { ItemHost } from "../codehost/item.js";
 import { GitlabError } from "../gitlab/app.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type LinearBinding } from "../factory/intake.js";
@@ -999,7 +1000,30 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read",
 	const resolved = await resolveBoundRepository(app, connection, repositoryId, installationId, access);
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, (token) => host.readPull(token, owner, name, number), { reuse: true });
-	return { app, host, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
+	return { app, host, installationId: resolved.installation.id, repositoryId, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
+}
+
+/** The item host in the shape every code host shares, from the user's GitHub connection. */
+function githubItem(hub: Awaited<ReturnType<typeof github>>): ItemHost {
+	const { app, installationId, repositoryId, owner, name } = hub;
+	return {
+		host: hub.host, owner, name, pull: hub.pull,
+		target: head => ({ installationId, repositoryId: hub.repository.id, owner, name, head }),
+		withToken: (permissions, step) => app.withToken(installationId, { repositoryId, permissions: { metadata: "read", ...permissions } }, step),
+		ownComment: comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]",
+		acknowledge: key => app.acknowledgeFeedback(installationId, { id: repositoryId, owner, name }, key),
+		capabilities: { checkRuns: true, webhooks: githubConfig().pollFallback },
+	};
+}
+
+/**
+ * The item's code host, whichever it is, in one shape (`ItemHost`). Callers branch on `capabilities`, and reach for
+ * `github` only in flows GitHub alone has (push observation, feedback reconciliation).
+ */
+async function hostFor(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read", repo?: FeatureRepoState): Promise<ItemHost & { github?: Awaited<ReturnType<typeof github>> }> {
+	if (meta.repository.provider === "gitlab") return gitlabItem(await gitlabItemHost(c, meta.uid, meta.repository));
+	const hub = await github(c, meta, access, repo);
+	return { ...githubItem(hub), github: hub };
 }
 
 /**
@@ -1280,7 +1304,7 @@ async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<vo
  * Without a kept id (posted before ids were kept, or the reply to the post was lost) the platform looks
  * for its marker, and refuses rather than post again when the list is cut short.
  */
-type CommentHub = ReturnType<typeof githubServices> | GitlabItemHost;
+type CommentHub = Pick<ItemHost, "host" | "ownComment">;
 async function writeMarkedComment(c: Ctx, hub: CommentHub, token: string, owner: string, name: string, pr: number, body: string) {
 	const [kept] = await c.db.execute<{ id: string }>("SELECT id FROM verdict_comment WHERE pr=?", pr);
 	if (kept) {
@@ -1304,8 +1328,7 @@ async function upsertMarkedComment(hub: CommentHub, token: string, owner: string
 	const marker = body.split("\n", 1)[0];
 	const { host } = hub;
 	const comments = await host.listComments(token, owner, name, pr, true);
-	const own = comments.find(c => c.body.split("\n", 1)[0] === marker && ("viewer" in hub
-		? String(c.person?.id) === hub.viewer : c.author.toLowerCase() === hub.app.settings.slug.toLowerCase() + "[bot]"));
+	const own = comments.find(c => c.body.split("\n", 1)[0] === marker && hub.ownComment(c));
 	if (own && !own.id) throw new Error("GitHub returned an invalid verdict comment id");
 	const id = own?.id ?? await host.createComment(token, owner, name, pr, body);
 	if (own?.id) await host.updateComment(token, owner, name, own.id, body);
@@ -1342,7 +1365,7 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			action = "post the verdict comment";
 			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
 			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, unfinished: effect.unfinished, owner, name });
-			await writeMarkedComment(c, hub, token, owner, name, number, body);
+			await writeMarkedComment(c, githubItem(hub), token, owner, name, number, body);
 		});
 	} catch (error) {
 		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
@@ -1856,7 +1879,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "review_comment": {
 			const [filing] = await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", effect.key);
 			if (!filing) return true;
-			const hub = meta.repository.provider === "gitlab" ? await gitlabItemHost(c, meta.uid, meta.repository) : await github(c, meta, "write");
+			const hub = await hostFor(c, meta, "write");
 			const review: ItemReview = JSON.parse(filing.data);
 			const screenshots = effect.parts ? await Promise.all(effect.parts.map(async part => {
 				const sets = await itemActor(c, meta.uid, part.id).internalScreenshotSets();
@@ -1868,12 +1891,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				screenshots.push({ label: "", count: reviews.reduce((n, r) => n + r.screenshots.length, report?.screenshots.length ?? 0) });
 			}
 			const body = reviewRoundComment(item.id, review, hub, screenshots);
-			if ("viewer" in hub) {
-				await upsertMarkedComment(hub, hub.token, hub.owner, hub.name, effect.pr, body);
-				return true;
-			}
-			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } },
-				token => upsertMarkedComment(hub, token, hub.owner, hub.name, effect.pr, body));
+			await hub.withToken({ pull_requests: "write" }, token => upsertMarkedComment(hub, token, hub.owner, hub.name, effect.pr, body));
 			return true;
 		}
 		case "post_requested_review": {
@@ -1904,18 +1922,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await feedbackReady(c);
 			return "deferred";
 		case "feedback_ack": {
-			if (meta.repository.provider === "gitlab") {
-				await gitlabEyes(await gitlabItemHost(c, meta.uid, meta.repository), effect.key);
-				return true;
-			}
-			const hub = await github(c, meta);
-			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key);
+			await (await hostFor(c, meta)).acknowledge(effect.key);
 			return true;
 		}
 		case "feedback_comment": {
 			const update = c.vars.handoff.then(async () => {
 				if (!live(c.vars.stored!.item, effect)) return;
-				const hub = meta.repository.provider === "gitlab" ? await gitlabItemHost(c, meta.uid, meta.repository) : await github(c, meta);
+				const hub = await hostFor(c, meta);
 				const write = async (token: string) => {
 					const marker = `<!-- windlass-item:${item.id} -->`;
 					const [prev] = await c.db.execute<{data:string}>("SELECT data FROM verdicts WHERE run < ? ORDER BY at DESC,rowid DESC LIMIT 1", effect.run);
@@ -1924,12 +1937,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						const verdict: Verdict = JSON.parse(prev.data);
 						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? AND json_extract(data,'$.requestedPull') IS NULL ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
-							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name, gitlabUrl: "viewer" in hub ? hub.project.url : undefined }, effect);
+							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name, gitlabUrl: hub.webUrl }, effect);
 					}
 					await writeMarkedComment(c, hub, token, hub.owner, hub.name, item.pr!.number, body);
 				};
-				if ("viewer" in hub) await write(hub.token);
-				else await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, write);
+				await hub.withToken({ pull_requests: "write" }, write);
 			});
 			c.vars.handoff = update.catch(() => {});
 			await update;
@@ -2235,8 +2247,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (!await take(c, { ...effect, kind: "ci_rerun_started", at: Date.now() })) return false;
 			let result;
 			try {
-				const hub = meta.repository.provider === "gitlab" ? await gitlabItemHost(c, meta.uid, meta.repository) : await github(c, meta, "write", effect.repo ? repoOf(item, effect.repo) : undefined);
-				result = await hub.host.rerunJobs("viewer" in hub ? hub.target(effect.head) : { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
+				const hub = await hostFor(c, meta, "write", effect.repo ? repoOf(item, effect.repo) : undefined);
+				result = await hub.host.rerunJobs(hub.target(effect.head), effect.jobs);
 			} catch (error) {
 				result = { accepted: [], said: `Could not request a CI rerun: ${describeError(error)}.` };
 			}
@@ -2253,17 +2265,17 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "poll_pr": {
 			// In review, too: the last turn's sandbox time is settled while the person reviews.
 			await factsOf(c, meta);
-			const hub = meta.repository.provider === "gitlab" ? await gitlabItemHost(c, meta.uid, meta.repository) : await github(c, meta);
+			const hub = await hostFor(c, meta);
 			const pull = await hub.pull(effect.pr);
 			const ci = item.run?.ci;
-			if ((pull.state === "open" || pull.state === "draft") && !("viewer" in hub) && await observePush(c, item, hub, pull.head, pull.headSha)) return true;
+			if ((pull.state === "open" || pull.state === "draft") && hub.github && await observePush(c, item, hub.github, pull.head, pull.headSha)) return true;
 			const pushCi = ci && item.state === "review" && item.mode !== "orchestrate" && !item.machineRemoved &&
 				(pull.state === "open" || pull.state === "draft") && pull.headSha && pull.headSha !== ci.head &&
 				(pull.headSha !== ci.moved || (ci.reviewPush?.head === pull.headSha && !ci.reviewPush.asked))
-				? await hub.host.readCi("viewer" in hub ? hub.target(pull.headSha) : { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: pull.headSha })
+				? await hub.host.readCi(hub.target(pull.headSha))
 				: undefined;
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, pushCi, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: "viewer" in hub || githubConfig().pollFallback });
-			if ((pull.state === "open" || pull.state === "draft") && item.state === "review" && !("viewer" in hub)) await reconcileFeedback(c, meta, hub, effect.pr);
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, pushCi, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: hub.capabilities.webhooks });
+			if ((pull.state === "open" || pull.state === "draft") && item.state === "review" && hub.github) await reconcileFeedback(c, meta, hub.github, effect.pr);
 			return true;
 		}
 		case "handoff": {
@@ -2278,10 +2290,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, token => readyFeature(hub.app, token, hub.owner, hub.name, latest.pr!.number, latest.id));
 				}
 				if (meta.repository.provider === "gitlab") {
-					const hub = await gitlabItemHost(c, meta.uid, meta.repository);
+					const hub = await hostFor(c, meta);
 					const [filed] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", effect.review) : [];
-					const body = itemComment(effect.verdict, effect.words, await latestReport(c.db, effect.verdict.run), { filed: filed ? JSON.parse(filed.data) : null, reason: effect.reviewNone, unfinished: effect.unfinished, owner: hub.owner, name: hub.name, gitlabUrl: hub.project.url });
-					await writeMarkedComment(c, hub, hub.token, hub.owner, hub.name, latest.pr.number, body);
+					const body = itemComment(effect.verdict, effect.words, await latestReport(c.db, effect.verdict.run), { filed: filed ? JSON.parse(filed.data) : null, reason: effect.reviewNone, unfinished: effect.unfinished, owner: hub.owner, name: hub.name, gitlabUrl: hub.webUrl });
+					await hub.withToken({ pull_requests: "write" }, token => writeMarkedComment(c, hub, token, hub.owner, hub.name, latest.pr!.number, body));
 					return true;
 				}
 				await handoffOnGithub(c, meta, latest.pr.number, effect, row);

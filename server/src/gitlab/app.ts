@@ -113,6 +113,17 @@ async function request(url: string, init: RequestInit): Promise<Response> {
 	return response;
 }
 
+/** A project as GitLab describes it to this token, or null. Only provider-confirmed path segments are kept. */
+export function projectAccess(value: unknown) {
+	const p = record(value), id = gitlabId(p.id), parts = text(p.path_with_namespace).split("/");
+	if (!id || parts.length < 2 || parts.some(part => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === "..")) return null;
+	const name = parts.pop()!, permissions = record(p.permissions), last = Date.parse(text(p.last_activity_at));
+	const level = Math.max(Number(record(permissions.project_access).access_level ?? 0), Number(record(permissions.group_access).access_level ?? 0));
+	return { id, owner: parts.join("/"), name, defaultBranch: text(p.default_branch), private: p.visibility !== "public",
+		/** Developer (30) or above on a project that is not archived. */
+		writable: !p.archived && level >= 30, pushedAt: Number.isFinite(last) ? last : null };
+}
+
 export class GitlabApp {
 	readonly settings: Readonly<GitlabAppSettings>;
 
@@ -213,6 +224,14 @@ export class GitlabApp {
 	async mergeMr(token: string, project: Project, iid: number, head: string, title: string) {
 		return (await this.call({ token, method: "PUT", path: `${subject(project, "merge_requests", iid)}/merge`,
 			body: { sha: head, squash: true, squash_commit_message: title } })).body;
+	}
+
+	/** The commit a branch points at now. */
+	async branchHead(token: string, project: Project, branch: string): Promise<string> {
+		const ref = record((await this.call({ token, path: `${projectRoot(project)}/repository/branches/${encodeURIComponent(branch)}` })).body);
+		const sha = text(record(ref.commit).id);
+		if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("GitLab did not identify the branch head.");
+		return sha;
 	}
 
 	/** The paths a change touches, or null when GitLab could not list them all. */

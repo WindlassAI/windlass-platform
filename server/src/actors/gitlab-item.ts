@@ -1,10 +1,11 @@
 import { gitlabAccess } from "./internal.js";
 import { ciState, type CiReading } from "../codehost/ci.js";
 import type { SessionRepository } from "../contract.js";
-import { GitlabError, record, text } from "../gitlab/app.js";
+import { GitlabError } from "../gitlab/app.js";
 import { gitlabApp } from "../gitlab/connect.js";
 import { mergeKindAllowed, taskKind, type TaskKind } from "../factory/readiness-track.js";
 import { resolveCodeHost } from "../codehost/index.js";
+import type { ItemHost } from "../codehost/item.js";
 import type { Pull } from "../codehost/types.js";
 
 /** Resolve the owner's selected project for each effect. Never persist this object (it holds a grant). */
@@ -19,15 +20,21 @@ export async function gitlabItemHost(c: Parameters<typeof gitlabAccess>[0], uid:
 	const target = (head: string) => ({ installationId: viewer, repositoryId: project.id, owner, name, head });
 	const pull = (number: number) => host.readPull(token, owner, name, number);
 	const pipeline = (head: string, pull?: number) => host.readCi(target(head), { pull });
-	const baseTip = async (branch: string) => {
-		const response = await app.call({ token, path: `/projects/${project.id}/repository/branches/${encodeURIComponent(branch)}` });
-		const sha = text(record(record(response.body).commit).id);
-		if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("GitLab did not identify the base commit.");
-		return sha;
-	};
-	return { app, host, project, gitlabUrl: project.url, viewer, token, owner, name, target, pull, pipeline, baseTip };
+	const baseTip = (branch: string) => app.branchHead(token, project.id, branch);
+	return { app, host, project, viewer, token, owner, name, target, pull, pipeline, baseTip };
 }
 export type GitlabItemHost = Awaited<ReturnType<typeof gitlabItemHost>>;
+
+/** The item host in the shape every code host shares. The grant is the owner's, not a scoped installation token. */
+export function gitlabItem(hub: GitlabItemHost): ItemHost {
+	return {
+		host: hub.host, owner: hub.owner, name: hub.name, target: hub.target, pull: hub.pull, webUrl: hub.project.url,
+		withToken: (_permissions, step) => step(hub.token),
+		ownComment: comment => String(comment.person?.id) === hub.viewer,
+		acknowledge: key => gitlabEyes(hub, key),
+		capabilities: { checkRuns: false, webhooks: true },
+	};
+}
 
 export async function gitlabEyes(hub: GitlabItemHost, key: string) {
 	const at = key.indexOf(":"), kind = key.slice(0, at), id = key.slice(at + 1);

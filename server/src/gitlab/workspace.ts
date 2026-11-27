@@ -17,12 +17,7 @@ async function remote(access: GitlabAccess, repo: StoredRepository) {
 	const project = record((await app.call({ path: root, token })).body);
 	const parts = text(project.path_with_namespace).split("/"), name = parts.pop();
 	if (String(project.id) !== String(repo.id) || !name || !parts.length) throw new Error("GitLab project unavailable.");
-	return { url: app.cloneUrl(parts.join("/"), name), name, viewer: () => app.viewer(token), async base() {
-		const ref = record((await app.call({ path: `${root}/repository/branches/${encodeURIComponent(repo.branch)}`, token })).body);
-		const sha = text(record(ref.commit).id);
-		if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("GitLab did not confirm the repository base.");
-		return sha;
-	} };
+	return { url: app.cloneUrl(parts.join("/"), name), name, viewer: () => app.viewer(token), base: () => app.branchHead(token, repo.id, repo.branch) };
 }
 
 function failure(outcome: GitOutcome): GithubProblem {

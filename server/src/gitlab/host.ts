@@ -3,7 +3,7 @@ import { JOB_READS_PER_READING, LOGS_PER_READING, readLogTail, type CiLog, type 
 import type { CodeHost, Pull } from "../codehost/types.js";
 import { redact } from "../github/redact.js";
 import { verifiedWords } from "../verified.js";
-import { GitlabApp, GitlabError, record as obj, text } from "./app.js";
+import { GitlabApp, GitlabError, projectAccess, record as obj, text } from "./app.js";
 import { decimalId, gitlabId } from "./ids.js";
 import { gitlabWebhookRoute, parseGitlabWebhook, type GitlabDelivery, type GitlabWebhookBinding } from "./webhook.js";
 
@@ -30,11 +30,9 @@ function parsePull(body: unknown): Pull {
 	};
 }
 function repository(body: unknown): GithubRepository {
-	const p = obj(body), path = text(p.path_with_namespace).split("/"), name = path.pop(), projectId = gitlabId(p.id);
-	if (!projectId || !path.length || !name) throw new Error("Invalid GitLab project.");
-	const perms = obj(p.permissions), last = Date.parse(text(p.last_activity_at));
-	return { id: projectId, owner: path.join("/"), name, defaultBranch: text(p.default_branch) || "main", private: p.visibility !== "public",
-		canPush: !p.archived && Math.max(Number(obj(perms.project_access).access_level ?? 0), Number(obj(perms.group_access).access_level ?? 0)) >= 30, pushedAt: Number.isFinite(last) ? last : null };
+	const p = projectAccess(body);
+	if (!p) throw new Error("Invalid GitLab project.");
+	return { id: p.id, owner: p.owner, name: p.name, defaultBranch: p.defaultBranch || "main", private: p.private, canPush: p.writable, pushedAt: p.pushedAt };
 }
 
 function state(status: unknown): CiRun["state"] {

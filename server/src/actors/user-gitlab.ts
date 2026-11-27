@@ -5,9 +5,9 @@ import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, checkGeneration, requireServiceFor, serviceParams } from "../auth.js";
 import { config, ownEngineEndpoint } from "../config.js";
 import type { GitlabProjectList, GitlabStatus, SessionRepository } from "../contract.js";
-import { challengeOf, GitlabApp, GitlabError, newVerifier, record, text, type GitlabToken } from "../gitlab/app.js";
+import { challengeOf, GitlabApp, GitlabError, newVerifier, projectAccess, type GitlabToken } from "../gitlab/app.js";
 import { GITLAB_RECONNECT, gitlabApp, issuerOf, openGitlabTicket, type GitlabConnectStore } from "../gitlab/connect.js";
-import { decimalId, gitlabId } from "../gitlab/ids.js";
+import { decimalId } from "../gitlab/ids.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
@@ -101,13 +101,9 @@ async function status(c: Context): Promise<GitlabStatus> {
 }
 /** Use only provider-confirmed paths and construct links on the configured instance. */
 function project(app: GitlabApp, value: unknown): SessionRepository | null {
-	const p = record(value), id = gitlabId(p.id), parts = text(p.path_with_namespace).split("/");
-	if (!id || parts.length < 2 || parts.some(part => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === "..")) return null;
-	const name = parts.pop()!, owner = parts.join("/"), branch = text(p.default_branch);
-	const permissions = record(p.permissions);
-	const level = Math.max(Number(record(permissions.project_access).access_level ?? 0), Number(record(permissions.group_access).access_level ?? 0));
-	if (!branch || p.archived || !(level >= 30)) return null;
-	return { provider: "gitlab", id, owner, name, branch, private: p.visibility !== "public", url: app.cloneUrl(owner, name).slice(0, -4) };
+	const p = projectAccess(value);
+	if (!p?.defaultBranch || !p.writable) return null;
+	return { provider: "gitlab", id: p.id, owner: p.owner, name: p.name, branch: p.defaultBranch, private: p.private, url: app.cloneUrl(p.owner, p.name).slice(0, -4) };
 }
 const badProject = () => new UserError("Choose a writable GitLab project.", { code: "gitlab_project" });
 
