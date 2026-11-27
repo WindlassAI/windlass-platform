@@ -16,7 +16,7 @@
  */
 
 import {
-	type GithubId,
+	type RepoAddress,
 	type ItemCount,
 	type ItemCursor,
 	type ItemFeed,
@@ -52,7 +52,7 @@ export interface CleanPage {
 	limit: number;
 	/** true: only ended items; false: only open ones; null: both. */
 	ended: boolean | null;
-	repository: GithubId | null;
+	repository: RepoAddress | null;
 	source: ItemSummary["source"] | null;
 }
 

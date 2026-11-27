@@ -6,7 +6,7 @@
  */
 import { readRepoAddress } from "../../../server/src/codehost/ref.js";
 import { githubId } from "../../../server/src/github/ids.js";
-import type { GithubId, ItemSummary } from "@contract";
+import type { GithubId, ItemSummary, RepoAddress } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { routeLabel } from "./nav";
 
@@ -37,7 +37,7 @@ export type Route =
 	/** A work item: where it is, what it waits for, what it asks, its verdicts and its cost. */
 	| { name: "item"; id: string }
 	/** Every work item across repositories, by what its person must do: `repository` and `from` filter it (`?repository=`, `?from=`). */
-	| { name: "factory"; repository?: GithubId; from?: ItemSource }
+	| { name: "factory"; repository?: RepoAddress; from?: ItemSource }
 	/** The mock's stand-in for OpenAI's sign-in page. */
 	| { name: "mock-authorize" }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */

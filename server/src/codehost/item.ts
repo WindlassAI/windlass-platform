@@ -7,7 +7,7 @@ import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredCo
 import { GitlabError, type GitlabApp } from "../gitlab/app.js";
 import { gitlabApp } from "../gitlab/connect.js";
 import { gitlabAccess, userActor } from "../actors/internal.js";
-import { capabilitiesOf, type HostCapabilities } from "./capabilities.js";
+import { hostCaps, type HostCaps } from "./capabilities.js";
 import type { CiTarget } from "./ci.js";
 import { resolveCodeHost } from "./index.js";
 import { repoRef, type RepoRef } from "./ref.js";
@@ -41,7 +41,7 @@ export interface GitlabBinding {
 export interface BoundHost {
 	host: CodeHost<unknown, unknown, unknown>;
 	/** What the host offers beyond `CodeHost`. Callers branch on these, not on the provider. */
-	caps: HostCapabilities;
+	caps: HostCaps;
 	repo: RepoRef;
 	owner: string;
 	name: string;
@@ -63,9 +63,9 @@ export interface BoundHost {
 	gitlab?: GitlabBinding;
 }
 
-/** Whose comment it is, by the host's identity: the App's bot by its login, the connected person by their account id. */
-function ownTest(caps: HostCapabilities, identity: { bot?: string; account?: string }): BoundHost["isOwn"] {
-	return caps.identity === "app-bot"
+/** Whose comment it is, by whom the platform acts as there: the App's bot by its login, the connected person by their account id. */
+function ownTest(caps: HostCaps, identity: { bot?: string; account?: string }): BoundHost["isOwn"] {
+	return caps.actsAs === "app-bot"
 		? comment => comment.author.toLowerCase() === `${identity.bot?.toLowerCase()}[bot]`
 		: comment => comment.person !== null && String(comment.person.id) === identity.account;
 }
@@ -92,7 +92,7 @@ export async function hostFor(
 ): Promise<BoundHost> {
 	const repo = repoRef(meta.repository);
 	if (repo.instance !== null) throw new Error("This deployment reaches one instance of each code host.");
-	const caps = capabilitiesOf(repo.host);
+	const caps = hostCaps(repo.host);
 	return repo.host === "gitlab"
 		? gitlabHost(c, meta.uid, meta.repository, repo, caps)
 		: githubHost(c, meta, repo, caps, options);
@@ -102,7 +102,7 @@ async function githubHost(
 	c: HasClient,
 	meta: { uid: string; repository: SessionRepository },
 	ref: RepoRef,
-	caps: HostCapabilities,
+	caps: HostCaps,
 	{ access = "read", repo, installation }: HostOptions,
 ): Promise<BoundHost> {
 	// CodeHost for portable operations, the App for exact token scopes and reuse.
@@ -155,7 +155,7 @@ async function gitlabHost(
 	uid: string,
 	repository: SessionRepository,
 	ref: RepoRef,
-	caps: HostCapabilities,
+	caps: HostCaps,
 ): Promise<BoundHost> {
 	const app = gitlabApp();
 	if (!app) throw new Error("GitLab is unavailable.");

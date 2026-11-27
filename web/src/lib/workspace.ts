@@ -10,6 +10,7 @@
  */
 import type {
 	GithubId,
+	RepoAddress,
 	HarnessId,
 	ItemFeed,
 	ItemSummary,
@@ -176,8 +177,7 @@ export function safeStorage(): Storage | null {
 
 /** One repository in the rail, with its live state under the filters. */
 export interface RailRepository {
-	/** Its address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
-	id: GithubId;
+	id: RepoAddress;
 	owner: string;
 	name: string;
 	/** The user's own agents on it, and its work items (a feature's subtasks are part of their feature). */
@@ -220,7 +220,7 @@ export interface RailInput {
 	saved: readonly SavedRepository[];
 	filters?: Filters;
 	/** A repository kept in the rail whatever the filters say: the one shown. */
-	keep?: GithubId | null;
+	keep?: RepoAddress | null;
 }
 
 const isRunning = (status: StatusFilter | null) => status === "running";
@@ -237,7 +237,7 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 	const found = new Map<string, RailRepository>();
 	const everything: RailTotals = { count: 0, running: 0, needs: 0 };
 	const none: RailTotals = { count: 0, running: 0, needs: 0 };
-	const entry = (id: GithubId, owner: string, name: string): RailRepository => {
+	const entry = (id: RepoAddress, owner: string, name: string): RailRepository => {
 		const key = String(id);
 		let repository = found.get(key);
 		if (!repository) {
