@@ -38,18 +38,26 @@ afterEach(() => {
 });
 
 const VALUE = "re_live_5f2c9a81d0b74e3a";
-const WHY = 'Needed for the test. <img src=x onerror="alert(1)"> **bold** [click](https://evil.example/steal) <b>now</b>';
+const WHY =
+	'Needed for the test. <img src=x onerror="alert(1)"> **bold** [click](https://evil.example/steal) <b>now</b>';
 const request = { name: "RESEND_API_KEY", why: WHY };
-const NOTICE = "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.\nIf supplied, this will be saved for this repository with agent scope. <b>**not bold**</b>";
+const NOTICE =
+	"This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.\nIf supplied, this will be saved for this repository with agent scope. <b>**not bold**</b>";
 
 function render(patch: Partial<SecretAskProps> = {}) {
-	const props: SecretAskProps = { request, repository: "acme/harbor", onAdd: vi.fn(async () => undefined), onWithout: vi.fn(async () => undefined), ...patch };
+	const props: SecretAskProps = {
+		request,
+		repository: "acme/harbor",
+		onAdd: vi.fn(async () => undefined),
+		onWithout: vi.fn(async () => undefined),
+		...patch,
+	};
 	act(() => root.render(createElement(SecretAsk, props)));
 	return props;
 }
 
 const field = () => host.querySelector<HTMLInputElement>("input")!;
-const button = (text: string) => [...host.querySelectorAll("button")].find((one) => one.textContent?.includes(text));
+const button = (text: string) => [...host.querySelectorAll("button")].find(one => one.textContent?.includes(text));
 function type(value: string) {
 	const input = field();
 	act(() => {
@@ -58,7 +66,14 @@ function type(value: string) {
 	});
 }
 /** Everything of the page and the browser the value could be left in. */
-const traces = () => [host.innerHTML, ...[...host.querySelectorAll("input")].map((input) => input.value), JSON.stringify({ ...localStorage }), JSON.stringify({ ...sessionStorage }), location.href].join("\n");
+const traces = () =>
+	[
+		host.innerHTML,
+		...[...host.querySelectorAll("input")].map(input => input.value),
+		JSON.stringify({ ...localStorage }),
+		JSON.stringify({ ...sessionStorage }),
+		location.href,
+	].join("\n");
 
 describe("the reason", () => {
 	it("is the agent's text, quoted as text: no element, link or emphasis is made of it", () => {
@@ -76,7 +91,9 @@ describe("the reason", () => {
 		const notice = host.querySelector<HTMLElement>(".secret-notice")!;
 		expect(notice.getAttribute("role")).toBe("note");
 		expect(notice.querySelector(".secret-notice-who")?.textContent).toBe("From the platform");
-		expect([...notice.querySelectorAll(".secret-notice-line")].map((line) => line.textContent)).toEqual(NOTICE.split("\n"));
+		expect([...notice.querySelectorAll(".secret-notice-line")].map(line => line.textContent)).toEqual(
+			NOTICE.split("\n"),
+		);
 		// Not Markdown, not HTML, not inside the agent's quoted words, and the reason holds none of it.
 		expect(notice.querySelector("b, strong, em, a")).toBeNull();
 		expect(notice.closest("blockquote, figure")).toBeNull();
@@ -96,13 +113,37 @@ describe("the reason", () => {
 		expect(host.textContent).toContain("Saved for repository acme/harbor");
 		expect(host.querySelector(".secret-ask-account")).toBeNull();
 		// For the account, the furthest a value reaches: the platform's notice is marked as a warning, and says so first.
-		act(() => root.render(createElement(SecretAsk, { request: { ...request, notice: "Through the host connection.\nIf supplied, this will be saved for your account: every agent of yours will have it." }, repository: null, onAdd: async () => undefined, onWithout: async () => undefined })));
+		act(() =>
+			root.render(
+				createElement(SecretAsk, {
+					request: {
+						...request,
+						notice:
+							"Through the host connection.\nIf supplied, this will be saved for your account: every agent of yours will have it.",
+					},
+					repository: null,
+					onAdd: async () => undefined,
+					onWithout: async () => undefined,
+				}),
+			),
+		);
 		const notice = host.querySelector(".secret-notice.secret-notice-account");
-		expect(notice?.querySelector(".secret-notice-who strong")?.textContent).toBe("From the platform: for your whole account");
+		expect(notice?.querySelector(".secret-notice-who strong")?.textContent).toBe(
+			"From the platform: for your whole account",
+		);
 		expect(notice?.textContent).toContain("every agent of yours will have it");
 		expect(host.querySelector(".secret-ask-account")).toBeNull();
 		// An older request, with no notice: the card says it as a warning of its own, before the field.
-		act(() => root.render(createElement(SecretAsk, { request, repository: null, onAdd: async () => undefined, onWithout: async () => undefined })));
+		act(() =>
+			root.render(
+				createElement(SecretAsk, {
+					request,
+					repository: null,
+					onAdd: async () => undefined,
+					onWithout: async () => undefined,
+				}),
+			),
+		);
 		const account = host.querySelector(".secret-ask-account.callout-warn");
 		expect(account?.textContent).toContain("Saved for your account, not one repository.");
 		expect(account?.textContent).toContain("Every agent of yours can read it");
@@ -133,7 +174,7 @@ describe("the value", () => {
 
 	it("goes to onAdd only, and nothing of it is left once it was sent", async () => {
 		let finish: () => void = () => undefined;
-		const onAdd = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+		const onAdd = vi.fn(() => new Promise<void>(resolve => (finish = resolve)));
 		render({ onAdd });
 		type(VALUE);
 		await act(async () => button("Add it and continue")!.click());
@@ -161,7 +202,9 @@ describe("the value", () => {
 		expect(button("Add it and continue")!.disabled).toBe(true);
 		expect(traces()).not.toContain(VALUE);
 		expect(withoutValue("plain", VALUE)).toBe("plain");
-		expect(withoutValue("A shorter one could not be taken out.", "short")).toBe("A shorter one could not be taken out.");
+		expect(withoutValue("A shorter one could not be taken out.", "short")).toBe(
+			"A shorter one could not be taken out.",
+		);
 	});
 
 	it("shows a carried error from the start, as the card of a reopened request does", () => {
@@ -186,13 +229,28 @@ describe("the value", () => {
 
 const at = Date.UTC(2026, 10, 23, 22, 0);
 const user: TimelineItem = { seq: 1, at, turn: 1, kind: "user", text: "Email the notes", model: "m", effort: null };
-const asked: TimelineItem = { seq: 2, at, turn: 1, kind: "platform", level: "info", text: `A secret was requested for RESEND_API_KEY.\n${NOTICE}`, secretRequest: { id: "1", ...request, notice: NOTICE } };
+const asked: TimelineItem = {
+	seq: 2,
+	at,
+	turn: 1,
+	kind: "platform",
+	level: "info",
+	text: `A secret was requested for RESEND_API_KEY.\n${NOTICE}`,
+	secretRequest: { id: "1", ...request, notice: NOTICE },
+};
 
 describe("the timeline's line", () => {
 	const flow = { question: null } as unknown as QuestionFlow;
 	const renderTurn = (value: Interactive, after: TimelineItem[] = []) => {
 		const view: SessionView = [user, asked, ...after].reduce(applyItem, emptyView());
-		act(() => root.render(createElement(InteractiveProvider, { value, children: view.turns.map((turn) => createElement(Turn, { key: turn.turn, turn })) })));
+		act(() =>
+			root.render(
+				createElement(InteractiveProvider, {
+					value,
+					children: view.turns.map(turn => createElement(Turn, { key: turn.turn, turn })),
+				}),
+			),
+		);
 		return view;
 	};
 	const line = () => host.querySelector(".system-secret .system-text")?.textContent;
@@ -214,7 +272,9 @@ describe("the timeline's line", () => {
 
 	it("records a saved value in one line, and folds the reason, as text, and the notice behind Show the request", () => {
 		const view = renderTurn({ flow, stopCall: null, secretRequestId: null, repositoryId: 7101 }, [saved]);
-		expect(view.turns[0]!.blocks.find((block) => block.kind === "platform")).toMatchObject({ secret: { answer: "saved" } });
+		expect(view.turns[0]!.blocks.find(block => block.kind === "platform")).toMatchObject({
+			secret: { answer: "saved" },
+		});
 		expect(line()).toBe("RESEND_API_KEY saved");
 		const body = host.querySelector<HTMLElement>(".system-secret-body")!;
 		expect(body.hidden).toBe(true);
@@ -224,7 +284,7 @@ describe("the timeline's line", () => {
 		expect(body.querySelector("blockquote")?.textContent).toBe(WHY);
 		expect(body.querySelector("a, img, input, strong, b, em")).toBeNull();
 		const notice = body.querySelector(".secret-notice")!;
-		expect([...notice.querySelectorAll(".secret-notice-line")].map((one) => one.textContent)).toEqual(NOTICE.split("\n"));
+		expect([...notice.querySelectorAll(".secret-notice-line")].map(one => one.textContent)).toEqual(NOTICE.split("\n"));
 		expect(notice.closest("blockquote")).toBeNull();
 		expect(notice.classList.contains("secret-notice-account")).toBe(false);
 		expect(host.textContent!.split("inside the agent's sandbox").length).toBe(2);
@@ -287,7 +347,7 @@ describe("a save the server refuses as secret_exists", () => {
 		const user = client.user(auth);
 		const listing = user.listItems();
 		await vi.advanceTimersByTimeAsync(1000);
-		const listed = (await listing).find((item) => item.question?.kind === "secret_needed")!;
+		const listed = (await listing).find(item => item.question?.kind === "secret_needed")!;
 		const reading = user.item(listed.id);
 		await vi.advanceTimersByTimeAsync(1000);
 		const before = (await reading).question!;
@@ -300,7 +360,11 @@ describe("a save the server refuses as secret_exists", () => {
 		expect(host.querySelector(".item-question .secret-notice")?.textContent).toContain("inside the agent's sandbox");
 
 		// Saved under Secrets since the agent asked.
-		const saving = user.saveRepositorySecret(7101, "docker-windlass-sandbox", { name: "RESEND_API_KEY", value: "re_other_0e9d1c2b3a4f", scope: "agent" });
+		const saving = user.saveRepositorySecret(7101, "docker-windlass-sandbox", {
+			name: "RESEND_API_KEY",
+			value: "re_other_0e9d1c2b3a4f",
+			scope: "agent",
+		});
 		await vi.advanceTimersByTimeAsync(1000);
 		await saving;
 		type(VALUE);

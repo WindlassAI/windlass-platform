@@ -19,7 +19,13 @@ describe("place", () => {
 	const options = { side: "bottom" as const, align: "start" as const, offset: 6, padding: 8, maxHeight: 360 };
 
 	it("opens below its anchor, start-aligned, capped at its max height", () => {
-		expect(place({ x: 100, y: 100, width: 80, height: 30 }, { width: 300, height: 500 }, viewport, options)).toEqual({ x: 100, y: 136, side: "bottom", maxHeight: 360, origin: "top left" });
+		expect(place({ x: 100, y: 100, width: 80, height: 30 }, { width: 300, height: 500 }, viewport, options)).toEqual({
+			x: 100,
+			y: 136,
+			side: "bottom",
+			maxHeight: 360,
+			origin: "top left",
+		});
 	});
 
 	it("flips above when the room below is short and above is larger", () => {
@@ -30,7 +36,10 @@ describe("place", () => {
 	});
 
 	it("shifts along the edge to stay on screen, and caps its height at the room it has", () => {
-		const placed = place({ x: 900, y: 500, width: 80, height: 30 }, { width: 300, height: 600 }, viewport, { ...options, maxHeight: undefined });
+		const placed = place({ x: 900, y: 500, width: 80, height: 30 }, { width: 300, height: 600 }, viewport, {
+			...options,
+			maxHeight: undefined,
+		});
 		expect(placed.x).toBe(1000 - 300 - 8);
 		// More room above (494) than below (256): it flips, and takes the room above.
 		expect(placed.side).toBe("top");
@@ -38,8 +47,16 @@ describe("place", () => {
 	});
 
 	it("puts a submenu to the right, or to the left where the right has no room", () => {
-		expect(place({ x: 100, y: 200, width: 300, height: 32 }, { width: 200, height: 160 }, viewport, { ...options, side: "right" }).x).toBe(406);
-		const left = place({ x: 700, y: 200, width: 280, height: 32 }, { width: 200, height: 160 }, viewport, { ...options, side: "right" });
+		expect(
+			place({ x: 100, y: 200, width: 300, height: 32 }, { width: 200, height: 160 }, viewport, {
+				...options,
+				side: "right",
+			}).x,
+		).toBe(406);
+		const left = place({ x: 700, y: 200, width: 280, height: 32 }, { width: 200, height: 160 }, viewport, {
+			...options,
+			side: "right",
+		});
 		expect(left.side).toBe("left");
 		expect(left.x).toBe(700 - 6 - 200);
 	});
@@ -63,11 +80,17 @@ afterEach(() => {
 
 /** A phone's width, as matchMedia says it. */
 function phone(): void {
-	(window as { matchMedia?: unknown }).matchMedia = (query: string) => ({ matches: query.includes("max-width"), media: query, addEventListener() {}, removeEventListener() {} });
+	(window as { matchMedia?: unknown }).matchMedia = (query: string) => ({
+		matches: query.includes("max-width"),
+		media: query,
+		addEventListener() {},
+		removeEventListener() {},
+	});
 }
 
 const render = (node: ReactNode) => act(() => root.render(node));
-const key = (target: Element, name: string) => act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
+const key = (target: Element, name: string) =>
+	act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true })));
 const trigger = () => host.querySelector("button") as HTMLButtonElement;
 const rows = () => [...document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]')] as HTMLElement[];
 const highlighted = () => document.querySelector("[data-highlighted]")?.getAttribute("data-value");
@@ -80,12 +103,45 @@ function models(chosen: string[], current = "sonnet", effort = "high"): MenuSpec
 		label: "Agent and model",
 		hints: { right: "effort" },
 		groups: [
-			{ id: "claude", label: "Claude Code", note: "signed in", items: [{ id: "opus", label: "Opus 5.5", description: "Most capable", checked: current === "opus", onSelect: pick("opus") }, { id: "sonnet", label: "Sonnet 5.5", checked: current === "sonnet", onSelect: pick("sonnet") }] },
+			{
+				id: "claude",
+				label: "Claude Code",
+				note: "signed in",
+				items: [
+					{
+						id: "opus",
+						label: "Opus 5.5",
+						description: "Most capable",
+						checked: current === "opus",
+						onSelect: pick("opus"),
+					},
+					{ id: "sonnet", label: "Sonnet 5.5", checked: current === "sonnet", onSelect: pick("sonnet") },
+				],
+			},
 			{
 				id: "windlass",
 				label: "Windlass",
 				items: [
-					{ id: "sol", label: "GPT-6.1 Sol", checked: current === "sol", onSelect: pick("sol"), submenu: { label: "Effort for GPT-6.1 Sol", groups: [{ id: "efforts", items: ["low", "high", "max"].map((name) => ({ id: name, label: name, checked: name === effort, onSelect: pick(`sol:${name}`) })) }] } },
+					{
+						id: "sol",
+						label: "GPT-6.1 Sol",
+						checked: current === "sol",
+						onSelect: pick("sol"),
+						submenu: {
+							label: "Effort for GPT-6.1 Sol",
+							groups: [
+								{
+									id: "efforts",
+									items: ["low", "high", "max"].map(name => ({
+										id: name,
+										label: name,
+										checked: name === effort,
+										onSelect: pick(`sol:${name}`),
+									})),
+								},
+							],
+						},
+					},
 					{ id: "luna", label: "GPT-6 Luna", disabled: true, description: "Not on this machine" },
 					{ id: "brisk", label: "GPT-6 Brisk", checked: current === "brisk", onSelect: pick("brisk") },
 				],
@@ -95,7 +151,7 @@ function models(chosen: string[], current = "sonnet", effort = "high"): MenuSpec
 }
 
 function showMenu(spec: MenuSpec) {
-	render(createElement(Menu, { spec, trigger: (props) => createElement(Pill, { ...props, children: "Sonnet 5.5" }) }));
+	render(createElement(Menu, { spec, trigger: props => createElement(Pill, { ...props, children: "Sonnet 5.5" }) }));
 }
 
 describe("a menu on a wide screen", () => {
@@ -125,8 +181,11 @@ describe("a menu on a wide screen", () => {
 	it("groups its rows under their headers, marks the chosen one, and shows its keys at its foot", () => {
 		showMenu(models([]));
 		act(() => trigger().click());
-		expect([...document.querySelectorAll(".ui-menu-group-label")].map((label) => label.textContent)).toEqual(["Claude Codesigned in", "Windlass"]);
-		expect(rows().find((row) => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("sonnet");
+		expect([...document.querySelectorAll(".ui-menu-group-label")].map(label => label.textContent)).toEqual([
+			"Claude Codesigned in",
+			"Windlass",
+		]);
+		expect(rows().find(row => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("sonnet");
 		expect(document.querySelector(".ui-menu-hints")?.textContent).toContain("effort");
 	});
 
@@ -198,7 +257,7 @@ describe("a menu on a wide screen", () => {
 			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "son");
 			input.dispatchEvent(new Event("input", { bubbles: true }));
 		});
-		expect(rows().map((row) => row.dataset.value)).toEqual(["sonnet"]);
+		expect(rows().map(row => row.dataset.value)).toEqual(["sonnet"]);
 		expect(document.querySelector(".ui-mark")?.textContent).toBe("Son");
 		expect(input.getAttribute("aria-activedescendant")).toBe(rows()[0]?.id);
 		act(() => {
@@ -254,7 +313,14 @@ describe("a menu on a phone", () => {
 
 describe("a sheet", () => {
 	it("keeps focus inside it", () => {
-		render(createElement(Sheet, { open: true, onClose() {}, title: "Settings", children: createElement("button", { type: "button" }, "Only") }));
+		render(
+			createElement(Sheet, {
+				open: true,
+				onClose() {},
+				title: "Settings",
+				children: createElement("button", { type: "button" }, "Only"),
+			}),
+		);
 		const buttons = [...document.querySelectorAll(".ui-sheet button")] as HTMLButtonElement[];
 		const last = buttons[buttons.length - 1] as HTMLButtonElement;
 		act(() => last.focus());
@@ -265,7 +331,12 @@ describe("a sheet", () => {
 
 describe("a tooltip", () => {
 	it("shows on keyboard focus and describes its control while it shows", () => {
-		render(createElement(Tooltip, { content: "Setup command and secrets", children: createElement("button", { type: "button" }, "+") }));
+		render(
+			createElement(Tooltip, {
+				content: "Setup command and secrets",
+				children: createElement("button", { type: "button" }, "+"),
+			}),
+		);
 		const button = host.querySelector("button") as HTMLButtonElement;
 		// jsdom has no :focus-visible; the focus a key gives is what shows it.
 		const matches = Element.prototype.matches;
@@ -296,7 +367,7 @@ describe("agent badges", () => {
 			return svg;
 		};
 		const logos = ["windlass", "claude", "opencode", "codex"].map(drawn);
-		expect(logos.every((svg) => svg.startsWith("<svg"))).toBe(true);
+		expect(logos.every(svg => svg.startsWith("<svg"))).toBe(true);
 		expect(new Set(logos).size).toBe(logos.length);
 		expect(drawn("Claude Code")).toBe(drawn("claude"));
 		expect(agentId("OpenCode")).toBe("opencode");

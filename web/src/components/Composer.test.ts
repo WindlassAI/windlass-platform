@@ -37,7 +37,19 @@ const onSend = async (input: PromptInput) => {
 };
 
 const show = (props: Partial<ComposerProps> = {}) =>
-	act(() => root.render(createElement(Composer, { status: "idle", online: true, models: null, model: "gpt-6.1-sol", onSend, onStop: async () => undefined, ...props })));
+	act(() =>
+		root.render(
+			createElement(Composer, {
+				status: "idle",
+				online: true,
+				models: null,
+				model: "gpt-6.1-sol",
+				onSend,
+				onStop: async () => undefined,
+				...props,
+			}),
+		),
+	);
 
 const field = () => host.querySelector("textarea") as HTMLTextAreaElement;
 
@@ -74,7 +86,7 @@ describe("the composer's submissions", () => {
 		expect(field().value).toBe("Fix the flaky test");
 		expect(host.querySelector('[role="alert"]')?.textContent).toContain("did not answer");
 		await send();
-		expect(sent.map((input) => input.text)).toEqual(["Fix the flaky test", "Fix the flaky test"]);
+		expect(sent.map(input => input.text)).toEqual(["Fix the flaky test", "Fix the flaky test"]);
 		expect(sent[0]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
 		expect(sent[1]?.idempotencyKey).toBe(sent[0]?.idempotencyKey);
 		// Taken: the field is empty, and nothing shows a control for any of this: Send, and the model's pill.
@@ -92,7 +104,11 @@ describe("the composer's submissions", () => {
 		// Spaces around it are not part of what is sent, so they change nothing.
 		write("  Fix the flaky test in ci.yml  ");
 		await send();
-		expect(sent.map((input) => input.text)).toEqual(["Fix the flaky test", "Fix the flaky test in ci.yml", "Fix the flaky test in ci.yml"]);
+		expect(sent.map(input => input.text)).toEqual([
+			"Fix the flaky test",
+			"Fix the flaky test in ci.yml",
+			"Fix the flaky test in ci.yml",
+		]);
 		expect(sent[1]?.idempotencyKey).not.toBe(sent[0]?.idempotencyKey);
 		expect(sent[2]?.idempotencyKey).toBe(sent[1]?.idempotencyKey);
 	});
@@ -110,7 +126,13 @@ describe("the composer's submissions", () => {
 	it("keeps the key through a refusal that clears itself, and when the message then steers the turn", async () => {
 		show({ status: "running" });
 		write("Also update the changelog");
-		answers.push(new PlatformError("user", "The turn is still starting and cannot take a message right now. Try again in a moment.", { reason: "turn_running" }));
+		answers.push(
+			new PlatformError(
+				"user",
+				"The turn is still starting and cannot take a message right now. Try again in a moment.",
+				{ reason: "turn_running" },
+			),
+		);
 		await send();
 		expect(host.querySelector('[role="status"]')?.textContent).toContain("Your message is still here.");
 		await send();
@@ -118,7 +140,11 @@ describe("the composer's submissions", () => {
 	});
 
 	it("sends a handed-over prompt with the key it was first sent with, until its text changes", async () => {
-		handOver("s_1", { text: "Add a health check", error: "The server did not answer.", idempotencyKey: "key-of-the-launch-form" });
+		handOver("s_1", {
+			text: "Add a health check",
+			error: "The server did not answer.",
+			idempotencyKey: "key-of-the-launch-form",
+		});
 		const handover = takeHandover("s_1");
 		show({ initial: handover });
 		expect(field().value).toBe("Add a health check");
@@ -140,11 +166,18 @@ describe("the composer's submissions", () => {
 		await vi.advanceTimersByTimeAsync(500);
 		const api = client.session(auth, (await created).id);
 		const messages: string[] = [];
-		const close = api.open({ onSnapshot: () => undefined, onItem: (item) => void (item.kind === "user" && messages.push(item.text)), onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
+		const close = api.open({
+			onSnapshot: () => undefined,
+			onItem: item => void (item.kind === "user" && messages.push(item.text)),
+			onDelta: () => undefined,
+			onSummary: () => undefined,
+			onQuestion: () => undefined,
+			onConnection: () => undefined,
+		});
 		// The server takes the prompt; the first answer never reaches the composer.
 		let lost = true;
 		show({
-			onSend: async (input) => {
+			onSend: async input => {
 				sent.push(input);
 				await api.prompt(input);
 				if (lost) {
@@ -171,26 +204,38 @@ describe("the composer's submissions", () => {
 
 describe("another harness's model picker", () => {
 	it("names its models as the harness does, and tags its default as the start composer does, under their provider", () => {
-		const models = { source: "harness" as const, fetchedAt: null, defaultModel: "opus", models: [{ id: "haiku", name: "Haiku", efforts: [] }, { id: "opus", name: "Opus", efforts: [] }, { id: "sonnet", name: null, efforts: [] }] };
+		const models = {
+			source: "harness" as const,
+			fetchedAt: null,
+			defaultModel: "opus",
+			models: [
+				{ id: "haiku", name: "Haiku", efforts: [] },
+				{ id: "opus", name: "Opus", efforts: [] },
+				{ id: "sonnet", name: null, efforts: [] },
+			],
+		};
 		show({ harness: "Claude Code", model: "opus", models });
 		const pill = host.querySelector('[data-picker="model"]') as HTMLButtonElement;
 		act(() => pill.click());
 		const rows = [...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[];
-		expect(rows.map((row) => [row.dataset.value, row.querySelector(".ui-item-label")?.textContent])).toEqual([
+		expect(rows.map(row => [row.dataset.value, row.querySelector(".ui-item-label")?.textContent])).toEqual([
 			["haiku", "Haiku"],
 			["opus", "Opus"],
 			["sonnet", "Sonnet"],
 		]);
-		expect(rows.find((row) => row.dataset.value === "opus")?.textContent).toContain("default");
+		expect(rows.find(row => row.dataset.value === "opus")?.textContent).toContain("default");
 		expect(document.querySelector(".ui-pop")?.textContent).toContain("Anthropic");
-		expect(rows.find((row) => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("opus");
+		expect(rows.find(row => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("opus");
 		expect(pill.dataset.value).toBe("opus");
 	});
 });
 
 describe("a message to a running turn whose harness takes none then", () => {
 	// The server's refusal of a steer (server/src/actors/agent-session.ts, `steerTurn`): known by its code, whatever its words.
-	const notNow = () => new PlatformError("user", "The running turn could not take the message. Try again in a moment.", { reason: "steer_unavailable" });
+	const notNow = () =>
+		new PlatformError("user", "The running turn could not take the message. Try again in a moment.", {
+			reason: "steer_unavailable",
+		});
 
 	it("is held with “Sent when this turn ends.”, and sent once the turn ends, with the key it had", async () => {
 		show({ status: "running", harness: "Claude Code", model: "default" });
@@ -201,7 +246,19 @@ describe("a message to a running turn whose harness takes none then", () => {
 		expect(host.querySelector(".composer-held")?.textContent).toContain("Also update the changelog");
 		expect(host.querySelector(".composer-held")?.textContent).toContain("Sent when this turn ends.");
 		expect(sent).toHaveLength(1);
-		await act(async () => root.render(createElement(Composer, { status: "idle", online: true, models: null, model: "default", harness: "Claude Code", onSend, onStop: async () => undefined })));
+		await act(async () =>
+			root.render(
+				createElement(Composer, {
+					status: "idle",
+					online: true,
+					models: null,
+					model: "default",
+					harness: "Claude Code",
+					onSend,
+					onStop: async () => undefined,
+				}),
+			),
+		);
 		expect(sent).toHaveLength(2);
 		expect(sent[1]).toEqual({ text: "Also update the changelog", idempotencyKey: sent[0]?.idempotencyKey });
 		expect(host.querySelector(".composer-held")).toBeNull();
@@ -248,17 +305,26 @@ describe("the composer's mode", () => {
 	const options = () => [...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[];
 	const pick = async (name: string) => {
 		await act(async () => picker().click());
-		await act(async () => options().find((option) => option.querySelector(".ui-item-label")?.textContent === name)?.click());
+		await act(async () =>
+			options()
+				.find(option => option.querySelector(".ui-item-label")?.textContent === name)
+				?.click(),
+		);
 	};
 
 	it("sits before the model, and opens to each mode with what it does", async () => {
 		show({ modes: WINDLASS, mode: "auto", onMode });
-		expect([...host.querySelectorAll(".composer-selects [data-picker]")].map((pill) => (pill as HTMLElement).dataset.picker)).toEqual(["mode", "model"]);
+		expect(
+			[...host.querySelectorAll(".composer-selects [data-picker]")].map(pill => (pill as HTMLElement).dataset.picker),
+		).toEqual(["mode", "model"]);
 		expect(picker().textContent).toBe("Auto");
 		await act(async () => picker().click());
 		expect(picker().getAttribute("aria-expanded")).toBe("true");
-		expect(options().map((option) => option.textContent)).toEqual(["AskAsk before writes, commands, network access and MCP calls.", "AutoUse Windlass’s command sandbox and ask when needed."]);
-		expect(options().map((option) => option.getAttribute("aria-checked"))).toEqual(["false", "true"]);
+		expect(options().map(option => option.textContent)).toEqual([
+			"AskAsk before writes, commands, network access and MCP calls.",
+			"AutoUse Windlass’s command sandbox and ask when needed.",
+		]);
+		expect(options().map(option => option.getAttribute("aria-checked"))).toEqual(["false", "true"]);
 	});
 
 	it("calls setMode with the chosen mode and shows it, then follows the summary", async () => {

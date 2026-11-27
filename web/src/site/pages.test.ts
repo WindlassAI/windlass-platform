@@ -3,14 +3,29 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SITE_URL } from "./config";
 import { FAQ } from "./content";
-import { appShellHtml, canonical, fileOf, llmsFullTxt, llmsTxt, pageHtml, robotsTxt, scriptJson, sitemapXml } from "./documents";
+import {
+	appShellHtml,
+	canonical,
+	fileOf,
+	llmsFullTxt,
+	llmsTxt,
+	pageHtml,
+	robotsTxt,
+	scriptJson,
+	sitemapXml,
+} from "./documents";
 import { PUBLIC_PAGES } from "./pages";
 import { renderSite } from "./render";
 
-const ASSETS = { stylesheets: ["/assets/index-abc.css"], entry: "/assets/index-abc.js", fonts: ["/assets/geist-latin-wght-normal-abc.woff2"] };
-const BUILT = '<!doctype html>\n<html lang="en">\n\t<head>\n\t\t<meta charset="UTF-8" />\n\t\t<title>Windlass</title>\n\t\t<script type="module" crossorigin src="/assets/index-abc.js"></script>\n\t</head>\n\t<body><div id="root"></div></body>\n</html>\n';
+const ASSETS = {
+	stylesheets: ["/assets/index-abc.css"],
+	entry: "/assets/index-abc.js",
+	fonts: ["/assets/geist-latin-wght-normal-abc.woff2"],
+};
+const BUILT =
+	'<!doctype html>\n<html lang="en">\n\t<head>\n\t\t<meta charset="UTF-8" />\n\t\t<title>Windlass</title>\n\t\t<script type="module" crossorigin src="/assets/index-abc.js"></script>\n\t</head>\n\t<body><div id="root"></div></body>\n</html>\n';
 
-describe.each(PUBLIC_PAGES.map((page) => [page.path, page] as const))("the public page %s", (_path, page) => {
+describe.each(PUBLIC_PAGES.map(page => [page.path, page] as const))("the public page %s", (_path, page) => {
 	const body = renderToStaticMarkup(page.render());
 	const html = pageHtml(page, body, ASSETS);
 
@@ -28,7 +43,14 @@ describe.each(PUBLIC_PAGES.map((page) => [page.path, page] as const))("the publi
 
 	it("has its canonical address, Open Graph and Twitter tags", () => {
 		expect(html).toContain(`<link rel="canonical" href="${canonical(page)}" />`);
-		for (const tag of ['property="og:title"', 'property="og:description"', 'property="og:image"', 'property="og:url"', 'name="twitter:card" content="summary_large_image"', 'name="description"']) {
+		for (const tag of [
+			'property="og:title"',
+			'property="og:description"',
+			'property="og:image"',
+			'property="og:url"',
+			'name="twitter:card" content="summary_large_image"',
+			'name="description"',
+		]) {
 			expect(html).toContain(tag);
 		}
 		expect(canonical(page).startsWith(SITE_URL)).toBe(true);
@@ -55,14 +77,19 @@ describe.each(PUBLIC_PAGES.map((page) => [page.path, page] as const))("the publi
 });
 
 describe("the landing page", () => {
-	const landing = PUBLIC_PAGES.find((page) => page.path === "/");
+	const landing = PUBLIC_PAGES.find(page => page.path === "/");
 	if (!landing) throw new Error("no landing page");
 	const body = renderToStaticMarkup(landing.render());
 
 	it("answers in its FAQPage JSON-LD what it shows on the page", () => {
-		const faq = landing.jsonLd?.find((item) => (item as { "@type"?: string })["@type"] === "FAQPage") as { mainEntity: { name: string; acceptedAnswer: { text: string } }[] } | undefined;
-		expect(faq?.mainEntity.map((entry) => entry.name)).toEqual(FAQ.map((item) => item.question));
-		const text = body.replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+		const faq = landing.jsonLd?.find(item => (item as { "@type"?: string })["@type"] === "FAQPage") as
+			| { mainEntity: { name: string; acceptedAnswer: { text: string } }[] }
+			| undefined;
+		expect(faq?.mainEntity.map(entry => entry.name)).toEqual(FAQ.map(item => item.question));
+		const text = body
+			.replace(/&#x27;|&#39;/g, "'")
+			.replace(/&quot;/g, '"')
+			.replace(/&amp;/g, "&");
 		for (const item of FAQ) {
 			expect(text).toContain(item.question);
 			expect(text).toContain(item.answer);
@@ -72,19 +99,21 @@ describe("the landing page", () => {
 	it("keeps sign-in reachable and promises no dates, prices or numbers of users", () => {
 		expect(body).toContain('href="/signin"');
 		// The words people read: an agent's logo is drawn with numbers of its own, which are no promise.
-		expect(body.replace(/<svg\b[\s\S]*?<\/svg>/g, "")).not.toMatch(/\$\d|per month|\/mo\b|coming (soon|in)|20\d\d|customers|trusted by/i);
+		expect(body.replace(/<svg\b[\s\S]*?<\/svg>/g, "")).not.toMatch(
+			/\$\d|per month|\/mo\b|coming (soon|in)|20\d\d|customers|trusted by/i,
+		);
 	});
 
 	it("names the app's entry for a signed-in visitor, and only there", () => {
 		expect(pageHtml(landing, body, ASSETS)).toContain('<meta name="wlp-app" content="/assets/index-abc.js" />');
 		expect(pageHtml(landing, body, ASSETS)).not.toContain("wlp-app-for");
-		for (const page of PUBLIC_PAGES.filter((other) => !other.appForSignedIn && !other.appForEveryone)) {
+		for (const page of PUBLIC_PAGES.filter(other => !other.appForSignedIn && !other.appForEveryone)) {
 			expect(pageHtml(page, "", ASSETS)).not.toContain("wlp-app");
 		}
 	});
 
 	it("loads the app for every visitor of a docs page, so its search and menu work", () => {
-		const docs = PUBLIC_PAGES.filter((page) => page.path.startsWith("/docs"));
+		const docs = PUBLIC_PAGES.filter(page => page.path.startsWith("/docs"));
 		expect(docs.length).toBeGreaterThan(5);
 		for (const page of docs) {
 			const html = pageHtml(page, "", ASSETS);
@@ -115,8 +144,15 @@ describe("the site's files", () => {
 	});
 
 	it("write the shell, every page and the site's text files", () => {
-		const files = renderSite(ASSETS, BUILT).map((entry) => entry.file);
-		expect(files).toEqual(["app.html", ...PUBLIC_PAGES.map(fileOf), "sitemap.xml", "robots.txt", "llms.txt", "llms-full.txt"]);
+		const files = renderSite(ASSETS, BUILT).map(entry => entry.file);
+		expect(files).toEqual([
+			"app.html",
+			...PUBLIC_PAGES.map(fileOf),
+			"sitemap.xml",
+			"robots.txt",
+			"llms.txt",
+			"llms-full.txt",
+		]);
 	});
 
 	it("put JSON in a script element that nothing in it can close", () => {

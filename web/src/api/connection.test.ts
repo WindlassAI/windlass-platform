@@ -18,7 +18,7 @@ function json(status: number, body: unknown): Response {
  */
 function world(answers: Array<Response | Error | (() => Response)>, startAt = 1_000_000) {
 	const state = { now: startAt, requests: [] as string[], waits: [] as number[], onWait: () => undefined as void };
-	const fetcher: typeof fetch = async (input) => {
+	const fetcher: typeof fetch = async input => {
 		state.requests.push(String(input));
 		const next = answers[Math.min(state.requests.length - 1, answers.length - 1)];
 		if (next instanceof Error) throw next;
@@ -28,7 +28,7 @@ function world(answers: Array<Response | Error | (() => Response)>, startAt = 1_
 		api: API,
 		fetch: fetcher,
 		now: () => state.now,
-		sleep: async (ms) => {
+		sleep: async ms => {
 			state.onWait();
 			state.waits.push(ms);
 			state.now += ms;
@@ -37,7 +37,11 @@ function world(answers: Array<Response | Error | (() => Response)>, startAt = 1_
 	return { state, source };
 }
 
-function connection(token: string | null, validForMs = HOUR, endpoint: string | null = "https://engine.test"): PlatformConnection {
+function connection(
+	token: string | null,
+	validForMs = HOUR,
+	endpoint: string | null = "https://engine.test",
+): PlatformConnection {
 	return { endpoint, namespace: "default", token: token === null ? null : { token, expiresAt: 0, validForMs } };
 }
 
@@ -80,14 +84,27 @@ describe("the connection the server hands out", () => {
 		const { state, source } = world([json(200, connection("first")), json(200, connection("second"))]);
 		await source.connection();
 		state.now += 2 * HOUR;
-		const tokens = await Promise.all([source.token({ forceRefresh: false }), source.token({ forceRefresh: true }), source.token({ forceRefresh: false })]);
+		const tokens = await Promise.all([
+			source.token({ forceRefresh: false }),
+			source.token({ forceRefresh: true }),
+			source.token({ forceRefresh: false }),
+		]);
 		expect(tokens).toEqual(["second", "second", "second"]);
 		expect(state.requests.length).toBe(2);
 	});
 
 	it("counts a token's life from when it was asked for, not by the browser's clock", async () => {
 		// A clock set years ahead: the token's own expiry (`expiresAt`, and the JWT's `exp`) is long past by it.
-		const { state, source } = world([json(200, { ...connection("first"), token: { token: "first", expiresAt: 1_700_000_000_000, validForMs: HOUR } }), json(200, connection("second"))], 4_000_000_000_000);
+		const { state, source } = world(
+			[
+				json(200, {
+					...connection("first"),
+					token: { token: "first", expiresAt: 1_700_000_000_000, validForMs: HOUR },
+				}),
+				json(200, connection("second")),
+			],
+			4_000_000_000_000,
+		);
 		await source.connection();
 		state.now += 30 * 60 * 1000;
 		expect(await source.token({ forceRefresh: false })).toBe("first");
@@ -105,14 +122,28 @@ describe("the connection the server hands out", () => {
 
 	it("keeps asking a server that cannot be reached, more and more slowly, and says what it met meanwhile", async () => {
 		const down = new TypeError("Failed to fetch");
-		const { state, source } = world([json(200, connection("first")), down, down, json(503, { group: "platform", code: "connection_unavailable", message: "The server could not prepare a connection to the agents. Try again in a moment." }), json(200, connection("second"))]);
+		const { state, source } = world([
+			json(200, connection("first")),
+			down,
+			down,
+			json(503, {
+				group: "platform",
+				code: "connection_unavailable",
+				message: "The server could not prepare a connection to the agents. Try again in a moment.",
+			}),
+			json(200, connection("second")),
+		]);
 		await source.connection();
 		state.now += 2 * HOUR;
 		const seen: Array<string | null> = [];
 		state.onWait = () => void seen.push(source.failure()?.message ?? null);
 		expect(await source.token({ forceRefresh: false })).toBe("second");
 		expect(state.waits).toEqual([500, 1_000, 2_000]);
-		expect(seen).toEqual([`The server at ${API} could not be reached.`, `The server at ${API} could not be reached.`, "The server could not prepare a connection to the agents. Try again in a moment."]);
+		expect(seen).toEqual([
+			`The server at ${API} could not be reached.`,
+			`The server at ${API} could not be reached.`,
+			"The server could not prepare a connection to the agents. Try again in a moment.",
+		]);
 		expect(source.failure()).toBeNull();
 	});
 
@@ -124,7 +155,9 @@ describe("the connection the server hands out", () => {
 	});
 
 	it("does not ask again after a refusal, and says it as the server did", async () => {
-		const { state, source } = world([json(403, { group: "user", code: "origin_not_allowed", message: "This origin is not allowed to connect." })]);
+		const { state, source } = world([
+			json(403, { group: "user", code: "origin_not_allowed", message: "This origin is not allowed to connect." }),
+		]);
 		const error = await source.connection().catch((thrown: unknown) => thrown);
 		expect(error).toBeInstanceOf(PlatformError);
 		expect((error as PlatformError).message).toBe("This origin is not allowed to connect.");
@@ -136,7 +169,13 @@ describe("the connection the server hands out", () => {
 	});
 
 	it("refuses an answer that is not a connection", async () => {
-		for (const body of [null, {}, { endpoint: 5, namespace: "default", token: null }, { endpoint: null, namespace: "default", token: { token: "", expiresAt: 0, validForMs: 5 } }, { endpoint: null, namespace: "default", token: "abc" }]) {
+		for (const body of [
+			null,
+			{},
+			{ endpoint: 5, namespace: "default", token: null },
+			{ endpoint: null, namespace: "default", token: { token: "", expiresAt: 0, validForMs: 5 } },
+			{ endpoint: null, namespace: "default", token: "abc" },
+		]) {
 			const { state, source } = world([json(200, body)]);
 			const error = (await source.connection().catch((thrown: unknown) => thrown)) as PlatformError;
 			expect(error.message).toBe(`The server at ${API} did not say how to connect.`);
@@ -163,36 +202,68 @@ describe("the platform's routes", () => {
 	it("answer with the body, or with the server's own refusal", async () => {
 		const ok: typeof fetch = async () => json(200, { demoEnabled: true });
 		expect(await getPlatform(API, "/platform/info", ok)).toEqual({ demoEnabled: true });
-		const refused: typeof fetch = async () => json(403, { group: "user", code: "origin_not_allowed", message: "This origin is not allowed to connect." });
-		await expect(getPlatform(API, "/platform/info", refused)).rejects.toMatchObject({ code: "user", message: "This origin is not allowed to connect." });
+		const refused: typeof fetch = async () =>
+			json(403, { group: "user", code: "origin_not_allowed", message: "This origin is not allowed to connect." });
+		await expect(getPlatform(API, "/platform/info", refused)).rejects.toMatchObject({
+			code: "user",
+			message: "This origin is not allowed to connect.",
+		});
 		const plain: typeof fetch = async () => new Response("Not found\n", { status: 404 });
-		await expect(getPlatform(API, "/platform/info", plain)).rejects.toMatchObject({ code: "internal", message: `The server at ${API} answered 404.` });
+		await expect(getPlatform(API, "/platform/info", plain)).rejects.toMatchObject({
+			code: "internal",
+			message: `The server at ${API} answered 404.`,
+		});
 		const down: typeof fetch = async () => {
 			throw new TypeError("Failed to fetch");
 		};
-		await expect(getPlatform(API, "/platform/info", down)).rejects.toMatchObject({ code: "network", message: `The server at ${API} could not be reached.` });
+		await expect(getPlatform(API, "/platform/info", down)).rejects.toMatchObject({
+			code: "network",
+			message: `The server at ${API} could not be reached.`,
+		});
 	});
 });
 
 describe("a request that meets the platform restarting", () => {
 	it("is told apart from a real internal error", () => {
-		expect(toPlatformError({ group: "guard", code: "actor_stopped_while_waiting", message: "" }, "https://engine.test")).toMatchObject({ code: "restarting", message: "The platform is restarting. Trying again…" });
-		expect(toPlatformError(new Error("HTTP request error: Request failed: TypeError: Failed to fetch"), "https://engine.test")).toMatchObject({ code: "restarting" });
-		expect(toPlatformError(new Error("HTTP request error: Internal Server Error (500):\n"), "https://engine.test")).toMatchObject({ code: "internal" });
+		expect(
+			toPlatformError({ group: "guard", code: "actor_stopped_while_waiting", message: "" }, "https://engine.test"),
+		).toMatchObject({ code: "restarting", message: "The platform is restarting. Trying again…" });
+		expect(
+			toPlatformError(
+				new Error("HTTP request error: Request failed: TypeError: Failed to fetch"),
+				"https://engine.test",
+			),
+		).toMatchObject({ code: "restarting" });
+		expect(
+			toPlatformError(new Error("HTTP request error: Internal Server Error (500):\n"), "https://engine.test"),
+		).toMatchObject({ code: "internal" });
 	});
 });
 
 describe("what the engine refuses", () => {
 	it("is told apart from a sign-in the platform refuses, which shares the code", () => {
 		const engine = { group: "auth", code: "token_expired", message: "Authentication token has expired." };
-		const platform = { group: "user", code: "invalid_token", message: "Your sign-in is not valid any more. Sign in again." };
+		const platform = {
+			group: "user",
+			code: "invalid_token",
+			message: "Your sign-in is not valid any more. Sign in again.",
+		};
 		expect(isRefusedConnectionToken(engine)).toBe(true);
 		expect(isRefusedConnectionToken({ ...engine, code: "invalid_token" })).toBe(true);
 		expect(isRefusedConnectionToken({ ...engine, code: "insufficient_permissions" })).toBe(false);
 		expect(isRefusedConnectionToken(platform)).toBe(false);
 		// The engine's refusal never signs the user out; the platform's does.
-		expect(toPlatformError(engine, "https://engine.test")).toMatchObject({ code: "network", message: "The connection to https://engine.test could not be renewed." });
-		expect(toPlatformError({ ...engine, code: "insufficient_permissions" }, "https://engine.test")).toMatchObject({ code: "internal", message: "The server at https://engine.test refused the connection." });
-		expect(toPlatformError(platform, "https://engine.test")).toMatchObject({ code: "unauthorized", message: "Your sign-in is not valid any more. Sign in again." });
+		expect(toPlatformError(engine, "https://engine.test")).toMatchObject({
+			code: "network",
+			message: "The connection to https://engine.test could not be renewed.",
+		});
+		expect(toPlatformError({ ...engine, code: "insufficient_permissions" }, "https://engine.test")).toMatchObject({
+			code: "internal",
+			message: "The server at https://engine.test refused the connection.",
+		});
+		expect(toPlatformError(platform, "https://engine.test")).toMatchObject({
+			code: "unauthorized",
+			message: "Your sign-in is not valid any more. Sign in again.",
+		});
 	});
 });

@@ -22,7 +22,9 @@ for (const action of ["finish", "demo"] as const) {
 	test(action + " can retry a failed generation lookup before handing over the sign-in", async t => {
 		const sql = new DatabaseSync(":memory:");
 		t.after(() => sql.close());
-		sql.exec("CREATE TABLE attempt (id INTEGER PRIMARY KEY, state TEXT, expires_at INTEGER, sealed TEXT, schedule_id TEXT, failures INTEGER DEFAULT 0)");
+		sql.exec(
+			"CREATE TABLE attempt (id INTEGER PRIMARY KEY, state TEXT, expires_at INTEGER, sealed TEXT, schedule_id TEXT, failures INTEGER DEFAULT 0)",
+		);
 		const db = { execute: async (query: string, ...args: SQLInputValue[]) => sql.prepare(query).all(...args) };
 		let unavailable = true;
 		const generation = async () => {
@@ -31,8 +33,14 @@ for (const action of ["finish", "demo"] as const) {
 		};
 		const user = { internalTokenGeneration: generation, internalLogin: generation };
 		const actor = {
-			key: ["attempt_handover"], conn: { params: serviceParams() }, db, log: { error() {} },
-			client: () => ({ user: { getOrCreate: () => user }, accountIdentities: { getOrCreate: () => ({ internalResolve: async () => "u_handover" }) } }),
+			key: ["attempt_handover"],
+			conn: { params: serviceParams() },
+			db,
+			log: { error() {} },
+			client: () => ({
+				user: { getOrCreate: () => user },
+				accountIdentities: { getOrCreate: () => ({ internalResolve: async () => "u_handover" }) },
+			}),
 			schedule: { after: async () => "job", cancel: async () => true },
 		};
 		await login.config.onCreate!(actor as never, { grant: createGrant("login", actor.key) });
@@ -49,7 +57,10 @@ for (const action of ["finish", "demo"] as const) {
 			const start = await login.config.actions!.start(ctx as never, "github", "http://localhost:5173", secret, null);
 			callback = github.authorize("owner", start.url);
 		}
-		const finish = () => action === "finish" ? login.config.actions!.finish(ctx as never, callback, secret, null) : login.config.actions!.demo(ctx as never);
+		const finish = () =>
+			action === "finish"
+				? login.config.actions!.finish(ctx as never, callback, secret, null)
+				: login.config.actions!.demo(ctx as never);
 		await assert.rejects(finish(), { code: "internal_error" });
 		assert.equal(handover.mock.callCount(), 0);
 		// Restart the attempt actor from its saved row and retry the same callback.
@@ -75,8 +86,13 @@ test("expired, replaced and disconnected model attempts cannot commit credential
 		execute: async (sql: string, ...args: SQLInputValue[]) => sqlite.prepare(sql).all(...args),
 		transaction: async (run: (tx: Db) => Promise<void>) => {
 			sqlite.exec("BEGIN");
-			try { await run(db); sqlite.exec("COMMIT"); }
-			catch (error) { sqlite.exec("ROLLBACK"); throw error; }
+			try {
+				await run(db);
+				sqlite.exec("COMMIT");
+			} catch (error) {
+				sqlite.exec("ROLLBACK");
+				throw error;
+			}
 		},
 	} as Db;
 	const row = { sealed: "model-credential", generation: 1, shortNoted: false };
@@ -98,8 +114,12 @@ test("an existing session cannot rewrite the stored admission email", async () =
 	const { issueUserToken } = await import("../server/src/tokens.js");
 	const profile = { uid: "u_existing", demo: false, email: "current@example.invalid" };
 	const prior = { ...profile, email: "prior@example.invalid" };
-	const ctx = { key: [profile.uid], conn: { params: { token: issueUserToken(prior, 0) } },
-		vars: { tokenGen: 0, profile }, db: { execute: async () => assert.fail("session rewrote the admission profile") } };
+	const ctx = {
+		key: [profile.uid],
+		conn: { params: { token: issueUserToken(prior, 0) } },
+		vars: { tokenGen: 0, profile },
+		db: { execute: async () => assert.fail("session rewrote the admission profile") },
+	};
 	assert.equal((await user.config.actions!.me(ctx as never)).uid, profile.uid);
 	assert.equal(ctx.vars.profile.email, profile.email);
 });

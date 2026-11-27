@@ -13,17 +13,22 @@ export function requireGuideStructure(path: string, lines: string[], files: Read
 	let section: string[] | undefined;
 	let fenced = false;
 	for (const line of lines) {
-		if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
+		if (/^\s*```/.test(line)) {
+			fenced = !fenced;
+			continue;
+		}
 		if (!fenced && /^#{1,2}\s/.test(line)) {
 			section = [];
 			if (line.startsWith("##")) sections.push({ title: line.trim(), body: section });
 		} else if (line.trim() && !/^(?:\s*#|[| :\-]+$)/.test(line)) section?.push(line);
 	}
 	for (const title of requiredSections) {
-		if (!sections.some(s => s.title === title && s.body.length)) throw Error(`${path}: include ${title} with cited content that survives the evidence checks.`);
+		if (!sections.some(s => s.title === title && s.body.length))
+			throw Error(`${path}: include ${title} with cited content that survives the evidence checks.`);
 	}
 	for (const { title, body } of sections) {
-		if (!body.length) throw Error(`${path}: ${title} is empty after evidence checks. Add cited content or leave it out.`);
+		if (!body.length)
+			throw Error(`${path}: ${title} is empty after evidence checks. Add cited content or leave it out.`);
 		if (title === "## Terms" && body.length > 15) throw Error(`${path}: keep at most fifteen verified terms.`);
 		if (title === "## Key files") {
 			const entries = body.filter(line => /^\s*[-*+]\s/.test(line));
@@ -31,11 +36,21 @@ export function requireGuideStructure(path: string, lines: string[], files: Read
 				const ref = line.match(/`([^`]+)`|\]\(([^)]+)\)/);
 				return ref && guideReference(path, (ref[1] ?? ref[2]).split("#")[0]);
 			});
-			if (entries.length < (root ? 1 : 3) || entries.length > 5 || new Set(targets).size !== entries.length || targets.some(file => !file || !files.has(file)))
-				throw Error(`${path}: list ${root ? "one" : "three"} to five key files, each in its own cited bullet with a distinct file path in backticks or a Markdown link.`);
+			if (
+				entries.length < (root ? 1 : 3) ||
+				entries.length > 5 ||
+				new Set(targets).size !== entries.length ||
+				targets.some(file => !file || !files.has(file))
+			)
+				throw Error(
+					`${path}: list ${root ? "one" : "three"} to five key files, each in its own cited bullet with a distinct file path in backticks or a Markdown link.`,
+				);
 		}
 	}
 	const count = lines.filter(line => line.trim()).length;
 	// An existing guide only needs what is missing, not padding up to a size.
-	if (!existing && count < minimum) throw Error(`${path}: only ${count} verified nonblank lines remain. Provide at least ${minimum} with line citations.${root ? "" : " You can omit this folder."}`);
+	if (!existing && count < minimum)
+		throw Error(
+			`${path}: only ${count} verified nonblank lines remain. Provide at least ${minimum} with line citations.${root ? "" : " You can omit this folder."}`,
+		);
 }

@@ -4,9 +4,18 @@
  * stand beside it as chips, each with the way to take it off.
  */
 import type { HarnessId, MachineSummary } from "@contract";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_DISPLAY_ORDER, HARNESS_NAMES } from "../lib/acp";
 import { machineLabel } from "../lib/machines";
-import { AGENT_FILTERS, KIND_FILTERS, KIND_FILTER_WORD, NO_FILTERS, STATUS_FILTERS, STATUS_FILTER_WORD, filterCount, toggleFilter, type Filters } from "../lib/workspace";
+import {
+	KIND_FILTERS,
+	KIND_FILTER_WORD,
+	NO_FILTERS,
+	STATUS_FILTERS,
+	STATUS_FILTER_WORD,
+	filterCount,
+	toggleFilter,
+	type Filters,
+} from "../lib/workspace";
 import { CrossIcon, SlidersIcon } from "./Icons";
 import { Menu, type MenuGroup, type MenuSpec } from "./ui/Menu";
 
@@ -21,7 +30,7 @@ export interface FilterProps {
 export function placeWord(place: string, machines: readonly MachineSummary[]): string {
 	if (place === "hosted") return "Hosted";
 	const id = place.slice("machine:".length);
-	const machine = machines.find((one) => one.machineId === id);
+	const machine = machines.find(one => one.machineId === id);
 	return machine ? machineLabel(machine) : "A removed machine";
 }
 
@@ -33,14 +42,22 @@ function filterSpec({ filters, onChange, machines }: FilterProps): MenuSpec {
 		keepOpen: true,
 		onSelect: () => onChange(toggleFilter(filters, key, value)),
 	});
-	const places = ["hosted", ...machines.map((machine) => `machine:${machine.machineId}`)];
+	const places = ["hosted", ...machines.map(machine => `machine:${machine.machineId}`)];
 	// A machine filtered by that was removed since stays in the menu, so that it can be taken off.
 	for (const place of filters.place) if (!places.includes(place)) places.push(place);
 	const groups: MenuGroup[] = [
-		{ id: "status", label: "Status", items: STATUS_FILTERS.map((status) => check("status", status, STATUS_FILTER_WORD[status])) },
-		{ id: "agent", label: "Agent", items: AGENT_FILTERS.map((agent) => check("agent", agent, HARNESS_NAMES[agent])) },
-		{ id: "place", label: "Runs on", items: places.map((place) => check("place", place, placeWord(place, machines))) },
-		{ id: "kind", label: "Kind", items: KIND_FILTERS.map((kind) => check("kind", kind, KIND_FILTER_WORD[kind])) },
+		{
+			id: "status",
+			label: "Status",
+			items: STATUS_FILTERS.map(status => check("status", status, STATUS_FILTER_WORD[status])),
+		},
+		{
+			id: "agent",
+			label: "Agent",
+			items: HARNESS_DISPLAY_ORDER.map(agent => check("agent", agent, HARNESS_NAMES[agent])),
+		},
+		{ id: "place", label: "Runs on", items: places.map(place => check("place", place, placeWord(place, machines))) },
+		{ id: "kind", label: "Kind", items: KIND_FILTERS.map(kind => check("kind", kind, KIND_FILTER_WORD[kind])) },
 	];
 	return {
 		label: "Filter",
@@ -64,8 +81,14 @@ export function FilterMenu({ compact = false, ...props }: FilterProps & { compac
 		<Menu
 			spec={filterSpec(props)}
 			align={compact ? "start" : "end"}
-			trigger={(trigger) => (
-				<button {...trigger} type="button" className={`ws-filter-button${compact ? " ws-filter-button-compact" : ""}${on > 0 ? " ws-filter-button-on" : ""}`} aria-label={on > 0 ? `Filter, ${on} on` : "Filter"} title={compact ? "Filter the repositories and lists" : undefined}>
+			trigger={trigger => (
+				<button
+					{...trigger}
+					type="button"
+					className={`ws-filter-button${compact ? " ws-filter-button-compact" : ""}${on > 0 ? " ws-filter-button-on" : ""}`}
+					aria-label={on > 0 ? `Filter, ${on} on` : "Filter"}
+					title={compact ? "Filter the repositories and lists" : undefined}
+				>
 					<SlidersIcon size={14} />
 					{compact ? null : <span>Filter</span>}
 					{on > 0 ? <span className="ws-filter-count">{on}</span> : null}
@@ -79,14 +102,30 @@ export function FilterMenu({ compact = false, ...props }: FilterProps & { compac
 export function ActiveFilters({ filters, onChange, machines }: FilterProps) {
 	if (filterCount(filters) === 0) return null;
 	const chips: { key: string; label: string; off(): void }[] = [
-		...filters.status.map((status) => ({ key: `status:${status}`, label: STATUS_FILTER_WORD[status], off: () => onChange(toggleFilter(filters, "status", status)) })),
-		...filters.agent.map((agent: HarnessId) => ({ key: `agent:${agent}`, label: HARNESS_NAMES[agent], off: () => onChange(toggleFilter(filters, "agent", agent)) })),
-		...filters.place.map((place) => ({ key: `place:${place}`, label: placeWord(place, machines), off: () => onChange(toggleFilter(filters, "place", place)) })),
-		...filters.kind.map((kind) => ({ key: `kind:${kind}`, label: KIND_FILTER_WORD[kind], off: () => onChange(toggleFilter(filters, "kind", kind)) })),
+		...filters.status.map(status => ({
+			key: `status:${status}`,
+			label: STATUS_FILTER_WORD[status],
+			off: () => onChange(toggleFilter(filters, "status", status)),
+		})),
+		...filters.agent.map((agent: HarnessId) => ({
+			key: `agent:${agent}`,
+			label: HARNESS_NAMES[agent],
+			off: () => onChange(toggleFilter(filters, "agent", agent)),
+		})),
+		...filters.place.map(place => ({
+			key: `place:${place}`,
+			label: placeWord(place, machines),
+			off: () => onChange(toggleFilter(filters, "place", place)),
+		})),
+		...filters.kind.map(kind => ({
+			key: `kind:${kind}`,
+			label: KIND_FILTER_WORD[kind],
+			off: () => onChange(toggleFilter(filters, "kind", kind)),
+		})),
 	];
 	return (
 		<ul className="ws-chips" aria-label="Filters on">
-			{chips.map((chip) => (
+			{chips.map(chip => (
 				<li key={chip.key}>
 					<button type="button" className="ws-chip" onClick={chip.off} aria-label={`Remove the filter ${chip.label}`}>
 						{chip.label}

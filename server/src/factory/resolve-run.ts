@@ -1,8 +1,27 @@
-import type { CredentialSource, DefaultPlace, HarnessId, HostedSize, ItemPlaceDefaults, MachineSummary, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
-import { windlassProvider } from "../sandbox/harnesses.js";
+import type {
+	CredentialSource,
+	DefaultPlace,
+	HarnessId,
+	HostedSize,
+	ItemPlaceDefaults,
+	MachineSummary,
+	PlanSubtask,
+	SandboxPlace,
+	SandboxProfileId,
+} from "../contract.js";
+import { usesAccountModels, windlassProvider } from "../sandbox/harnesses.js";
 import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 
-export type RunRole = "builder" | "planner" | "part" | "repair" | "reviewer" | "critic" | "summary" | "setup" | "environment";
+export type RunRole =
+	| "builder"
+	| "planner"
+	| "part"
+	| "repair"
+	| "reviewer"
+	| "critic"
+	| "summary"
+	| "setup"
+	| "environment";
 type Source = "deployment" | "account" | "repository" | "item";
 export interface RunSettings extends ItemPlaceDefaults {
 	reviewModel?: string | null;
@@ -42,7 +61,8 @@ export function runAgent(run: ResolvedRun) {
 
 /** A filed isolation belongs to the destination kind the owner chose. Older filings wrote it in both columns. */
 export function contextAtPlace(context: RunContext, place: DefaultPlace): RunContext {
-	const previous = context.item?.place ?? context.repository?.place ?? context.account?.place ?? context.deployment?.place ?? "hosted";
+	const previous =
+		context.item?.place ?? context.repository?.place ?? context.account?.place ?? context.deployment?.place ?? "hosted";
 	const item = { ...context.item, place };
 	if ((previous === "hosted") !== (place === "hosted")) {
 		if (item.machineProfile === item.profile) {
@@ -54,25 +74,47 @@ export function contextAtPlace(context: RunContext, place: DefaultPlace): RunCon
 	return { ...context, item };
 }
 
-export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">, role: "part" | "repair" = "part", machines?: readonly { name: string; machineId: string }[]) {
-	const repository = task.repo ? context.repositories?.[task.repo] ?? context.repository : context.repository;
+export function partRun(
+	context: RunContext,
+	task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">,
+	role: "part" | "repair" = "part",
+	machines?: readonly { name: string; machineId: string }[],
+) {
+	const repository = task.repo ? (context.repositories?.[task.repo] ?? context.repository) : context.repository;
 	const place = task.place?.prefer;
 	const layers = { ...context, repository };
-	return resolveRun(place ? contextAtPlace(layers, place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place }) : layers, role, task);
+	return resolveRun(
+		place
+			? contextAtPlace(
+					layers,
+					place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place },
+				)
+			: layers,
+		role,
+		task,
+	);
 }
 
 export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_HOSTED_SIZE) {
 	return offered.includes(preferred) ? preferred : offered[0];
 }
 
-export const runPlace = (place: SandboxPlace): DefaultPlace => place.kind === "machine" ? { machine: place.machineId } : "hosted";
+export const runPlace = (place: SandboxPlace): DefaultPlace =>
+	place.kind === "machine" ? { machine: place.machineId } : "hosted";
 
 export function machinePayers(machines: readonly MachineSummary[]) {
-	return Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).map(h => [h.id, h.source ?? "machine"]))]));
+	return Object.fromEntries(
+		machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).map(h => [h.id, h.source ?? "machine"]))]),
+	);
 }
 
 /** An alternative must keep both the approved payer and that machine’s own filed credential source. */
-export function changesMachinePayer(run: ResolvedRun, machineId: string, source: CredentialSource, filed?: RunContext["machinePayers"]) {
+export function changesMachinePayer(
+	run: ResolvedRun,
+	machineId: string,
+	source: CredentialSource,
+	filed?: RunContext["machinePayers"],
+) {
 	if (source !== run.payer) return true;
 	if (!filed || (typeof run.place === "object" && run.place.machine === machineId)) return false;
 	const machine = filed[machineId];
@@ -88,22 +130,37 @@ function runLayers(context: RunContext): [Source, RunSettings][] {
 	];
 }
 
-const agentLayerOf = (layers: [Source, RunSettings][]) => [...layers].reverse().find(([, settings]) => settings.harness != null);
+const agentLayerOf = (layers: [Source, RunSettings][]) =>
+	[...layers].reverse().find(([, settings]) => settings.harness != null);
 
 /** Store a filed model and effort under the agent they belong to, including an inherited agent. */
 export function filedAgentSettings(context: RunContext, model: string | null, effort: string | null): RunSettings {
 	const agent = agentLayerOf(runLayers(context))?.[1].harness ?? "windlass";
-	return agent === "windlass" ? { model, effort } : { machineModel: model, machineEffort: effort };
+	return usesAccountModels(agent) ? { model, effort } : { machineModel: model, machineEffort: effort };
 }
 
 /** Model IDs belong to their agent. A planning model at any layer takes precedence over the resolved Windlass build model. */
-export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
+export function resolveRun(
+	context: RunContext,
+	role: RunRole,
+	part?: Pick<PlanSubtask, "agent" | "needs">,
+): ResolvedRun {
 	const layers = runLayers(context);
 	if (part) {
 		const { agent, needs } = part;
-		layers.push(["item", { harness: agent?.harness, model: agent?.harness === "windlass" ? agent.model : undefined,
-			machineModel: agent?.model, effort: agent?.effort, machineEffort: agent?.effort,
-			hostedSize: needs?.hostedSize, profile: needs?.profile, machineProfile: needs?.profile }]);
+		layers.push([
+			"item",
+			{
+				harness: agent?.harness,
+				model: agent?.harness && usesAccountModels(agent.harness) ? agent.model : undefined,
+				machineModel: agent?.model,
+				effort: agent?.effort,
+				machineEffort: agent?.effort,
+				hostedSize: needs?.hostedSize,
+				profile: needs?.profile,
+				machineProfile: needs?.profile,
+			},
+		]);
 	}
 
 	// The final place selects the profile column. A machine model belongs to the agent in scope at its layer.
@@ -114,10 +171,26 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 	const agentLayer = implementation ? agentLayerOf(layers) : undefined;
 	const place = placeLayer?.[1].place ?? "hosted";
 	const agent = agentLayer?.[1].harness ?? "windlass";
-	const values: RunValues = { place, fallback: "wait", agent, model: null, effort: null, profile: null, size: ITEM_HOSTED_SIZE,
-		payer: agent === "windlass" ? "windlass" : place === "hosted" ? "key" : "machine" };
-	const sources: ResolvedRun["sources"] = { place: placeLayer?.[0] ?? "deployment", fallback: "deployment", agent: agentLayer?.[0] ?? "deployment",
-		model: "deployment", effort: "deployment", profile: "deployment", size: "deployment", payer: "deployment" };
+	const values: RunValues = {
+		place,
+		fallback: "wait",
+		agent,
+		model: null,
+		effort: null,
+		profile: null,
+		size: ITEM_HOSTED_SIZE,
+		payer: agent === "windlass" ? "windlass" : place === "hosted" ? "key" : "machine",
+	};
+	const sources: ResolvedRun["sources"] = {
+		place: placeLayer?.[0] ?? "deployment",
+		fallback: "deployment",
+		agent: agentLayer?.[0] ?? "deployment",
+		model: "deployment",
+		effort: "deployment",
+		profile: "deployment",
+		size: "deployment",
+		payer: "deployment",
+	};
 	function set<K extends keyof RunValues>(key: K, value: RunValues[K] | undefined | null, source: Source) {
 		if (value == null) return;
 		values[key] = value;
@@ -125,7 +198,10 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 	}
 	if (agent !== "windlass" && place !== "hosted") {
 		const payers = context.machinePayers ?? {};
-		const payer = place === "any-machine" ? Object.values(payers).find(machine => machine[agent])?.[agent] : payers[place.machine]?.[agent];
+		const payer =
+			place === "any-machine"
+				? Object.values(payers).find(machine => machine[agent])?.[agent]
+				: payers[place.machine]?.[agent];
 		set("payer", payer, "account");
 	}
 	let layerAgent: HarnessId = "windlass";
@@ -135,9 +211,9 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		set("size", layer.hostedSize, source);
 		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
 		if (agent !== "windlass" && place !== "hosted") set("payer", layer.payer, source);
-		if (agent === "windlass") {
+		if (usesAccountModels(agent)) {
 			set("model", layer.model, source);
-			set("effort", planning ? layer.reviewEffort ?? layer.effort : layer.effort, source);
+			set("effort", planning ? (layer.reviewEffort ?? layer.effort) : layer.effort, source);
 		} else if (agent === layerAgent) {
 			set("model", layer.machineModel, source);
 			set("effort", layer.machineEffort, source);

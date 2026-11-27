@@ -10,103 +10,119 @@ import { Settings } from "./Settings";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
-HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+HTMLDialogElement.prototype.showModal ??= function () {
+	this.open = true;
+};
+HTMLDialogElement.prototype.close ??= function () {
+	this.open = false;
+};
 
-it.each([true, false])("keeps the session on cancel and signs out with revoke API tokens set to %s", async (revokeApiTokens) => {
-	const client = createMockClient({ pace: 0 });
-	const login = async () => {
-		const { url, redirectPrefix } = await client.login.start();
-		return client.login.finish(redirectPrefix + "?code=settings&state=" + new URL(url).searchParams.get("state"));
-	};
-	const auth = await login();
-	const before = await client.user(auth).apiTokens();
-	expect(before.length).toBeGreaterThan(0);
-	saveAuth("mock", auth);
-	const host = document.body.appendChild(document.createElement("div"));
-	const root = createRoot(host);
-	const Screen = () => useApp().auth ? createElement(Settings) : createElement("p", null, "Signed out");
-	const click = async (label: string, container: ParentNode = host) => {
-		const button = Array.from(container.querySelectorAll("button")).find(one => one.textContent === label);
-		expect(button, label).toBeDefined();
-		await act(async () => button!.click());
-	};
-	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Screen) })));
-		await click("Sign out everywhere");
-		const checkbox = () => document.querySelector<HTMLInputElement>('dialog input[type="checkbox"]')!;
-		expect(checkbox()?.labels?.[0]?.textContent).toContain("Also revoke all API tokens");
-		expect(checkbox().checked).toBe(true);
-		expect(document.querySelector("dialog")?.textContent).toMatch(/paired machines keep working/i);
-		expect(document.querySelector('dialog a[href="/machines"]')?.textContent).toBe("Machines");
-		await act(async () => checkbox().click());
-		await click("Cancel", document);
-		expect(await client.user(auth).apiTokens()).toEqual(before);
-		expect(loadAuth("mock")).toEqual(auth);
-		await click("Sign out everywhere");
-		expect(checkbox().checked).toBe(true);
-		if (!revokeApiTokens) await act(async () => checkbox().click());
-		await click("Sign out everywhere", document.querySelector("dialog")!);
-		expect(loadAuth("mock")).toBeNull();
-		expect(host.textContent).toBe("Signed out");
-		await expect(client.user(auth).me()).rejects.toMatchObject({ code: "unauthorized" });
-		expect(await client.user(await login()).apiTokens()).toEqual(revokeApiTokens ? [] : before);
-	} finally {
-		act(() => root.unmount());
-		host.remove();
-		client.dispose();
-		localStorage.clear();
-	}
-}, 15_000);
-
-it.each([false, true])("shows linked identities and protects the last sign-in method (Google configured: %s)", async google => {
-	const client = createMockClient({ pace: 0 });
-	const github = await client.login.start("github");
-	const auth = await client.login.finish(github.url);
-	const info = await client.info();
-	vi.spyOn(client, "info").mockResolvedValue({
-		...info, googleLogin: google ? true : undefined,
-		github: { slug: "windlass", url: google ? "https://github.example.test" : "https://github.com" },
-	});
-	if (google) {
-		const link = await client.login.start("google", auth);
-		await client.login.finish(link.url, auth);
-	}
-	saveAuth("mock", auth);
-	const host = document.body.appendChild(document.createElement("div"));
-	const root = createRoot(host);
-	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
-		const rows = Array.from(host.querySelectorAll('[aria-label="Sign-in methods"] li'));
-		expect(rows.map(row => row.querySelector(".provider-name")?.textContent)).toEqual(google ? ["GitHub", "Google"] : ["GitHub"]);
-		const githubRow = rows[0]!;
-		expect(githubRow.textContent).toContain("@ada");
-		expect(githubRow.textContent).not.toContain("github.com");
-		const unlink = githubRow.querySelector("button")!;
-		if (google) {
-			expect(githubRow.textContent).toContain("github.example.test");
-			expect(rows[1]?.textContent).toContain("ada@example.com");
-			await act(async () => unlink.click());
-			expect(host.querySelector("dialog")?.textContent).toContain("Unlink GitHub?");
-			await act(async () => host.querySelector<HTMLButtonElement>("dialog [data-autofocus]")!.click());
-			expect(await client.user(auth).linkedLogins()).toHaveLength(2);
-			await act(async () => unlink.click());
-			await act(async () => host.querySelector<HTMLButtonElement>("dialog .button-danger")!.click());
-			expect(host.querySelector("dialog")).toBeNull();
-			expect(githubRow.textContent).toContain("not linked");
-			expect(githubRow.textContent).not.toContain("@ada");
-			expect(githubRow.querySelector("button")?.getAttribute("aria-label")).toBe("Link GitHub");
+it.each([true, false])(
+	"keeps the session on cancel and signs out with revoke API tokens set to %s",
+	async revokeApiTokens => {
+		const client = createMockClient({ pace: 0 });
+		const login = async () => {
+			const { url, redirectPrefix } = await client.login.start();
+			return client.login.finish(redirectPrefix + "?code=settings&state=" + new URL(url).searchParams.get("state"));
+		};
+		const auth = await login();
+		const before = await client.user(auth).apiTokens();
+		expect(before.length).toBeGreaterThan(0);
+		saveAuth("mock", auth);
+		const host = document.body.appendChild(document.createElement("div"));
+		const root = createRoot(host);
+		const Screen = () => (useApp().auth ? createElement(Settings) : createElement("p", null, "Signed out"));
+		const click = async (label: string, container: ParentNode = host) => {
+			const button = Array.from(container.querySelectorAll("button")).find(one => one.textContent === label);
+			expect(button, label).toBeDefined();
+			await act(async () => button!.click());
+		};
+		try {
+			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Screen) })));
+			await click("Sign out everywhere");
+			const checkbox = () => document.querySelector<HTMLInputElement>('dialog input[type="checkbox"]')!;
+			expect(checkbox()?.labels?.[0]?.textContent).toContain("Also revoke all API tokens");
+			expect(checkbox().checked).toBe(true);
+			expect(document.querySelector("dialog")?.textContent).toMatch(/paired machines keep working/i);
+			expect(document.querySelector('dialog a[href="/machines"]')?.textContent).toBe("Machines");
+			await act(async () => checkbox().click());
+			await click("Cancel", document);
+			expect(await client.user(auth).apiTokens()).toEqual(before);
+			expect(loadAuth("mock")).toEqual(auth);
+			await click("Sign out everywhere");
+			expect(checkbox().checked).toBe(true);
+			if (!revokeApiTokens) await act(async () => checkbox().click());
+			await click("Sign out everywhere", document.querySelector("dialog")!);
+			expect(loadAuth("mock")).toBeNull();
+			expect(host.textContent).toBe("Signed out");
+			await expect(client.user(auth).me()).rejects.toMatchObject({ code: "unauthorized" });
+			expect(await client.user(await login()).apiTokens()).toEqual(revokeApiTokens ? [] : before);
+		} finally {
+			act(() => root.unmount());
+			host.remove();
+			client.dispose();
+			localStorage.clear();
 		}
-		const lastAction = rows.at(-1)!.querySelector("button")!;
-		expect(lastAction.disabled).toBe(true);
-		expect(document.getElementById(lastAction.getAttribute("aria-describedby")!)?.textContent).toMatch(/link another sign-in method/i);
-	} finally {
-		act(() => root.unmount());
-		host.remove();
-		client.dispose();
-		localStorage.clear();
-	}
-});
+	},
+	15_000,
+);
+
+it.each([false, true])(
+	"shows linked identities and protects the last sign-in method (Google configured: %s)",
+	async google => {
+		const client = createMockClient({ pace: 0 });
+		const github = await client.login.start("github");
+		const auth = await client.login.finish(github.url);
+		const info = await client.info();
+		vi.spyOn(client, "info").mockResolvedValue({
+			...info,
+			googleLogin: google ? true : undefined,
+			github: { slug: "windlass", url: google ? "https://github.example.test" : "https://github.com" },
+		});
+		if (google) {
+			const link = await client.login.start("google", auth);
+			await client.login.finish(link.url, auth);
+		}
+		saveAuth("mock", auth);
+		const host = document.body.appendChild(document.createElement("div"));
+		const root = createRoot(host);
+		try {
+			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+			const rows = Array.from(host.querySelectorAll('[aria-label="Sign-in methods"] li'));
+			expect(rows.map(row => row.querySelector(".provider-name")?.textContent)).toEqual(
+				google ? ["GitHub", "Google"] : ["GitHub"],
+			);
+			const githubRow = rows[0]!;
+			expect(githubRow.textContent).toContain("@ada");
+			expect(githubRow.textContent).not.toContain("github.com");
+			const unlink = githubRow.querySelector("button")!;
+			if (google) {
+				expect(githubRow.textContent).toContain("github.example.test");
+				expect(rows[1]?.textContent).toContain("ada@example.com");
+				await act(async () => unlink.click());
+				expect(host.querySelector("dialog")?.textContent).toContain("Unlink GitHub?");
+				await act(async () => host.querySelector<HTMLButtonElement>("dialog [data-autofocus]")!.click());
+				expect(await client.user(auth).linkedLogins()).toHaveLength(2);
+				await act(async () => unlink.click());
+				await act(async () => host.querySelector<HTMLButtonElement>("dialog .button-danger")!.click());
+				expect(host.querySelector("dialog")).toBeNull();
+				expect(githubRow.textContent).toContain("not linked");
+				expect(githubRow.textContent).not.toContain("@ada");
+				expect(githubRow.querySelector("button")?.getAttribute("aria-label")).toBe("Link GitHub");
+			}
+			const lastAction = rows.at(-1)!.querySelector("button")!;
+			expect(lastAction.disabled).toBe(true);
+			expect(document.getElementById(lastAction.getAttribute("aria-describedby")!)?.textContent).toMatch(
+				/link another sign-in method/i,
+			);
+		} finally {
+			act(() => root.unmount());
+			host.remove();
+			client.dispose();
+			localStorage.clear();
+		}
+	},
+);
 
 it("refuses a pending GitHub sign-in and lists only Google after the GitHub App is removed", async () => {
 	const configured = createMockClient({ pace: 0 });
@@ -133,19 +149,44 @@ it("refuses a pending GitHub sign-in and lists only Google after the GitHub App 
 /** Renders a screen signed in as a fresh account, with a way to change its selects and wait. */
 async function screen(name: string, render: () => ReturnType<typeof createElement>) {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: `mock:user:u_${name}:ada@example.com`, profile: { uid: `u_${name}`, email: "ada@example.com", demo: false } };
+	const auth = {
+		token: `mock:user:u_${name}:ada@example.com`,
+		profile: { uid: `u_${name}`, email: "ada@example.com", demo: false },
+	};
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);
-	const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
-	const field = (label: string) => [...host.querySelectorAll<HTMLSelectElement>(".run-default select")].find(el => el.labels?.[0]?.textContent === label);
+	const settle = async () => {
+		for (let i = 0; i < 10; i++) await act(async () => void (await new Promise(r => setTimeout(r, 2))));
+	};
+	const field = (label: string) =>
+		[...host.querySelectorAll<HTMLSelectElement>(".run-default select")].find(
+			el => el.labels?.[0]?.textContent === label,
+		);
 	const select = async (label: string, value: string) => {
-		await act(async () => { const el = field(label)!; el.value = value; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await act(async () => {
+			const el = field(label)!;
+			el.value = value;
+			el.dispatchEvent(new Event("change", { bubbles: true }));
+		});
 		await settle();
 	};
 	await act(async () => root.render(createElement(AppProvider, { client, children: render() })));
 	await settle();
-	return { client, user: client.user(auth), host, field, select, settle, close: () => { act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear(); } };
+	return {
+		client,
+		user: client.user(auth),
+		host,
+		field,
+		select,
+		settle,
+		close: () => {
+			act(() => root.unmount());
+			host.remove();
+			client.dispose();
+			localStorage.clear();
+		},
+	};
 }
 
 it("chooses the default agent in Settings → Models, and says what plans and reviews", async () => {
@@ -157,7 +198,9 @@ it("chooses the default agent in Settings → Models, and says what plans and re
 		const planning = [...s.host.querySelectorAll<HTMLButtonElement>('[data-picker="model"]')][1]!;
 		expect(planning.textContent).toBe("Same as building");
 		await act(async () => planning.click());
-		await act(async () => document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-luna"]')!.click());
+		await act(async () =>
+			document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-luna"]')!.click(),
+		);
 		await s.settle();
 		expect((await s.user.account()).defaults).toMatchObject({ model: null, reviewModel: "gpt-6-luna" });
 		await s.select("Agent", "claude");
@@ -193,15 +236,28 @@ it("chooses the default place on Machines, its isolation and what happens when i
 describe("Linear in Settings", () => {
 	async function open(client: ReturnType<typeof createMockClient>, hash = "") {
 		const { url, redirectPrefix } = await client.login.start();
-		const auth = await client.login.finish(redirectPrefix + "?code=linear&state=" + new URL(url).searchParams.get("state"));
+		const auth = await client.login.finish(
+			redirectPrefix + "?code=linear&state=" + new URL(url).searchParams.get("state"),
+		);
 		saveAuth("mock", auth);
 		history.replaceState(null, "", "/settings" + hash);
 		const host = document.body.appendChild(document.createElement("div"));
 		const root = createRoot(host);
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
-		const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 5)))); };
+		const settle = async () => {
+			for (let i = 0; i < 6; i++) await act(async () => void (await new Promise(r => setTimeout(r, 5))));
+		};
 		await settle();
-		return { host, root, auth, settle, close: () => { act(() => root.unmount()); host.remove(); } };
+		return {
+			host,
+			root,
+			auth,
+			settle,
+			close: () => {
+				act(() => root.unmount());
+				host.remove();
+			},
+		};
 	}
 	const section = (host: HTMLElement) => host.querySelector("[data-testid='linear-settings']") as HTMLElement;
 	const choose = async (select: HTMLSelectElement, value: string) => {
@@ -211,12 +267,17 @@ describe("Linear in Settings", () => {
 		});
 	};
 	const press = async (scope: ParentNode, label: string) => {
-		const button = Array.from(scope.querySelectorAll("button")).find((one) => one.textContent === label || one.getAttribute("aria-label") === label);
+		const button = Array.from(scope.querySelectorAll("button")).find(
+			one => one.textContent === label || one.getAttribute("aria-label") === label,
+		);
 		expect(button, label).toBeDefined();
 		await act(async () => button!.click());
 	};
 
-	afterEach(() => { localStorage.clear(); history.replaceState(null, "", "/"); });
+	afterEach(() => {
+		localStorage.clear();
+		history.replaceState(null, "", "/");
+	});
 
 	it("offers Connect, then shows unmapped teams, a saved mapping, and keeps it on reload", async () => {
 		const client = createMockClient({ pace: 0 });
@@ -225,7 +286,13 @@ describe("Linear in Settings", () => {
 		expect(section(first.host).textContent).toContain("Connect Linear…");
 		// Begin leaves the account disconnected until Settings redeems the ticket.
 		const assign = vi.fn();
-		vi.stubGlobal("location", { assign, origin: "http://localhost", pathname: "/settings", search: "?mock=1", hash: "" });
+		vi.stubGlobal("location", {
+			assign,
+			origin: "http://localhost",
+			pathname: "/settings",
+			search: "?mock=1",
+			hash: "",
+		});
 		await press(section(first.host), "Connect Linear…");
 		await first.settle();
 		vi.unstubAllGlobals();
@@ -240,22 +307,30 @@ describe("Linear in Settings", () => {
 		expect(location.hash).toBe("");
 		expect(section(second.host).textContent).toContain("Linear is connected.");
 		expect(section(second.host).querySelector("details:not([open])")?.textContent).toContain("windlass-quick");
-		expect(section(second.host).querySelector("[data-testid='linear-workspace']")?.textContent).toContain("Connected to Acme as Ada Lovelace");
+		expect(section(second.host).querySelector("[data-testid='linear-workspace']")?.textContent).toContain(
+			"Connected to Acme as Ada Lovelace",
+		);
 		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
 		const [team, repository] = Array.from(section(second.host).querySelectorAll("select"));
-		const save = Array.from(section(second.host).querySelectorAll("button")).find((one) => one.textContent === "Map team") as HTMLButtonElement;
+		const save = Array.from(section(second.host).querySelectorAll("button")).find(
+			one => one.textContent === "Map team",
+		) as HTMLButtonElement;
 		expect(save.disabled).toBe(true);
 		await choose(team as HTMLSelectElement, "team-eng");
 		await choose(repository as HTMLSelectElement, "7101");
 		await press(section(second.host), "Map team");
 		await second.settle();
-		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("→ acme/harbor");
+		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain(
+			"→ acme/harbor",
+		);
 		expect(section(second.host).querySelector("[data-testid='linear-team-DES']")?.textContent).toContain("not mapped");
 		second.close();
 
 		// A reload: a new client, the same account.
 		const third = await open(createMockClient({ pace: 0 }));
-		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("→ acme/harbor");
+		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain(
+			"→ acme/harbor",
+		);
 		await press(section(third.host), "Remove the mapping of Engineering");
 		await third.settle();
 		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");

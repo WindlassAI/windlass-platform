@@ -20,9 +20,21 @@ export interface Agent {
 }
 
 export const AGENTS: Agent[] = [
-	{ name: "Windlass", state: "available", where: "Hosted sandboxes and your own machines. The platform's own agent, a coding agent for the terminal." },
-	{ name: "Claude Code", state: "available", where: "On a machine of your own, signed in there with your own Claude account." },
-	{ name: "OpenCode", state: "available", where: "On a machine of your own, with any API-key provider OpenCode supports or its free models." },
+	{
+		name: "Windlass",
+		state: "available",
+		where: "Hosted sandboxes and your own machines. The platform's own agent, a coding agent for the terminal.",
+	},
+	{
+		name: "Claude Code",
+		state: "available",
+		where: "On a machine of your own, signed in there with your own Claude account.",
+	},
+	{
+		name: "OpenCode",
+		state: "available",
+		where: "On a machine of your own, with any API-key provider OpenCode supports or its free models.",
+	},
 	{ name: "Codex", state: "planned", where: "Planned. Not available yet." },
 ];
 
@@ -33,12 +45,32 @@ export interface Feature {
 }
 
 export const SESSION_FEATURES: Feature[] = [
-	{ key: "start", title: "Start from a prompt", text: "Pick the agent, the model, the mode and the repository, then say what you want done." },
-	{ key: "watch", title: "Watch it live", text: "Every file it reads, every command it runs and what it cost, as it happens." },
-	{ key: "steer", title: "Steer mid-turn", text: "A message sent while it works is read at its next step. Stop one call without ending the turn." },
-	{ key: "ask", title: "Answer its questions", text: "When a command wants the network or a write outside the workspace, it asks: allow once, for the session, or decline with a note." },
+	{
+		key: "start",
+		title: "Start from a prompt",
+		text: "Pick the agent, the model, the mode and the repository, then say what you want done.",
+	},
+	{
+		key: "watch",
+		title: "Watch it live",
+		text: "Every file it reads, every command it runs and what it cost, as it happens.",
+	},
+	{
+		key: "steer",
+		title: "Steer mid-turn",
+		text: "A message sent while it works is read at its next step. Stop one call without ending the turn.",
+	},
+	{
+		key: "ask",
+		title: "Answer its questions",
+		text: "When a command wants the network or a write outside the workspace, it asks: allow once, for the session, or decline with a note.",
+	},
 	{ key: "diff", title: "Read the diff", text: "The workspace's changes after every turn, file by file." },
-	{ key: "publish", title: "Publish a pull request", text: "Through the Windlass GitHub App, on the repositories you connect." },
+	{
+		key: "publish",
+		title: "Publish a pull request",
+		text: "Through the Windlass GitHub App, on the repositories you connect.",
+	},
 ];
 
 export interface Step {
@@ -86,7 +118,7 @@ export const FAQ: Faq[] = [
 	{
 		question: "What is the Factory?",
 		answer:
-			"The Factory carries a task to a pull request by itself. You file a work item on the Factory page, through the API, or by labelling a GitHub issue “windlass” or @mentioning the Windlass app on it. An agent implements it, your checks and CI are read and failures go back to the agent, a second agent can review the result, and the item lands in your \"Ready for you\" list with a verdict. The platform never merges: you do, on GitHub.",
+			'The Factory carries a task to a pull request by itself. You file a work item on the Factory page, through the API, or by labelling a GitHub issue “windlass” or @mentioning the Windlass app on it. An agent implements it, your checks and CI are read and failures go back to the agent, a second agent can review the result, and the item lands in your "Ready for you" list with a verdict. The platform never merges: you do, on GitHub.',
 	},
 	{
 		question: "Does it work with GitHub?",

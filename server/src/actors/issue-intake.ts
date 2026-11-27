@@ -11,7 +11,17 @@
 import { mayUse } from "../access.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
-import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
+import {
+	issueMode,
+	linearIdentifier,
+	linearId,
+	linearName,
+	refusals,
+	taskOfLinear,
+	type LinearBinding,
+	type LinearFiled,
+	type LinearFiling,
+} from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
@@ -35,13 +45,19 @@ const queues = new WeakMap<ItemsState, Promise<unknown>>();
  */
 export function inIntakeQueue<T>(c: ItemsCtx, job: () => Promise<T>): Promise<T> {
 	const next = (queues.get(c.vars.items) ?? Promise.resolve()).then(job);
-	queues.set(c.vars.items, next.catch(() => {}));
+	queues.set(
+		c.vars.items,
+		next.catch(() => {}),
+	);
 	return next;
 }
 
 export async function existingItem(c: ItemsCtx, uid: string, id: string) {
-	try { return await itemActor(c, uid, id).internalSummary(); }
-	catch (error) { if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error; }
+	try {
+		return await itemActor(c, uid, id).internalSummary();
+	} catch (error) {
+		if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error;
+	}
 }
 
 /**
@@ -56,16 +72,31 @@ export async function quotaRefusal(c: ItemsCtx, resuming?: string, from = "GitHu
 	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
 	const [pending] = await c.db.execute<{ count: number; reserved: number }>(
 		`SELECT count(*) AS count, count(CASE WHEN id=? THEN 1 END) AS reserved ${unindexed} AND created_at >= ? AND created_at < ?`,
-		resuming ?? null, midnight, midnight + 86_400_000);
-	if (!pending.reserved && filed.filter(i => i.createdAt >= midnight && i.createdAt < midnight + 86_400_000).length + pending.count >= githubItemsPerDay) return refusals.daily(githubItemsPerDay, from);
+		resuming ?? null,
+		midnight,
+		midnight + 86_400_000,
+	);
+	if (
+		!pending.reserved &&
+		filed.filter(i => i.createdAt >= midnight && i.createdAt < midnight + 86_400_000).length + pending.count >=
+			githubItemsPerDay
+	)
+		return refusals.daily(githubItemsPerDay, from);
 	return null;
 }
 
-export function intakeInput(task: { title: string; body: string; acceptance: string[] }, mode: "single" | "orchestrate", repository: { id: GithubId; branch: string }, start: boolean, key: string): CreateItemInput {
+export function intakeInput(
+	task: { title: string; body: string; acceptance: string[] },
+	mode: "single" | "orchestrate",
+	repository: { id: GithubId; branch: string },
+	start: boolean,
+	key: string,
+): CreateItemInput {
 	return { ...task, mode, repository, start, idempotencyKey: key };
 }
 
-export const isEnded = (item: Pick<ItemSummary, "state">) => item.state === "done" || item.state === "failed" || item.state === "cancelled";
+export const isEnded = (item: Pick<ItemSummary, "state">) =>
+	item.state === "done" || item.state === "failed" || item.state === "cancelled";
 
 /** The key of a Linear issue's nth filing. Reserved with the same table as GitHub's, and told apart from them by its form. */
 export const linearKey = (issueId: string, generation: number) => `linear:${issueId}:${generation}`;
@@ -83,24 +114,47 @@ export const linearKey = (issueId: string, generation: number) => `linear:${issu
  *
  * Call it inside `inIntakeQueue`.
  */
-export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
-	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: LinearBinding }) => Promise<ItemSummary>): Promise<LinearFiled> {
+export async function fileLinearIssue(
+	c: ItemsCtx,
+	f: LinearFiling,
+	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: LinearBinding }) => Promise<ItemSummary>,
+): Promise<LinearFiled> {
 	const { profile } = c.vars;
 	const { issue, trigger, team } = f;
-	const well = issue && trigger && team && f.repository && f.owner
-		&& linearId(issue.id) && linearIdentifier(issue.identifier) && linearId(team.id) && linearId(team.workspaceId) && linearId(f.owner.linearUserId)
-		&& isGithubId(f.repository.id) && (trigger.via === "label" || trigger.via === "assignment") && Number.isFinite(trigger.at)
-		&& linearId(trigger.sender?.id) && typeof issue.title === "string" && typeof issue.description === "string" && Array.isArray(issue.labels)
-		&& (issue.creator === null || (linearId(issue.creator?.id) && typeof issue.creator.name === "string"))
-		&& typeof issue.url === "string" && /^https:\/\/[^\s/]+\//.test(issue.url);
+	const well =
+		issue &&
+		trigger &&
+		team &&
+		f.repository &&
+		f.owner &&
+		linearId(issue.id) &&
+		linearIdentifier(issue.identifier) &&
+		linearId(team.id) &&
+		linearId(team.workspaceId) &&
+		linearId(f.owner.linearUserId) &&
+		isGithubId(f.repository.id) &&
+		(trigger.via === "label" || trigger.via === "assignment") &&
+		Number.isFinite(trigger.at) &&
+		linearId(trigger.sender?.id) &&
+		typeof issue.title === "string" &&
+		typeof issue.description === "string" &&
+		Array.isArray(issue.labels) &&
+		(issue.creator === null || (linearId(issue.creator?.id) && typeof issue.creator.name === "string")) &&
+		typeof issue.url === "string" &&
+		/^https:\/\/[^\s/]+\//.test(issue.url);
 	if (!well) return { kind: "refused", reason: "The Linear issue was not well formed." };
-	if (!profile || !mayUse(profile, config.access)) return { kind: "ignored", why: "The owner may not use Windlass here." };
+	if (!profile || !mayUse(profile, config.access))
+		return { kind: "ignored", why: "The owner may not use Windlass here." };
 	if (issue.closed) return { kind: "ignored", why: "The issue is closed in Linear." };
 	const uid = profile.uid;
 
 	// The issue's earlier filings, from the keys: those the index holds, and one the index does not yet (an interrupted filing).
 	const prefix = intakeScope(`linear:${issue.id}:`);
-	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
+	const made = [...c.vars.items.created].flatMap(([key, entry]) =>
+		key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))
+			? [{ generation: Number(key.slice(prefix.length)), id: entry.id }]
+			: [],
+	);
 	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
 	const held = last && c.vars.items.items.get(last.id);
 	if (last && held && !isEnded(held)) return { kind: "exists", itemId: last.id };
@@ -109,31 +163,59 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	const generation = resuming?.generation ?? (last?.generation ?? 0) + 1;
 
 	if (!config.items) return { kind: "refused", reason: refusals.off };
-	const app = githubApp(), connection = c.vars.github;
-	if (!app || !connection) return { kind: "refused", reason: "Not taken: GitHub is not connected, so there is no repository to file this on." };
+	const app = githubApp(),
+		connection = c.vars.github;
+	if (!app || !connection)
+		return {
+			kind: "refused",
+			reason: "Not taken: GitHub is not connected, so there is no repository to file this on.",
+		};
 	let repository;
-	try { repository = (await resolveRepository(app, connection, f.repository.id, "write")).repository; }
-	catch (error) {
+	try {
+		repository = (await resolveRepository(app, connection, f.repository.id, "write")).repository;
+	} catch (error) {
 		// A GitHub that cannot answer is no refusal: the delivery fails and Linear redelivers it.
-		if (error instanceof GithubProblem && error.code !== "github_unreachable" && error.code !== "github_failed") return { kind: "refused", reason: "Not taken: " + error.message };
+		if (error instanceof GithubProblem && error.code !== "github_unreachable" && error.code !== "github_failed")
+			return { kind: "refused", reason: "Not taken: " + error.message };
 		throw error;
 	}
 
 	const author = linearName(issue.creator?.name);
 	const trusted = issue.creator !== null && issue.creator.id === f.owner.linearUserId;
-	const labels = issue.labels.filter((label): label is string => typeof label === "string").map(label => label.trim().toLowerCase());
-	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", QUICK_LABELS);
-	const resumed = resuming && await existingItem(c, uid, resuming.id);
+	const labels = issue.labels
+		.filter((label): label is string => typeof label === "string")
+		.map(label => label.trim().toLowerCase());
+	const {
+		mode,
+		reason: modeReason,
+		refusal,
+	} = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", QUICK_LABELS);
+	const resumed = resuming && (await existingItem(c, uid, resuming.id));
 	if (refusal) return { kind: "refused", reason: refusal };
 	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, "Linear");
 	if (cap) return { kind: "refused", reason: cap, dailyCap: true };
 
 	const key = linearKey(issue.id, generation);
-	const { task } = taskOfLinear({ title: issue.title, body: issue.description, identifier: issue.identifier, url: issue.url, author, trusted });
+	const { task } = taskOfLinear({
+		title: issue.title,
+		body: issue.description,
+		identifier: issue.identifier,
+		url: issue.url,
+		author,
+		trusted,
+	});
 	const binding: LinearBinding = {
-		modeReason, generation, via: trigger.via, triggeredAt: trigger.at, senderId: trigger.sender.id,
-		workspaceId: team.workspaceId, teamId: team.id,
-		origin: { linear: { id: issue.id, identifier: issue.identifier, url: issue.url, author, trusted }, sender: linearName(trigger.sender.name) },
+		modeReason,
+		generation,
+		via: trigger.via,
+		triggeredAt: trigger.at,
+		senderId: trigger.sender.id,
+		workspaceId: team.workspaceId,
+		teamId: team.id,
+		origin: {
+			linear: { id: issue.id, identifier: issue.identifier, url: issue.url, author, trusted },
+			sender: linearName(trigger.sender.name),
+		},
 	};
 	const input = intakeInput(task, mode, { id: repository.id, branch: repository.defaultBranch }, trusted, key);
 	const item = await file(profile, { input, binding });

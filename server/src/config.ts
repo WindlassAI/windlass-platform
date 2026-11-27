@@ -288,7 +288,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type AccessRules, readAccessRules } from "./access.js";
-import { QUESTION_TIMEOUT_MS } from "./contract.js";
+import { MACHINE_HARNESS_IDS, QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
 import type { FactoryLimits, MachinesInfo } from "./contract.js";
@@ -448,7 +448,14 @@ export function engineAdminToken(): string | null {
 /** What `backupConfig` found: the bucket's settings when all of them are there, and the size limit. */
 export interface BackupConfig {
 	/** The S3 bucket's settings (bucket/s3.ts takes them as they are); null when the feature is off. `secretAccessKey` is a secret. */
-	bucket: { endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string; style: "path" | "virtual" } | null;
+	bucket: {
+		endpoint: string;
+		region: string;
+		bucket: string;
+		accessKeyId: string;
+		secretAccessKey: string;
+		style: "path" | "virtual";
+	} | null;
 	/** WLP_BUCKET_PREFIX, ending in a slash when it is not empty. */
 	prefix: string;
 	/** WLP_BACKUP_MAX_BYTES. */
@@ -464,14 +471,21 @@ export interface BackupConfig {
  */
 export function backupConfig(env: NodeJS.ProcessEnv = process.env): BackupConfig {
 	const read = (name: string) => (env[name] ?? "").trim();
-	const required = ["WLP_BUCKET_ENDPOINT", "WLP_BUCKET_NAME", "WLP_BUCKET_ACCESS_KEY_ID", "WLP_BUCKET_SECRET_ACCESS_KEY"];
-	const missing = required.filter((name) => read(name) === "");
+	const required = [
+		"WLP_BUCKET_ENDPOINT",
+		"WLP_BUCKET_NAME",
+		"WLP_BUCKET_ACCESS_KEY_ID",
+		"WLP_BUCKET_SECRET_ACCESS_KEY",
+	];
+	const missing = required.filter(name => read(name) === "");
 	const raw = Number(read("WLP_BACKUP_MAX_BYTES"));
 	const maxBytes = Number.isSafeInteger(raw) && raw > 0 ? raw : 64 * 1024 * 1024;
 	const prefix = read("WLP_BUCKET_PREFIX").replace(/^\/+|\/+$/g, "");
-	if (prefix !== "" && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix)) throw new Error('WLP_BUCKET_PREFIX may hold letters, digits, ".", "_", "-" and "/" only');
+	if (prefix !== "" && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix))
+		throw new Error('WLP_BUCKET_PREFIX may hold letters, digits, ".", "_", "-" and "/" only');
 	const style = read("WLP_BUCKET_STYLE").toLowerCase();
-	if (style !== "" && style !== "path" && style !== "virtual") throw new Error('WLP_BUCKET_STYLE must be "path" or "virtual"');
+	if (style !== "" && style !== "path" && style !== "virtual")
+		throw new Error('WLP_BUCKET_STYLE must be "path" or "virtual"');
 	const bucket =
 		missing.length > 0
 			? null
@@ -483,7 +497,12 @@ export function backupConfig(env: NodeJS.ProcessEnv = process.env): BackupConfig
 					secretAccessKey: read("WLP_BUCKET_SECRET_ACCESS_KEY"),
 					style: style === "virtual" ? ("virtual" as const) : ("path" as const),
 				};
-	return { bucket, prefix: prefix === "" ? "" : `${prefix}/`, maxBytes, missing: missing.length === required.length ? [] : missing };
+	return {
+		bucket,
+		prefix: prefix === "" ? "" : `${prefix}/`,
+		maxBytes,
+		missing: missing.length === required.length ? [] : missing,
+	};
 }
 
 /** What `githubConfig` found: the GitHub App's public settings when all of it is configured. */
@@ -496,7 +515,13 @@ export interface GithubConfig {
 	missing: string[];
 }
 
-const GITHUB_REQUIRED = ["WLP_GITHUB_APP_ID", "WLP_GITHUB_APP_SLUG", "WLP_GITHUB_CLIENT_ID", "WLP_GITHUB_CLIENT_SECRET", "WLP_GITHUB_PRIVATE_KEY"];
+const GITHUB_REQUIRED = [
+	"WLP_GITHUB_APP_ID",
+	"WLP_GITHUB_APP_SLUG",
+	"WLP_GITHUB_CLIENT_ID",
+	"WLP_GITHUB_CLIENT_SECRET",
+	"WLP_GITHUB_PRIVATE_KEY",
+];
 
 /**
  * The GitHub App of this deployment, read when it is asked for. Throws for a value that cannot be what
@@ -504,11 +529,13 @@ const GITHUB_REQUIRED = ["WLP_GITHUB_APP_ID", "WLP_GITHUB_APP_SLUG", "WLP_GITHUB
  * variable and never repeats a secret.
  */
 export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig {
-	const read = (name: string) => (name === "WLP_GITHUB_PRIVATE_KEY" ? rawGithubPrivateKey(env) : (env[name] ?? "").trim());
-	const missing = GITHUB_REQUIRED.filter((name) => read(name) === "");
+	const read = (name: string) =>
+		name === "WLP_GITHUB_PRIVATE_KEY" ? rawGithubPrivateKey(env) : (env[name] ?? "").trim();
+	const missing = GITHUB_REQUIRED.filter(name => read(name) === "");
 	const webhookSecret = (name: string) => {
 		const secret = env[name] ?? "";
-		if (env[name] !== undefined && [...secret].length < 32) throw new Error(`${name} must be at least 32 characters long`);
+		if (env[name] !== undefined && [...secret].length < 32)
+			throw new Error(`${name} must be at least 32 characters long`);
 		return secret;
 	};
 	const current = webhookSecret("WLP_GITHUB_WEBHOOK_SECRET");
@@ -516,11 +543,18 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 	const fallback = env.WLP_GITHUB_POLL_FALLBACK;
 	if (fallback !== undefined && fallback !== "1") throw new Error("WLP_GITHUB_POLL_FALLBACK must be 1 or unset");
 	if (fallback && !current) throw new Error("WLP_GITHUB_POLL_FALLBACK requires WLP_GITHUB_WEBHOOK_SECRET");
-	if (missing.length > 0) return { app: null, webhook: null, pollFallback: false, missing: missing.length === GITHUB_REQUIRED.length ? [] : missing };
+	if (missing.length > 0)
+		return {
+			app: null,
+			webhook: null,
+			pollFallback: false,
+			missing: missing.length === GITHUB_REQUIRED.length ? [] : missing,
+		};
 	const appId = read("WLP_GITHUB_APP_ID");
 	if (!/^[0-9]{1,20}$/.test(appId)) throw new Error("WLP_GITHUB_APP_ID must be the app's numeric id");
 	const slug = read("WLP_GITHUB_APP_SLUG");
-	if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(slug)) throw new Error("WLP_GITHUB_APP_SLUG must be the app's name as its address has it: letters, digits and hyphens");
+	if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(slug))
+		throw new Error("WLP_GITHUB_APP_SLUG must be the app's name as its address has it: letters, digits and hyphens");
 	const clientId = read("WLP_GITHUB_CLIENT_ID");
 	if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new Error("WLP_GITHUB_CLIENT_ID is not a client id");
 	const address = (name: string, fallback: string) => {
@@ -531,7 +565,13 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 		} catch {
 			throw new Error(`${name} must be a URL`);
 		}
-		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+		if (
+			(url.protocol !== "https:" && url.protocol !== "http:") ||
+			url.username !== "" ||
+			url.password !== "" ||
+			url.search !== "" ||
+			url.hash !== ""
+		) {
 			throw new Error(`${name} must be an http or https URL with no user name, query or fragment in it`);
 		}
 		return url.toString().replace(/\/+$/, "");
@@ -539,7 +579,18 @@ export function githubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig
 	const webhook = current ? { secrets: previous ? [current, previous] : [current] } : null;
 	// Keep configuration dumps and JSON responses free of credentials.
 	if (webhook) Object.defineProperty(webhook, "secrets", { enumerable: false });
-	return { app: { appId, slug, clientId, apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"), webUrl: address("WLP_GITHUB_URL", "https://github.com") }, webhook, pollFallback: fallback === "1", missing: [] };
+	return {
+		app: {
+			appId,
+			slug,
+			clientId,
+			apiUrl: address("WLP_GITHUB_API_URL", "https://api.github.com"),
+			webUrl: address("WLP_GITHUB_URL", "https://github.com"),
+		},
+		webhook,
+		pollFallback: fallback === "1",
+		missing: [],
+	};
 }
 
 /** The GitHub App's client secret, or null. Like the admin token it is not part of any configuration object. */
@@ -596,8 +647,9 @@ const LINEAR_REQUIRED = ["WLP_LINEAR_CLIENT_ID", "WLP_LINEAR_CLIENT_SECRET", "WL
  */
 export function linearConfig(env: NodeJS.ProcessEnv = process.env): LinearConfig {
 	const read = (name: string) => (env[name] ?? "").trim();
-	const missing = LINEAR_REQUIRED.filter((name) => read(name) === "");
-	if (missing.length > 0) return { app: null, webhook: null, missing: missing.length === LINEAR_REQUIRED.length ? [] : missing };
+	const missing = LINEAR_REQUIRED.filter(name => read(name) === "");
+	if (missing.length > 0)
+		return { app: null, webhook: null, missing: missing.length === LINEAR_REQUIRED.length ? [] : missing };
 	const clientId = read("WLP_LINEAR_CLIENT_ID");
 	if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new Error("WLP_LINEAR_CLIENT_ID is not a client id");
 	const secret = read("WLP_LINEAR_WEBHOOK_SECRET");
@@ -610,7 +662,13 @@ export function linearConfig(env: NodeJS.ProcessEnv = process.env): LinearConfig
 		} catch {
 			throw new Error(`${name} must be a URL`);
 		}
-		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+		if (
+			(url.protocol !== "https:" && url.protocol !== "http:") ||
+			url.username !== "" ||
+			url.password !== "" ||
+			url.search !== "" ||
+			url.hash !== ""
+		) {
 			throw new Error(`${name} must be an http or https URL with no user name, query or fragment in it`);
 		}
 		return path ? url.toString() : url.toString().replace(/\/+$/, "");
@@ -652,14 +710,18 @@ function connectionEndpoint(name: "WLP_PUBLIC_ENDPOINT" | "WLP_TOKEN_ENDPOINT"):
 	if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`${name} must be an http or https URL`);
 	// Never include a configured URL in a validation error: it may contain credentials.
 	if (url.username || url.password) throw new Error(`${name} must not carry a namespace or a token`);
-	if (name === "WLP_TOKEN_ENDPOINT" && (url.search || url.hash)) throw new Error(`${name} must not carry a query string or fragment`);
+	if (name === "WLP_TOKEN_ENDPOINT" && (url.search || url.hash))
+		throw new Error(`${name} must not carry a query string or fragment`);
 	return url.toString().replace(/\/+$/, "");
 }
 
 function readBrowsers(): BrowserConnectionConfig {
 	const endpoint = connectionEndpoint("WLP_PUBLIC_ENDPOINT");
 	const tokenEndpoint = connectionEndpoint("WLP_TOKEN_ENDPOINT") ?? undefined;
-	const tokenTtlMs = Math.min(readDuration("WLP_CONNECTION_TOKEN_TTL_MS", 60 * 60 * 1000, 60_000), MAX_CONNECTION_TOKEN_TTL_MS);
+	const tokenTtlMs = Math.min(
+		readDuration("WLP_CONNECTION_TOKEN_TTL_MS", 60 * 60 * 1000, 60_000),
+		MAX_CONNECTION_TOKEN_TTL_MS,
+	);
 	return { endpoint, tokenEndpoint, tokens: engineAdminToken() !== null, tokenTtlMs };
 }
 
@@ -690,7 +752,8 @@ export function signInKeys(): Keyring | Buffer {
 	const ring = configuredKeys("WLP_SIGNIN_KEYS", 32);
 	if (ring) return ring;
 	const own = process.env.WLP_SIGNIN_KEY;
-	if (own === undefined) return process.env.WLP_SECRET_KEYS === undefined ? config.signingKeys[0].secret : config.signingKeys;
+	if (own === undefined)
+		return process.env.WLP_SECRET_KEYS === undefined ? config.signingKeys[0].secret : config.signingKeys;
 	if (own.length < 32) throw new Error("WLP_SIGNIN_KEY must be at least 32 characters long");
 	return Buffer.from(own, "utf8");
 }
@@ -699,8 +762,8 @@ function readOrigins(): string[] {
 	const raw = process.env.WLP_WEB_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173";
 	return raw
 		.split(",")
-		.map((origin) => origin.trim().replace(/\/+$/, ""))
-		.filter((origin) => origin !== "");
+		.map(origin => origin.trim().replace(/\/+$/, ""))
+		.filter(origin => origin !== "");
 }
 
 function readStoragePath(): string {
@@ -716,7 +779,8 @@ function readHttpPort(): number {
 	for (const raw of [process.env.WLP_HTTP_PORT, process.env.PORT]) {
 		if (raw === undefined || raw.trim() === "") continue;
 		const port = Number(raw);
-		if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`The HTTP port must be a number from 1 to 65535; got "${raw}"`);
+		if (!Number.isInteger(port) || port < 1 || port > 65_535)
+			throw new Error(`The HTTP port must be a number from 1 to 65535; got "${raw}"`);
 		return port;
 	}
 	return 6440;
@@ -736,15 +800,23 @@ function readDuration(name: string, fallback: number, min: number): number {
 
 function readModelRelay(): Config["modelRelay"] {
 	const mode = (process.env.WLP_MODEL_RELAY ?? "").trim().toLowerCase();
-	if (mode !== "" && mode !== "on" && mode !== "off") unusable.push('WLP_MODEL_RELAY must be "on" or "off", or not set for on');
+	if (mode !== "" && mode !== "on" && mode !== "off")
+		unusable.push('WLP_MODEL_RELAY must be "on" or "off", or not set for on');
 	const text = (process.env.WLP_MODEL_RELAY_REQUESTS ?? "").trim();
 	const requests = text === "" ? 64 : Number(text);
-	if (!Number.isInteger(requests) || requests < 1 || requests > 4096) unusable.push("WLP_MODEL_RELAY_REQUESTS must be a whole number from 1 to 4096, or not set for 64");
+	if (!Number.isInteger(requests) || requests < 1 || requests > 4096)
+		unusable.push("WLP_MODEL_RELAY_REQUESTS must be a whole number from 1 to 4096, or not set for 64");
 	const turnRequests = Number(process.env.WLP_MODEL_RELAY_TURN_REQUESTS?.trim() || 300);
-	if (!Number.isSafeInteger(turnRequests) || turnRequests < 1) unusable.push("WLP_MODEL_RELAY_TURN_REQUESTS must be a positive whole number");
+	if (!Number.isSafeInteger(turnRequests) || turnRequests < 1)
+		unusable.push("WLP_MODEL_RELAY_TURN_REQUESTS must be a positive whole number");
 	const url = parseModelRelayUrl(process.env.WLP_MODEL_RELAY_URL);
 	if (url !== null && "problem" in url) unusable.push(url.problem);
-	return { on: mode !== "off", turnRequests, requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64, url: url !== null && "problem" in url ? null : url };
+	return {
+		on: mode !== "off",
+		turnRequests,
+		requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64,
+		url: url !== null && "problem" in url ? null : url,
+	};
 }
 
 function readStoreLimits(): Config["storeLimits"] {
@@ -772,7 +844,9 @@ function readCount(name: string, fallback: number | null, min: number, max: numb
 	if (unlimited && text.toLowerCase() === "unlimited") return null;
 	const raw = Number(text);
 	if (Number.isInteger(raw) && raw >= min && raw <= max) return raw;
-	unusable.push(`${name} must be a whole number from ${min} to ${max}${unlimited ? ', or "unlimited"' : ""}, or not set for its default`);
+	unusable.push(
+		`${name} must be a whole number from ${min} to ${max}${unlimited ? ', or "unlimited"' : ""}, or not set for its default`,
+	);
 	return fallback;
 }
 
@@ -835,16 +909,24 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	try {
 		const report = JSON.parse(raw);
 		if (report?.image !== image || !Array.isArray(report.harnesses)) return undefined;
-		return (["claude", "opencode", "codex"] as const).filter(id => report.harnesses.includes(id));
-	} catch { return undefined; }
+		return MACHINE_HARNESS_IDS.filter(id => report.harnesses.includes(id));
+	} catch {
+		return undefined;
+	}
 }
 
 function platformIdentity() {
 	const mode = process.env.WLP_REQUIRE_SIGNED_RUNNER ?? "0";
 	if (mode === "0") return;
-	if (mode !== "1") { unusable.push("WLP_REQUIRE_SIGNED_RUNNER must be 0 or 1"); return; }
-	try { return readPlatformKey(process.env.WLP_PLATFORM_KEY); }
-	catch { unusable.push("WLP_PLATFORM_KEY needs a valid, unexpired certified online key"); }
+	if (mode !== "1") {
+		unusable.push("WLP_REQUIRE_SIGNED_RUNNER must be 0 or 1");
+		return;
+	}
+	try {
+		return readPlatformKey(process.env.WLP_PLATFORM_KEY);
+	} catch {
+		unusable.push("WLP_PLATFORM_KEY needs a valid, unexpired certified online key");
+	}
 }
 
 function readMachines(httpPort: number): MachinesConfig | null {
@@ -852,11 +934,15 @@ function readMachines(httpPort: number): MachinesConfig | null {
 	const image = (process.env.WLP_RUNNER_IMAGE ?? "").trim();
 	// A runner release pins the sandbox image it runs; the runner image is pinned the same way, so what the page names is one exact build.
 	const pinned = /^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$/.test(image);
-	if (image !== "" && !pinned) unusable.push("WLP_RUNNER_IMAGE must be an image pinned by digest, <name>@sha256:<64 hex>");
+	if (image !== "" && !pinned)
+		unusable.push("WLP_RUNNER_IMAGE must be an image pinned by digest, <name>@sha256:<64 hex>");
 	const raw = (process.env.WLP_PUBLIC_URL ?? "").trim();
 	let publicUrl = `http://localhost:${httpPort}`;
 	if (raw === "") {
-		if (engine.remote) unusable.push("WLP_PUBLIC_URL must be set with WLP_MACHINES=1 and a remote engine: it is the address runners are given");
+		if (engine.remote)
+			unusable.push(
+				"WLP_PUBLIC_URL must be set with WLP_MACHINES=1 and a remote engine: it is the address runners are given",
+			);
 	} else {
 		let url: URL | null = null;
 		try {
@@ -864,11 +950,27 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		} catch {
 			// Said below.
 		}
-		const fit = url !== null && (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname))) && url.username === "" && url.password === "" && url.pathname === "/" && url.search === "" && url.hash === "";
+		const fit =
+			url !== null &&
+			(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname))) &&
+			url.username === "" &&
+			url.password === "" &&
+			url.pathname === "/" &&
+			url.search === "" &&
+			url.hash === "";
 		if (fit) publicUrl = url!.origin;
-		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
+		else
+			unusable.push(
+				"WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials",
+			);
 	}
-	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl, durableTurns: process.env.WLP_RUNNER_DURABLE_TURNS === "1" };
+	return {
+		identity: platformIdentity(),
+		runnerImage: pinned ? image : null,
+		runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined,
+		publicUrl,
+		durableTurns: process.env.WLP_RUNNER_DURABLE_TURNS === "1",
+	};
 }
 
 const httpPort = readHttpPort();
@@ -895,7 +997,10 @@ export const config: Config = {
 	storagePath: readStoragePath(),
 	loginTtlMs: readLoginTtl(),
 	questionTimeoutMs: readQuestionTimeout(),
-hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTED_QUESTION_TIMEOUT_MS", 5 * 60 * 1000, 100)),
+	hostedQuestionTimeoutMs: Math.min(
+		readQuestionTimeout(),
+		readDuration("WLP_HOSTED_QUESTION_TIMEOUT_MS", 5 * 60 * 1000, 100),
+	),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
@@ -928,6 +1033,9 @@ export const crossRepoFactory = (): boolean => process.env.WLP_FACTORY_CROSS_REP
  * Whether post-setup snapshots are on for a session's place: a hosted session on E2B follows
  * WLP_E2B_SNAPSHOTS, every other place (hosted Docker, a machine's runner) WLP_SNAPSHOTS.
  */
-export function snapshotsFor(place: { kind: "hosted" | "machine" }, settings: Pick<Config, "hosted" | "snapshots"> = config): boolean {
+export function snapshotsFor(
+	place: { kind: "hosted" | "machine" },
+	settings: Pick<Config, "hosted" | "snapshots"> = config,
+): boolean {
 	return place.kind === "hosted" && settings.hosted ? !!settings.hosted.snapshots : settings.snapshots;
 }

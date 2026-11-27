@@ -23,8 +23,13 @@ export interface SessionDataFacts {
  * now, since a runner upgraded or downgraded since may make its sandboxes otherwise. Without a sandbox
  * (null), what one made now would have (`Sandboxes.privateSessionData`), for words only.
  */
-export async function privateSessionData(meta: SessionDataFacts, sandboxes: Pick<Sandboxes, "sessionsLiveInSandbox" | "privateSessionData">, sandbox: string | null): Promise<boolean> {
-	if (!capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox) return true;
+export async function privateSessionData(
+	meta: SessionDataFacts,
+	sandboxes: Pick<Sandboxes, "sessionsLiveInSandbox" | "privateSessionData">,
+	sandbox: string | null,
+): Promise<boolean> {
+	if (!capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox)
+		return true;
 	if (sandbox !== null) return meta.ownDataSandbox === sandbox;
 	return (await sandboxes.privateSessionData?.(meta.profile)) === true;
 }

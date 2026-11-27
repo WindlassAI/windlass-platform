@@ -42,7 +42,8 @@ export function pushTokenKinds(patch: string): string[] {
  * Hunk content always has a prefix, even when the added text resembles a patch header. */
 export function outgoingCredentials(patch: string, cleanPath = (path: string) => path): string[] {
 	const findings = new Set<string>();
-	let message = false, hunk = false;
+	let message = false,
+		hunk = false;
 	let path: string | undefined;
 	for (const line of patch.split("\n")) {
 		if (!message && /^[0-9a-f]{40}$/.test(line)) {
@@ -64,8 +65,10 @@ export function outgoingCredentials(patch: string, cleanPath = (path: string) =>
 		} else if (line.startsWith("@@ ")) {
 			hunk = true;
 			continue;
-		} else if (!(hunk && line.startsWith("+")) &&
-			!(!hunk && /^(?:--- |rename (?:from|to) |copy (?:from|to) )/.test(line))) {
+		} else if (
+			!(hunk && line.startsWith("+")) &&
+			!(!hunk && /^(?:--- |rename (?:from|to) |copy (?:from|to) )/.test(line))
+		) {
 			continue;
 		}
 		for (const kind of pushTokenKinds(line)) findings.add(path ? `${kind} in ${path}` : kind);
@@ -81,8 +84,16 @@ export function redact(text: string, secrets: Array<string | null | undefined> =
 	let out = text;
 	for (const secret of secrets) {
 		if (typeof secret !== "string" || secret.length < 6) continue;
-		const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(`x-access-token:${secret}`, "utf8").toString("base64"), encodeURIComponent(secret)];
+		const forms = [
+			secret,
+			Buffer.from(secret, "utf8").toString("base64"),
+			Buffer.from(`x-access-token:${secret}`, "utf8").toString("base64"),
+			encodeURIComponent(secret),
+		];
 		for (const form of forms) out = out.split(form).join("[redacted]");
 	}
-	return out.replace(TOKEN_SHAPE, "[redacted]").replace(URL_CREDENTIAL, "$1[redacted]@").replace(HEADER_CREDENTIAL, "$1[redacted]");
+	return out
+		.replace(TOKEN_SHAPE, "[redacted]")
+		.replace(URL_CREDENTIAL, "$1[redacted]@")
+		.replace(HEADER_CREDENTIAL, "$1[redacted]");
 }

@@ -45,7 +45,15 @@
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
 import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../model-relay-url.js";
-import { DATA_DIR, type KeyReference, type KeyTurnRelay, type TakeRelayRequest, type TurnModelRelay, type TurnSandbox } from "./provider.js";
+import {
+	DATA_DIR,
+	type KeyReference,
+	type KeyTurnRelay,
+	type TakeRelayRequest,
+	type TurnModelRelay,
+	type TurnSandbox,
+} from "./provider.js";
+import { errorText } from "../util.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -53,7 +61,10 @@ export const TOKEN_FILE_PREFIX = "access-token-";
 /** Docker mounts this tmpfs privately. Bubblewrap replaces /dev inside agent commands. */
 const DOCKER_TOKEN_DIR = "/dev/shm";
 
-export function tokenFilePath(sandboxId: string, directory: typeof DATA_DIR | typeof DOCKER_TOKEN_DIR = DOCKER_TOKEN_DIR): string {
+export function tokenFilePath(
+	sandboxId: string,
+	directory: typeof DATA_DIR | typeof DOCKER_TOKEN_DIR = DOCKER_TOKEN_DIR,
+): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(sandboxId)) throw new Error("invalid sandbox id");
 	return `${directory}/${TOKEN_FILE_PREFIX}${sandboxId}.json`;
 }
@@ -89,13 +100,22 @@ export class TokenFileError extends Error {
 }
 
 /** Settings-key turns get only a relay address and placeholder. */
-export async function openModelKeyRelay(sandbox: TurnSandbox, sessionId: string, key: KeyReference, signal?: AbortSignal, takeRequest?: TakeRelayRequest): Promise<KeyTurnRelay> {
+export async function openModelKeyRelay(
+	sandbox: TurnSandbox,
+	sessionId: string,
+	key: KeyReference,
+	signal?: AbortSignal,
+	takeRequest?: TakeRelayRequest,
+): Promise<KeyTurnRelay> {
 	if (key.harness === "windlass" && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
 	if (!sandbox.modelKeyRelay) throw new TokenFileError("A saved provider key requires a model relay for this sandbox.");
 	if (key.harness === "windlass") {
 		// A connected runner or restored snapshot can have an older binary than its current image.
 		const version = await sandbox.ask(["windlass", "--version"], { timeoutMs: 10_000 });
-		if (version?.code !== 0 || !readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1], SETTINGS_KEY_WINDLASS))
+		if (
+			version?.code !== 0 ||
+			!readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1], SETTINGS_KEY_WINDLASS)
+		)
 			throw new TokenFileError(`Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys in this sandbox.`);
 	}
 	return sandbox.modelKeyRelay(sessionId, key, signal, takeRequest);
@@ -136,10 +156,14 @@ export class TokenFile {
 		private readonly tokens: AccessTokens,
 		options: TokenFileOptions = {},
 	) {
-		this.path = tokenFilePath(sandbox.id, (sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b")) ? DATA_DIR : DOCKER_TOKEN_DIR);
+		this.path = tokenFilePath(
+			sandbox.id,
+			sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b") ? DATA_DIR : DOCKER_TOKEN_DIR,
+		);
 		this.leadMs = options.leadMs ?? TOKEN_REPLACE_LEAD_MS;
 		this.retryMs = options.retryMs ?? TOKEN_REPLACE_RETRY_MS;
-		this.log = options.log ?? ((line) => (line.includes("token.replace_failed") ? console.warn(line) : console.log(line)));
+		this.log =
+			options.log ?? (line => (line.includes("token.replace_failed") ? console.warn(line) : console.log(line)));
 	}
 
 	/** What the turn leaves in the sandbox and removes when it ends: the file, and the one a write that was cut off may have left beside it. */
@@ -160,7 +184,9 @@ export class TokenFile {
 	/** What `handedInFailure` needs to know when Windlass refuses the token. */
 	get state(): TokenFileState {
 		const now = Date.now();
-		const lapsed = (this.expiresAt > 0 && this.expiresAt <= now) || (this.lapseEndedAt !== null && now - this.lapseEndedAt < LAPSE_MEMORY_MS);
+		const lapsed =
+			(this.expiresAt > 0 && this.expiresAt <= now) ||
+			(this.lapseEndedAt !== null && now - this.lapseEndedAt < LAPSE_MEMORY_MS);
 		return { expiresAt: this.expiresAt, problem: this.problem, lapsed };
 	}
 
@@ -183,16 +209,18 @@ export class TokenFile {
 				this.relay = await this.sandbox.modelRelay();
 				this.relayMs = Date.now() - began;
 			} catch (error) {
-				throw new TokenFileError(`the model relay could not be started: ${error instanceof Error ? error.message : String(error)}`);
+				throw new TokenFileError(`the model relay could not be started: ${errorText(error)}`);
 			}
 			// A stop that came while the lease was being opened did not see it.
 			if (this.stopped) await this.relay.close();
 		}
 		const written = await this.write(token).catch((error: unknown) => {
-			throw new TokenFileError(error instanceof Error ? error.message : String(error));
+			throw new TokenFileError(errorText(error));
 		});
 		if (!written) return;
-		this.log(`[wlp] token.handed sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
+		this.log(
+			`[wlp] token.handed sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`,
+		);
 		this.schedule();
 	}
 
@@ -209,14 +237,17 @@ export class TokenFile {
 	async resume(relay: { lease: string; placeholder: string; env: Record<string, string> } | null): Promise<void> {
 		const token = await this.tokens.current(this.sandbox.uid);
 		if (relay !== null) {
-			if (this.sandbox.resumeRelay === undefined) throw new TokenFileError("the model relay's lease cannot be taken up here");
+			if (this.sandbox.resumeRelay === undefined)
+				throw new TokenFileError("the model relay's lease cannot be taken up here");
 			this.relay = this.sandbox.resumeRelay(relay);
 		}
 		const written = await this.write(token).catch((error: unknown) => {
-			throw new TokenFileError(error instanceof Error ? error.message : String(error));
+			throw new TokenFileError(errorText(error));
 		});
 		if (!written) return;
-		this.log(`[wlp] token.handed_again sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn taken up after a restart was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
+		this.log(
+			`[wlp] token.handed_again sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn taken up after a restart was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`,
+		);
 		this.schedule();
 	}
 
@@ -233,14 +264,23 @@ export class TokenFile {
 	private async write(token: AccessToken): Promise<boolean> {
 		if (this.stopped) return false;
 		// Before the file is there: a command may read it the moment it is. Too short a string would be found everywhere.
-		if (token.accessToken.length >= 16) for (const form of [token.accessToken, JSON.stringify(token.accessToken).slice(1, -1)]) this.handed.add(form);
+		if (token.accessToken.length >= 16)
+			for (const form of [token.accessToken, JSON.stringify(token.accessToken).slice(1, -1)]) this.handed.add(form);
 		const relay = this.relay;
 		if (relay !== null) this.handed.add(relay.placeholder);
 		// With a relay: the token goes there first, then the file gets the placeholder with the token's expiry.
 		if (relay === null && this.sandbox.profile === "daytona") throw new TokenFileError("Daytona requires a turn relay");
-		const writing = relay === null
-			? this.sandbox.writeSecretFile(this.path, tokenFileContent(token))
-			: relay.hand(token).then(() => this.sandbox.writeSecretFile(this.path, tokenFileContent({ accessToken: relay.placeholder, expiresAt: token.expiresAt })));
+		const writing =
+			relay === null
+				? this.sandbox.writeSecretFile(this.path, tokenFileContent(token))
+				: relay
+						.hand(token)
+						.then(() =>
+							this.sandbox.writeSecretFile(
+								this.path,
+								tokenFileContent({ accessToken: relay.placeholder, expiresAt: token.expiresAt }),
+							),
+						);
 		this.writing = writing.catch(() => undefined);
 		await writing;
 		const now = Date.now();
@@ -271,7 +311,9 @@ export class TokenFile {
 			if (token.expiresAt === this.expiresAt) return this.schedule(this.retryMs);
 			if (!(await this.write(token))) return;
 			this.replaced += 1;
-			this.log(`[wlp] token.replaced ${who}: the turn's access token file holds a new token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.problem === null ? "" : this.lapseEndedAt !== null ? ", after the one in it had expired" : ", after an earlier try had failed"}`);
+			this.log(
+				`[wlp] token.replaced ${who}: the turn's access token file holds a new token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.problem === null ? "" : this.lapseEndedAt !== null ? ", after the one in it had expired" : ", after an earlier try had failed"}`,
+			);
 			this.problem = null;
 			this.refused = 0;
 			this.schedule();
@@ -281,10 +323,15 @@ export class TokenFile {
 			// A sign-in that is gone or refused (the token source read that from Windlass's code) does not come back by
 			// asking again; one the network kept from being refreshed (`network_error`) may.
 			this.refused = error instanceof SandboxUserError ? this.refused + 1 : 0;
-			const retryInMs = this.refused === 0 ? this.retryMs : Math.min(this.retryMs * 2 ** (this.refused - 1), Math.max(this.retryMs, REFUSED_RETRY_MAX_MS));
+			const retryInMs =
+				this.refused === 0
+					? this.retryMs
+					: Math.min(this.retryMs * 2 ** (this.refused - 1), Math.max(this.retryMs, REFUSED_RETRY_MAX_MS));
 			const left = this.expiresAt - Date.now();
-			const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-			this.log(`[wlp] token.replace_failed ${who}: the turn's access token file could not be replaced (${message}); the token in it ${left > 0 ? `lasts ${Math.ceil(left / 1000)} s more` : "has expired"}; trying again in ${Math.round(retryInMs / 1000)} s`);
+			const message = errorText(error).replace(/\s+/g, " ").trim();
+			this.log(
+				`[wlp] token.replace_failed ${who}: the turn's access token file could not be replaced (${message}); the token in it ${left > 0 ? `lasts ${Math.ceil(left / 1000)} s more` : "has expired"}; trying again in ${Math.round(retryInMs / 1000)} s`,
+			);
 			this.schedule(retryInMs);
 		}
 	}

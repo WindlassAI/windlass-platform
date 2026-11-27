@@ -20,12 +20,21 @@ import { sign } from "../server/src/billing/standard-webhooks.js";
 export const FAKE_SECRET = `whsec_${randomBytes(24).toString("base64")}`;
 export const FAKE_KEY = "dodo_test_fake";
 
-export interface FakeCall { method: string; path: string; query: URLSearchParams; body: any; auth: string | null }
+export interface FakeCall {
+	method: string;
+	path: string;
+	query: URLSearchParams;
+	body: any;
+	auth: string | null;
+}
 
 type PaymentStatus = "failed" | "cancelled" | "processing" | "succeeded";
 
 export class FakeDodo {
-	readonly checkouts = new Map<string, { id: string; created_at: string; payment_id: string | null; payment_status: PaymentStatus | null }>();
+	readonly checkouts = new Map<
+		string,
+		{ id: string; created_at: string; payment_id: string | null; payment_status: PaymentStatus | null }
+	>();
 	readonly calls: FakeCall[] = [];
 	/** Event ids taken by /events/ingest, and the minutes each carried. */
 	readonly ingested = new Map<string, number>();
@@ -37,14 +46,19 @@ export class FakeDodo {
 		const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
 		const auth = new Headers(init.headers).get("authorization");
 		this.calls.push({ method: init.method ?? "GET", path: parsed.pathname, query: parsed.searchParams, body, auth });
-		if (auth !== `Bearer ${FAKE_KEY}`) return Response.json({ code: "UNAUTHORIZED", message: "bad key" }, { status: 401 });
+		if (auth !== `Bearer ${FAKE_KEY}`)
+			return Response.json({ code: "UNAUTHORIZED", message: "bad key" }, { status: 401 });
 		const fail = this.failNext;
 		if (fail && fail.count > 0) {
 			fail.count -= 1;
 			if (fail.took && parsed.pathname === "/events/ingest") this.take(body);
-			return Response.json({ code: "INTERNAL", message: "customer jane@example.com card 4242" }, { status: fail.status });
+			return Response.json(
+				{ code: "INTERNAL", message: "customer jane@example.com card 4242" },
+				{ status: fail.status },
+			);
 		}
-		if (init.method === "POST" && parsed.pathname === "/customers" && body.name && body.email) return Response.json({ customer_id: "cus_1" });
+		if (init.method === "POST" && parsed.pathname === "/customers" && body.name && body.email)
+			return Response.json({ customer_id: "cus_1" });
 		if (init.method === "POST" && parsed.pathname === "/checkouts" && body.customer?.customer_id) {
 			const id = `cks_${randomBytes(6).toString("hex")}`;
 			this.checkouts.set(id, { id, created_at: new Date().toISOString(), payment_id: null, payment_status: null });
@@ -53,8 +67,10 @@ export class FakeDodo {
 		const checkout = this.checkouts.get(parsed.pathname.slice("/checkouts/".length));
 		if (init.method === "GET" && parsed.pathname.startsWith("/checkouts/") && checkout) return Response.json(checkout);
 		const portal = /^\/customers\/([^/]+)\/customer-portal\/session$/.exec(parsed.pathname);
-		if (init.method === "POST" && portal) return Response.json({ link: `https://test.customer.dodopayments.com/portal/${portal[1]}` });
-		if (init.method === "POST" && parsed.pathname === "/events/ingest") return Response.json({ ingested_count: this.take(body) });
+		if (init.method === "POST" && portal)
+			return Response.json({ link: `https://test.customer.dodopayments.com/portal/${portal[1]}` });
+		if (init.method === "POST" && parsed.pathname === "/events/ingest")
+			return Response.json({ ingested_count: this.take(body) });
 		return Response.json({ code: "NOT_FOUND" }, { status: 404 });
 	};
 
@@ -103,7 +119,12 @@ export function subscriptionData(facts: SubscriptionFacts) {
 		quantity: 1,
 		currency: "USD",
 		recurring_pre_tax_amount: 1500,
-		customer: { customer_id: facts.customerId ?? "cus_1", email: "jane@example.com", name: "Jane Doe", ...(facts.uidOn === "customer" && { metadata: { wlp_uid: uid } }) },
+		customer: {
+			customer_id: facts.customerId ?? "cus_1",
+			email: "jane@example.com",
+			name: "Jane Doe",
+			...(facts.uidOn === "customer" && { metadata: { wlp_uid: uid } }),
+		},
 		metadata: facts.uidOn === "customer" || facts.uidOn === "none" ? {} : { wlp_uid: uid },
 		next_billing_date: facts.nextBillingDate ?? "2026-12-23T00:00:00Z",
 		previous_billing_date: "2026-11-23T00:00:00Z",
@@ -135,11 +156,20 @@ export function paymentData(facts: { uid?: string; subscriptionId?: string | nul
 let deliveries = 0;
 
 /** A signed delivery: its headers and raw body, as Dodo sends it. */
-export function delivery(type: string, data: unknown, options: { at?: number; secret?: string; id?: string; signedAt?: number } = {}) {
+export function delivery(
+	type: string,
+	data: unknown,
+	options: { at?: number; secret?: string; id?: string; signedAt?: number } = {},
+) {
 	const at = options.at ?? Date.now();
 	const id = options.id ?? `msg_${++deliveries}_${randomBytes(4).toString("hex")}`;
 	const body = JSON.stringify({ business_id: "bus_1", type, timestamp: new Date(at).toISOString(), data });
 	const timestamp = Math.floor((options.signedAt ?? Date.now()) / 1000);
-	const headers = new Headers({ "webhook-id": id, "webhook-timestamp": String(timestamp), "webhook-signature": sign(options.secret ?? FAKE_SECRET, id, timestamp, body), "content-type": "application/json" });
+	const headers = new Headers({
+		"webhook-id": id,
+		"webhook-timestamp": String(timestamp),
+		"webhook-signature": sign(options.secret ?? FAKE_SECRET, id, timestamp, body),
+		"content-type": "application/json",
+	});
 	return { id, headers, body };
 }

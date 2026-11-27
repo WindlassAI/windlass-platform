@@ -18,7 +18,15 @@
 import type { RawAccess } from "rivetkit/db";
 import type { BillingView, HostedMonth } from "../contract.js";
 import { boundedPeriodStart, meterPeriod, shiftMonths, type MeterPeriod } from "./meter.js";
-import { capMinutes, effectivePlan, MAX_CAP_CENTS, NO_SUBSCRIPTION, PLAN_LIST, PLANS, type BillingState } from "./plans.js";
+import {
+	capMinutes,
+	effectivePlan,
+	MAX_CAP_CENTS,
+	NO_SUBSCRIPTION,
+	PLAN_LIST,
+	PLANS,
+	type BillingState,
+} from "./plans.js";
 import type { BillingEvent, BillingProvider, CheckoutInput, UsageReport } from "./provider.js";
 
 export type BillingDb = Pick<RawAccess, "execute">;
@@ -45,27 +53,47 @@ export async function billingTables(db: BillingDb): Promise<void> {
 
 export async function readBilling(db: BillingDb): Promise<BillingState> {
 	const [row] = await db.execute<{ state: string }>("SELECT state FROM billing WHERE id = 1");
-	return row ? JSON.parse(row.state) as BillingState : { ...NO_SUBSCRIPTION };
+	return row ? (JSON.parse(row.state) as BillingState) : { ...NO_SUBSCRIPTION };
 }
 
 async function writeBilling(db: BillingDb, state: BillingState): Promise<void> {
-	await db.execute("INSERT INTO billing (id, state) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state", JSON.stringify(state));
+	await db.execute(
+		"INSERT INTO billing (id, state) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state",
+		JSON.stringify(state),
+	);
 }
 
-export type ApplyOutcome = "applied" | "duplicate" | "stale" | "other_customer" | "other_subscription" | "no_subscription";
+export type ApplyOutcome =
+	| "applied"
+	| "duplicate"
+	| "stale"
+	| "other_customer"
+	| "other_subscription"
+	| "no_subscription";
 
 /** What an event makes of the state, or why it changes nothing. Pure: `applyBillingEvent` stores it. */
-export function nextBillingState(state: BillingState, event: BillingEvent, now: number, graceMs: number): { state: BillingState; outcome: ApplyOutcome } {
+export function nextBillingState(
+	state: BillingState,
+	event: BillingEvent,
+	now: number,
+	graceMs: number,
+): { state: BillingState; outcome: ApplyOutcome } {
 	const same = (outcome: ApplyOutcome) => ({ state, outcome });
-	if (event.customerId !== null && state.customerId !== null && event.customerId !== state.customerId) return same("other_customer");
+	if (event.customerId !== null && state.customerId !== null && event.customerId !== state.customerId)
+		return same("other_customer");
 	if (event.occurredAt < state.eventAt) return same("stale");
 	// A subscription webhook identifies the Pro product even if its first payment never succeeded.
-	const providerHold = (event.kind === "payment_failed" || event.kind === "paused") && event.period !== null && event.subscriptionId !== null;
-	const replacing = event.subscriptionId !== null && state.subscriptionId !== null && event.subscriptionId !== state.subscriptionId;
+	const providerHold =
+		(event.kind === "payment_failed" || event.kind === "paused") &&
+		event.period !== null &&
+		event.subscriptionId !== null;
+	const replacing =
+		event.subscriptionId !== null && state.subscriptionId !== null && event.subscriptionId !== state.subscriptionId;
 	if (replacing) {
 		// A new subscription takes the place of one that no longer runs; while one runs, another is somebody's mistake.
 		const newSubscription = event.kind === "active" || (providerHold && state.status === "ended");
-		if (!newSubscription || state.status === "paused" || effectivePlan(state, now) !== "free") return same("other_subscription");
+		if (!newSubscription || state.status === "paused" || effectivePlan(state, now) !== "free")
+			return same("other_subscription");
 	}
 	const ids = {
 		customerId: event.customerId ?? state.customerId,
@@ -74,70 +102,126 @@ export function nextBillingState(state: BillingState, event: BillingEvent, now: 
 	};
 	const period = event.period ?? state.period;
 	const periodEnd = event.periodEnd ?? (replacing ? null : state.periodEnd);
-	const start = event.periodStart ?? (replacing ? null : state.periodStart)
-		?? (periodEnd === null ? event.occurredAt : shiftMonths(periodEnd, period === "year" ? -12 : -1));
+	const start =
+		event.periodStart ??
+		(replacing ? null : state.periodStart) ??
+		(periodEnd === null ? event.occurredAt : shiftMonths(periodEnd, period === "year" ? -12 : -1));
 	const periodStart = boundedPeriodStart(start, periodEnd, period);
 	let previousPeriod = replacing ? null : state.previousPeriod;
-	if (!replacing && state.period === "month" && state.periodStart !== null && state.periodEnd !== null && periodStart > state.periodStart) {
+	if (
+		!replacing &&
+		state.period === "month" &&
+		state.periodStart !== null &&
+		state.periodEnd !== null &&
+		periodStart > state.periodStart
+	) {
 		previousPeriod = { start: state.periodStart, end: state.periodEnd };
 	}
 	const dates = { period, periodStart, periodEnd, previousPeriod };
 	switch (event.kind) {
 		case "active":
 		case "changed":
-			return { outcome: "applied", state: { ...state, ...ids, plan: "pro", status: "active", ...dates, cancelAtPeriodEnd: event.cancelAtPeriodEnd, graceUntil: null } };
+			return {
+				outcome: "applied",
+				state: {
+					...state,
+					...ids,
+					plan: "pro",
+					status: "active",
+					...dates,
+					cancelAtPeriodEnd: event.cancelAtPeriodEnd,
+					graceUntil: null,
+				},
+			};
 		case "paused":
 		case "payment_failed": {
 			const status = event.kind === "paused" || (!replacing && state.status === "paused") ? "paused" : "past_due";
 			if (state.plan !== "pro" || state.status === "ended") {
-				if (!providerHold || (state.status === "ended" && !replacing && event.kind !== "paused")) return same("no_subscription");
+				if (!providerHold || (state.status === "ended" && !replacing && event.kind !== "paused"))
+					return same("no_subscription");
 				return { outcome: "applied", state: { ...state, ...ids, plan: "free", status, ...dates, graceUntil: null } };
 			}
 			// The grace period starts at the first failure and is not moved by the next.
-			return { outcome: "applied", state: { ...state, ...ids, status, ...dates, graceUntil: state.graceUntil ?? now + graceMs } };
+			return {
+				outcome: "applied",
+				state: { ...state, ...ids, status, ...dates, graceUntil: state.graceUntil ?? now + graceMs },
+			};
 		}
 		case "ended":
 			if (state.subscriptionId === null && event.subscriptionId === null) return same("no_subscription");
-			return { outcome: "applied", state: { ...state, ...ids, plan: "free", status: "ended", cancelAtPeriodEnd: false, graceUntil: null } };
+			return {
+				outcome: "applied",
+				state: { ...state, ...ids, plan: "free", status: "ended", cancelAtPeriodEnd: false, graceUntil: null },
+			};
 	}
 }
 
 /** Applies a delivery once. The delivery's id and the new state are written in one transaction. */
-export async function applyBillingEvent(db: TxDb, event: BillingEvent, now: number, graceMs: number, claimCustomer?: (id: string) => Promise<boolean>): Promise<{ outcome: ApplyOutcome; state: BillingState }> {
-	const result = await db.transaction(async (tx) => {
-		const seen = await tx.execute<{ id: string }>("INSERT INTO billing_event (id, at, kind, outcome) VALUES (?, ?, ?, '') ON CONFLICT (id) DO NOTHING RETURNING id", event.id, now, event.kind);
-		const before = await readBilling(tx);
-		if (seen.length === 0) return { outcome: "duplicate" as const, state: before };
-		let done = nextBillingState(before, event, now, graceMs);
-		if (done.outcome === "applied" && done.state.customerId && claimCustomer && !await claimCustomer(done.state.customerId)) {
-			done = { state: before, outcome: "other_customer" };
-		}
-		await tx.execute("UPDATE billing_event SET outcome = ? WHERE id = ?", done.outcome, event.id);
-		if (done.outcome === "applied") {
-			await writeBilling(tx, done.state);
-			// A repeated cancellation for the previous subscription cannot settle a new checkout.
-			if (done.state.status !== "ended" || before.status !== "ended" || before.subscriptionId !== done.state.subscriptionId) {
-				await tx.execute("DELETE FROM billing_checkout WHERE id = 1");
+export async function applyBillingEvent(
+	db: TxDb,
+	event: BillingEvent,
+	now: number,
+	graceMs: number,
+	claimCustomer?: (id: string) => Promise<boolean>,
+): Promise<{ outcome: ApplyOutcome; state: BillingState }> {
+	const result = await db.transaction(
+		async tx => {
+			const seen = await tx.execute<{ id: string }>(
+				"INSERT INTO billing_event (id, at, kind, outcome) VALUES (?, ?, ?, '') ON CONFLICT (id) DO NOTHING RETURNING id",
+				event.id,
+				now,
+				event.kind,
+			);
+			const before = await readBilling(tx);
+			if (seen.length === 0) return { outcome: "duplicate" as const, state: before };
+			let done = nextBillingState(before, event, now, graceMs);
+			if (
+				done.outcome === "applied" &&
+				done.state.customerId &&
+				claimCustomer &&
+				!(await claimCustomer(done.state.customerId))
+			) {
+				done = { state: before, outcome: "other_customer" };
 			}
-		}
-		await tx.execute("DELETE FROM billing_event WHERE at < ?", now - EVENT_KEPT_MS);
-		return done;
-	}, { name: "billing.event" });
+			await tx.execute("UPDATE billing_event SET outcome = ? WHERE id = ?", done.outcome, event.id);
+			if (done.outcome === "applied") {
+				await writeBilling(tx, done.state);
+				// A repeated cancellation for the previous subscription cannot settle a new checkout.
+				if (
+					done.state.status !== "ended" ||
+					before.status !== "ended" ||
+					before.subscriptionId !== done.state.subscriptionId
+				) {
+					await tx.execute("DELETE FROM billing_checkout WHERE id = 1");
+				}
+			}
+			await tx.execute("DELETE FROM billing_event WHERE at < ?", now - EVENT_KEPT_MS);
+			return done;
+		},
+		{ name: "billing.event" },
+	);
 	if (result.outcome === "other_subscription" && event.kind === "active") {
-		console.warn(`[wlp] billing.double_subscription event=${event.id} customer=${event.customerId} subscription=${event.subscriptionId} current_subscription=${result.state.subscriptionId}`);
+		console.warn(
+			`[wlp] billing.double_subscription event=${event.id} customer=${event.customerId} subscription=${event.subscriptionId} current_subscription=${result.state.subscriptionId}`,
+		);
 	}
 	return result;
 }
 
 export async function setCapCents(db: TxDb, cents: unknown): Promise<BillingState> {
-	if (typeof cents !== "number" || !Number.isSafeInteger(cents) || cents < 0 || cents > MAX_CAP_CENTS) throw new RangeError(`Set the cap in whole cents from 0 to ${MAX_CAP_CENTS}.`);
-	return db.transaction(async tx => {
-		const state = await readBilling(tx);
-		if (state.period === "year" && state.status !== "ended") throw new RangeError("Yearly Pro has no overage spend cap.");
-		state.capCents = cents;
-		await writeBilling(tx, state);
-		return state;
-	}, { name: "billing.cap" });
+	if (typeof cents !== "number" || !Number.isSafeInteger(cents) || cents < 0 || cents > MAX_CAP_CENTS)
+		throw new RangeError(`Set the cap in whole cents from 0 to ${MAX_CAP_CENTS}.`);
+	return db.transaction(
+		async tx => {
+			const state = await readBilling(tx);
+			if (state.period === "year" && state.status !== "ended")
+				throw new RangeError("Yearly Pro has no overage spend cap.");
+			state.capCents = cents;
+			await writeBilling(tx, state);
+			return state;
+		},
+		{ name: "billing.cap" },
+	);
 }
 
 export class CheckoutBlocked extends Error {}
@@ -145,8 +229,10 @@ export class CheckoutEmailRequired extends Error {}
 
 async function checkoutState(db: BillingDb): Promise<BillingState> {
 	const state = await readBilling(db);
-	if (state.status === "paused") throw new CheckoutBlocked("Your subscription is paused. Open Manage billing in Settings.");
-	if (state.status === "past_due") throw new CheckoutBlocked("Your subscription has a payment on hold. Open Manage billing in Settings.");
+	if (state.status === "paused")
+		throw new CheckoutBlocked("Your subscription is paused. Open Manage billing in Settings.");
+	if (state.status === "past_due")
+		throw new CheckoutBlocked("Your subscription has a payment on hold. Open Manage billing in Settings.");
 	if (state.status === "active") throw new CheckoutBlocked("You already have Pro. Open Manage billing in Settings.");
 	return state;
 }
@@ -162,21 +248,35 @@ export class AccountCheckout {
 	private period?: CheckoutInput["period"];
 
 	open(db: TxDb, provider: BillingProvider, input: OpenCheckout, now: number): Promise<{ url: string }> {
-		if (this.opening && input.period !== this.period) return this.opening.then(() => this.open(db, provider, input, now));
+		if (this.opening && input.period !== this.period)
+			return this.opening.then(() => this.open(db, provider, input, now));
 		this.period = input.period;
-		this.opening ??= this.openOrReuse(db, provider, input, now).finally(() => { this.opening = undefined; });
+		this.opening ??= this.openOrReuse(db, provider, input, now).finally(() => {
+			this.opening = undefined;
+		});
 		return this.opening;
 	}
 
-	private async openOrReuse(db: TxDb, provider: BillingProvider, input: OpenCheckout, now: number): Promise<{ url: string }> {
-		const { state, saved } = await db.transaction(async tx => {
-			const state = await checkoutState(tx);
-			const [saved] = await tx.execute<{ session: string; url: string; period: string }>("SELECT session, url, period FROM billing_checkout WHERE id = 1");
-			return { state, saved };
-		}, { name: "billing.checkout.read" });
+	private async openOrReuse(
+		db: TxDb,
+		provider: BillingProvider,
+		input: OpenCheckout,
+		now: number,
+	): Promise<{ url: string }> {
+		const { state, saved } = await db.transaction(
+			async tx => {
+				const state = await checkoutState(tx);
+				const [saved] = await tx.execute<{ session: string; url: string; period: string }>(
+					"SELECT session, url, period FROM billing_checkout WHERE id = 1",
+				);
+				return { state, saved };
+			},
+			{ name: "billing.checkout.read" },
+		);
 		// Keep the saved checkout if the provider cannot confirm that a replacement is safe.
-		if (saved && !await provider.checkoutReplaceable(saved.session, now).catch(() => false)) {
-			if (saved.period !== input.period) throw new CheckoutBlocked("You have a checkout open; finish or cancel it first.");
+		if (saved && !(await provider.checkoutReplaceable(saved.session, now).catch(() => false))) {
+			if (saved.period !== input.period)
+				throw new CheckoutBlocked("You have a checkout open; finish or cancel it first.");
 			return { url: saved.url };
 		}
 		let customerId = state.customerId;
@@ -185,22 +285,40 @@ export class AccountCheckout {
 			customerId = await provider.createCustomer(input.uid, input.email);
 		}
 		const id = customerId;
-		await db.transaction(async tx => {
-			const current = await checkoutState(tx);
-			if ((current.customerId && current.customerId !== id) || !await input.claimCustomer(id)) {
-				throw new CheckoutBlocked("The billing customer could not be linked to this account.");
-			}
-			if (!current.customerId) await writeBilling(tx, { ...current, customerId: id });
-		}, { name: "billing.customer" });
+		await db.transaction(
+			async tx => {
+				const current = await checkoutState(tx);
+				if ((current.customerId && current.customerId !== id) || !(await input.claimCustomer(id))) {
+					throw new CheckoutBlocked("The billing customer could not be linked to this account.");
+				}
+				if (!current.customerId) await writeBilling(tx, { ...current, customerId: id });
+			},
+			{ name: "billing.customer" },
+		);
 
-		const checkout = await provider.createCheckout({ uid: input.uid, returnUrl: input.returnUrl, period: input.period, customerId: id });
-		return db.transaction(async tx => {
-			// A webhook may have arrived while the provider was opening the checkout.
-			const current = await checkoutState(tx);
-			if (current.eventAt !== state.eventAt) throw new CheckoutBlocked("Your subscription changed. Check billing in Settings and try again.");
-			await tx.execute("INSERT OR REPLACE INTO billing_checkout (id, session, url, opened_at, period) VALUES (1, ?, ?, ?, ?)", checkout.id, checkout.url, now, input.period);
-			return { url: checkout.url };
-		}, { name: "billing.checkout" });
+		const checkout = await provider.createCheckout({
+			uid: input.uid,
+			returnUrl: input.returnUrl,
+			period: input.period,
+			customerId: id,
+		});
+		return db.transaction(
+			async tx => {
+				// A webhook may have arrived while the provider was opening the checkout.
+				const current = await checkoutState(tx);
+				if (current.eventAt !== state.eventAt)
+					throw new CheckoutBlocked("Your subscription changed. Check billing in Settings and try again.");
+				await tx.execute(
+					"INSERT OR REPLACE INTO billing_checkout (id, session, url, opened_at, period) VALUES (1, ?, ?, ?, ?)",
+					checkout.id,
+					checkout.url,
+					now,
+					input.period,
+				);
+				return { url: checkout.url };
+			},
+			{ name: "billing.checkout" },
+		);
 	}
 }
 
@@ -221,32 +339,56 @@ export interface ReportInput {
 }
 
 /** Record every period's tail before contacting Dodo. An earlier outage cannot strand a newer period. */
-export async function reportOverage(db: TxDb, provider: BillingProvider, input: ReportInput): Promise<Array<{ periodStart: number; minutes: number; eventId: string }>> {
+export async function reportOverage(
+	db: TxDb,
+	provider: BillingProvider,
+	input: ReportInput,
+): Promise<Array<{ periodStart: number; minutes: number; eventId: string }>> {
 	const { state, now, includedSeconds } = input;
 	const { customerId, subscriptionId, periodEnd, previousPeriod } = state;
-	if (effectivePlan(state, now) === "pro" && customerId && subscriptionId && periodEnd !== null && includedSeconds !== null) {
+	if (
+		effectivePlan(state, now) === "pro" &&
+		customerId &&
+		subscriptionId &&
+		periodEnd !== null &&
+		includedSeconds !== null
+	) {
 		const periods: MeterPeriod[] = [];
 		if (previousPeriod) {
 			// If Dodo advanced the renewal, the new period owns holds from its start onward.
 			periods.push({ ...previousPeriod, end: Math.min(previousPeriod.end, state.periodStart ?? periodEnd) });
 		}
 		if (state.period === "month") periods.push(meterPeriod(state, Math.min(now, periodEnd - 1)));
-		await db.transaction(async tx => {
-			for (const period of periods) {
-				const total = overageMinutes({ ...state, period: "month" }, input.usedSeconds(period), includedSeconds, now);
-				if (total <= 0) continue;
-				const [row] = await tx.execute<{ queued: number }>(
-					"SELECT COALESCE(MAX(total), 0) AS queued FROM billing_usage WHERE subscription_id = ? AND period_start = ?", subscriptionId, period.start);
-				const queued = row!.queued;
-				if (total <= queued) continue;
-				const id = `wlp_${input.uid}_${subscriptionId}_${period.start}_${queued}_${total}`;
-				await tx.execute("INSERT INTO billing_usage(event_id, customer_id, subscription_id, period_start, total, minutes) VALUES (?, ?, ?, ?, ?, ?)",
-					id, customerId, subscriptionId, period.start, total, total - queued);
-			}
-		}, { name: "billing.usage.queue" });
+		await db.transaction(
+			async tx => {
+				for (const period of periods) {
+					const total = overageMinutes({ ...state, period: "month" }, input.usedSeconds(period), includedSeconds, now);
+					if (total <= 0) continue;
+					const [row] = await tx.execute<{ queued: number }>(
+						"SELECT COALESCE(MAX(total), 0) AS queued FROM billing_usage WHERE subscription_id = ? AND period_start = ?",
+						subscriptionId,
+						period.start,
+					);
+					const queued = row!.queued;
+					if (total <= queued) continue;
+					const id = `wlp_${input.uid}_${subscriptionId}_${period.start}_${queued}_${total}`;
+					await tx.execute(
+						"INSERT INTO billing_usage(event_id, customer_id, subscription_id, period_start, total, minutes) VALUES (?, ?, ?, ?, ?, ?)",
+						id,
+						customerId,
+						subscriptionId,
+						period.start,
+						total,
+						total - queued,
+					);
+				}
+			},
+			{ name: "billing.usage.queue" },
+		);
 	}
 
-	const pending = await db.execute<UsageReport>(`SELECT event_id AS eventId, customer_id AS customerId, subscription_id AS subscriptionId,
+	const pending =
+		await db.execute<UsageReport>(`SELECT event_id AS eventId, customer_id AS customerId, subscription_id AS subscriptionId,
 		period_start AS periodStart, minutes FROM billing_usage WHERE sent = 0 ORDER BY period_start, total`);
 	const sent = [];
 	let deliveryFailed = false;
@@ -265,9 +407,20 @@ export async function reportOverage(db: TxDb, provider: BillingProvider, input: 
 	return sent;
 }
 
-export async function billingView(db: BillingDb, state: BillingState, month: HostedMonth | null, now: number): Promise<BillingView> {
-	const [reported] = effectivePlan(state, now) === "pro" && state.period === "month"
-		? await db.execute<{ minutes: number }>("SELECT SUM(minutes) AS minutes FROM billing_usage WHERE subscription_id = ? AND period_start = ? AND sent = 1", state.subscriptionId, meterPeriod(state, now).start) : [];
+export async function billingView(
+	db: BillingDb,
+	state: BillingState,
+	month: HostedMonth | null,
+	now: number,
+): Promise<BillingView> {
+	const [reported] =
+		effectivePlan(state, now) === "pro" && state.period === "month"
+			? await db.execute<{ minutes: number }>(
+					"SELECT SUM(minutes) AS minutes FROM billing_usage WHERE subscription_id = ? AND period_start = ? AND sent = 1",
+					state.subscriptionId,
+					meterPeriod(state, now).start,
+				)
+			: [];
 	return {
 		enabled: true,
 		plan: effectivePlan(state, now),

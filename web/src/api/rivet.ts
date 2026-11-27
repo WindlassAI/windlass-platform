@@ -43,7 +43,15 @@ import {
 	type UserEvents,
 } from "@contract";
 import { createClient, type ActorConn, type ActorConnStatus, type ActorHandle } from "rivetkit/client";
-import { PlatformError, type ConnectionState, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
+import {
+	PlatformError,
+	type ConnectionState,
+	type PlatformClient,
+	type SessionApi,
+	type SessionFeed,
+	type UserApi,
+	type UserFeed,
+} from "./client";
 import { CONNECT_PATIENCE_MS, ConnectionSource, getPlatform } from "./connection";
 import { isRefusedConnectionToken, isRestart, RESTARTED_MESSAGE, toPlatformError } from "./errors";
 
@@ -80,17 +88,50 @@ const RESTART_RETRY_MS = 2_000;
  * sent again only with the key of its submission (`idempotencyKey`), which the server takes once.
  */
 const READS = new Set([
-	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
-	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
-	"accountSecrets", "modelProviders", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
-	"apiTokens", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
+	"me",
+	"chatgpt",
+	"models",
+	"listSessions",
+	"github",
+	"githubRepositories",
+	"githubBranches",
+	"repositorySetup",
+	"repositoryChecks",
+	"repositoryEnvironments",
+	"repositoryNetwork",
+	"repositorySecrets",
+	"repository",
+	"githubRepository",
+	"savedRepositories",
+	"account",
+	"accountSecrets",
+	"modelProviders",
+	"allowance",
+	"usage",
+	"billing",
+	"machines",
+	"machineCatalog",
+	"listItems",
+	"itemFeed",
+	"item",
+	"factoryLimits",
+	"apiTokens",
+	"linear",
+	"linearTeams",
+	"snapshot",
+	"changes",
+	"diff",
+	"publishState",
+	"servers",
 ]);
 
 /** Whether an action may be sent twice: it reads, or it carries the key of its submission. */
 function isSafeToResend(name: string, args: unknown[]): boolean {
 	if (READS.has(name)) return true;
 	const input = args[0];
-	return typeof input === "object" && input !== null && "idempotencyKey" in input && typeof input.idempotencyKey === "string";
+	return (
+		typeof input === "object" && input !== null && "idempotencyKey" in input && typeof input.idempotencyKey === "string"
+	);
 }
 
 /** What an action of a contract interface resolves to. */
@@ -138,7 +179,11 @@ function servedFrom(): string | undefined {
  * platform's port, so that a browser on another machine pointed at `http://host:6420` finds them at
  * `http://host:6440`.
  */
-export function platformUrl(endpoint: string, configured: string | undefined = import.meta.env.VITE_WLP_API, page: string | undefined = servedFrom()): string {
+export function platformUrl(
+	endpoint: string,
+	configured: string | undefined = import.meta.env.VITE_WLP_API,
+	page: string | undefined = servedFrom(),
+): string {
 	if (configured) return configured.replace(/\/+$/, "");
 	if (page) return page;
 	try {
@@ -156,7 +201,11 @@ export function platformUrl(endpoint: string, configured: string | undefined = i
  * names none, as a development server does; `api` is the platform's address, which is asked for the
  * connection as soon as the client is made, beside the platform's information.
  */
-export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT, api: string = platformUrl(built), source: ConnectionSource = new ConnectionSource({ api })): PlatformClient {
+export function createRivetClient(
+	built: string = import.meta.env.VITE_WLP_ENDPOINT || DEFAULT_ENDPOINT,
+	api: string = platformUrl(built),
+	source: ConnectionSource = new ConnectionSource({ api }),
+): PlatformClient {
 	// What messages name; the endpoint itself may carry a namespace and a token.
 	let shown = displayAddress(built);
 
@@ -184,7 +233,11 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 	 * it, and RivetKit has fetched the next token by the time the refusal is thrown. An action that met
 	 * the platform restarting is sent once more after RESTART_RETRY_MS, when sending it twice is safe.
 	 */
-	async function call<A, K extends keyof A & string>(target: Handle | Conn | Promise<Handle>, name: K, ...args: A[K] extends (...args: infer P) => unknown ? P : never): Promise<ResultOf<A, K>> {
+	async function call<A, K extends keyof A & string>(
+		target: Handle | Conn | Promise<Handle>,
+		name: K,
+		...args: A[K] extends (...args: infer P) => unknown ? P : never
+	): Promise<ResultOf<A, K>> {
 		const abort = new AbortController();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		// The first call of a page load is `info`: it is how the app learns the server is not there, so it waits less.
@@ -206,7 +259,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		try {
 			const result = attempt().catch(async (error: unknown) => {
 				if (!isRestart(error) || !isSafeToResend(name, args)) throw error;
-				await new Promise((done) => setTimeout(done, RESTART_RETRY_MS));
+				await new Promise(done => setTimeout(done, RESTART_RETRY_MS));
 				if (abort.signal.aborted) throw error;
 				return attempt();
 			});
@@ -214,7 +267,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		} catch (error) {
 			const failure = toPlatformError(error, shown);
 			// The one more time is spent, or was not safe: RivetKit is not trying again either.
-			throw failure.code === "restarting" ? new PlatformError("restarting", RESTARTED_MESSAGE, { cause: error }) : failure;
+			throw failure.code === "restarting"
+				? new PlatformError("restarting", RESTARTED_MESSAGE, { cause: error })
+				: failure;
 		} finally {
 			clearTimeout(timer);
 		}
@@ -222,19 +277,26 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 
 	async function loginPost<T>(step: string, body: object, auth?: AuthResult): Promise<T> {
 		const response = await fetch(api.replace(/\/$/, "") + "/platform/login/" + step, {
-			method: "POST", cache: "no-store", redirect: "error",
+			method: "POST",
+			cache: "no-store",
+			redirect: "error",
 			headers: { "content-type": "application/json", ...(auth && { authorization: "Bearer " + auth.token }) },
 			body: JSON.stringify(body),
 		});
 		const data = await response.json();
-		if (!response.ok) throw new PlatformError("user", data.message ?? "Sign-in failed. Try again.", { reason: data.code });
+		if (!response.ok)
+			throw new PlatformError("user", data.message ?? "Sign-in failed. Try again.", { reason: data.code });
 		return data;
 	}
 
 	// ASSUMPTION 2: `params` on the handle is what `onBeforeConnect` receives, for `.connect()` and for stateless actions alike.
-	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).get<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
+	const userHandle = (auth: AuthResult) =>
+		lazy(async () => (await connect()).get<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
 	// ASSUMPTION 3: a session's actor is created by `user.createSession`, so the web app only ever looks it up.
-	const sessionHandle = async (auth: AuthResult, sessionId: string) => (await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } });
+	const sessionHandle = async (auth: AuthResult, sessionId: string) =>
+		(await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], {
+			params: { token: auth.token },
+		});
 
 	/**
 	 * A connection that keeps a feed alive: `load` runs on every "connected" (the first and each
@@ -279,8 +341,11 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			if (!checkMissing || closed || probe !== undefined) return;
 			const timer = setTimeout(async () => {
 				if (conn && conn.connStatus !== "connected" && conn.connStatus !== "idle") {
-					try { await checkMissing(); }
-					catch (error) { if (!closed && probe === timer) missing(toPlatformError(error, shown)); }
+					try {
+						await checkMissing();
+					} catch (error) {
+						if (!closed && probe === timer) missing(toPlatformError(error, shown));
+					}
 				}
 				if (probe !== timer) return;
 				probe = undefined;
@@ -326,14 +391,14 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 
 		report("connecting");
 		handle().then(
-			(found) => {
+			found => {
 				if (closed) return;
 				const opened: Conn = found.connect();
 				conn = opened;
 				offs = [
 					...listen(opened),
 					opened.onStatusChange(onStatus),
-					opened.onError((error) => {
+					opened.onError(error => {
 						if (closed) return;
 						lastError = toPlatformError(error, shown);
 						if (missing(lastError)) return;
@@ -361,7 +426,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		const patience = setTimeout(() => {
 			if (closed || everConnected || reportedFailure) return;
 			reportedFailure = true;
-			report("failed", lastError ?? source.failure() ?? new PlatformError("network", `The server at ${shown} is not answering.`));
+			report(
+				"failed",
+				lastError ?? source.failure() ?? new PlatformError("network", `The server at ${shown} is not answering.`),
+			);
 		}, CONNECT_PATIENCE_MS);
 
 		return { reload, close };
@@ -369,7 +437,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 
 	function userApi(auth: AuthResult): UserApi {
 		const handle = userHandle(auth);
-		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle(), name, ...(args as never));
+		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) =>
+			call<UserActions, K>(handle(), name, ...(args as never));
 		return {
 			me: () => act("me"),
 			signOutEverywhere: (...args) => act("signOutEverywhere", ...args),
@@ -381,83 +450,86 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			forgetChatgpt: () => act("forgetChatgpt"),
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),
-			createSession: (input) => act("createSession", input),
+			createSession: input => act("createSession", input),
 			renameSession: (id, title) => act("renameSession", id, title),
-			deleteSession: (id) => act("deleteSession", id),
+			deleteSession: id => act("deleteSession", id),
 			github: () => act("github"),
 			githubConnect: (origin, install) => act("githubConnect", { origin, install }),
-			githubComplete: (ticket) => act("githubComplete", ticket),
+			githubComplete: ticket => act("githubComplete", ticket),
 			githubDisconnect: () => act("githubDisconnect"),
 			githubRepositories: (query, fresh) => act("githubRepositories", query, fresh),
-			githubBranches: (repositoryId) => act("githubBranches", repositoryId),
-			repositorySetup: (repositoryId) => act("repositorySetup", repositoryId),
+			githubBranches: repositoryId => act("githubBranches", repositoryId),
+			repositorySetup: repositoryId => act("repositorySetup", repositoryId),
 			saveRepositorySetup: (repositoryId, command) => act("saveRepositorySetup", { repositoryId, command }),
-			repositoryChecks: (repositoryId) => act("repositoryChecks", repositoryId),
+			repositoryChecks: repositoryId => act("repositoryChecks", repositoryId),
 			saveRepositoryChecks: (repositoryId, checks) => act("saveRepositoryChecks", { repositoryId, checks }),
-			repositoryEnvironments: (repositoryId) => act("repositoryEnvironments", repositoryId),
-			rebuildEnvironment: (repositoryId, place) => act("rebuildEnvironment", { repositoryId, ...(place !== undefined && { place }) }),
+			repositoryEnvironments: repositoryId => act("repositoryEnvironments", repositoryId),
+			rebuildEnvironment: (repositoryId, place) =>
+				act("rebuildEnvironment", { repositoryId, ...(place !== undefined && { place }) }),
 			saveEnvironmentSchedule: (repositoryId, schedule) => act("saveEnvironmentSchedule", { repositoryId, schedule }),
-			repositoryNetwork: (repositoryId) => act("repositoryNetwork", repositoryId),
+			repositoryNetwork: repositoryId => act("repositoryNetwork", repositoryId),
 			saveRepositoryNetwork: (repositoryId, entries) => act("saveRepositoryNetwork", { repositoryId, entries }),
 			dismissNetworkRequest: (repositoryId, host) => act("dismissNetworkRequest", { repositoryId, host }),
-			scanRepositoryNetwork: (repositoryId) => act("scanRepositoryNetwork", repositoryId),
+			scanRepositoryNetwork: repositoryId => act("scanRepositoryNetwork", repositoryId),
 			repositorySecrets: (repositoryId, profile) => act("repositorySecrets", { repositoryId, profile }),
-			saveRepositorySecret: (repositoryId, profile, secret) => act("saveRepositorySecret", { repositoryId, profile, ...secret }),
-			deleteRepositorySecret: (repositoryId, profile, name) => act("deleteRepositorySecret", { repositoryId, profile, name }),
-			repository: (repositoryId) => act("repository", repositoryId),
+			saveRepositorySecret: (repositoryId, profile, secret) =>
+				act("saveRepositorySecret", { repositoryId, profile, ...secret }),
+			deleteRepositorySecret: (repositoryId, profile, name) =>
+				act("deleteRepositorySecret", { repositoryId, profile, name }),
+			repository: repositoryId => act("repository", repositoryId),
 			setGuideCheck: (id, enabled) => act("setGuideCheck", id, enabled),
 			setSetupWeekly: (id, enabled) => act("setSetupWeekly", id, enabled),
 			addSetupNotes: (id, files) => act("addSetupNotes", id, files),
 			deleteSetupNote: (id, note) => act("deleteSetupNote", id, note),
 			runReadiness: (...args) => act("runReadiness", ...args),
-			githubRepository: (repositoryId) => act("githubRepository", repositoryId),
+			githubRepository: repositoryId => act("githubRepository", repositoryId),
 			saveRepositoryDefaults: (repositoryId, change) => act("saveRepositoryDefaults", { repositoryId, ...change }),
 			forgetRepositoryApproval: (repositoryId, name) => act("forgetRepositoryApproval", { repositoryId, name }),
-			forgetRepository: (repositoryId) => act("forgetRepository", repositoryId),
+			forgetRepository: repositoryId => act("forgetRepository", repositoryId),
 			savedRepositories: () => act("savedRepositories"),
 			account: () => act("account"),
-			saveAccountDefaults: (change) => act("saveAccountDefaults", change),
-			savePersonalServer: (server) => act("savePersonalServer", server),
-			deletePersonalServer: (name) => act("deletePersonalServer", name),
+			saveAccountDefaults: change => act("saveAccountDefaults", change),
+			savePersonalServer: server => act("savePersonalServer", server),
+			deletePersonalServer: name => act("deletePersonalServer", name),
 			modelProviders: () => act("modelProviders"),
 			saveModelProvider: input => act("saveModelProvider", input),
 			checkModelProvider: provider => act("checkModelProvider", provider),
 			removeModelProvider: provider => act("removeModelProvider", provider),
-			accountSecrets: (profile) => act("accountSecrets", { profile }),
+			accountSecrets: profile => act("accountSecrets", { profile }),
 			saveAccountSecret: (profile, secret) => act("saveAccountSecret", { profile, ...secret }),
 			deleteAccountSecret: (profile, name) => act("deleteAccountSecret", { profile, name }),
 			allowance: () => act("allowance"),
 			usage: () => act("usage"),
-			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
+			freeSandbox: sessionId => act("freeSandbox", sessionId),
 			billing: () => act("billing"),
-			billingCheckout: (input) => act("billingCheckout", input),
-			billingPortal: (input) => act("billingPortal", input),
-			setOverageCap: (input) => act("setOverageCap", input),
+			billingCheckout: input => act("billingCheckout", input),
+			billingPortal: input => act("billingPortal", input),
+			setOverageCap: input => act("setOverageCap", input),
 			machines: () => act("machines"),
 			machineCatalog: input => act("machineCatalog", input),
-			claimMachine: (input) => act("claimMachine", input),
-			confirmMachine: (input) => act("confirmMachine", input),
-			removeMachine: (input) => act("removeMachine", input),
+			claimMachine: input => act("claimMachine", input),
+			confirmMachine: input => act("confirmMachine", input),
+			removeMachine: input => act("removeMachine", input),
 			setMachineDetails: input => act("setMachineDetails", input),
-			setMachineSecrets: (input) => act("setMachineSecrets", input),
-			setCredentialSource: (input) => act("setCredentialSource", input),
+			setMachineSecrets: input => act("setMachineSecrets", input),
+			setCredentialSource: input => act("setCredentialSource", input),
 			listItems: (...args) => act("listItems", ...args),
 			itemFeed: () => act("itemFeed"),
-			item: (id) => act("item", id),
-			itemAttachmentLinks: (itemId) => act("itemAttachmentLinks", itemId),
-			createItem: (input) => act("createItem", input),
+			item: id => act("item", id),
+			itemAttachmentLinks: itemId => act("itemAttachmentLinks", itemId),
+			createItem: input => act("createItem", input),
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),
 			linear: () => act("linear"),
-			linearConnect: (input) => act("linearConnect", input),
-			linearComplete: (ticket) => act("linearComplete", ticket),
+			linearConnect: input => act("linearConnect", input),
+			linearComplete: ticket => act("linearComplete", ticket),
 			linearTeams: () => act("linearTeams"),
-			saveLinearMapping: (input) => act("saveLinearMapping", input),
-			removeLinearMapping: (teamId) => act("removeLinearMapping", teamId),
+			saveLinearMapping: input => act("saveLinearMapping", input),
+			removeLinearMapping: teamId => act("removeLinearMapping", teamId),
 			disconnectLinear: () => act("disconnectLinear"),
 			apiTokens: () => act("apiTokens"),
-			createApiToken: (input) => act("createApiToken", input),
-			revokeApiToken: (id) => act("revokeApiToken", id),
+			createApiToken: input => act("createApiToken", input),
+			revokeApiToken: id => act("revokeApiToken", id),
 			watch(feed: UserFeed) {
 				let live = false;
 				const feedConn = feedConnection(
@@ -475,7 +547,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						live = true;
 					},
 					// ASSUMPTION 4: an event broadcast as `c.broadcast("sessions", list)` arrives as `on("sessions", (list) => ...)`.
-					(conn) => [
+					conn => [
 						conn.on("sessions" satisfies keyof UserEvents, (sessions: SessionSummary[]) => {
 							if (live) feed.onSessions(sessions);
 						}),
@@ -501,24 +573,25 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 	function sessionApi(auth: AuthResult, sessionId: string): SessionApi {
 		const freshHandle = () => sessionHandle(auth, sessionId);
 		const handle = lazy(freshHandle);
-		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle(), name, ...(args as never));
+		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) =>
+			call<AgentSessionActions, K>(handle(), name, ...(args as never));
 		const reloads = new Set<() => void>();
 		return {
-			prompt: (input) => act("prompt", input),
-			answer: (input) => act("answer", input),
-			stopCall: (input) => act("stopCall", input),
+			prompt: input => act("prompt", input),
+			answer: input => act("answer", input),
+			stopCall: input => act("stopCall", input),
 			stop: () => act("stop"),
 			changes: () => act("changes"),
 			diff: () => act("diff"),
 			publishState: () => act("publishState"),
-			publish: (message) => act("publish", { message }),
-			setMode: (mode) => act("setMode", { mode }),
-			setPublishUnasked: (unasked) => act("setPublishUnasked", { unasked }),
+			publish: message => act("publish", { message }),
+			setMode: mode => act("setMode", { mode }),
+			setPublishUnasked: unasked => act("setPublishUnasked", { unasked }),
 			servers: () => act("servers"),
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
-			forgetServer: (name) => act("forgetServer", { name }),
-			allowHost: (host) => act("allowHost", { host }),
-			setRequestedSecret: (input) => act("setRequestedSecret", input),
+			forgetServer: name => act("forgetServer", { name }),
+			allowHost: host => act("allowHost", { host }),
+			setRequestedSecret: input => act("setRequestedSecret", input),
 			resync() {
 				for (const reload of reloads) reload();
 			},
@@ -546,17 +619,20 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						early = [];
 						live = true;
 					},
-					(conn) => [
+					conn => [
 						conn.on("item" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["item"]) => {
 							if (live) feed.onItem(item);
 							else early.push(item);
 						}),
 						// A newer revision of a turn's `network.blocked` row, with the seq it replaces: the reducer swaps it in place.
 						// Kept with the items before the snapshot, which carries a revision at least as new.
-						conn.on("networkBlocked" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["networkBlocked"]) => {
-							if (live) feed.onItem(item);
-							else early.push(item);
-						}),
+						conn.on(
+							"networkBlocked" satisfies keyof AgentSessionEvents,
+							(item: AgentSessionEvents["networkBlocked"]) => {
+								if (live) feed.onItem(item);
+								else early.push(item);
+							},
+						),
 						conn.on("delta" satisfies keyof AgentSessionEvents, (delta: AgentSessionEvents["delta"]) => {
 							if (live) feed.onDelta(delta);
 						}),
@@ -566,9 +642,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 						// ASSUMPTION 9. One that arrives before the snapshot is dropped, like a delta: by ASSUMPTION 7
 						// the snapshot is newer, and unlike an item a question has no `seq` to tell. The snapshot's
 						// `question` is the whole truth after every (re)connect, so one settled during a gap disappears.
-						conn.on("question" satisfies keyof AgentSessionEvents, (question: AgentSessionEvents["question"] | undefined) => {
-							if (live) feed.onQuestion(question ?? null);
-						}),
+						conn.on(
+							"question" satisfies keyof AgentSessionEvents,
+							(question: AgentSessionEvents["question"] | undefined) => {
+								if (live) feed.onQuestion(question ?? null);
+							},
+						),
 						// Dropped before the snapshot, as a question is: the snapshot's `machine` is newer.
 						conn.on("machine" satisfies keyof AgentSessionEvents, (machine: AgentSessionEvents["machine"]) => {
 							if (live) feed.onMachine?.(machine);
@@ -596,14 +675,21 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		login: {
 			async start(provider = "github", auth) {
 				const id = crypto.randomUUID();
-				const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+				const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+					.replaceAll("+", "-")
+					.replaceAll("/", "_")
+					.replace(/=+$/, "");
 				const started = await loginPost<LoginStart>("start", { id, secret, provider }, auth);
-				sessionStorage.setItem("wlp.login", JSON.stringify({ id, secret, state: new URL(started.url).searchParams.get("state") }));
+				sessionStorage.setItem(
+					"wlp.login",
+					JSON.stringify({ id, secret, state: new URL(started.url).searchParams.get("state") }),
+				);
 				return started;
 			},
 			async finish(callback, auth) {
 				const saved = JSON.parse(sessionStorage.getItem("wlp.login") ?? "null");
-				if (!saved?.state || new URL(callback).searchParams.get("state") !== saved.state) throw new PlatformError("user", "Start the sign-in in this tab.");
+				if (!saved?.state || new URL(callback).searchParams.get("state") !== saved.state)
+					throw new PlatformError("user", "Start the sign-in in this tab.");
 				const result = await loginPost<AuthResult>("finish", { id: saved.id, secret: saved.secret, callback }, auth);
 				sessionStorage.removeItem("wlp.login");
 				return result;
@@ -615,7 +701,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		dispose() {
 			source.close();
 			connect().then(
-				(client) => client.dispose().catch(() => undefined),
+				client => client.dispose().catch(() => undefined),
 				() => undefined,
 			);
 		},

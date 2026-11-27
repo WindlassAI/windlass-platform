@@ -4,7 +4,16 @@ import { config } from "../../config.js";
 import type { PendingQuestion, SessionServers } from "../../contract.js";
 import type { TurnAnswer, TurnQuestion, TurnServer, TurnServerQuestion } from "../../sandbox/api.js";
 import { type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../../server-approvals.js";
-import { SERVER_START, type ServerQuestionContext, forgettingWords, serverExpiredNote, serverNotNowNote, serverPanelWords, serverQuestionWords, serverUnansweredNote } from "../../server-question.js";
+import {
+	SERVER_START,
+	type ServerQuestionContext,
+	forgettingWords,
+	serverExpiredNote,
+	serverNotNowNote,
+	serverPanelWords,
+	serverQuestionWords,
+	serverUnansweredNote,
+} from "../../server-question.js";
 import { hostedLimitsApply } from "../../usage.js";
 import { userActor } from "../internal.js";
 import { PLATFORM_RESTART } from "../../sandbox/api.js";
@@ -20,8 +29,10 @@ export const RECALL_WAIT_MS = 10_000;
 
 export function duration(ms: number): string {
 	const plural = (count: number, unit: string) => (count === 1 ? `1 ${unit}` : `${count} ${unit}s`);
-	if (ms >= 2 * 86_400_000 || (ms >= 86_400_000 && ms % 86_400_000 === 0)) return plural(Math.round(ms / 86_400_000), "day");
-	if (ms >= 2 * 3_600_000 || (ms >= 3_600_000 && ms % 3_600_000 === 0)) return plural(Math.round(ms / 3_600_000), "hour");
+	if (ms >= 2 * 86_400_000 || (ms >= 86_400_000 && ms % 86_400_000 === 0))
+		return plural(Math.round(ms / 86_400_000), "day");
+	if (ms >= 2 * 3_600_000 || (ms >= 3_600_000 && ms % 3_600_000 === 0))
+		return plural(Math.round(ms / 3_600_000), "hour");
 	if (ms >= 60_000) {
 		const minutes = Math.round(ms / 60_000);
 		return minutes === 1 ? "1 minute" : `${minutes} minutes`;
@@ -49,17 +60,26 @@ export function takeQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn): Ask
 	return asked;
 }
 
-export function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: TurnQuestion, withdrawn: AbortSignal): Promise<TurnAnswer> {
-	const choices = (Array.isArray(question?.choices) ? question.choices : []).map((choice) => ({
+export function askQuestion(
+	c: Ctx,
+	meta: SessionMeta,
+	active: ActiveTurn,
+	question: TurnQuestion,
+	withdrawn: AbortSignal,
+): Promise<TurnAnswer> {
+	const choices = (Array.isArray(question?.choices) ? question.choices : []).map(choice => ({
 		id: str(choice?.id),
 		label: str(choice?.label) || str(choice?.id),
 		approve: choice?.approve === true,
 		remembers: typeof choice?.remembers === "string" && choice.remembers !== "" ? choice.remembers : null,
 	}));
 	// "deny" is Windlass's own id for it; a rejection declines a question that has no such choice.
-	const refusal = choices.find((choice) => choice.id === "deny" && !choice.approve) ?? choices.find((choice) => !choice.approve);
+	const refusal =
+		choices.find(choice => choice.id === "deny" && !choice.approve) ?? choices.find(choice => !choice.approve);
 	const declined = (why?: string): Promise<TurnAnswer> =>
-		refusal ? Promise.resolve({ choice: refusal.id, note: why }) : Promise.reject(new Error(why ?? "the question was declined"));
+		refusal
+			? Promise.resolve({ choice: refusal.id, note: why })
+			: Promise.reject(new Error(why ?? "the question was declined"));
 	const title = str(question?.title) || "Allow this tool call?";
 
 	if (active.closed || active.controller.signal.aborted || withdrawn.aborted) return declined();
@@ -73,8 +93,15 @@ export function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, quest
 		if (meta.status === "waiting") meta.status = "running";
 	} else if (active.question) {
 		// Windlass asks one question at a time, and the contract shows one. A second one is not left to hang.
-		note(c, active.number, "warn", `${meta.harness && meta.harness !== "windlass" ? machineHarnesses[meta.harness].name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`);
-		return declined("Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.");
+		note(
+			c,
+			active.number,
+			"warn",
+			`${meta.harness && meta.harness !== "windlass" ? machineHarnesses[meta.harness].name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`,
+		);
+		return declined(
+			"Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.",
+		);
 	}
 
 	const now = Date.now();
@@ -105,23 +132,29 @@ export function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, quest
 				takeQuestion(c, meta, active);
 				// A hosted sandbox runs, and costs, while it waits: the turn ends, and the sandbox pauses at once (`pauseNow`).
 				const hosted = hostedLimitsApply(meta.place);
-				note(c, active.number, "warn", hosted
-					? `Nobody answered "${pending.title}" within ${duration(wait)}, so the turn was ended and its sandbox paused. Send a prompt to go on.`
-					: `Nobody answered "${pending.title}" within ${duration(wait)}, so it was declined.`, {
-					code: "question_expired",
-					call: { messageId: pending.messageId, callId: pending.callId },
-				});
+				note(
+					c,
+					active.number,
+					"warn",
+					hosted
+						? `Nobody answered "${pending.title}" within ${duration(wait)}, so the turn was ended and its sandbox paused. Send a prompt to go on.`
+						: `Nobody answered "${pending.title}" within ${duration(wait)}, so it was declined.`,
+					{
+						code: "question_expired",
+						call: { messageId: pending.messageId, callId: pending.callId },
+					},
+				);
 				if (hosted) meta.pauseNow = true;
 				publish(c);
 				void persist(c);
 				asked.decline(`Nobody answered within ${duration(wait)}, so the platform declined this call for the user.`);
 				if (hosted) abortTurn(c, meta, active);
 			}, wait),
-			answer: (answer) => {
+			answer: answer => {
 				settled();
 				resolve(answer);
 			},
-			decline: (why) => {
+			decline: why => {
 				settled();
 				if (refusal) resolve({ choice: refusal.id, note: why });
 				else reject(new Error(why ?? "the question was withdrawn"));
@@ -153,26 +186,42 @@ export const serverApprovals = {
 	of(c: Ctx, meta: SessionMeta): Promise<ServerApproval[]> {
 		return userActor(c, meta.uid).internalServerApprovals(projectOf(meta).key);
 	},
-	async approved(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<ServerApproval | null> {
+	async approved(
+		c: Ctx,
+		meta: SessionMeta,
+		question: Pick<TurnServerQuestion, "name" | "fingerprint">,
+	): Promise<ServerApproval | null> {
 		if (question.name === "" || question.fingerprint === "") return null;
 		const approvals = await serverApprovals.of(c, meta);
-		return approvals.find((approval) => approval.name === question.name && approval.fingerprint === question.fingerprint) ?? null;
+		return (
+			approvals.find(approval => approval.name === question.name && approval.fingerprint === question.fingerprint) ??
+			null
+		);
 	},
 	async remember(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
 		const project = projectOf(meta);
-		await userActor(c, meta.uid).internalServerApprove({ project: project.key, label: project.label, name: question.name, fingerprint: question.fingerprint });
+		await userActor(c, meta.uid).internalServerApprove({
+			project: project.key,
+			label: project.label,
+			name: question.name,
+			fingerprint: question.fingerprint,
+		});
 	},
 	async forget(c: Ctx, meta: SessionMeta, name: string): Promise<number> {
 		return (await userActor(c, meta.uid).internalServerForget({ project: projectOf(meta).key, name })).forgotten;
 	},
 };
 
-export const serverKey = (question: Pick<TurnServerQuestion, "name" | "fingerprint">) => `${question.name}:${question.fingerprint}`;
+export const serverKey = (question: Pick<TurnServerQuestion, "name" | "fingerprint">) =>
+	`${question.name}:${question.fingerprint}`;
 
 /** `promise`'s value, or null when it fails or takes longer than `ms`. */
 export function orNull<T>(promise: Promise<T>, ms: number): Promise<T | null> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise.catch(() => null), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))]).finally(() => clearTimeout(timer));
+	return Promise.race([
+		promise.catch(() => null),
+		new Promise<null>(resolve => (timer = setTimeout(() => resolve(null), ms))),
+	]).finally(() => clearTimeout(timer));
 }
 
 /** Says that what the session knows of its project's servers, or of their approvals, changed: clients ask `servers()` again. */
@@ -193,10 +242,20 @@ export function knowServers(c: Ctx, meta: SessionMeta, said: TurnServer[]): void
 }
 
 /** Keeps the user's yes for the session's project. A failure costs one more question in another session, and is logged. */
-export function rememberServer(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
+export function rememberServer(
+	c: Ctx,
+	meta: SessionMeta,
+	question: Pick<TurnServerQuestion, "name" | "fingerprint">,
+): Promise<void> {
 	const work = serverApprovals.remember(c, meta, question).then(
 		() => serversChanged(c, meta),
-		(error: unknown) => c.log.warn({ msg: "could not remember the approval of a project's MCP server", session: meta.sessionId, server: question.name, error: describeError(error) }),
+		(error: unknown) =>
+			c.log.warn({
+				msg: "could not remember the approval of a project's MCP server",
+				session: meta.sessionId,
+				server: question.name,
+				error: describeError(error),
+			}),
 	);
 	return c.vars.stopping ? work : c.keepAwake(work);
 }
@@ -211,16 +270,34 @@ export async function sessionServers(c: Ctx, meta: SessionMeta): Promise<Session
 	const known = meta.servers ?? [];
 	const { sandboxes } = await layerOf(c, meta);
 	// A session whose project names no server asks nobody: the user's own have no approval.
-	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
+	const approvals = known.some(server => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: await privateSessionData(meta, sandboxes, meta.sandboxId), project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
-	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
+	const context: ServerQuestionContext = {
+		profile: sandboxes.profile(meta.profile),
+		demo: meta.demo,
+		dataInSandbox: await privateSessionData(meta, sandboxes, meta.sandboxId),
+		project,
+		machine: machineOf(meta),
+		hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined,
+	};
+	const view = serversView(project, known, approvals, forgettingWords(context), server =>
+		serverPanelWords(server, context),
+	);
 	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
-	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
+	return known.some(server => server.origin === "user")
+		? { ...view, accountSecrets: meta.accountSecrets ?? null }
+		: view;
 }
 
 // A tool-call question may interrupt this question and requeue it with a fresh timeout.
-export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context: ServerQuestionContext, given: TurnServerQuestion, withdrawn: AbortSignal): Promise<boolean> {
+export async function askServer(
+	c: Ctx,
+	meta: SessionMeta,
+	active: ActiveTurn,
+	context: ServerQuestionContext,
+	given: TurnServerQuestion,
+	withdrawn: AbortSignal,
+): Promise<boolean> {
 	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
 	const argv = Array.isArray(given?.argv) ? given.argv.map(str) : null;
 	const question: TurnServerQuestion = {
@@ -244,7 +321,7 @@ export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, c
 
 	const words = serverQuestionWords(question, context);
 	const now = Date.now();
-	return new Promise<boolean>((resolve) => {
+	return new Promise<boolean>(resolve => {
 		let done = false;
 		let shown = false;
 		const settle = (start: boolean): void => {
@@ -270,11 +347,17 @@ export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, c
 				subagent: null,
 				askedAt: now,
 				expiresAt: now + config.questionTimeoutMs,
-				server: { name: question.name, file: question.file, remote: argv === null, unset: question.unset, holdsTurn: question.holdsTurn },
+				server: {
+					name: question.name,
+					file: question.file,
+					remote: argv === null,
+					unset: question.unset,
+					holdsTurn: question.holdsTurn,
+				},
 			},
 			timer: undefined,
 			server: { name: question.name, fingerprint: question.fingerprint },
-			answer: (answer) => {
+			answer: answer => {
 				if (done) return;
 				const start = answer.choice === SERVER_START;
 				// A yes gets its line, and is remembered, when Windlass has said what became of the server (`onServerApproved`).
@@ -286,15 +369,18 @@ export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, c
 				// Put again after it stood aside, it has the whole time to be answered in once more.
 				if (shown) asked.pending = { ...asked.pending, expiresAt: Date.now() + config.questionTimeoutMs };
 				shown = true;
-				asked.timer = setTimeout(() => {
-					// Nobody answered: "not now", and the turn goes on without the server.
-					if (active.question !== asked) return;
-					takeQuestion(c, meta, active);
-					note(c, active.number, "warn", serverExpiredNote(question, duration(config.questionTimeoutMs)));
-					publish(c);
-					void persist(c);
-					settle(false);
-				}, Math.max(0, asked.pending.expiresAt - Date.now()));
+				asked.timer = setTimeout(
+					() => {
+						// Nobody answered: "not now", and the turn goes on without the server.
+						if (active.question !== asked) return;
+						takeQuestion(c, meta, active);
+						note(c, active.number, "warn", serverExpiredNote(question, duration(config.questionTimeoutMs)));
+						publish(c);
+						void persist(c);
+						settle(false);
+					},
+					Math.max(0, asked.pending.expiresAt - Date.now()),
+				);
 				active.question = asked;
 				meta.updatedAt = Date.now();
 				if (question.holdsTurn && meta.status === "running") meta.status = "waiting";
@@ -306,7 +392,8 @@ export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, c
 		// The layer withdrew the question: the turn was stopped, or ended under a question put while it ran.
 		function onWithdrawn(): void {
 			if (done) return;
-			if (!active.stopping && !active.controller.signal.aborted) note(c, active.number, "info", serverUnansweredNote(question));
+			if (!active.stopping && !active.controller.signal.aborted)
+				note(c, active.number, "info", serverUnansweredNote(question));
 			if (active.question === asked) {
 				takeQuestion(c, meta, active);
 				publish(c);
@@ -333,7 +420,8 @@ export function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 		publish(c);
 		void persist(c);
 	}
-	const shutdown = active.pausing === "restart" && meta.place.kind === "hosted" && (meta.harness ?? "windlass") === "windlass";
+	const shutdown =
+		active.pausing === "restart" && meta.place.kind === "hosted" && (meta.harness ?? "windlass") === "windlass";
 	active.controller.abort(shutdown ? PLATFORM_RESTART : undefined);
 }
 

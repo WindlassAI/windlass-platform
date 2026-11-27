@@ -40,39 +40,32 @@ import { type AddressInfo, type Socket, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AuthResult, PlatformConnection, PlatformInfo, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
+import type {
+	AuthResult,
+	PlatformConnection,
+	PlatformInfo,
+	SessionSnapshot,
+	SessionSummary,
+	TimelineItem,
+} from "../server/src/contract.js";
+import { Report } from "./check-report.js";
+import { sleep, waitFor } from "./check-wait.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
-const { engine, http: [HTTP_PORT] } = await localListeners();
+const {
+	engine,
+	http: [HTTP_PORT],
+} = await localListeners();
 const ENGINE = { host: "127.0.0.1", port: engine };
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const ADMIN = "FAKE-ADMIN-TOKEN-for-connection-e2e";
 /** How long the front's tokens last. The server hands one out until half of that is gone. */
 const TOKEN_MS = 12_000;
 
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
-let failed = 0;
-let passed = 0;
-
-async function check(name: string, body: () => Promise<string | void>): Promise<void> {
-	try {
-		const detail = await body();
-		passed += 1;
-		console.log(`PASS  ${name}${detail ? `  (${detail})` : ""}`);
-	} catch (error) {
-		failed += 1;
-		console.log(`FAIL  ${name}  -- ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
+const tally = new Report({ failure: "dash", fold: false });
+const { check } = tally;
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
-}
-async function waitFor(what: string, test: () => boolean | Promise<boolean>, ms: number, every = 50): Promise<void> {
-	const deadline = Date.now() + ms;
-	while (!(await test())) {
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-		await sleep(every);
-	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -98,7 +91,7 @@ class Front {
 
 	async start(): Promise<void> {
 		this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket as Socket, head));
-		await new Promise<void>((done) => this.server.listen(0, "127.0.0.1", done));
+		await new Promise<void>(done => this.server.listen(0, "127.0.0.1", done));
 		const { port } = this.server.address() as AddressInfo;
 		this.url = `http://127.0.0.1:${port}`;
 		console.log(`Connection proxy port: ${port}`);
@@ -142,12 +135,22 @@ class Front {
 	private presented(request: IncomingMessage, protocols: string[] = []): { token: string | undefined; path: string } {
 		const raw = request.url ?? "/";
 		const url = new URL(raw, "http://front");
-		const selector = url.pathname.split("/")[1] === "gateway" && !url.searchParams.has("rvt-method") ? (url.pathname.split("/")[2] ?? "") : "";
-		const inSelector = selector.includes("@") ? decodeURIComponent(selector.slice(selector.indexOf("@") + 1)) : undefined;
+		const selector =
+			url.pathname.split("/")[1] === "gateway" && !url.searchParams.has("rvt-method")
+				? (url.pathname.split("/")[2] ?? "")
+				: "";
+		const inSelector = selector.includes("@")
+			? decodeURIComponent(selector.slice(selector.indexOf("@") + 1))
+			: undefined;
 		const inUrl = inSelector ?? url.searchParams.get("rvt-token") ?? undefined;
 		const header = request.headers["x-rivet-token"];
-		const token = inUrl ?? protocols.find((protocol) => protocol.startsWith("rivet_token."))?.slice("rivet_token.".length) ?? (typeof header === "string" ? header : undefined) ?? /^bearer (.+)$/i.exec(request.headers.authorization ?? "")?.[1];
-		const path = inUrl === undefined ? raw : raw.split(encodeURIComponent(inUrl)).join("default").split(inUrl).join("default");
+		const token =
+			inUrl ??
+			protocols.find(protocol => protocol.startsWith("rivet_token."))?.slice("rivet_token.".length) ??
+			(typeof header === "string" ? header : undefined) ??
+			/^bearer (.+)$/i.exec(request.headers.authorization ?? "")?.[1];
+		const path =
+			inUrl === undefined ? raw : raw.split(encodeURIComponent(inUrl)).join("default").split(inUrl).join("default");
 		return { token, path };
 	}
 
@@ -168,7 +171,12 @@ class Front {
 		const bearer = /^bearer (.+)$/i.exec(request.headers.authorization ?? "")?.[1];
 		if (request.method === "POST" && request.url === "/auth/tokens") {
 			request.resume();
-			if (bearer !== ADMIN) return send(401, { group: "auth", code: "invalid_token", message: "Authentication token is invalid." }, { "x-rivet-error": "auth.invalid_token" });
+			if (bearer !== ADMIN)
+				return send(
+					401,
+					{ group: "auth", code: "invalid_token", message: "Authentication token is invalid." },
+					{ "x-rivet-error": "auth.invalid_token" },
+				);
 			return send(200, this.issue());
 		}
 		const { token, path } = this.presented(request);
@@ -178,36 +186,45 @@ class Front {
 			const code = this.judge(token, "http");
 			if (code !== null) {
 				request.resume();
-				const message = code === "token_expired" ? "Authentication token has expired." : "Authentication token is invalid.";
+				const message =
+					code === "token_expired" ? "Authentication token has expired." : "Authentication token is invalid.";
 				return send(401, { group: "auth", code, message }, { "x-rivet-error": `auth.${code}` });
 			}
 		}
 		// Let through: to the local engine, with the token it knows in place of the front's.
-		const headers: Record<string, string | string[] | undefined> = { ...request.headers, host: `${ENGINE.host}:${ENGINE.port}` };
+		const headers: Record<string, string | string[] | undefined> = {
+			...request.headers,
+			host: `${ENGINE.host}:${ENGINE.port}`,
+		};
 		if (headers["x-rivet-token"] !== undefined) headers["x-rivet-token"] = "default";
 		if (headers.authorization !== undefined) headers.authorization = "Bearer default";
-		const upstream = httpRequest({ ...ENGINE, method: request.method, path, headers }, (answer) => {
+		const upstream = httpRequest({ ...ENGINE, method: request.method, path, headers }, answer => {
 			response.writeHead(answer.statusCode ?? 502, answer.headers);
 			answer.pipe(response);
 		});
 		upstream.on("error", () => {
-			if (!response.headersSent) send(502, { group: "guard", code: "upstream_error", message: "The engine did not answer." });
+			if (!response.headersSent)
+				send(502, { group: "guard", code: "upstream_error", message: "The engine did not answer." });
 			else response.destroy();
 		});
 		request.pipe(upstream);
 	}
 
 	private upgrade(request: IncomingMessage, socket: Socket, head: Buffer): void {
-		const protocols = (request.headers["sec-websocket-protocol"] ?? "").split(",").map((protocol) => protocol.trim());
+		const protocols = (request.headers["sec-websocket-protocol"] ?? "").split(",").map(protocol => protocol.trim());
 		const { token, path } = this.presented(request, protocols);
 		const code = this.judge(token, "ws");
 		if (code !== null) {
 			// A browser cannot read a refused upgrade, so the engine accepts the socket and closes it with the reason.
-			const accept = createHash("sha1").update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-			const chosen = protocols.find((protocol) => !protocol.startsWith("rivet_token."));
+			const accept = createHash("sha1")
+				.update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+				.digest("base64");
+			const chosen = protocols.find(protocol => !protocol.startsWith("rivet_token."));
 			const reason = Buffer.from(`auth.${code}#front`);
 			const frame = Buffer.concat([Buffer.from([0x88, 2 + reason.length, 1008 >> 8, 1008 & 0xff]), reason]);
-			socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${chosen ? `Sec-WebSocket-Protocol: ${chosen}\r\n` : ""}\r\n`);
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${chosen ? `Sec-WebSocket-Protocol: ${chosen}\r\n` : ""}\r\n`,
+			);
 			socket.end(frame);
 			return;
 		}
@@ -217,7 +234,10 @@ class Front {
 				const name = request.rawHeaders[i]!;
 				let value = request.rawHeaders[i + 1]!;
 				if (name.toLowerCase() === "host") value = `${ENGINE.host}:${ENGINE.port}`;
-				if (name.toLowerCase() === "sec-websocket-protocol") value = protocols.map((protocol) => (protocol.startsWith("rivet_token.") ? "rivet_token.default" : protocol)).join(", ");
+				if (name.toLowerCase() === "sec-websocket-protocol")
+					value = protocols
+						.map(protocol => (protocol.startsWith("rivet_token.") ? "rivet_token.default" : protocol))
+						.join(", ");
 				lines.push(`${name}: ${value}`);
 			}
 			upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
@@ -294,7 +314,9 @@ class Server {
 			await sleep(300);
 		}
 		try {
-			const runtime = JSON.parse(readFileSync(join(this.storage, ".rivetkit", "var", "engine", "runtime.json"), "utf8")) as { pid?: number };
+			const runtime = JSON.parse(
+				readFileSync(join(this.storage, ".rivetkit", "var", "engine", "runtime.json"), "utf8"),
+			) as { pid?: number };
 			if (typeof runtime.pid === "number") process.kill(runtime.pid, "SIGKILL");
 		} catch {
 			// No engine left, which is the point.
@@ -337,7 +359,9 @@ async function main(): Promise<void> {
 	const server = new Server();
 	// The web app's module is loaded by its address, so that the server's type check does not take the web app in.
 	const webModule = "../web/src/api/rivet.ts";
-	const { createRivetClient } = (await import(webModule)) as { createRivetClient(built: string, api: string): WebClient };
+	const { createRivetClient } = (await import(webModule)) as {
+		createRivetClient(built: string, api: string): WebClient;
+	};
 	let client: WebClient | null = null;
 
 	try {
@@ -352,7 +376,7 @@ async function main(): Promise<void> {
 		const sessions = { states: [] as string[], lists: 0 };
 		let closeFeed: () => void = () => undefined;
 		let closeList: () => void = () => undefined;
-		const tokensUsed = (from: number) => [...new Set(front.served.slice(from).map((entry) => entry.token))];
+		const tokensUsed = (from: number) => [...new Set(front.served.slice(from).map(entry => entry.token))];
 		/** Sends a prompt and waits until the feed has seen its turn end. */
 		const turn = async (text: string) => {
 			const before = feed.items.length;
@@ -363,106 +387,166 @@ async function main(): Promise<void> {
 
 		await check("the server tells the web app where the engine is, and hands it a token", async () => {
 			const connection = (await (await fetch(`${API}/platform/connection`)).json()) as PlatformConnection;
-			assert(connection.endpoint === front.url && connection.namespace === "default", `the server answered endpoint ${connection.endpoint}, namespace ${connection.namespace}`);
-			assert(connection.token !== null && front.tokens.has(connection.token.token), "the token is not one the engine issued");
-			assert(connection.token.validForMs > TOKEN_MS / 2 - 500 && connection.token.validForMs <= TOKEN_MS, `validForMs is ${connection.token.validForMs}`);
-			assert(!server.output.includes(ADMIN) && ![...front.tokens.keys()].some((token) => server.output.includes(token)), "a token is in the server's output");
+			assert(
+				connection.endpoint === front.url && connection.namespace === "default",
+				`the server answered endpoint ${connection.endpoint}, namespace ${connection.namespace}`,
+			);
+			assert(
+				connection.token !== null && front.tokens.has(connection.token.token),
+				"the token is not one the engine issued",
+			);
+			assert(
+				connection.token.validForMs > TOKEN_MS / 2 - 500 && connection.token.validForMs <= TOKEN_MS,
+				`validForMs is ${connection.token.validForMs}`,
+			);
+			assert(
+				!server.output.includes(ADMIN) && ![...front.tokens.keys()].some(token => server.output.includes(token)),
+				"a token is in the server's output",
+			);
 			return `the engine made it last ${TOKEN_MS / 1000} s, not the hour asked for; ${Math.round(connection.token.validForMs / 100) / 10} s left when handed out`;
 		});
 
-		await check("a request without a token, or with one the engine does not know, is refused by this engine", async () => {
-			const bare = await fetch(`${front.url}/actors?namespace=default&name=user`);
-			const wrong = await fetch(`${front.url}/actors?namespace=default&name=user`, { headers: { authorization: "Bearer default" } });
-			assert(bare.status === 401 && wrong.status === 401 && wrong.headers.get("x-rivet-error") === "auth.invalid_token", `it answered ${bare.status} and ${wrong.status}`);
-			front.refused.length = 0;
-			return "401 auth.invalid_token: what worked on the local engine does not work here";
-		});
+		await check(
+			"a request without a token, or with one the engine does not know, is refused by this engine",
+			async () => {
+				const bare = await fetch(`${front.url}/actors?namespace=default&name=user`);
+				const wrong = await fetch(`${front.url}/actors?namespace=default&name=user`, {
+					headers: { authorization: "Bearer default" },
+				});
+				assert(
+					bare.status === 401 && wrong.status === 401 && wrong.headers.get("x-rivet-error") === "auth.invalid_token",
+					`it answered ${bare.status} and ${wrong.status}`,
+				);
+				front.refused.length = 0;
+				return "401 auth.invalid_token: what worked on the local engine does not work here";
+			},
+		);
 
 		await check("the web app, built with no token: demo sign-in, a new agent, its feed, and a turn", async () => {
 			const info = await web.info();
-			const profile = info.profiles.find((candidate) => candidate.available);
+			const profile = info.profiles.find(candidate => candidate.available);
 			assert(profile, "no available profile");
 			auth = await web.login.demo();
 			session = await web.user(auth).createSession({ profile: profile.id });
-			closeList = web.user(auth).watch({ onSessions: () => (sessions.lists += 1), onConnection: (state) => sessions.states.push(state) });
+			closeList = web
+				.user(auth)
+				.watch({ onSessions: () => (sessions.lists += 1), onConnection: state => sessions.states.push(state) });
 			closeFeed = web.session(auth, session.id).open({
-				onSnapshot: (snapshot) => {
+				onSnapshot: snapshot => {
 					feed.snapshots += 1;
 					feed.status = snapshot.summary.status;
 				},
-				onItem: (item) => feed.items.push(item),
+				onItem: item => feed.items.push(item),
 				onDelta: () => undefined,
-				onSummary: (summary) => (feed.status = summary.status),
+				onSummary: summary => (feed.status = summary.status),
 				onQuestion: () => undefined,
-				onConnection: (state) => feed.states.push(state),
+				onConnection: state => feed.states.push(state),
 			});
 			await waitFor("the feeds to connect", () => feed.snapshots === 1 && sessions.lists >= 1, 20_000);
 			const first = await turn("List the files here.");
-			assert(front.refused.length === 0, `the engine refused ${front.refused.length} request(s): ${JSON.stringify(front.refused)}`);
+			assert(
+				front.refused.length === 0,
+				`the engine refused ${front.refused.length} request(s): ${JSON.stringify(front.refused)}`,
+			);
 			assert(web.endpoint === front.url, `the client names ${web.endpoint} as its endpoint`);
 			return `turn ${first.turn} ran; ${feed.items.length} items on the feed; ${front.served.length} requests let through, none refused; ${front.openSockets} feeds open`;
 		});
 
-		await check("a feed that is open stays open and delivers after its token ran out, and the next prompt goes with a new token", async () => {
-			const firstToken = Math.min(...tokensUsed(0));
-			const expiresAt = [...front.tokens.values()].find((token) => token.number === firstToken)!.expiresAt;
-			await sleep(Math.max(0, expiresAt - Date.now()) + 1_500);
-			assert(front.openSockets === 2, `${front.openSockets} feeds are open after the token ran out`);
-			const servedBefore = front.served.length;
-			const snapshotsBefore = feed.snapshots;
-			const second = await turn("And now?");
-			const used = tokensUsed(servedBefore);
-			assert(front.refused.length === 0, `the engine refused ${JSON.stringify(front.refused)}`);
-			assert(used.length >= 1 && used.every((token) => token > firstToken), `the prompt was sent with token ${used.join(", ")}; the first was ${firstToken}`);
-			assert(feed.snapshots === snapshotsBefore && !feed.states.includes("reconnecting"), "the feed was opened again");
-			return `token ${firstToken} ran out; turn ${second.turn} was sent with token ${used.join(", ")} and nothing was refused; the feed, opened with token ${firstToken}, delivered it without reconnecting`;
-		});
+		await check(
+			"a feed that is open stays open and delivers after its token ran out, and the next prompt goes with a new token",
+			async () => {
+				const firstToken = Math.min(...tokensUsed(0));
+				const expiresAt = [...front.tokens.values()].find(token => token.number === firstToken)!.expiresAt;
+				await sleep(Math.max(0, expiresAt - Date.now()) + 1_500);
+				assert(front.openSockets === 2, `${front.openSockets} feeds are open after the token ran out`);
+				const servedBefore = front.served.length;
+				const snapshotsBefore = feed.snapshots;
+				const second = await turn("And now?");
+				const used = tokensUsed(servedBefore);
+				assert(front.refused.length === 0, `the engine refused ${JSON.stringify(front.refused)}`);
+				assert(
+					used.length >= 1 && used.every(token => token > firstToken),
+					`the prompt was sent with token ${used.join(", ")}; the first was ${firstToken}`,
+				);
+				assert(
+					feed.snapshots === snapshotsBefore && !feed.states.includes("reconnecting"),
+					"the feed was opened again",
+				);
+				return `token ${firstToken} ran out; turn ${second.turn} was sent with token ${used.join(", ")} and nothing was refused; the feed, opened with token ${firstToken}, delivered it without reconnecting`;
+			},
+		);
 
 		await check("a feed whose connection drops comes back by itself, with a token that is good", async () => {
 			await sleep(TOKEN_MS + 1_000);
 			const servedBefore = front.served.length;
 			const snapshotsBefore = feed.snapshots;
 			const dropped = front.dropSockets();
-			await waitFor("the feeds to come back", () => feed.snapshots > snapshotsBefore && front.openSockets === 2, 30_000);
+			await waitFor(
+				"the feeds to come back",
+				() => feed.snapshots > snapshotsBefore && front.openSockets === 2,
+				30_000,
+			);
 			const used = front.served
 				.slice(servedBefore)
-				.filter((entry) => entry.kind === "ws")
-				.map((entry) => entry.token);
+				.filter(entry => entry.kind === "ws")
+				.map(entry => entry.token);
 			assert(front.refused.length === 0, `the engine refused ${JSON.stringify(front.refused)}`);
-			assert(feed.states.includes("reconnecting") && feed.states.at(-1) === "connected", `the feed went ${feed.states.join(" > ")}`);
+			assert(
+				feed.states.includes("reconnecting") && feed.states.at(-1) === "connected",
+				`the feed went ${feed.states.join(" > ")}`,
+			);
 			const third = await turn("Still there?");
 			return `${dropped} feeds cut; both back with token ${[...new Set(used)].join(", ")}, none refused; the feed went ${feed.states.slice(-2).join(" > ")}; turn ${third.turn} ran`;
 		});
 
-		await check("a browser whose clock runs behind: a prompt the engine refuses is renewed and sent again, and the caller sees nothing", async () => {
-			// From here the tokens claim an hour more than they have, so RivetKit takes a token that ran out for good.
-			front.claimAheadMs = 60 * 60 * 1000;
-			await sleep(TOKEN_MS + 1_000);
-			await web.user(auth).listSessions();
-			const liar = Math.max(...front.served.map((entry) => entry.token));
-			const expiresAt = [...front.tokens.values()].find((token) => token.number === liar)!.expiresAt;
-			await sleep(Math.max(0, expiresAt - Date.now()) + 1_000);
-			front.refused.length = 0;
-			const servedBefore = front.served.length;
-			const fourth = await turn("After the clock went wrong.");
-			const refusals = front.refused.filter((entry) => entry.kind === "http");
-			assert(refusals.length === 1 && refusals[0]!.code === "token_expired" && refusals[0]!.token === liar, `the engine refused ${JSON.stringify(front.refused)}`);
-			const used = tokensUsed(servedBefore);
-			assert(used.every((token) => token > liar), `sent again with token ${used.join(", ")}`);
-			return `token ${liar} claimed an hour more than it had; the engine refused the prompt once (auth.token_expired), it went through with token ${used.join(", ")}, and turn ${fourth.turn} ran`;
-		});
+		await check(
+			"a browser whose clock runs behind: a prompt the engine refuses is renewed and sent again, and the caller sees nothing",
+			async () => {
+				// From here the tokens claim an hour more than they have, so RivetKit takes a token that ran out for good.
+				front.claimAheadMs = 60 * 60 * 1000;
+				await sleep(TOKEN_MS + 1_000);
+				await web.user(auth).listSessions();
+				const liar = Math.max(...front.served.map(entry => entry.token));
+				const expiresAt = [...front.tokens.values()].find(token => token.number === liar)!.expiresAt;
+				await sleep(Math.max(0, expiresAt - Date.now()) + 1_000);
+				front.refused.length = 0;
+				const servedBefore = front.served.length;
+				const fourth = await turn("After the clock went wrong.");
+				const refusals = front.refused.filter(entry => entry.kind === "http");
+				assert(
+					refusals.length === 1 && refusals[0]!.code === "token_expired" && refusals[0]!.token === liar,
+					`the engine refused ${JSON.stringify(front.refused)}`,
+				);
+				const used = tokensUsed(servedBefore);
+				assert(
+					used.every(token => token > liar),
+					`sent again with token ${used.join(", ")}`,
+				);
+				return `token ${liar} claimed an hour more than it had; the engine refused the prompt once (auth.token_expired), it went through with token ${used.join(", ")}, and turn ${fourth.turn} ran`;
+			},
+		);
 
 		await check("and a feed that reconnects with such a token is refused once, renewed, and connected", async () => {
-			const current = Math.max(...front.served.map((entry) => entry.token));
-			const expiresAt = [...front.tokens.values()].find((token) => token.number === current)!.expiresAt;
+			const current = Math.max(...front.served.map(entry => entry.token));
+			const expiresAt = [...front.tokens.values()].find(token => token.number === current)!.expiresAt;
 			await sleep(Math.max(0, expiresAt - Date.now()) + 1_000);
 			front.refused.length = 0;
 			const snapshotsBefore = feed.snapshots;
 			front.dropSockets();
-			await waitFor("the feeds to come back", () => feed.snapshots > snapshotsBefore && front.openSockets === 2, 30_000);
-			const refusals = front.refused.filter((entry) => entry.kind === "ws");
-			assert(refusals.length >= 1 && refusals.every((entry) => entry.code === "token_expired"), `the engine refused ${JSON.stringify(front.refused)}`);
-			assert(feed.states.at(-1) === "connected" && !feed.states.includes("failed"), `the feed went ${feed.states.join(" > ")}`);
+			await waitFor(
+				"the feeds to come back",
+				() => feed.snapshots > snapshotsBefore && front.openSockets === 2,
+				30_000,
+			);
+			const refusals = front.refused.filter(entry => entry.kind === "ws");
+			assert(
+				refusals.length >= 1 && refusals.every(entry => entry.code === "token_expired"),
+				`the engine refused ${JSON.stringify(front.refused)}`,
+			);
+			assert(
+				feed.states.at(-1) === "connected" && !feed.states.includes("failed"),
+				`the feed went ${feed.states.join(" > ")}`,
+			);
 			const fifth = await turn("Last one.");
 			return `${refusals.length} WebSocket open(s) refused with auth.token_expired, then accepted with a new token; the feed never failed; turn ${fifth.turn} ran`;
 		});
@@ -471,8 +555,14 @@ async function main(): Promise<void> {
 			closeFeed();
 			closeList();
 			await web.user(auth).deleteSession(session.id);
-			assert((await web.user(auth).listSessions()).every((entry) => entry.id !== session.id), "the session is still listed");
-			assert(!server.output.includes(ADMIN) && ![...front.tokens.keys()].some((token) => server.output.includes(token)), "a token is in the server's output");
+			assert(
+				(await web.user(auth).listSessions()).every(entry => entry.id !== session.id),
+				"the session is still listed",
+			);
+			assert(
+				!server.output.includes(ADMIN) && ![...front.tokens.keys()].some(token => server.output.includes(token)),
+				"a token is in the server's output",
+			);
 			assert(!server.output.includes("connection.token_failed"), "the server failed to issue a token");
 			return `${front.tokens.size} tokens issued in all, for ${front.served.length} requests and WebSocket opens`;
 		});
@@ -481,12 +571,12 @@ async function main(): Promise<void> {
 		await server.stop();
 		await front.stop();
 	}
-	console.log(`\n${failed === 0 ? "ALL PASSED" : "FAILED"}: ${passed} passed, ${failed} failed`);
+	tally.summary(true);
 }
 
 main()
-	.catch((error) => {
-		failed += 1;
+	.catch(error => {
+		tally.failures += 1;
 		console.error(error instanceof Error ? error.message : "the check failed");
 	})
-	.finally(() => process.exit(failed === 0 ? 0 : 1));
+	.finally(() => process.exit(tally.failures === 0 ? 0 : 1));

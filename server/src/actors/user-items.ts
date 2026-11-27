@@ -20,13 +20,37 @@
  * a slot is given back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { deploymentSize, filedAgentSettings, machinePayers, partRun, resolveRun, runPlace, type ResolvedRun, type RunContext } from "../factory/resolve-run.js";
+import {
+	deploymentSize,
+	filedAgentSettings,
+	machinePayers,
+	partRun,
+	resolveRun,
+	runPlace,
+	type ResolvedRun,
+	type RunContext,
+} from "../factory/resolve-run.js";
 import { type DefaultDestination, checkRunPlace, placeMachines } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { SessionRepository } from "../contract.js";
 import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
-import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
-import { bindRoute, choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import {
+	accountFor,
+	accountKey,
+	loginGeneration,
+	limitedAccounts,
+	providerAccounts,
+	PROVIDER_TABLE,
+} from "./provider-accounts.js";
+import {
+	bindRoute,
+	choosePlacement,
+	machineSlots,
+	placeKey,
+	type AgentModels,
+	type PlacementInventory,
+	type PlacementRoute,
+} from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
 import { providerStatuses, savedProviders } from "../model-providers.js";
@@ -50,10 +74,25 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage, listedItems } from "../item-pages.js";
-import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
+import {
+	API_TOKEN_WINDOW_MS,
+	API_TOKENS_TABLE,
+	ApiTokenProblem,
+	createApiToken,
+	listApiTokens,
+	revokeApiToken,
+	tokenOwner,
+	useApiToken,
+} from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
-import { ATTACHMENT_PUT_TTL_MS, attachmentStore, type AttachmentLedger, type Reservation, type ReserveResult } from "../sandbox/attach.js";
+import {
+	ATTACHMENT_PUT_TTL_MS,
+	attachmentStore,
+	type AttachmentLedger,
+	type Reservation,
+	type ReserveResult,
+} from "../sandbox/attach.js";
 import { backupConfig, config } from "../config.js";
 import {
 	machineLabel,
@@ -82,7 +121,13 @@ import {
 } from "../contract.js";
 import { createItem, RULES } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
-import { keptFull, makeSandboxRoom, nextSandboxRelease, releaseAt, releaseDueSandboxes } from "./user/kept-sandboxes.js";
+import {
+	keptFull,
+	makeSandboxRoom,
+	nextSandboxRelease,
+	releaseAt,
+	releaseDueSandboxes,
+} from "./user/kept-sandboxes.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { REVIEW_OFF_REASON } from "../factory/review.js";
@@ -90,13 +135,23 @@ import { readAccountDefaults, readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { hostedSizesForPlan } from "../billing/plans.js";
 import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
-import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
-import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
+import {
+	dailyTokenWait,
+	TOKEN_USAGE_TABLE,
+	usesPlatformModel,
+	type UsageBook,
+	dayOf,
+	hostedLimitsApply,
+	keptHolder,
+} from "../usage.js";
+import { createItemActor, isSessionGone, itemActor, sessionActor, type ActorClient } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { itemMachines, launchPlace, machineModelLists } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
-declare module "./internal.js" { interface UserInternal extends AttachmentLedger {} }
+declare module "./internal.js" {
+	interface UserInternal extends AttachmentLedger {}
+}
 
 export const ATTACHMENT_SWEEP_ACTION = "internalAttachmentSweep";
 const DAY = 86_400_000;
@@ -104,7 +159,8 @@ const DAY = 86_400_000;
 const ATTACHMENT_DRAIN_MS = ATTACHMENT_PUT_TTL_MS + 5 * 60_000;
 export const ITEM_TABLES = [
 	PROVIDER_TABLE,
-	LIMITS_AUDIT_TABLE, TOKEN_USAGE_TABLE,
+	LIMITS_AUDIT_TABLE,
+	TOKEN_USAGE_TABLE,
 	"CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, item TEXT NOT NULL, session TEXT NOT NULL, step_key TEXT NOT NULL, sha256 TEXT NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, ended_at INTEGER)",
 	"CREATE INDEX IF NOT EXISTS attachments_active_digest ON attachments(item, step_key, sha256) WHERE state IN ('reserved','kept')",
 	"CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item, state)",
@@ -176,32 +232,86 @@ const KEYED = "work item";
 export const QUEUE_ACTION = "internalTurnQueue";
 
 /** The key of a creation in `ItemsState.created`: an item filed from an issue (GitHub's or Linear's) is in a scope of its own, apart from the web's and the API's. */
-const scopedKey = (intake: boolean, key: string) => intake ? intakeScope(key) : "user:" + key;
+const scopedKey = (intake: boolean, key: string) => (intake ? intakeScope(key) : "user:" + key);
 
 export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	const items = new Map<string, ItemSummary>();
 	const created = new Map<string, Submission & { id: string }>();
-	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>("SELECT summary, key, sent FROM items")) {
+	for (const row of await db.execute<{ summary: string; key: string | null; sent: string | null }>(
+		"SELECT summary, key, sent FROM items",
+	)) {
 		const summary = JSON.parse(row.summary) as ItemSummary;
 		summary.origin ??= null;
 		summary.mode ??= "single";
 		summary.parent ??= null;
 		items.set(summary.id, summary);
-		if (row.key !== null && row.sent !== null) created.set(scopedKey(INTAKE_SOURCES.has(summary.source), row.key), { key: row.key, sent: row.sent, id: summary.id });
+		if (row.key !== null && row.sent !== null)
+			created.set(scopedKey(INTAKE_SOURCES.has(summary.source), row.key), {
+				key: row.key,
+				sent: row.sent,
+				id: summary.id,
+			});
 	}
-	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM item_keys")) created.set(scopedKey(false, row.key), row);
-	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM github_item_keys")) created.set(scopedKey(true, row.key), row);
+	for (const row of await db.execute<{ key: string; sent: string; id: string }>("SELECT key, sent, id FROM item_keys"))
+		created.set(scopedKey(false, row.key), row);
+	for (const row of await db.execute<{ key: string; sent: string; id: string }>(
+		"SELECT key, sent, id FROM github_item_keys",
+	))
+		created.set(scopedKey(true, row.key), row);
 	const requests = new Map<string, Request>();
-	type RequestRow = { key: string; session: string; item: string; title: string; starts_run: number; at: number; attempt: number; full: number | null; full_until: number | null; wait: string | null };
-	for (const row of await db.execute<RequestRow>("SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request")) {
-		requests.set(row.key, { key: row.key, session: row.session, item: row.item, title: row.title, startsRun: row.starts_run === 1, at: row.at, attempt: row.attempt, full: row.full, deferUntil: row.full_until, wait: row.wait ? (JSON.parse(row.wait) as Wait) : null });
+	type RequestRow = {
+		key: string;
+		session: string;
+		item: string;
+		title: string;
+		starts_run: number;
+		at: number;
+		attempt: number;
+		full: number | null;
+		full_until: number | null;
+		wait: string | null;
+	};
+	for (const row of await db.execute<RequestRow>(
+		"SELECT key, session, item, title, starts_run, at, attempt, full, full_until, wait FROM turn_request",
+	)) {
+		requests.set(row.key, {
+			key: row.key,
+			session: row.session,
+			item: row.item,
+			title: row.title,
+			startsRun: row.starts_run === 1,
+			at: row.at,
+			attempt: row.attempt,
+			full: row.full,
+			deferUntil: row.full_until,
+			wait: row.wait ? (JSON.parse(row.wait) as Wait) : null,
+		});
 	}
 	const slots = new Map<string, Slot>();
-	type SlotRow = { id: string; key: string; session: string; item: string; title: string; at: number; expires_at: number };
-	const untold = new Set((await db.execute<{ slot: string }>("SELECT slot FROM turn_grant")).map((row) => row.slot));
-	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot")) slots.set(row.id, { ...row, expiresAt: row.expires_at, told: !untold.has(row.id) });
-	const [queue] = await db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM turn_queue WHERE id = 1");
-	return { limits: await readUserLimits(db), items, created, creating: new Attempts(), requests, slots, queueAt: queue ? { id: queue.schedule, at: queue.at } : null };
+	type SlotRow = {
+		id: string;
+		key: string;
+		session: string;
+		item: string;
+		title: string;
+		at: number;
+		expires_at: number;
+	};
+	const untold = new Set((await db.execute<{ slot: string }>("SELECT slot FROM turn_grant")).map(row => row.slot));
+	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot"))
+		slots.set(row.id, { ...row, expiresAt: row.expires_at, told: !untold.has(row.id) });
+	const [queue] = await db.execute<{ schedule: string; at: number }>(
+		"SELECT schedule, at FROM turn_queue WHERE id = 1",
+	);
+	return {
+		limits: await readUserLimits(db),
+		items,
+		created,
+		creating: new Attempts(),
+		requests,
+		slots,
+		queueAt: queue ? { id: queue.schedule, at: queue.at } : null,
+	};
 }
 
 /**
@@ -216,15 +326,25 @@ export interface ItemFacts {
 
 /** What the factory's functions need of the user actor's context. */
 export interface ItemsCtx {
-	vars: { tokenGen: number; github?: StoredConnection | null; items: ItemsState; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; usage: UsageBook; profile: UserProfile | null };
+	vars: {
+		tokenGen: number;
+		github?: StoredConnection | null;
+		items: ItemsState;
+		machines: Map<string, MachineSummary>;
+		sessions: Map<string, SessionSummary>;
+		usage: UsageBook;
+		profile: UserProfile | null;
+	};
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void; error(entry: unknown): void };
 	broadcast(name: string, ...args: unknown[]): void;
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
+	client(): ActorClient;
 	keepAwake<T>(promise: Promise<T>): Promise<T>;
-	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
+	schedule: {
+		at(timestamp: number, action: string, ...args: unknown[]): Promise<string>;
+		cancel(id: string): Promise<boolean>;
+	};
 	conn?: { params: unknown } | null;
 	scheduledFire?: { id: string; scheduledAt: number; firedAt: number };
 }
@@ -244,7 +364,11 @@ export interface ItemSessionInput {
 	issue?: { number: number; installationId: GithubId };
 	effort?: string;
 }
-export type MakeSession = (owner: UserProfile, input: CreateSessionInput, item: ItemSessionInput) => Promise<SessionSummary>;
+export type MakeSession = (
+	owner: UserProfile,
+	input: CreateSessionInput,
+	item: ItemSessionInput,
+) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -259,8 +383,56 @@ const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state), state.
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
-	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, agent: item.agent, resolved: item.resolved, ranWith: item.ranWith, repositories: item.repositories, record: item.record, endedAt: item.endedAt, ...(item.awaitingPlace && { awaitingPlace: true }), ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
+	const {
+		id,
+		title,
+		repository,
+		place,
+		source,
+		state,
+		wait,
+		question,
+		pullRequest,
+		verdict,
+		review,
+		budget,
+		spent,
+		sessionId,
+		createdAt,
+		updatedAt,
+		revision,
+	} = item;
+	return {
+		id,
+		title,
+		repository,
+		place,
+		agent: item.agent,
+		resolved: item.resolved,
+		ranWith: item.ranWith,
+		repositories: item.repositories,
+		record: item.record,
+		endedAt: item.endedAt,
+		...(item.awaitingPlace && { awaitingPlace: true }),
+		...(item.placement && { placement: item.placement }),
+		source,
+		mode: item.mode ?? "single",
+		parent: item.parent ?? null,
+		origin: item.origin ?? null,
+		state,
+		wait,
+		question,
+		pullRequest,
+		verdict,
+		review,
+		budget,
+		spent,
+		sessionId,
+		createdAt,
+		updatedAt,
+		revision,
+		...(item.step && { step: item.step }),
+	};
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -270,8 +442,14 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 	if (!held || held.revision > summary.revision) return;
 	c.vars.items.items.set(summary.id, summary);
 	await c.db.execute("UPDATE items SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
-	if (ended(summary)) await c.db.execute("UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?", summary.updatedAt, summary.id);
-	else if (ended(held)) await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
+	if (ended(summary))
+		await c.db.execute(
+			"UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?",
+			summary.updatedAt,
+			summary.id,
+		);
+	else if (ended(held))
+		await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
 	c.broadcast("items", feedOf(c.vars.items));
 	if (releaseAt(summary) !== releaseAt(held)) queueChanged(c);
 }
@@ -289,32 +467,51 @@ const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").
 function cleanItemInput(raw: unknown) {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
-	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
-	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
+	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate")
+		throw bad("Choose single or orchestrate for the work item.");
+	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0")
+		throw bad("Orchestrated work items are disabled.");
 	const harness = knownHarness(input.harness ?? "windlass");
 	if (harness === null) throw bad("Choose an agent this platform runs: windlass, or one of your machine's.");
 	const notForItems = itemHarnessProblem(harness);
 	if (notForItems) throw bad(notForItems);
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
-	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
+	if (title === "" || title.length > MAX_TITLE_CHARS)
+		throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
 	const body = typeof input.body === "string" ? input.body.trim() : "";
-	if (body === "" || body.length > MAX_ITEM_BODY_CHARS) throw bad(`Say what is to be done, in at most ${MAX_ITEM_BODY_CHARS} characters.`);
+	if (body === "" || body.length > MAX_ITEM_BODY_CHARS)
+		throw bad(`Say what is to be done, in at most ${MAX_ITEM_BODY_CHARS} characters.`);
 	const acceptance = input.acceptance === undefined || input.acceptance === null ? [] : input.acceptance;
-	if (!Array.isArray(acceptance) || acceptance.length > MAX_ACCEPTANCE_CRITERIA || !acceptance.every((line) => typeof line === "string" && line.trim() !== "" && line.length <= MAX_NOTE_CHARS)) {
-		throw bad(`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`);
+	if (
+		!Array.isArray(acceptance) ||
+		acceptance.length > MAX_ACCEPTANCE_CRITERIA ||
+		!acceptance.every(line => typeof line === "string" && line.trim() !== "" && line.length <= MAX_NOTE_CHARS)
+	) {
+		throw bad(
+			`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`,
+		);
 	}
 	const place = launchPlace(input.place ?? undefined);
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
-	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
-	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
+	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id))
+		throw bad("Choose a repository of your GitHub connection for the item.");
+	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean")
+		throw bad("Say yes or no to starting the item at once.");
 	const mode: ItemMode = input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate");
 	const partProblem = mode === "orchestrate" && subtaskHarnessProblem(harness);
 	if (partProblem) throw bad(partProblem);
 	const repositories = cleanRepositories(input.repositories, repository.id, mode, bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
-	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize)) throw bad("Choose a hosted size: Small, Medium or Large.");
-	if (isHostedSize(input.hostedSize) && place.kind !== "hosted") throw bad("A hosted size is for an item that runs hosted.");
+	if (
+		input.effort !== undefined &&
+		input.effort !== null &&
+		(typeof input.effort !== "string" || input.effort.length > 64)
+	)
+		throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
+	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize))
+		throw bad("Choose a hosted size: Small, Medium or Large.");
+	if (isHostedSize(input.hostedSize) && place.kind !== "hosted")
+		throw bad("A hosted size is for an item that runs hosted.");
 	return {
 		mode,
 		place: input.place == null ? input.place : runPlace(place),
@@ -337,19 +534,29 @@ function cleanItemInput(raw: unknown) {
  * A filing's repositories (`CreateItemInput.repositories`), checked: null for one repository. Two only for
  * Plan first, where the deployment allows cross-repo features, the first being the item's `repository`.
  */
-function cleanRepositories(raw: unknown, primary: GithubId, mode: string, bad: (message: string) => UserError): FeatureRepoInput[] | null {
+function cleanRepositories(
+	raw: unknown,
+	primary: GithubId,
+	mode: string,
+	bad: (message: string) => UserError,
+): FeatureRepoInput[] | null {
 	if (raw === undefined || raw === null) return null;
 	if (!Array.isArray(raw) || raw.length < 1) throw bad("List the feature's repositories: one or two.");
 	if (raw.length > 2) throw bad("A feature spans at most two repositories.");
 	const list = raw.map((entry): FeatureRepoInput => {
 		const e = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
-		if (typeof e.alias !== "string" || !ALIAS.test(e.alias)) throw bad("Give each repository a short alias: a lowercase letter, then up to 15 lowercase letters, digits or dashes.");
+		if (typeof e.alias !== "string" || !ALIAS.test(e.alias))
+			throw bad(
+				"Give each repository a short alias: a lowercase letter, then up to 15 lowercase letters, digits or dashes.",
+			);
 		if (!isGithubId(e.id)) throw bad("Name each repository by GitHub's id for it.");
-		if (e.branch !== undefined && typeof e.branch !== "string") throw bad("A repository's base branch is a branch name.");
+		if (e.branch !== undefined && typeof e.branch !== "string")
+			throw bad("A repository's base branch is a branch name.");
 		return { alias: e.alias, id: e.id, ...(typeof e.branch === "string" && { branch: e.branch }) };
 	});
 	if (String(list[0]!.id) !== String(primary)) throw bad("The first of the repositories is the item's repository.");
-	if (new Set(list.map(r => r.alias)).size !== list.length || new Set(list.map(r => String(r.id))).size !== list.length) throw bad("Name each repository once, each with its own alias.");
+	if (new Set(list.map(r => r.alias)).size !== list.length || new Set(list.map(r => String(r.id))).size !== list.length)
+		throw bad("Name each repository once, each with its own alias.");
 	if (list.length === 1) return null;
 	if (mode !== "orchestrate") throw bad("Only a Plan-first feature spans two repositories.");
 	if (!crossRepoFactory()) throw bad("Features over two repositories are not offered on this deployment.");
@@ -362,9 +569,15 @@ function cleanRepositories(raw: unknown, primary: GithubId, mode: string, bad: (
  * The primary is the item's session's own repository. Each must be one the user can write to, and not
  * archived: the feature pushes a branch and opens a pull request in every one of them.
  */
-async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBranch: string | undefined): Promise<FeatureRepository[]> {
-	const app = githubApp(), connection = c.vars.github;
-	if (!app || !connection) throw new UserError("Connect GitHub to file a feature over two repositories.", { code: "github_not_connected" });
+async function bindRepositories(
+	c: ItemsCtx,
+	list: FeatureRepoInput[],
+	primaryBranch: string | undefined,
+): Promise<FeatureRepository[]> {
+	const app = githubApp(),
+		connection = c.vars.github;
+	if (!app || !connection)
+		throw new UserError("Connect GitHub to file a feature over two repositories.", { code: "github_not_connected" });
 	const bound: FeatureRepository[] = [];
 	for (const [i, entry] of list.entries()) {
 		const named = (error: unknown): never => {
@@ -373,10 +586,30 @@ async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBr
 		};
 		const found = await resolveRepository(app, connection, entry.id, "write").catch(named);
 		// Read again by id through that installation: the listing may be minutes old, and an archive since then refuses the binding.
-		const { installation, repository } = await resolveBoundRepository(app, connection, entry.id, found.installation.id, "write").catch(named);
+		const { installation, repository } = await resolveBoundRepository(
+			app,
+			connection,
+			entry.id,
+			found.installation.id,
+			"write",
+		).catch(named);
 		const baseRef = (i === 0 ? primaryBranch : entry.branch) ?? repository.defaultBranch;
-		const planningBaseSha = await app.withToken(installation.id, { repositoryId: entry.id, permissions: { metadata: "read", contents: "read" } }, token => refHead(app, token, repository.owner, repository.name, baseRef));
-		bound.push({ alias: entry.alias, repositoryId: entry.id, installationId: installation.id, owner: repository.owner, name: repository.name, url: app.repositoryUrl(repository.owner, repository.name), private: repository.private, baseRef, planningBaseSha });
+		const planningBaseSha = await app.withToken(
+			installation.id,
+			{ repositoryId: entry.id, permissions: { metadata: "read", contents: "read" } },
+			token => refHead(app, token, repository.owner, repository.name, baseRef),
+		);
+		bound.push({
+			alias: entry.alias,
+			repositoryId: entry.id,
+			installationId: installation.id,
+			owner: repository.owner,
+			name: repository.name,
+			url: app.repositoryUrl(repository.owner, repository.name),
+			private: repository.private,
+			baseRef,
+			planningBaseSha,
+		});
 	}
 	return bound;
 }
@@ -389,37 +622,87 @@ export interface DefaultBuilder {
 	issue?: { number: number; installationId: GithubId };
 }
 
-const availabilityErrors = new Set(["bad_input", "bad_model", "bad_effort", "machine_not_found", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "bad_profile", "profile_unavailable", "harness_signed_out"]);
+const availabilityErrors = new Set([
+	"bad_input",
+	"bad_model",
+	"bad_effort",
+	"machine_not_found",
+	"machine_not_connected",
+	"runner_outdated",
+	"runner_signing_disabled",
+	"bad_profile",
+	"profile_unavailable",
+	"harness_signed_out",
+]);
 
-async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, run: ResolvedRun, makeSession: MakeSession, phase: "file" | "retry",
-	child?: Pick<ItemSessionInput, "owns" | "size" | "subtaskScreenshots" | "childBranch">): Promise<{ session: SessionSummary | null; destination: DefaultDestination }> {
+async function defaultBuilder(
+	c: ItemsCtx,
+	owner: UserProfile,
+	itemId: string,
+	job: DefaultBuilder,
+	run: ResolvedRun,
+	makeSession: MakeSession,
+	phase: "file" | "retry",
+	child?: Pick<ItemSessionInput, "owns" | "size" | "subtaskScreenshots" | "childBranch">,
+): Promise<{ session: SessionSummary | null; destination: DefaultDestination }> {
 	const sessionId = itemSessionId(itemId);
 	const existing = c.vars.sessions.get(sessionId);
-	if (existing) return { session: existing, destination: { place: existing.place, harness: existing.harness ?? "windlass" } };
+	if (existing)
+		return { session: existing, destination: { place: existing.place, harness: existing.harness ?? "windlass" } };
 	const machines = itemMachines(c.vars.machines);
 	let models: AgentModels | undefined;
 	if (!child && run.place !== "hosted" && run.agent !== "windlass" && (run.model || run.effort)) {
 		models = { machines: await machineModelLists(c, placeMachines(run.place, machines), id => id === run.agent) };
 	}
-	const destination: DefaultDestination = child && typeof run.place === "object" ? { place: { kind: "machine", machineId: run.place.machine }, profile: run.profile ?? undefined, harness: run.agent }
-		: checkRunPlace(run, machines, models, job.context.machinePayers);
+	const destination: DefaultDestination =
+		child && typeof run.place === "object"
+			? {
+					place: { kind: "machine", machineId: run.place.machine },
+					profile: run.profile ?? undefined,
+					harness: run.agent,
+				}
+			: checkRunPlace(run, machines, models, job.context.machinePayers);
 	// Explicit filing choices fail at the call site. A saved default or a retry can wait for availability.
-	const filedChoice = phase === "file" && [run.sources.place, run.sources.agent, run.sources.model, run.sources.effort].includes("item");
-	if (filedChoice && destination.refusal) throw new UserError(destination.refusal.message, { code: destination.refusal.code });
+	const filedChoice =
+		phase === "file" && [run.sources.place, run.sources.agent, run.sources.model, run.sources.effort].includes("item");
+	if (filedChoice && destination.refusal)
+		throw new UserError(destination.refusal.message, { code: destination.refusal.code });
 	if (destination.wait && !child) return { session: null, destination };
 	let profile = destination.profile;
 	if (!profile) {
 		const available = (await getLayer()).sandboxes.profiles().filter(p => p.available);
-		profile = (run.agent === "windlass" ? available[0] : available.find(p => p.platformKeys) ?? available[0])?.id;
+		profile = (run.agent === "windlass" ? available[0] : (available.find(p => p.platformKeys) ?? available[0]))?.id;
 	}
 	try {
 		if (!profile) throw new UserError("Choose an available sandbox profile.", { code: "bad_profile" });
 		// A one-implementer plan reuses this Windlass workspace, with the build model.
-		const build = job.role === "planner" ? resolveRun({ ...job.context, item: { ...job.context.item, harness: "windlass" } }, "builder") : null;
-		const session = await makeSession(owner, { title: job.title, repository: job.repository, place: destination.place, profile,
-			harness: run.agent, model: run.model ?? undefined, ...(destination.place.kind === "hosted" && (run.sources.size !== "deployment" || job.context.deployment?.hostedSize) && { hostedSize: run.size }) },
-			{ sessionId, itemId, role: "builder", payer: run.payer, issue: job.issue, effort: run.effort ?? undefined,
-				...(build && { afterPlanning: { model: build.model, effort: build.effort } }), ...child });
+		const build =
+			job.role === "planner"
+				? resolveRun({ ...job.context, item: { ...job.context.item, harness: "windlass" } }, "builder")
+				: null;
+		const session = await makeSession(
+			owner,
+			{
+				title: job.title,
+				repository: job.repository,
+				place: destination.place,
+				profile,
+				harness: run.agent,
+				model: run.model ?? undefined,
+				...(destination.place.kind === "hosted" &&
+					(run.sources.size !== "deployment" || job.context.deployment?.hostedSize) && { hostedSize: run.size }),
+			},
+			{
+				sessionId,
+				itemId,
+				role: "builder",
+				payer: run.payer,
+				issue: job.issue,
+				effort: run.effort ?? undefined,
+				...(build && { afterPlanning: { model: build.model, effort: build.effort } }),
+				...child,
+			},
+		);
 		return { session, destination };
 	} catch (error) {
 		if (child || !(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
@@ -428,7 +711,19 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 	}
 }
 
-async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSummary, itemId: string, child: boolean, job: DefaultBuilder, makeSession: MakeSession): Promise<{ reviewer?: import("../factory/types.js").FactoryItem["reviewer"]; reviewerSessionId: string | null; wait?: string }> {
+async function bindReviewer(
+	c: ItemsCtx,
+	owner: UserProfile,
+	session: SessionSummary,
+	itemId: string,
+	child: boolean,
+	job: DefaultBuilder,
+	makeSession: MakeSession,
+): Promise<{
+	reviewer?: import("../factory/types.js").FactoryItem["reviewer"];
+	reviewerSessionId: string | null;
+	wait?: string;
+}> {
 	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
 	if (child) return off("feature");
 	if (!config.factory.reviewer) return off("deployment");
@@ -437,8 +732,25 @@ async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSum
 		const { id, branch } = session.repository!;
 		const run = resolveRun(job.context, "reviewer");
 		try {
-			await makeSession(owner, { title: session.title, place: session.place, profile: run.profile ?? session.profile, harness: run.agent, model: run.model ?? undefined, repository: { id, branch } },
-				{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue: job.issue, effort: run.effort ?? undefined, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
+			await makeSession(
+				owner,
+				{
+					title: session.title,
+					place: session.place,
+					profile: run.profile ?? session.profile,
+					harness: run.agent,
+					model: run.model ?? undefined,
+					repository: { id, branch },
+				},
+				{
+					sessionId: reviewerSessionId,
+					itemId,
+					role: "reviewer",
+					issue: job.issue,
+					effort: run.effort ?? undefined,
+					...(session.hostedSize && { hostedSize: session.hostedSize }),
+				},
+			);
 		} catch (error) {
 			if (!(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
 			return { wait: "The reviewer cannot start. " + error.message, reviewerSessionId: null, reviewer: undefined };
@@ -449,12 +761,24 @@ async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSum
 
 /** Bind the same repository even when the item's machine session cannot be created yet. */
 async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<SessionRepository> {
-	const app = githubApp(), connection = c.vars.github;
+	const app = githubApp(),
+		connection = c.vars.github;
 	if (!app || !connection) throw new UserError("Connect GitHub to file this item.", { code: "github_not_connected" });
 	const { id, branch } = job.repository;
-	if (branch !== undefined && !isBranchName(branch)) throw new UserError("Choose a valid base branch.", { code: "bad_input" });
-	const { repository } = job.issue ? await resolveBoundRepository(app, connection, id, job.issue.installationId, "read") : await resolveRepository(app, connection, id, "read");
-	return { provider: "github", id, owner: repository.owner, name: repository.name, private: repository.private, branch: branch ?? repository.defaultBranch, url: app.repositoryUrl(repository.owner, repository.name) };
+	if (branch !== undefined && !isBranchName(branch))
+		throw new UserError("Choose a valid base branch.", { code: "bad_input" });
+	const { repository } = job.issue
+		? await resolveBoundRepository(app, connection, id, job.issue.installationId, "read")
+		: await resolveRepository(app, connection, id, "read");
+	return {
+		provider: "github",
+		id,
+		owner: repository.owner,
+		name: repository.name,
+		private: repository.private,
+		branch: branch ?? repository.defaultBranch,
+		url: app.repositoryUrl(repository.owner, repository.name),
+	};
 }
 
 /**
@@ -463,25 +787,72 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { resolved: ResolvedRun; context: RunContext; role: "part" | "repair"; screenshots: boolean; mergeTarget?: string; joinOnGate: boolean; featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(
+	c: ItemsCtx,
+	profile: UserProfile,
+	raw: unknown,
+	source: ItemSummary["source"],
+	submission: Submission | null,
+	makeSession: MakeSession,
+	intake?: Intake,
+	child?: {
+		resolved: ResolvedRun;
+		context: RunContext;
+		role: "part" | "repair";
+		screenshots: boolean;
+		mergeTarget?: string;
+		joinOnGate: boolean;
+		featureBody: string;
+		placement: ChildPlacement;
+		id: string;
+		base: string;
+		start?: string | null;
+		owns: string[];
+		parent: NonNullable<ItemSummary["parent"]>;
+		budget: ItemSummary["budget"];
+		untrusted?: string[];
+		unsandboxed?: string[];
+	},
+): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const { github, linear } = intake ?? {};
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
-	if (intake && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
+	if (intake && input.repositories)
+		throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
 	// Where the deployment has billing, a feature over two repositories is Pro's (billing/plans.ts).
-	if (input.repositories && accountLimits(c.vars.items.limits).plan?.crossRepo === false) throw new UserError("Features over two repositories are on Pro. Upgrade in Settings, or file one item per repository.", { code: "bad_input" });
+	if (input.repositories && accountLimits(c.vars.items.limits).plan?.crossRepo === false)
+		throw new UserError(
+			"Features over two repositories are on Pro. Upgrade in Settings, or file one item per repository.",
+			{ code: "bad_input" },
+		);
 	const uid = profile.uid;
-	const itemId = child?.id ?? (intake && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
+	const itemId =
+		child?.id ??
+		(intake && submission
+			? githubItemId(uid, submission.key)
+			: `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
-	const context: RunContext = child?.context ?? { account: await readAccountDefaults(c.db), repository: await readDefaults(c.db, "github:" + input.repository.id) };
+	const context: RunContext = child?.context ?? {
+		account: await readAccountDefaults(c.db),
+		repository: await readDefaults(c.db, "github:" + input.repository.id),
+	};
 	const role = child?.role ?? (input.mode === "orchestrate" ? "planner" : "builder");
 	if (!child) {
-		const offered = hostedSizesForPlan((await getLayer()).sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
+		const offered = hostedSizesForPlan(
+			(await getLayer()).sandboxes.sizes?.() ?? [],
+			accountLimits(c.vars.items.limits).plan,
+		);
 		context.deployment = { hostedSize: deploymentSize(offered.map(s => s.id)) };
 		context.machinePayers = machinePayers([...c.vars.machines.values()]);
-		context.item = { place: input.place, reviewModel: input.reviewModel, harness: input.harness, hostedSize: input.hostedSize,
-			profile: input.profile, machineProfile: input.profile };
+		context.item = {
+			place: input.place,
+			reviewModel: input.reviewModel,
+			harness: input.harness,
+			hostedSize: input.hostedSize,
+			profile: input.profile,
+			machineProfile: input.profile,
+		};
 		Object.assign(context.item, filedAgentSettings(context, input.model, input.effort));
 	}
 	const run = child?.resolved ?? resolveRun(context, role);
@@ -493,29 +864,91 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// The key is this body's from here, before anything is made: in memory now, so that a second attempt is judged by it at
 		// once, and stored before the first actor, so that it holds across a restart too.
 		c.vars.items.created.set(scopedKey(!!intake, submission.key), { ...submission, id: itemId });
-		if (intake) await c.db.execute("INSERT OR IGNORE INTO github_item_keys VALUES(?,?,?,?,?)", submission.key, submission.sent, itemId, Number(!input.start), Date.now());
-		else await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
+		if (intake)
+			await c.db.execute(
+				"INSERT OR IGNORE INTO github_item_keys VALUES(?,?,?,?,?)",
+				submission.key,
+				submission.sent,
+				itemId,
+				Number(!input.start),
+				Date.now(),
+			);
+		else
+			await c.db.execute(
+				"INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)",
+				submission.key,
+				submission.sent,
+				itemId,
+			);
 	}
 	try {
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
-		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
-		if (repos) context.repositories = Object.fromEntries(await Promise.all(repos.map(async r => [r.alias, await readDefaults(c.db, "github:" + r.repositoryId)])));
+		const repos =
+			input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
+		if (repos)
+			context.repositories = Object.fromEntries(
+				await Promise.all(repos.map(async r => [r.alias, await readDefaults(c.db, "github:" + r.repositoryId)])),
+			);
 		begun = true;
-		const { session, destination } = await defaultBuilder(c, profile, itemId, job, run, makeSession, "file", child && { owns: child.owns, size: child.placement.units, subtaskScreenshots: child.screenshots,
-			...(child.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }) });
+		const { session, destination } = await defaultBuilder(
+			c,
+			profile,
+			itemId,
+			job,
+			run,
+			makeSession,
+			"file",
+			child && {
+				owns: child.owns,
+				size: child.placement.units,
+				subtaskScreenshots: child.screenshots,
+				...(child.start && {
+					childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start },
+				}),
+			},
+		);
 		if (session) {
 			if (!run.model && run.agent === "windlass" && !child) (context.deployment ??= {}).model = session.model;
 			run.model ??= session.model;
 			run.profile ??= session.profile;
 			run.size = session.hostedSize ?? run.size;
 		}
-		const repository = session?.repository ?? await waitingRepository(c, job);
+		const repository = session?.repository ?? (await waitingRepository(c, job));
 		if (!repository) throw new Error("the item's session has no repository");
-		const review = session && await bindReviewer(c, profile, session, itemId, !!child, job, makeSession);
+		const review = session && (await bindReviewer(c, profile, session, itemId, !!child, job, makeSession));
 		const now = Date.now();
-		const meta: ItemMeta = { ...((!session || review?.wait) && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = {
+			...((!session || review?.wait) && { pendingBuilder: job }),
+			uid,
+			sessionId,
+			reviewerSessionId: review?.reviewerSessionId ?? null,
+			reviewBase: null,
+			handoffReview: null,
+			repository,
+			source,
+			github,
+			...(linear && { linear }),
+			createdAt: now,
+			activityAt: now,
+			verdict: null,
+			ledger: { seconds: 0, holds: [] },
+		};
 		const limits = accountLimits(c.vars.items.limits).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : destination.harness, model: session?.model ?? "default", effort: run.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
+		const item = createItem({
+			id: itemId,
+			mode: input.mode,
+			...(repos && { repos }),
+			reviewer: review?.reviewer,
+			task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch },
+			place: session?.place ?? destination.place,
+			budget: child?.budget ?? limits.item,
+			agent: {
+				harness: session ? (session.harness ?? "windlass") : destination.harness,
+				model: session?.model ?? "default",
+				effort: run.effort,
+				...(session?.item?.signIn && { signIn: session.item.signIn }),
+			},
+		});
 		item.runRole = role;
 		item.context = context;
 		item.resolved = run;
@@ -536,24 +969,48 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 			item.placement = child.placement;
 		}
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
-		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : [], linear ? linearSources(linear.origin) : []);
+		const outside = sources(
+			child?.untrusted,
+			github && !github.origin.issue.trusted
+				? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)]
+				: [],
+			linear ? linearSources(linear.origin) : [],
+		);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
-		await createItemActor(c, uid, itemId, { item, meta, placeNote: destination.wait, startedBy: input.start ? `person:${uid}` : null });
+		await createItemActor(c, uid, itemId, {
+			item,
+			meta,
+			placeNote: destination.wait,
+			startedBy: input.start ? `person:${uid}` : null,
+		});
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
 		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
 		if (submission && !begun) {
 			c.vars.items.created.delete(scopedKey(!!intake, submission.key));
-			await c.db.execute(intake ? "DELETE FROM github_item_keys WHERE key = ?" : "DELETE FROM item_keys WHERE key = ?", submission.key).catch(() => undefined);
+			await c.db
+				.execute(
+					intake ? "DELETE FROM github_item_keys WHERE key = ?" : "DELETE FROM item_keys WHERE key = ?",
+					submission.key,
+				)
+				.catch(() => undefined);
 		}
 		throw clientError(c.log, error, "The item could not be filed. Try again.");
 	}
 	// In one step with the item: from here a creation with this key answers with it.
 	c.vars.items.items.set(summary.id, summary);
 	if (submission) c.vars.items.created.set(scopedKey(!!intake, submission.key), { ...submission, id: summary.id });
-	const index = (db: Pick<RawAccess, "execute">) => db.execute("INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary", summary.id, summary.createdAt, JSON.stringify(summary), submission?.key ?? null, submission?.sent ?? null);
+	const index = (db: Pick<RawAccess, "execute">) =>
+		db.execute(
+			"INSERT INTO items (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary",
+			summary.id,
+			summary.createdAt,
+			JSON.stringify(summary),
+			submission?.key ?? null,
+			submission?.sent ?? null,
+		);
 	if (intake && submission) {
 		try {
 			await c.db.transaction(async tx => {
@@ -575,19 +1032,35 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 }
 
 /** `createItem`, keyed or not, as `createSession` is: the same key answers with the item it made. */
-async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], makeSession: MakeSession, intake?: Intake): Promise<ItemSummary> {
+async function fileItem(
+	c: ItemsCtx,
+	profile: UserProfile,
+	raw: unknown,
+	source: ItemSummary["source"],
+	makeSession: MakeSession,
+	intake?: Intake,
+): Promise<ItemSummary> {
 	if (typeof raw !== "object" || raw === null) throw new UserError("Say what the item is.", { code: "bad_input" });
 	let attempt: Promise<ItemSummary>;
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
 		// What a Linear item's key stands for is the issue's filing, not the text it had when the first attempt was made: an attempt that finishes an interrupted one is the same.
-		const submission = submissionOf(idempotencyKey, intake?.linear ? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation } : intake ? { asked, github: intake.github } : asked);
+		const submission = submissionOf(
+			idempotencyKey,
+			intake?.linear
+				? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+				: intake
+					? { asked, github: intake.github }
+					: asked,
+		);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
 		const made = c.vars.items.created.get(key);
 		const item = made && isRepeat(made, submission, KEYED) ? c.vars.items.items.get(made.id) : undefined;
 		if (item) return item;
-		attempt = c.vars.items.creating.run({ ...submission, key }, KEYED, () => makeItem(c, profile, asked, source, submission, makeSession, intake));
+		attempt = c.vars.items.creating.run({ ...submission, key }, KEYED, () =>
+			makeItem(c, profile, asked, source, submission, makeSession, intake),
+		);
 	} catch (error) {
 		if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
 		throw error;
@@ -601,10 +1074,17 @@ async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> 
 	}
 	const parts = view.children?.length ? await partScreenshots(c, view.children) : [];
 	if (parts.length) view.partScreenshots = parts;
-	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots), ...parts.flatMap(set => set.screenshots)];
+	const shots = [
+		...(view.report?.screenshots ?? []),
+		...view.reviews.flatMap(review => review.screenshots),
+		...parts.flatMap(set => set.screenshots),
+	];
 	if (!shots.length) return view;
 	const items = [view.id, ...new Set(parts.map(set => set.itemId))];
-	const rows = await c.db.execute<{ id: string }>(`SELECT id FROM attachments WHERE item IN (${items.map(() => "?").join(",")}) AND state='kept' AND ended_at IS NOT 0`, ...items);
+	const rows = await c.db.execute<{ id: string }>(
+		`SELECT id FROM attachments WHERE item IN (${items.map(() => "?").join(",")}) AND state='kept' AND ended_at IS NOT 0`,
+		...items,
+	);
 	const live = new Set(rows.map(row => row.id));
 	for (const shot of shots) shot.state = live.has(shot.id) ? "kept" : "removed";
 	return view;
@@ -612,10 +1092,14 @@ async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> 
 
 /** The screenshot sets of a feature's parts, the newest first. A part that cannot be read now is left out of this answer. */
 async function partScreenshots(c: ItemsCtx, children: ItemSummary[]): Promise<PartScreenshots[]> {
-	const sets = await Promise.all(children.map(async child => {
-		const filed = await itemActor(c, c.key[0] as string, child.id).internalScreenshotSets().catch(() => []);
-		return filed.map(set => ({ itemId: child.id, key: child.parent?.key ?? "", title: child.title, ...set }));
-	}));
+	const sets = await Promise.all(
+		children.map(async child => {
+			const filed = await itemActor(c, c.key[0] as string, child.id)
+				.internalScreenshotSets()
+				.catch(() => []);
+			return filed.map(set => ({ itemId: child.id, key: child.parent?.key ?? "", title: child.title, ...set }));
+		}),
+	);
 	return sets.flat().sort((a, b) => b.at - a.at);
 }
 
@@ -646,16 +1130,21 @@ async function storeRequest(db: RawAccess, request: Request): Promise<void> {
 }
 
 /** The factory's slots held now on hosted sandboxes, for `internalAcquireRun`: they count against the person's hosted ceiling too. A machine's never do. */
-export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyMap<string, SessionSummary> } }): number {
+export function factorySlots(c: {
+	vars: { items: ItemsState; sessions: ReadonlyMap<string, SessionSummary> };
+}): number {
 	let hosted = 0;
-	for (const slot of c.vars.items.slots.values()) if (hostedLimitsApply(c.vars.sessions.get(slot.session)?.place ?? { kind: "hosted" })) hosted++;
+	for (const slot of c.vars.items.slots.values())
+		if (hostedLimitsApply(c.vars.sessions.get(slot.session)?.place ?? { kind: "hosted" })) hosted++;
 	return hosted;
 }
 
 type QueueSession = Pick<SessionSummary, "place" | "sandbox" | "status" | "item">;
 
 function holdsHostedPlace(session: QueueSession): boolean {
-	return hostedLimitsApply(session.place) && (session.sandbox === "running" || (!session.item && session.status !== "idle"));
+	return (
+		hostedLimitsApply(session.place) && (session.sandbox === "running" || (!session.item && session.status !== "idle"))
+	);
 }
 
 /** Factory turns share the places left by personal sessions, including places already held by factory turns. */
@@ -666,11 +1155,19 @@ export function plannerHostedCapacity(limits: UserLimits, sessions: Iterable<Que
 	return Math.max(0, Math.min(RULES.parallelChildren, remaining));
 }
 
-function sessionProvider(session: SessionSummary, machine: MachineSummary | undefined | null, hostedKeys: readonly ModelProvider[]) {
+function sessionProvider(
+	session: SessionSummary,
+	machine: MachineSummary | undefined | null,
+	hostedKeys: readonly ModelProvider[],
+) {
 	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
 	if (!session.harness || session.harness === "windlass") return windlassProvider(model);
 	if (session.place.kind === "hosted") return hostedProvider(session.harness, model, hostedKeys);
-	return selectedKey(session.harness, model, machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? []);
+	return selectedKey(
+		session.harness,
+		model,
+		machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? [],
+	);
 }
 
 /**
@@ -691,17 +1188,34 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		released.push(slot.id);
 		// Asked for again: a turn whose slot outlived every turn's limit never started (its grant was lost with a server), and a
 		// session that ended it answers a second grant by giving it back.
-		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, deferUntil: null, wait: null });
-		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
+		if (!state.requests.has(slot.key))
+			state.requests.set(slot.key, {
+				key: slot.key,
+				session: slot.session,
+				item: slot.item,
+				title: slot.title,
+				startsRun: false,
+				at: slot.at,
+				attempt: 0,
+				full: null,
+				deferUntil: null,
+				wait: null,
+			});
+		console.warn(
+			`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`,
+		);
 	}
 	const limits = accountLimits(state.limits).factory;
 	const tokenWait = dailyTokenWait(c.vars.usage.modelTokens(now), limits.dailyTokens);
 	const sessions = [...c.vars.sessions.values()];
 	const usage = c.vars.usage.numbers(now);
 	// What holds the hosted places, in words, for an item told it waits for one (budget.ts `admit`).
-	const holders = c.vars.usage.kept().filter((claim) => !c.vars.usage.shares(claim.session)).map((claim) => keptHolder(c.vars.sessions, claim.session));
+	const holders = c.vars.usage
+		.kept()
+		.filter(claim => !c.vars.usage.shares(claim.session))
+		.map(claim => keptHolder(c.vars.sessions, claim.session));
 	// The user's hosted sandboxes at work: running ones, and the person's own agents working (`internalAcquireRun` counts those).
-	const hostedRunning = new Set(sessions.filter(holdsHostedPlace).map((session) => session.id));
+	const hostedRunning = new Set(sessions.filter(holdsHostedPlace).map(session => session.id));
 	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
 	for (const slot of state.slots.values()) {
 		if (c.vars.sessions.get(slot.session)?.place.kind === "hosted") hostedRunning.add(slot.session);
@@ -728,25 +1242,51 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
-			provider: accountFor(accounts, { place: placeKey(session.place), harness: session.harness ?? "windlass",
-				provider: sessionProvider(session, machine, hostedKeys) }),
+			provider: accountFor(accounts, {
+				place: placeKey(session.place),
+				harness: session.harness ?? "windlass",
+				provider: sessionProvider(session, machine, hostedKeys),
+			}),
 			at: now,
 			limits,
 			dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
 			// The session's own sandbox, running already, is not one more for its turn.
-			place: machine ? {
-				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
-				...(capacity && capacity.max !== null && placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
-				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
-				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
-				max: machine.maxRunning ?? Infinity,
-				keptFull: keptFull(c, session),
-			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id), holders, deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
+			place: machine
+				? {
+						kind: "machine",
+						name: machineLabel(machine),
+						online: machine.status === "online",
+						...(capacity &&
+							capacity.max !== null &&
+							placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
+						attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
+						running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
+						max: machine.maxRunning ?? Infinity,
+						keptFull: keptFull(c, session),
+					}
+				: {
+						kind: "hosted",
+						usage,
+						running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0),
+						needsSandbox:
+							session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id),
+						holders,
+						deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null,
+					},
 			attempt: request.attempt,
 		});
 		if (answer.ok) {
 			// The one asking now is told in its answer; any other is told below, and until it answers the grant stays recorded.
-			const slot: Slot = { id: `t_${randomBytes(8).toString("hex")}`, key: request.key, session: request.session, item: request.item, title: request.title, at: now, expiresAt: now + SLOT_LEASE_MS, told: request.key === answering };
+			const slot: Slot = {
+				id: `t_${randomBytes(8).toString("hex")}`,
+				key: request.key,
+				session: request.session,
+				item: request.item,
+				title: request.title,
+				at: now,
+				expiresAt: now + SLOT_LEASE_MS,
+				told: request.key === answering,
+			};
 			state.requests.delete(request.key);
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
@@ -768,19 +1308,33 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	for (const key of dropped) await c.db.execute("DELETE FROM turn_request WHERE key = ?", key);
 	for (const slot of granted) {
 		// The request becomes its slot in one transaction: a server stopped in between leaves one or the other, never neither.
-		await c.db.transaction(async (tx) => {
-			await tx.execute("DELETE FROM turn_request WHERE key = ?", slot.key);
-			await tx.execute("INSERT OR REPLACE INTO turn_slot (id, key, session, item, title, at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", slot.id, slot.key, slot.session, slot.item, slot.title, slot.at, slot.expiresAt);
-			if (!slot.told) await tx.execute("INSERT OR IGNORE INTO turn_grant (slot) VALUES (?)", slot.id);
-		}, { name: "queue.grant" });
-		console.log(`[wlp] factory.slot_granted uid=${c.key[0]} slot=${slot.id} key=${slot.key} factory=${state.slots.size}`);
+		await c.db.transaction(
+			async tx => {
+				await tx.execute("DELETE FROM turn_request WHERE key = ?", slot.key);
+				await tx.execute(
+					"INSERT OR REPLACE INTO turn_slot (id, key, session, item, title, at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					slot.id,
+					slot.key,
+					slot.session,
+					slot.item,
+					slot.title,
+					slot.at,
+					slot.expiresAt,
+				);
+				if (!slot.told) await tx.execute("INSERT OR IGNORE INTO turn_grant (slot) VALUES (?)", slot.id);
+			},
+			{ name: "queue.grant" },
+		);
+		console.log(
+			`[wlp] factory.slot_granted uid=${c.key[0]} slot=${slot.id} key=${slot.key} factory=${state.slots.size}`,
+		);
 	}
 	for (const request of waits) await storeRequest(c.db, request);
 
 	const uid = c.key[0] as string;
-	const mine = granted.find((slot) => slot.key === answering) ?? null;
+	const mine = granted.find(slot => slot.key === answering) ?? null;
 	// Every slot its session has not answered for: the ones granted now, and any whose grant was lost before.
-	for (const slot of [...state.slots.values()].filter((one) => !one.told)) {
+	for (const slot of [...state.slots.values()].filter(one => !one.told)) {
 		try {
 			await sessionActor(c, uid, slot.session).internalGrant({ key: slot.key, slot: slot.id });
 			slot.told = true;
@@ -788,7 +1342,11 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		} catch (error) {
 			if (!isSessionGone(error)) {
 				// Kept, slot and all: the session may have taken it and only its answer was lost. Told again on the next run, or freed by its lease.
-				c.log.warn({ msg: "could not give a session its slot; it is told again later", session: slot.session, error: String(error) });
+				c.log.warn({
+					msg: "could not give a session its slot; it is told again later",
+					session: slot.session,
+					error: String(error),
+				});
 				continue;
 			}
 			state.slots.delete(slot.id);
@@ -816,7 +1374,9 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const fact = { kind: "turn_waiting" as const, at: now, key: request.key, wait: request.wait };
 		await itemActor(c, uid, request.item)
 			.internalFact(fact)
-			.catch((error: unknown) => c.log.warn({ msg: "could not tell an item why its turn waits", item: request.item, error: String(error) }));
+			.catch((error: unknown) =>
+				c.log.warn({ msg: "could not tell an item why its turn waits", item: request.item, error: String(error) }),
+			);
 	}
 	if (room) {
 		const retry = await runQueue(c, answering);
@@ -836,7 +1396,9 @@ function armQueue(c: ItemsCtx): Promise<void> {
 
 async function scheduleQueue(c: ItemsCtx): Promise<void> {
 	const state = c.vars.items;
-	const times = [...state.requests.values()].map((request) => request.wait?.retryAt ?? null).filter((at): at is number => at !== null);
+	const times = [...state.requests.values()]
+		.map(request => request.wait?.retryAt ?? null)
+		.filter((at): at is number => at !== null);
 	const due = nextSandboxRelease(c);
 	if (Number.isFinite(due)) times.push(due);
 	if (times.length === 0) return;
@@ -850,10 +1412,17 @@ async function scheduleQueue(c: ItemsCtx): Promise<void> {
 }
 
 /** Recheck persisted timers on adoption. A late summary or an actor restart can also reveal a wait on an older login. */
-export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, change: "login" | "settings" | "adopted" = "login") {
+export async function notifyProviderWaits(
+	c: ItemsCtx,
+	items: Iterable<ItemSummary>,
+	change: "login" | "settings" | "adopted" = "login",
+) {
 	const settingsChanged = change === "settings";
-	const waits = [...items].filter(item => settingsChanged && item.state === "waiting" && item.step?.kind === "subtasks" ||
-		item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey));
+	const waits = [...items].filter(
+		item =>
+			(settingsChanged && item.state === "waiting" && item.step?.kind === "subtasks") ||
+			(item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey)),
+	);
 	if (!waits.length) return;
 	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
 	const active = new Set(limitedAccounts(accounts).map(a => a.accountKey));
@@ -871,15 +1440,24 @@ export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSumma
 			const generation = await loginGeneration(c.db, location);
 			if (generation === null ? !settingsChanged : item.wait!.accountKey === accountKey(location, generation)) continue;
 		}
-		await itemActor(c, c.key[0]!, item.id).internalProviderChanged(item.revision).catch(error =>
-			c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }));
+		await itemActor(c, c.key[0]!, item.id)
+			.internalProviderChanged(item.revision)
+			.catch(error =>
+				c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }),
+			);
 	}
 }
 
 /** Removal also reaches drafts and work waiting on GitHub. Repeat on wake in case a notification was cut off. */
 export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Promise<void> {
 	for (const item of c.vars.items.items.values()) {
-		if (item.awaitingPlace || item.place.kind !== "machine" || (machineId && item.place.machineId !== machineId) || c.vars.machines.has(item.place.machineId)) continue;
+		if (
+			item.awaitingPlace ||
+			item.place.kind !== "machine" ||
+			(machineId && item.place.machineId !== machineId) ||
+			c.vars.machines.has(item.place.machineId)
+		)
+			continue;
 		if (["done", "failed", "cancelled"].includes(item.state) || item.question?.kind === "machine_removed") continue;
 		await itemActor(c, c.key[0]!, item.id).internalFact({ kind: "machine_removed", at: Date.now() });
 	}
@@ -890,10 +1468,14 @@ export function queueChanged(c: ItemsCtx): void {
 	const { requests, slots } = c.vars.items;
 	if (requests.size === 0 && [...slots.values()].every(slot => slot.told)) {
 		if (!Number.isFinite(nextSandboxRelease(c))) return;
-		void c.keepAwake(armQueue(c).catch(error => c.log.warn({ msg: "Could not schedule sandbox expiry", error: String(error) })));
+		void c.keepAwake(
+			armQueue(c).catch(error => c.log.warn({ msg: "Could not schedule sandbox expiry", error: String(error) })),
+		);
 		return;
 	}
-	void c.keepAwake(runQueue(c).catch((error) => c.log.error({ msg: "the turn queue could not be run", error: String(error) })));
+	void c.keepAwake(
+		runQueue(c).catch(error => c.log.error({ msg: "the turn queue could not be run", error: String(error) })),
+	);
 }
 
 /**
@@ -904,7 +1486,10 @@ export function itemSessionRefusal(c: { vars: { items: ItemsState } }, session: 
 	if (!session.item) return null;
 	const item = c.vars.items.items.get(session.item.id);
 	const name = item ? `“${item.title}”` : "a work item";
-	return new UserError(`This agent works for ${name}. Cancel the item instead; the agent and what it did stay readable.`, { code: "item_session" });
+	return new UserError(
+		`This agent works for ${name}. Cancel the item instead; the agent and what it did stay readable.`,
+		{ code: "item_session" },
+	);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -912,14 +1497,19 @@ export function itemSessionRefusal(c: { vars: { items: ItemsState } }, session: 
 // ---------------------------------------------------------------------------------------------
 
 function tokenInput<T>(step: () => Promise<T>): Promise<T> {
-	return step().catch((error) => {
+	return step().catch(error => {
 		if (error instanceof ApiTokenProblem) throw new UserError(error.message, { code: error.code });
 		throw error;
 	});
 }
 
 /** The profile of the user an API token names, when the token is good for `scope` here. */
-async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope, distinguishScope = false): Promise<UserProfile> {
+async function apiCaller(
+	c: ItemsCtx,
+	token: unknown,
+	scope: ApiTokenScope,
+	distinguishScope = false,
+): Promise<UserProfile> {
 	const owner = tokenOwner(token);
 	const profile = c.vars.profile;
 	const refused = new UserError("That API token is not valid, or may not do this.", { code: "invalid_token" });
@@ -928,12 +1518,16 @@ async function apiCaller(c: ItemsCtx, token: unknown, scope: ApiTokenScope, dist
 	const now = Date.now();
 	const admission = await useApiToken(c.db, owner.digest, scope, now, config.httpLimits.apiToken);
 	if (admission === "invalid") {
-		if (distinguishScope && (await c.db.execute("SELECT 1 FROM api_token WHERE digest=?", owner.digest)).length) throw new UserError("Use a token with items:read to read a screenshot.", { code: "missing_scope" });
+		if (distinguishScope && (await c.db.execute("SELECT 1 FROM api_token WHERE digest=?", owner.digest)).length)
+			throw new UserError("Use a token with items:read to read a screenshot.", { code: "missing_scope" });
 		throw refused;
 	}
 	if (admission === "limited") {
-		const retryAfter = Math.ceil((API_TOKEN_WINDOW_MS - now % API_TOKEN_WINDOW_MS) / 1000);
-		throw new UserError("This API token has reached its request limit. Try again next minute.", { code: "token_rate_limited", metadata: { retryAfter } });
+		const retryAfter = Math.ceil((API_TOKEN_WINDOW_MS - (now % API_TOKEN_WINDOW_MS)) / 1000);
+		throw new UserError("This API token has reached its request limit. Try again next minute.", {
+			code: "token_rate_limited",
+			metadata: { retryAfter },
+		});
 	}
 	return profile;
 }
@@ -953,12 +1547,17 @@ const ended = (item: ItemSummary) => ["done", "cancelled", "failed"].includes(it
 const writes = new WeakMap<ItemsState, Promise<unknown>>();
 function attachmentWrite<T>(c: ItemsCtx, work: () => Promise<T>): Promise<T> {
 	const next = (writes.get(c.vars.items) ?? Promise.resolve()).then(work);
-	writes.set(c.vars.items, next.catch(() => {}));
+	writes.set(
+		c.vars.items,
+		next.catch(() => {}),
+	);
 	return next;
 }
 
 async function armSweep(c: ItemsCtx, now: number) {
-	const [old] = await c.db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM attachment_sweep WHERE id=1");
+	const [old] = await c.db.execute<{ schedule: string; at: number }>(
+		"SELECT schedule, at FROM attachment_sweep WHERE id=1",
+	);
 	if (old && old.at > now && old.schedule !== c.scheduledFire?.id) return;
 	const at = now + DAY;
 	const id = await c.schedule.at(at, ATTACHMENT_SWEEP_ACTION);
@@ -969,34 +1568,62 @@ async function armSweep(c: ItemsCtx, now: number) {
 async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<ReserveResult> {
 	const { sessionId, itemId, key, sha256, bytes } = input;
 	const item = c.vars.items.items.get(itemId);
-	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":")) return { refused: "item_ended" };
+	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":"))
+		return { refused: "item_ended" };
 	const limits = accountLimits(c.vars.items.limits).factory.attachments;
-	if (!Number.isSafeInteger(bytes) || bytes <= 0 || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
+	if (!Number.isSafeInteger(bytes) || bytes <= 0 || !/^[a-f0-9]{64}$/.test(sha256))
+		throw new Error("Invalid screenshot size or digest.");
 	if (bytes > limits.bytes) return { refused: "too_large" };
 	await armSweep(c, Date.now());
-	return c.db.transaction(async tx => {
-		// Reuse active reservations and kept images. A discarded key belongs to its final sweep.
-		const [same] = await tx.execute<{ id: string; key: string; at: number; bytes: number; width: number; height: number }>(
-			"SELECT id,key,at,bytes,width,height FROM attachments WHERE item=? AND step_key=? AND sha256=? AND state IN ('reserved','kept') AND ended_at IS NOT 0 LIMIT 1",
-			itemId, key, sha256,
-		);
-		if (!c.vars.items.items.has(itemId) || ended(c.vars.items.items.get(itemId)!)) return { refused: "item_ended" } as const;
-		if (same) {
-			if (same.bytes !== bytes) throw new Error("The file size differs from its recorded digest.");
-			// Retrying an unfinished upload can issue a fresh link even if the first reservation is old.
-			const at = same.width ? same.at : Date.now();
-			if (!same.width) await tx.execute("UPDATE attachments SET at=? WHERE id=?", at, same.id);
-			return { id: same.id, key: same.key, at, width: same.width, height: same.height };
-		}
-		const [usage] = await tx.execute<{ count: number; total: number }>("SELECT COUNT(CASE WHEN item=? AND state!='discarded' THEN 1 END) AS count, COALESCE(SUM(bytes),0) AS total FROM attachments WHERE state!='removed'", itemId);
-		if (usage.count >= limits.perItem) return { refused: "item" } as const;
-		if (usage.total + bytes > limits.accountBytes) return { refused: "account" } as const;
-		const id = "a_" + randomBytes(8).toString("hex");
-		const objectKey = attachmentKey(backupConfig().prefix, c.key[0], itemId, id);
-		const at = Date.now();
-		await tx.execute("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,0,0,'reserved',?,NULL)", id, itemId, sessionId, key, sha256, objectKey, bytes, at);
-		return { id, key: objectKey, at, width: 0, height: 0 };
-	}, { name: "attachments.reserve" });
+	return c.db.transaction(
+		async tx => {
+			// Reuse active reservations and kept images. A discarded key belongs to its final sweep.
+			const [same] = await tx.execute<{
+				id: string;
+				key: string;
+				at: number;
+				bytes: number;
+				width: number;
+				height: number;
+			}>(
+				"SELECT id,key,at,bytes,width,height FROM attachments WHERE item=? AND step_key=? AND sha256=? AND state IN ('reserved','kept') AND ended_at IS NOT 0 LIMIT 1",
+				itemId,
+				key,
+				sha256,
+			);
+			if (!c.vars.items.items.has(itemId) || ended(c.vars.items.items.get(itemId)!))
+				return { refused: "item_ended" } as const;
+			if (same) {
+				if (same.bytes !== bytes) throw new Error("The file size differs from its recorded digest.");
+				// Retrying an unfinished upload can issue a fresh link even if the first reservation is old.
+				const at = same.width ? same.at : Date.now();
+				if (!same.width) await tx.execute("UPDATE attachments SET at=? WHERE id=?", at, same.id);
+				return { id: same.id, key: same.key, at, width: same.width, height: same.height };
+			}
+			const [usage] = await tx.execute<{ count: number; total: number }>(
+				"SELECT COUNT(CASE WHEN item=? AND state!='discarded' THEN 1 END) AS count, COALESCE(SUM(bytes),0) AS total FROM attachments WHERE state!='removed'",
+				itemId,
+			);
+			if (usage.count >= limits.perItem) return { refused: "item" } as const;
+			if (usage.total + bytes > limits.accountBytes) return { refused: "account" } as const;
+			const id = "a_" + randomBytes(8).toString("hex");
+			const objectKey = attachmentKey(backupConfig().prefix, c.key[0], itemId, id);
+			const at = Date.now();
+			await tx.execute(
+				"INSERT INTO attachments VALUES(?,?,?,?,?,?,?,0,0,'reserved',?,NULL)",
+				id,
+				itemId,
+				sessionId,
+				key,
+				sha256,
+				objectKey,
+				bytes,
+				at,
+			);
+			return { id, key: objectKey, at, width: 0, height: 0 };
+		},
+		{ name: "attachments.reserve" },
+	);
 }
 
 async function removeRows(c: ItemsCtx, rows: Array<{ id: string; key: string }>, final: boolean) {
@@ -1016,8 +1643,18 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	knownItem(c, item);
 	const store = attachmentStore();
 	if (!store) return [];
-	const rows = await c.db.execute<{ id: string; key: string }>("SELECT id,key FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0 AND (? IS NULL OR id=?)", item, only ?? null, only ?? null);
-	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
+	const rows = await c.db.execute<{ id: string; key: string }>(
+		"SELECT id,key FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0 AND (? IS NULL OR id=?)",
+		item,
+		only ?? null,
+		only ?? null,
+	);
+	return Promise.all(
+		rows.map(async row => ({
+			id: row.id,
+			...(await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" })),
+		})),
+	);
 }
 
 export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
@@ -1028,43 +1665,97 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 async function partDefaults(c: ItemsCtx, repositories: Record<string, GithubId>) {
 	const [account, entries] = await Promise.all([
 		readAccountDefaults(c.db),
-		Promise.all(Object.entries(repositories).map(async ([alias, id]) => [alias, await readDefaults(c.db, "github:" + id)] as const)),
+		Promise.all(
+			Object.entries(repositories).map(
+				async ([alias, id]) => [alias, await readDefaults(c.db, "github:" + id)] as const,
+			),
+		),
 	]);
 	const saved = Object.fromEntries(entries);
 	const machines = [...c.vars.machines.values()];
 	return { account, repository: saved[""], repositories: saved, machinePayers: machinePayers(machines) };
 }
 
-export async function placementInventory(c: ItemsCtx, models: () => Promise<AgentModels>, repositories: Record<string, GithubId>, snapshotRepository?: GithubId): Promise<PlacementInventory> {
+export async function placementInventory(
+	c: ItemsCtx,
+	models: () => Promise<AgentModels>,
+	repositories: Record<string, GithubId>,
+	snapshotRepository?: GithubId,
+): Promise<PlacementInventory> {
 	const { sandboxes } = await getLayer();
 	const profiles = sandboxes.profiles().filter(p => p.available);
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
-	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
+	for (const m of machines)
+		m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	const [catalogs, hostedKeys, accounts, defaults, fresh] = await Promise.all([
-		models(), providerStatuses(c.db), providerAccounts(c.db, Date.now()),
+		models(),
+		providerStatuses(c.db),
+		providerAccounts(c.db, Date.now()),
 		partDefaults(c, repositories),
-		snapshotRepository === undefined ? [] : snapshotPlaces(c.db, setupProjectKey(snapshotRepository) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []),
+		snapshotRepository === undefined
+			? []
+			: snapshotPlaces(
+					c.db,
+					setupProjectKey(snapshotRepository) ?? "",
+					c.vars.github?.connectedAt,
+					config.hosted?.snapshots?.ttlMs,
+				).catch(() => []),
 	]);
 	const sizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
-	return { defaults, machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
-		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(Object.entries(defaults.repositories).map(([alias, r]) => [alias, r.screenshots])),
-		hostedSizes: sizes.map(size => size.id), hostedRates: Object.fromEntries(sizes.map(size => [size.id, size.usdPerHour])),
-		hostedProfiles: profiles.map(p => p.id), keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id), hostedEgress: sandboxes.egress?.() };
+	return {
+		defaults,
+		machines,
+		models: catalogs,
+		hostedKeys: hostedKeys.filter(k => k.ok),
+		limited: limitedAccounts(accounts),
+		dailyTokenWait: accountTokenWait(c),
+		snapshotPlaces: fresh,
+		screenshotsEnabled: config.factory.screenshots,
+		screenshotStorage: !!attachmentStore(),
+		repositoryScreenshots: Object.fromEntries(
+			Object.entries(defaults.repositories).map(([alias, r]) => [alias, r.screenshots]),
+		),
+		hostedSizes: sizes.map(size => size.id),
+		hostedRates: Object.fromEntries(sizes.map(size => [size.id, size.usdPerHour])),
+		hostedProfiles: profiles.map(p => p.id),
+		keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id),
+		hostedEgress: sandboxes.egress?.(),
+	};
 }
 
-async function childLaunch(c: ItemsCtx, id: string, context: RunContext, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId: GithubId): Promise<ReturnType<typeof choosePlacement>> {
+async function childLaunch(
+	c: ItemsCtx,
+	id: string,
+	context: RunContext,
+	task: PlanSubtask,
+	route: PlacementRoute,
+	warm: string[],
+	defaultProfile: SandboxProfileId,
+	featureModel: string,
+	agentModels: () => Promise<AgentModels>,
+	repositoryId: GithubId,
+): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	const inventory = await placementInventory(c, agentModels, { [task.repo ?? ""]: repositoryId }, repositoryId);
 	inventory.defaults = context;
 	inventory.defaultProfile = pinned?.profile ?? defaultProfile;
 	inventory.featureModel = featureModel;
-	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
+	const selected = choosePlacement(
+		task,
+		pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route,
+		inventory,
+		warm,
+	);
 	if (!selected.decision) return selected;
 	if (pinned) {
 		if (pinned.units !== selected.decision.units || pinned.profile !== selected.decision.profile)
-			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’.", permanent: true, larger: undefined };
+			return {
+				refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’.",
+				permanent: true,
+				larger: undefined,
+			};
 		return { decision: pinned };
 	}
 	await c.db.execute("INSERT INTO child_launch VALUES (?,?)", id, JSON.stringify(selected.decision));
@@ -1072,11 +1763,31 @@ async function childLaunch(c: ItemsCtx, id: string, context: RunContext, task: P
 }
 
 /** The refusals of a child's creation that no retry cures until the person changes the plan or the machine. */
-const CHILD_REFUSALS = new Set(["bad_input", "bad_model", "bad_effort", "bad_profile", "profile_unavailable", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "harness_signed_out"]);
+const CHILD_REFUSALS = new Set([
+	"bad_input",
+	"bad_model",
+	"bad_effort",
+	"bad_profile",
+	"profile_unavailable",
+	"machine_not_connected",
+	"runner_outdated",
+	"runner_signing_disabled",
+	"harness_signed_out",
+]);
 
 export const itemActions = {
-	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession): Promise<
-		{ wait: string; reviewer?: boolean; offerPayer?: DefaultDestination["offerPayer"] } | { session: SessionSummary; reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>; reviewerSessionId: string | null } | null
+	async internalDefaultBuilder(
+		c: ItemsCtx,
+		input: { id: string; job: DefaultBuilder },
+		makeSession: MakeSession,
+	): Promise<
+		| { wait: string; reviewer?: boolean; offerPayer?: DefaultDestination["offerPayer"] }
+		| {
+				session: SessionSummary;
+				reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>;
+				reviewerSessionId: string | null;
+		  }
+		| null
 	> {
 		requireServiceFor(c, "call");
 		return attachmentWrite(c, async () => {
@@ -1088,7 +1799,9 @@ export const itemActions = {
 			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, run, makeSession, "retry");
 			if (!session) return { wait: destination.wait!, offerPayer: destination.offerPayer };
 			const review = await bindReviewer(c, owner, session, input.id, false, input.job, makeSession);
-			return review.wait ? { wait: review.wait, reviewer: true } : { session, reviewerSessionId: review.reviewerSessionId, reviewer: review.reviewer! };
+			return review.wait
+				? { wait: review.wait, reviewer: true }
+				: { session, reviewerSessionId: review.reviewerSessionId, reviewer: review.reviewer! };
 		});
 	},
 	async internalDiscardPlacement(c: ItemsCtx, itemId: string, remove: (id: string) => Promise<void>) {
@@ -1100,7 +1813,12 @@ export const itemActions = {
 			}
 		});
 	},
-	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession, agentModels: () => Promise<AgentModels>): Promise<ItemView | null> {
+	async internalFeatureChild(
+		c: ItemsCtx,
+		input: { parent: string; child: string; cancel?: boolean },
+		makeSession: MakeSession,
+		agentModels: () => Promise<AgentModels>,
+	): Promise<ItemView | null> {
 		requireServiceFor(c, "call");
 		const uid = c.key[0]!;
 		// Share an ordering boundary with cancellation so an interrupted creation can never outlive its parent.
@@ -1112,7 +1830,8 @@ export const itemActions = {
 			let existing = c.vars.items.items.get(input.child);
 			if ((!request || request.paused) && !existing) return null;
 			if (!existing && request) {
-				if ((input.cancel || request.job.cancelRequested) && !c.vars.sessions.has(itemSessionId(input.child))) return null;
+				if ((input.cancel || request.job.cancelRequested) && !c.vars.sessions.has(itemSessionId(input.child)))
+					return null;
 				const session = c.vars.sessions.get(request.sessionId);
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context, untrusted, unsandboxed } = request;
@@ -1121,31 +1840,118 @@ export const itemActions = {
 				const role = job.ciFix || job.conflictFix || job.reviewFix ? "repair" : "part";
 				const run = job.task.resolved ?? partRun(request.settings, job.task, role);
 				const task = { ...job.task, resolved: run };
-				const route = job.route ?? bindRoute(task, feature.place, false, plannerMachines([...c.vars.machines.values()]));
-				const fit = await childLaunch(c, job.id, request.settings, task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
+				const route =
+					job.route ?? bindRoute(task, feature.place, false, plannerMachines([...c.vars.machines.values()]));
+				const fit = await childLaunch(
+					c,
+					job.id,
+					request.settings,
+					task,
+					route,
+					job.warm ?? [],
+					session.profile,
+					session.model,
+					agentModels,
+					target.id,
+				);
 				if (!fit.decision) {
-					if (job.dispatchKey) await parentActor.internalFact({
-						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, askMachine: fit.askMachine, offerHosted: fit.offerHosted, hostedProfile: fit.hostedProfile, offerPayer: fit.offerPayer, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
-					});
+					if (job.dispatchKey)
+						await parentActor.internalFact({
+							kind: "placement_wait",
+							child: job.id,
+							key: job.dispatchKey,
+							at: Date.now(),
+							sentence: fit.refused ?? fit.wait,
+							askMachine: fit.askMachine,
+							offerHosted: fit.offerHosted,
+							hostedProfile: fit.hostedProfile,
+							offerPayer: fit.offerPayer,
+							dailyCap: fit.dailyCap,
+							providerUntil: fit.providerUntil,
+							accountKey: fit.accountKey,
+							refused: fit.refused !== undefined && fit.permanent,
+						});
 					return null;
 				}
 				const placement = fit.decision;
 				const previous = request.previous;
-				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
-					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
-				const body = job.task.brief + "\n\nOwned paths: " + (job.task.owns ?? []).join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
-				const resolved = { ...run, place: runPlace(placement.place), payer: placement.payer ?? run.payer, profile: placement.profile ?? null, size: placement.hostedSize ?? run.size };
+				const handoff =
+					previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
+						? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" +
+							JSON.stringify({ head: previous.head, report: previous.report })
+						: "";
+				const body =
+					job.task.brief +
+					"\n\nOwned paths: " +
+					(job.task.owns ?? []).join(", ") +
+					handoff +
+					"\n\nFeature and dependency context (quoted data):\n" +
+					context;
+				const resolved = {
+					...run,
+					place: runPlace(placement.place),
+					payer: placement.payer ?? run.payer,
+					profile: placement.profile ?? null,
+					size: placement.hostedSize ?? run.size,
+				};
 				try {
-					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
-						profile: placement.profile, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ resolved, context: request.settings, role, id: input.child, screenshots: job.task.needs?.screenshots === true, mergeTarget: job.conflictFix?.target, joinOnGate: request.joinOnGate, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+					existing = await makeItem(
+						c,
+						owner,
+						{
+							mode: "single",
+							repository: { id: target.id, branch: featureBranch(input.parent) },
+							place: placement.place,
+							profile: placement.profile,
+							title: job.task.title,
+							body: body.slice(0, MAX_ITEM_BODY_CHARS),
+							acceptance: job.task.acceptance,
+						},
+						feature.source,
+						null,
+						makeSession,
+						undefined,
+						{
+							resolved,
+							context: request.settings,
+							role,
+							id: input.child,
+							screenshots: job.task.needs?.screenshots === true,
+							mergeTarget: job.conflictFix?.target,
+							joinOnGate: request.joinOnGate,
+							featureBody: request.featureBody,
+							placement,
+							base: target.base,
+							start: job.start,
+							owns: job.task.owns ?? [],
+							budget: job.budget ?? {
+								tokens: job.task.budget.tokens,
+								hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds,
+							},
+							parent: { itemId: input.parent, title: feature.title, key: job.task.key },
+							untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []),
+							unsandboxed,
+						},
+					);
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.
-					if (!(error instanceof UserError) || !CHILD_REFUSALS.has(error.code) || c.vars.sessions.has(itemSessionId(input.child)) || !job.dispatchKey) throw error;
+					if (
+						!(error instanceof UserError) ||
+						!CHILD_REFUSALS.has(error.code) ||
+						c.vars.sessions.has(itemSessionId(input.child)) ||
+						!job.dispatchKey
+					)
+						throw error;
 					await c.db.execute("DELETE FROM child_launch WHERE id=?", job.id);
-					await parentActor.internalFact({ kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(), sentence: `‘${placement.name}’: ${error.message}`, refused: true });
+					await parentActor.internalFact({
+						kind: "placement_wait",
+						child: job.id,
+						key: job.dispatchKey,
+						at: Date.now(),
+						sentence: `‘${placement.name}’: ${error.message}`,
+						refused: true,
+					});
 					return null;
 				}
 			}
@@ -1155,16 +1961,22 @@ export const itemActions = {
 			const active = await parentActor.internalChildRequest(input.child);
 			if (input.cancel || !active || active.job.cancelRequested) {
 				if (!ended(view)) return actor.internalAct({ action: { kind: "cancel" }, by: "platform" });
-			} else if (!active.paused && view.state === "draft") return actor.internalAct({ action: { kind: "start" }, by: "platform" });
+			} else if (!active.paused && view.state === "draft")
+				return actor.internalAct({ action: { kind: "start" }, by: "platform" });
 			return view;
 		});
 	},
 	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
 		// All installations share this user's budget, and so does Linear: one queue. The durable claim makes interruption replayable.
-		return inIntakeQueue(c, () => githubIntake(c, trigger,
-			key => githubItemId(c.key[0]!, key),
-			(profile, filing) => fileItem(c, profile, filing.input, "github", makeSession, { github: filing.binding })));
+		return inIntakeQueue(c, () =>
+			githubIntake(
+				c,
+				trigger,
+				key => githubItemId(c.key[0]!, key),
+				(profile, filing) => fileItem(c, profile, filing.input, "github", makeSession, { github: filing.binding }),
+			),
+		);
 	},
 	/**
 	 * Files a Linear issue the platform has validated, on the repository its team is mapped to (`fileLinearIssue`): in the queue, under the cap and
@@ -1172,8 +1984,11 @@ export const itemActions = {
 	 */
 	internalLinearIntake(c: ItemsCtx, filing: LinearFiling, makeSession: MakeSession): Promise<LinearFiled> {
 		requireServiceFor(c, "call");
-		return inIntakeQueue(c, () => fileLinearIssue(c, filing,
-			(profile, made) => fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding })));
+		return inIntakeQueue(c, () =>
+			fileLinearIssue(c, filing, (profile, made) =>
+				fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding }),
+			),
+		);
 	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
 		requireService(c);
@@ -1182,31 +1997,62 @@ export const itemActions = {
 	async internalRecordAttachment(c: ItemsCtx, input: { id: string; width: number; height: number }) {
 		requireService(c);
 		await attachmentWrite(c, async () => {
-			const rows = await c.db.execute("UPDATE attachments SET width=?,height=? WHERE id=? AND state='reserved' AND ended_at IS NOT 0 RETURNING id", input.width, input.height, input.id);
+			const rows = await c.db.execute(
+				"UPDATE attachments SET width=?,height=? WHERE id=? AND state='reserved' AND ended_at IS NOT 0 RETURNING id",
+				input.width,
+				input.height,
+				input.id,
+			);
 			if (!rows.length) throw new Error("The screenshot reservation ended.");
 		});
 	},
 	async internalReleaseAttachment(c: ItemsCtx, id: string) {
 		requireService(c);
 		await attachmentWrite(c, async () => {
-			const rows = await c.db.execute<{ id: string; key: string }>("UPDATE attachments SET state='discarded', at=? WHERE id=? AND state='reserved' RETURNING id,key", Date.now(), id);
+			const rows = await c.db.execute<{ id: string; key: string }>(
+				"UPDATE attachments SET state='discarded', at=? WHERE id=? AND state='reserved' RETURNING id,key",
+				Date.now(),
+				id,
+			);
 			await removeRows(c, rows, false);
 		});
 	},
 	internalSettleAttachments(c: ItemsCtx, input: { sessionId: string; key: string; keep: string[] }) {
 		requireService(c);
-		return attachmentWrite(c, () => c.db.transaction(async tx => {
-			for (const id of new Set(input.keep)) await tx.execute("UPDATE attachments SET state='kept' WHERE session=? AND step_key=? AND id=? AND width>0 AND state='reserved' AND ended_at IS NOT 0", input.sessionId, input.key, id);
-			return tx.execute<{ id: string; key: string }>("SELECT id,key FROM attachments WHERE session=? AND step_key=? AND state='reserved'", input.sessionId, input.key);
-		}, { name: "attachments.settle" }));
+		return attachmentWrite(c, () =>
+			c.db.transaction(
+				async tx => {
+					for (const id of new Set(input.keep))
+						await tx.execute(
+							"UPDATE attachments SET state='kept' WHERE session=? AND step_key=? AND id=? AND width>0 AND state='reserved' AND ended_at IS NOT 0",
+							input.sessionId,
+							input.key,
+							id,
+						);
+					return tx.execute<{ id: string; key: string }>(
+						"SELECT id,key FROM attachments WHERE session=? AND step_key=? AND state='reserved'",
+						input.sessionId,
+						input.key,
+					);
+				},
+				{ name: "attachments.settle" },
+			),
+		);
 	},
 	internalDeleteItemAttachments(c: ItemsCtx, itemId: string) {
 		requireService(c);
 		return attachmentWrite(c, async () => {
-			const rows = await c.db.transaction(async tx => {
-				await tx.execute("DELETE FROM items WHERE id=?", itemId);
-				return tx.execute<{ id: string; key: string }>("UPDATE attachments SET ended_at=0, state='discarded', at=? WHERE item=? AND state IN ('reserved','kept') RETURNING id,key", Date.now(), itemId);
-			}, { name: "attachments.deleteItem" });
+			const rows = await c.db.transaction(
+				async tx => {
+					await tx.execute("DELETE FROM items WHERE id=?", itemId);
+					return tx.execute<{ id: string; key: string }>(
+						"UPDATE attachments SET ended_at=0, state='discarded', at=? WHERE item=? AND state IN ('reserved','kept') RETURNING id,key",
+						Date.now(),
+						itemId,
+					);
+				},
+				{ name: "attachments.deleteItem" },
+			);
 			c.vars.items.items.delete(itemId);
 			await removeRows(c, rows, false);
 		});
@@ -1220,7 +2066,9 @@ export const itemActions = {
 			await armSweep(c, fire.firedAt);
 			const rows = await c.db.execute<{ id: string; key: string }>(
 				"SELECT id,key FROM attachments WHERE state!='removed' AND at<=? AND (state='discarded' OR ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))",
-				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - accountLimits(c.vars.items.limits).factory.attachments.days * DAY,
+				fire.firedAt - ATTACHMENT_DRAIN_MS,
+				fire.firedAt - 2 * 3600_000,
+				fire.firedAt - accountLimits(c.vars.items.limits).factory.attachments.days * DAY,
 			);
 			await removeRows(c, rows, true);
 		});
@@ -1278,7 +2126,10 @@ export const itemActions = {
 		const profile = requireUser(c);
 		enabled();
 		knownItem(c, input?.id);
-		const view = await itemActor(c, profile.uid, input.id).internalAct({ action: input.action, by: `person:${profile.uid}` });
+		const view = await itemActor(c, profile.uid, input.id).internalAct({
+			action: input.action,
+			by: `person:${profile.uid}`,
+		});
 		await noteItem(c, view);
 		return await attachmentStates(c, view);
 	},
@@ -1295,7 +2146,10 @@ export const itemActions = {
 		return await listApiTokens(c.db);
 	},
 
-	createApiToken: async (c: ItemsCtx, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => {
+	createApiToken: async (
+		c: ItemsCtx,
+		input: { name: string; scopes: ApiTokenScope[] },
+	): Promise<{ token: ApiToken; secret: string }> => {
 		const profile = requireUser(c);
 		enabled();
 		// Admission and minting must agree even if sign-out commits while this call waits for SQLite.
@@ -1304,7 +2158,9 @@ export const itemActions = {
 			requireUser({ key: c.key, conn: c.conn, vars: { tokenGen: gen } });
 			return tokenInput(() => createApiToken(tx, profile.uid, input, Date.now()));
 		});
-		console.log(`[wlp] api_token.created uid=${profile.uid} token=${made.token.id} scopes=${made.token.scopes.join(",")}`);
+		console.log(
+			`[wlp] api_token.created uid=${profile.uid} token=${made.token.id} scopes=${made.token.scopes.join(",")}`,
+		);
 		return made;
 	},
 
@@ -1318,7 +2174,11 @@ export const itemActions = {
 
 	// --- called by api-routes.ts, with the caller's API token -------------------------------------
 
-	internalApiCreateItem: async (c: ItemsCtx, input: { token: string; item: CreateItemInput }, makeSession: MakeSession): Promise<ItemSummary> => {
+	internalApiCreateItem: async (
+		c: ItemsCtx,
+		input: { token: string; item: CreateItemInput },
+		makeSession: MakeSession,
+	): Promise<ItemSummary> => {
 		requireServiceFor(c, "api");
 		return fileItem(c, await apiCaller(c, input?.token, "items:create"), input?.item, "api", makeSession);
 	},
@@ -1338,10 +2198,24 @@ export const itemActions = {
 		const before = c.vars.items.items.get(summary.id);
 		await noteItem(c, summary);
 		await notifyProviderWaits(c, [summary]);
-		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
+		if (
+			summary.parent &&
+			before &&
+			summary.revision > before.revision &&
+			(ended(summary) || summary.question?.id !== before.question?.id)
+		) {
 			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
-			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, budget: summary.budget, state: summary.state }).catch(error =>
-				c.log.warn({ msg: "The feature will read the child on its scheduled check.", child: summary.id, error: String(error) })));
+			void c.keepAwake(
+				parent
+					.internalChildNotice({ id: summary.id, spent: summary.spent, budget: summary.budget, state: summary.state })
+					.catch(error =>
+						c.log.warn({
+							msg: "The feature will read the child on its scheduled check.",
+							child: summary.id,
+							error: String(error),
+						}),
+					),
+			);
 		}
 	},
 
@@ -1351,9 +2225,11 @@ export const itemActions = {
 		const today = dayOf(Date.now());
 		const entries = Array.from({ length: USAGE_HISTORY_DAYS }, (_, back) => c.vars.usage.entriesOn(today - back))
 			.flat()
-			.filter((entry) => sessionIds.includes(entry.session))
+			.filter(entry => sessionIds.includes(entry.session))
 			.map(({ hold, session, seconds }) => ({ hold, session, seconds }));
-		const openItems = [...c.vars.items.items.values()].filter((item) => item.state !== "done" && item.state !== "failed" && item.state !== "cancelled").length;
+		const openItems = [...c.vars.items.items.values()].filter(
+			item => item.state !== "done" && item.state !== "failed" && item.state !== "cancelled",
+		).length;
 		return { entries, openItems };
 	},
 
@@ -1362,7 +2238,7 @@ export const itemActions = {
 		requireService(c);
 		const state = c.vars.items;
 		const key = String(input?.key);
-		const held = [...state.slots.values()].find((slot) => slot.key === key);
+		const held = [...state.slots.values()].find(slot => slot.key === key);
 		if (held) {
 			// Asked by its session: this answer tells it, so the grant need not be sent again.
 			if (!held.told) {
@@ -1375,9 +2251,26 @@ export const itemActions = {
 		if (!session?.item || session.item.id !== input.itemId) return { granted: false };
 		const now = Date.now();
 		const known = state.requests.get(key);
-		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? input.deploymentFull : (known?.full ?? null);
-		const resumeAt = typeof input.resumeAt === "number" && Number.isSafeInteger(input.resumeAt) && input.resumeAt > 0 ? Math.min(input.resumeAt, now) : null;
-		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: resumeAt !== null ? Math.min(resumeAt, known?.at ?? now) : (known?.at ?? now), attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
+		const full =
+			typeof input.deploymentFull === "number" && input.deploymentFull > 0
+				? input.deploymentFull
+				: (known?.full ?? null);
+		const resumeAt =
+			typeof input.resumeAt === "number" && Number.isSafeInteger(input.resumeAt) && input.resumeAt > 0
+				? Math.min(input.resumeAt, now)
+				: null;
+		const request: Request = {
+			key,
+			session: session.id,
+			item: input.itemId,
+			title: String(input.title ?? ""),
+			startsRun: input.startsRun === true,
+			at: resumeAt !== null ? Math.min(resumeAt, known?.at ?? now) : (known?.at ?? now),
+			attempt: known?.attempt ?? 0,
+			full,
+			deferUntil: input.deploymentFull ? now + FULL_FOR_MS : (known?.deferUntil ?? null),
+			wait: known?.wait ?? null,
+		};
 		state.requests.set(key, request);
 		await storeRequest(c.db, request);
 		const mine = await runQueue(c, key);
@@ -1390,18 +2283,31 @@ export const itemActions = {
 		const slot = c.vars.items.slots.get(String(input?.slot));
 		if (!slot || slot.session !== input.sessionId) return;
 		const retry = input.machineWait;
-		const request: Request | null = retry ? {
-			key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: retry.startsRun,
-			at: retry.at, attempt: 0, full: null, deferUntil: retryAt(retry.at, 0), wait: null,
-		} : null;
+		const request: Request | null = retry
+			? {
+					key: slot.key,
+					session: slot.session,
+					item: slot.item,
+					title: slot.title,
+					startsRun: retry.startsRun,
+					at: retry.at,
+					attempt: 0,
+					full: null,
+					deferUntil: retryAt(retry.at, 0),
+					wait: null,
+				}
+			: null;
 		// Keep the slot until its durable release commits. An outbox retry after a failed write still finds it.
-		const released = await c.db.transaction(async tx => {
-			const rows = await tx.execute("DELETE FROM turn_slot WHERE id = ? RETURNING id", slot.id);
-			if (!rows.length) return false;
-			await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
-			if (request) await storeRequest(tx, request);
-			return true;
-		}, { name: "queue.release" });
+		const released = await c.db.transaction(
+			async tx => {
+				const rows = await tx.execute("DELETE FROM turn_slot WHERE id = ? RETURNING id", slot.id);
+				if (!rows.length) return false;
+				await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
+				if (request) await storeRequest(tx, request);
+				return true;
+			},
+			{ name: "queue.release" },
+		);
 		if (!released || !c.vars.items.slots.delete(slot.id)) return;
 		if (request) c.vars.items.requests.set(request.key, request);
 		await runQueue(c);
@@ -1414,13 +2320,16 @@ export const itemActions = {
 		const slot = [...c.vars.items.slots.values()].find(slot => slot.key === key && slot.session === input.sessionId);
 		// The inbox confirmed this delivery was withdrawn before it started. Its attach can still hold a
 		// slot, or its delayed release can already have put it back in the queue.
-		await c.db.transaction(async tx => {
-			await tx.execute("DELETE FROM turn_request WHERE key = ? AND session = ?", key, input.sessionId);
-			if (slot) {
-				await tx.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
-				await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
-			}
-		}, { name: "queue.withdraw" });
+		await c.db.transaction(
+			async tx => {
+				await tx.execute("DELETE FROM turn_request WHERE key = ? AND session = ?", key, input.sessionId);
+				if (slot) {
+					await tx.execute("DELETE FROM turn_slot WHERE id = ?", slot.id);
+					await tx.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
+				}
+			},
+			{ name: "queue.withdraw" },
+		);
 		if (c.vars.items.requests.get(key)?.session === input.sessionId) c.vars.items.requests.delete(key);
 		if (slot && c.vars.items.slots.delete(slot.id)) queueChanged(c);
 	},
@@ -1430,7 +2339,9 @@ export const itemActions = {
 	internalTurnQueue: async (c: ItemsCtx): Promise<void> => {
 		const fire = c.scheduledFire;
 		if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
-		console.log(`[wlp] schedule.fired action=${QUEUE_ACTION} uid=${c.key[0]} waiting=${c.vars.items.requests.size} late_ms=${fire.firedAt - fire.scheduledAt}`);
+		console.log(
+			`[wlp] schedule.fired action=${QUEUE_ACTION} uid=${c.key[0]} waiting=${c.vars.items.requests.size} late_ms=${fire.firedAt - fire.scheduledAt}`,
+		);
 		if (c.vars.items.queueAt?.id === fire.id) c.vars.items.queueAt = null;
 		await releaseDueSandboxes(c);
 		await runQueue(c, null, true);

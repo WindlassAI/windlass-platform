@@ -73,7 +73,10 @@ export interface BillingProvider {
 
 /** A provider error that says nothing of what was sent: its status, and the provider's own code where it gave one. */
 export class BillingProviderError extends Error {
-	constructor(readonly status: number, readonly detail: string) {
+	constructor(
+		readonly status: number,
+		readonly detail: string,
+	) {
 		super(`the billing provider answered ${status}${detail ? ` (${detail})` : ""}`);
 	}
 }

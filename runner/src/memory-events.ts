@@ -28,7 +28,10 @@ exit 1
 `;
 
 export async function readMemoryEvents(handle: Pick<TurnSandbox, "ask">): Promise<Value<"memoryEvents">> {
-	const result = await handle.ask(["/bin/sh", "-c", READ_MEMORY, "memory-events", "/sys/fs/cgroup", "/proc/self/cgroup"], { timeoutMs: 4_000 });
+	const result = await handle.ask(
+		["/bin/sh", "-c", READ_MEMORY, "memory-events", "/sys/fs/cgroup", "/proc/self/cgroup"],
+		{ timeoutMs: 4_000 },
+	);
 	if (result?.code !== 0) return null;
 	const bytes = Number(/^(\d+)$/m.exec(result.stdout)?.[1]);
 	if (!Number.isSafeInteger(bytes) || bytes < 2 ** 20) return null; // Includes unlimited v1 and v2 cgroups.

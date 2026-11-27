@@ -20,7 +20,13 @@ import { UserError } from "rivetkit";
 import { assertOrigin } from "./auth.js";
 import { config, engineAdminToken, githubConfig } from "./config.js";
 import { ConnectionTokens } from "./connection-tokens.js";
-import { type GithubInfo, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
+import {
+	type GithubInfo,
+	PLATFORM_CONNECTION_PATH,
+	PLATFORM_INFO_PATH,
+	type PlatformConnection,
+	type PlatformInfo,
+} from "./contract.js";
 import { getLayer } from "./layer.js";
 import { offeredProfiles } from "./sandbox/profiles.js";
 import { billing } from "./billing/config.js";
@@ -49,7 +55,7 @@ async function slow(): Promise<Slow> {
 	if (cached && Date.now() - cached.at < (cached.windlassVersion !== null ? FRESH_MS : RETRY_MS)) return cached;
 	if (!loading) {
 		loading = loadSlow()
-			.then((value) => {
+			.then(value => {
 				cached = value;
 				return value;
 			})
@@ -89,9 +95,21 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const app = githubInfo();
 	if (googleCredentials()) info.googleLogin = true;
 	if (app) info.github = app;
-	if (config.machines) info.machines = { minRunnerVersion: config.machines.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION, platformFingerprint: config.machines.identity && fingerprint(config.machines.identity.root), runnerImage: config.machines.runnerImage, runnerHarnesses: config.machines.runnerHarnesses, platformUrl: config.machines.publicUrl };
+	if (config.machines)
+		info.machines = {
+			minRunnerVersion: config.machines.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION,
+			platformFingerprint: config.machines.identity && fingerprint(config.machines.identity.root),
+			runnerImage: config.machines.runnerImage,
+			runnerHarnesses: config.machines.runnerHarnesses,
+			platformUrl: config.machines.publicUrl,
+		};
 	if (billing()) info.billing = { plans: PLAN_LIST };
-	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0", screenshots: config.factory.screenshots };
+	if (config.items)
+		info.items = {
+			reviewer: config.factory.reviewer,
+			orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0",
+			screenshots: config.factory.screenshots,
+		};
 	return info;
 }
 
@@ -106,7 +124,15 @@ export function connectionTokens(): ConnectionTokens | null {
 	if (tokens === undefined) {
 		const adminToken = engineAdminToken();
 		const { endpoint, tokenEndpoint, tokenTtlMs } = config.browsers;
-		tokens = adminToken !== null && endpoint !== null ? new ConnectionTokens({ endpoint: tokenEndpoint ?? endpoint, adminToken, namespace: config.engine.namespace, ttlMs: tokenTtlMs }) : null;
+		tokens =
+			adminToken !== null && endpoint !== null
+				? new ConnectionTokens({
+						endpoint: tokenEndpoint ?? endpoint,
+						adminToken,
+						namespace: config.engine.namespace,
+						ttlMs: tokenTtlMs,
+					})
+				: null;
 	}
 	return tokens;
 }
@@ -114,11 +140,18 @@ export function connectionTokens(): ConnectionTokens | null {
 /** Throws a ConnectionTokenError when a token is needed and cannot be had. */
 export async function platformConnection(): Promise<PlatformConnection> {
 	const source = connectionTokens();
-	return { endpoint: config.browsers.endpoint, namespace: config.engine.namespace, token: source ? await source.current() : null };
+	return {
+		endpoint: config.browsers.endpoint,
+		namespace: config.engine.namespace,
+		token: source ? await source.current() : null,
+	};
 }
 
 function json(status: number, body: unknown, headers: Record<string, string>): Response {
-	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
+	});
 }
 
 /**
@@ -127,7 +160,11 @@ function json(status: number, body: unknown, headers: Record<string, string>): R
  * browser gets the CORS header it needs to read the answer. Errors have the shape of RivetKit's
  * (`group`, `code`, `message`), so the web app reads them the same way.
  */
-async function getRoute(request: Request, path: string, answer: (cors: Record<string, string>) => Promise<Response>): Promise<Response> {
+async function getRoute(
+	request: Request,
+	path: string,
+	answer: (cors: Record<string, string>) => Promise<Response>,
+): Promise<Response> {
 	const origin = request.headers.get("origin");
 	const cors: Record<string, string> = { vary: "Origin" };
 	try {
@@ -138,22 +175,33 @@ async function getRoute(request: Request, path: string, answer: (cors: Record<st
 	}
 	if (origin) cors["access-control-allow-origin"] = origin;
 	if (request.method === "OPTIONS") {
-		return new Response(null, { status: 204, headers: { ...cors, "access-control-allow-methods": "GET", "access-control-max-age": "600" } });
+		return new Response(null, {
+			status: 204,
+			headers: { ...cors, "access-control-allow-methods": "GET", "access-control-max-age": "600" },
+		});
 	}
 	if (request.method !== "GET" && request.method !== "HEAD") {
-		return json(405, { group: "user", code: "method_not_allowed", message: `Use GET for ${path}.` }, { ...cors, allow: "GET" });
+		return json(
+			405,
+			{ group: "user", code: "method_not_allowed", message: `Use GET for ${path}.` },
+			{ ...cors, allow: "GET" },
+		);
 	}
 	return answer(cors);
 }
 
 /** `GET /platform/info`. */
 export function platformInfoResponse(request: Request): Promise<Response> {
-	return getRoute(request, PLATFORM_INFO_PATH, async (cors) => {
+	return getRoute(request, PLATFORM_INFO_PATH, async cors => {
 		try {
 			return json(200, await platformInfo(), cors);
 		} catch (error) {
 			console.error("[wlp] the platform's information could not be read:", error);
-			return json(500, { group: "rivetkit", code: "internal_error", message: "The platform's information could not be read." }, cors);
+			return json(
+				500,
+				{ group: "rivetkit", code: "internal_error", message: "The platform's information could not be read." },
+				cors,
+			);
 		}
 	});
 }
@@ -165,12 +213,20 @@ export function platformInfoResponse(request: Request): Promise<Response> {
  * log (connection-tokens.ts) and not in the answer, which says nothing of the engine.
  */
 export function platformConnectionResponse(request: Request): Promise<Response> {
-	return getRoute(request, PLATFORM_CONNECTION_PATH, async (cors) => {
+	return getRoute(request, PLATFORM_CONNECTION_PATH, async cors => {
 		try {
 			return json(200, await platformConnection(), cors);
 		} catch {
 			// Already logged where it failed, once for all the browsers that were waiting.
-			return json(503, { group: "platform", code: "connection_unavailable", message: "The server could not prepare a connection to the agents. Try again in a moment." }, cors);
+			return json(
+				503,
+				{
+					group: "platform",
+					code: "connection_unavailable",
+					message: "The server could not prepare a connection to the agents. Try again in a moment.",
+				},
+				cors,
+			);
 		}
 	});
 }

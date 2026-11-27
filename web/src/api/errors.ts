@@ -5,7 +5,15 @@
 import { PlatformError } from "./client";
 
 /** Error codes a server might use for a refused token. rivet.ts, ASSUMPTION 5. */
-const UNAUTHORIZED_CODES = new Set(["unauthorized", "unauthenticated", "forbidden", "invalid_token", "token_expired", "bad_token", "auth"]);
+const UNAUTHORIZED_CODES = new Set([
+	"unauthorized",
+	"unauthenticated",
+	"forbidden",
+	"invalid_token",
+	"token_expired",
+	"bad_token",
+	"auth",
+]);
 
 /**
  * The codes of the two limits a user can run into (server/src/usage.ts): too little of the day's
@@ -18,11 +26,27 @@ const LIMIT_CODES = new Set(["allowance_used", "too_many_sandboxes"]);
  * The codes of the Rivet gateway for a request that met an actor while it stopped or restarted: RivetKit's
  * own list of gateway errors worth sending again (`isRetryableGuardGatewayHttpError`).
  */
-const GATEWAY_RESTART_CODES = new Set(["service_unavailable", "actor_wake_retries_exceeded", "actor_stopped_while_waiting", "tunnel_request_aborted", "tunnel_message_timeout", "tunnel_response_closed", "gateway_response_start_timeout"]);
+const GATEWAY_RESTART_CODES = new Set([
+	"service_unavailable",
+	"actor_wake_retries_exceeded",
+	"actor_stopped_while_waiting",
+	"tunnel_request_aborted",
+	"tunnel_message_timeout",
+	"tunnel_response_closed",
+	"gateway_response_start_timeout",
+]);
 /** The codes of the group `actor` for an actor that is stopping or restarting. */
 const ACTOR_RESTART_CODES = new Set(["restarting", "stopping", "stopped"]);
 /** What the proxy answers while the server behind it is down. */
 const PROXY_RESTART_STATUSES = new Set([502, 503, 504]);
+
+/** The refusals of a machine that the list of machines may be behind on: a screen that meets one reads that list again. */
+export const MACHINE_REFUSALS = [
+	"machine_not_found",
+	"machine_not_connected",
+	"runner_outdated",
+	"bad_profile",
+] as const;
 
 export const RESTARTING_MESSAGE = "The platform is restarting. Trying again…";
 export const RESTARTED_MESSAGE = "The platform is restarting. Try again in a moment.";
@@ -36,11 +60,15 @@ export function isRestart(error: unknown): boolean {
 	if (isRivetError(error)) {
 		if (error.group === "guard" && GATEWAY_RESTART_CODES.has(error.code)) return true;
 		if (error.group === "actor" && ACTOR_RESTART_CODES.has(error.code)) return true;
-		return "statusCode" in error && typeof error.statusCode === "number" && PROXY_RESTART_STATUSES.has(error.statusCode);
+		return (
+			"statusCode" in error && typeof error.statusCode === "number" && PROXY_RESTART_STATUSES.has(error.statusCode)
+		);
 	}
 	if (!(error instanceof Error) || !error.message.startsWith("HTTP request error: ")) return false;
 	const status = /\((\d{3})\)/.exec(error.message)?.[1];
-	return error.message.includes("Request failed: ") || (status !== undefined && PROXY_RESTART_STATUSES.has(Number(status)));
+	return (
+		error.message.includes("Request failed: ") || (status !== undefined && PROXY_RESTART_STATUSES.has(Number(status)))
+	);
 }
 
 /** Whether something thrown at the interface is a refusal by one of the user's limits. */
@@ -50,7 +78,16 @@ export function isLimitRefusal(error: unknown): boolean {
 
 /** Structural, like `RivetError.isRivetError`: an error decoded from the wire need not be an instance. */
 export function isRivetError(error: unknown): error is { group: string; code: string; message: string } {
-	return typeof error === "object" && error !== null && "group" in error && typeof error.group === "string" && "code" in error && typeof error.code === "string" && "message" in error && typeof error.message === "string";
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"group" in error &&
+		typeof error.group === "string" &&
+		"code" in error &&
+		typeof error.code === "string" &&
+		"message" in error &&
+		typeof error.message === "string"
+	);
 }
 
 /**
@@ -59,7 +96,9 @@ export function isRivetError(error: unknown): error is { group: string; code: st
  * and refuse in the group `user`: the two share the code `invalid_token`.
  */
 export function isRefusedConnectionToken(error: unknown): boolean {
-	return isRivetError(error) && error.group === "auth" && (error.code === "invalid_token" || error.code === "token_expired");
+	return (
+		isRivetError(error) && error.group === "auth" && (error.code === "invalid_token" || error.code === "token_expired")
+	);
 }
 
 /**
@@ -77,18 +116,36 @@ export function toPlatformError(error: unknown, endpoint: string): PlatformError
 		if (group === "auth") {
 			// A token that ran out is renewed and the request sent again before this is reached (rivet.ts), so
 			// this is a renewal that did not help.
-			if (isRefusedConnectionToken(error)) return new PlatformError("network", `The connection to ${endpoint} could not be renewed.`, { cause: error });
+			if (isRefusedConnectionToken(error))
+				return new PlatformError("network", `The connection to ${endpoint} could not be renewed.`, { cause: error });
 			return new PlatformError("internal", `The server at ${endpoint} refused the connection.`, { cause: error });
 		}
-		if (UNAUTHORIZED_CODES.has(code)) return new PlatformError("unauthorized", message || "This sign-in is no longer accepted. Sign in again.", { cause: error });
-		if (code === "not_found" || (group === "actor" && (code === "destroying" || code.startsWith("destroyed"))) || (group === "user" && code === "session_not_found")) return new PlatformError("not_found", "There is no agent at this address.", { cause: error });
+		if (UNAUTHORIZED_CODES.has(code))
+			return new PlatformError("unauthorized", message || "This sign-in is no longer accepted. Sign in again.", {
+				cause: error,
+			});
+		if (
+			code === "not_found" ||
+			(group === "actor" && (code === "destroying" || code.startsWith("destroyed"))) ||
+			(group === "user" && code === "session_not_found")
+		)
+			return new PlatformError("not_found", "There is no agent at this address.", { cause: error });
 		// ASSUMPTION 10: the UserError's own code (`no_question`, `steer_unavailable`) arrives as `code`.
 		if (group === "user") return new PlatformError("user", message, { cause: error, reason: code });
-		if (group === "client") return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
-		if (code === "internal_error") return new PlatformError("internal", "The server hit an internal error. Its log has the details.", { cause: error });
+		if (group === "client")
+			return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
+		if (code === "internal_error")
+			return new PlatformError("internal", "The server hit an internal error. Its log has the details.", {
+				cause: error,
+			});
 		return new PlatformError("internal", message || "The server refused the request.", { cause: error });
 	}
 	// `fetch` rejects with a TypeError when nothing answers.
-	if (error instanceof TypeError) return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
-	return new PlatformError("internal", error instanceof Error && error.message !== "" ? error.message : "Something went wrong.", { cause: error });
+	if (error instanceof TypeError)
+		return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });
+	return new PlatformError(
+		"internal",
+		error instanceof Error && error.message !== "" ? error.message : "Something went wrong.",
+		{ cause: error },
+	);
 }

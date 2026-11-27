@@ -10,16 +10,23 @@ export function snapshotDeployment(directory: string, create = true, name = "sna
 		if (!/^[0-9a-f]{32}$/.test(id)) throw new Error("Invalid snapshot deployment identity");
 		return id;
 	};
-	try { return read(); }
-	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	try {
+		return read();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	if (!create) return;
 	mkdirSync(directory, { recursive: true });
 	const id = randomBytes(16).toString("hex");
 	const temp = path + "." + id;
 	writeFileSync(temp, id + "\n", { flag: "wx", mode: 0o600 });
-	try { linkSync(temp, path); }
-	catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-	finally { unlinkSync(temp); }
+	try {
+		linkSync(temp, path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	} finally {
+		unlinkSync(temp);
+	}
 	return read();
 }
 

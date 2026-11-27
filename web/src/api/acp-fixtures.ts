@@ -8,7 +8,15 @@ import type { AcpFixture } from "./feed";
 const files = import.meta.glob<AcpFixture>("./fixtures/acp-claude-*.json", { import: "default", eager: true });
 
 /** Every recorded turn by its file name without the extension, e.g. "acp-claude-tools". */
-export const ACP_FIXTURES: Record<string, AcpFixture> = Object.fromEntries(Object.entries(files).map(([path, fixture]) => [path.split("/").at(-1)?.replace(/\.json$/, "") ?? path, fixture]));
+export const ACP_FIXTURES: Record<string, AcpFixture> = Object.fromEntries(
+	Object.entries(files).map(([path, fixture]) => [
+		path
+			.split("/")
+			.at(-1)
+			?.replace(/\.json$/, "") ?? path,
+		fixture,
+	]),
+);
 
 export function acpFixture(name: string): AcpFixture {
 	const found = ACP_FIXTURES[name];

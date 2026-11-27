@@ -50,15 +50,22 @@ const shot = (id: string, more: Partial<ItemAttachment> = {}): ItemAttachment =>
 	state: "kept",
 	...more,
 });
-const linksOf = (shots: ItemAttachment[], round = 1): AttachmentLink[] => shots.filter((one) => one.state === "kept").map((one) => ({ id: one.id, url: `https://store.example/${one.id}.png?sig=${round}`, expiresAt: Date.now() + 600_000 }));
+const linksOf = (shots: ItemAttachment[], round = 1): AttachmentLink[] =>
+	shots
+		.filter(one => one.state === "kept")
+		.map(one => ({
+			id: one.id,
+			url: `https://store.example/${one.id}.png?sig=${round}`,
+			expiresAt: Date.now() + 600_000,
+		}));
 
 /** The screenshots as the item's page shows them, with links asked of `ask`. */
 function Page({ ask, shots, days }: { ask: () => Promise<AttachmentLink[]>; shots: ItemAttachment[]; days?: number }) {
 	const links = useAttachmentLinks(
 		ask,
 		shots
-			.filter((one) => one.state === "kept")
-			.map((one) => one.id)
+			.filter(one => one.state === "kept")
+			.map(one => one.id)
 			.join(","),
 	);
 	return createElement(Screenshots, { by: "builder", head: shots[0]?.head ?? null, shots, links, days });
@@ -75,14 +82,24 @@ describe("an item's screenshots", () => {
 		const ask = await show([shot("a_1"), shot("a_2", { shows: "before", page: null, width: 390, height: 844 })]);
 		expect(ask).toHaveBeenCalledTimes(1);
 		const images = [...host.querySelectorAll("img")];
-		expect(images.map((img) => [img.getAttribute("src"), img.getAttribute("width"), img.getAttribute("height"), img.getAttribute("referrerpolicy"), img.getAttribute("alt"), img.getAttribute("loading"), img.getAttribute("decoding")])).toEqual([
+		expect(
+			images.map(img => [
+				img.getAttribute("src"),
+				img.getAttribute("width"),
+				img.getAttribute("height"),
+				img.getAttribute("referrerpolicy"),
+				img.getAttribute("alt"),
+				img.getAttribute("loading"),
+				img.getAttribute("decoding"),
+			]),
+		).toEqual([
 			["https://store.example/a_1.png?sig=1", "1280", "800", "no-referrer", "The page a_1", "lazy", "async"],
 			["https://store.example/a_2.png?sig=1", "390", "844", "no-referrer", "The page a_2", "lazy", "async"],
 		]);
 		const text = host.textContent ?? "";
 		expect(text).toContain("Screenshots");
 		expect(text).toContain("Filed by the builder for commit 8c76c00.");
-		const captions = [...host.querySelectorAll("figcaption")].map((one) => one.textContent);
+		const captions = [...host.querySelectorAll("figcaption")].map(one => one.textContent);
 		expect(captions).toEqual(["The page a_1after1280 × 800/settings", "The page a_2before390 × 844"]);
 	});
 
@@ -105,7 +122,10 @@ describe("an item's screenshots", () => {
 	it("asks for the links once more when an image fails, and says it could not be loaded when it fails again", async () => {
 		const shots = [shot("a_1"), shot("a_2")];
 		let round = 0;
-		const ask = await show(shots, vi.fn(async () => linksOf(shots, ++round)));
+		const ask = await show(
+			shots,
+			vi.fn(async () => linksOf(shots, ++round)),
+		);
 		expect(ask).toHaveBeenCalledTimes(1);
 		await fail(host.querySelectorAll("img")[0] as Element);
 		expect(ask).toHaveBeenCalledTimes(2);
@@ -121,10 +141,16 @@ describe("an item's screenshots", () => {
 	});
 
 	it("says it could not be loaded when the platform gives no link for it, or the links cannot be had", async () => {
-		await show([shot("a_1"), shot("a_2")], vi.fn(async () => linksOf([shot("a_2")])));
+		await show(
+			[shot("a_1"), shot("a_2")],
+			vi.fn(async () => linksOf([shot("a_2")])),
+		);
 		expect(host.querySelectorAll("figure")[0]?.textContent).toContain(COULD_NOT_LOAD);
 		expect(host.querySelectorAll("img")).toHaveLength(1);
-		await show([shot("a_3")], vi.fn(async () => Promise.reject(new Error("offline"))));
+		await show(
+			[shot("a_3")],
+			vi.fn(async () => Promise.reject(new Error("offline"))),
+		);
 		expect(host.textContent).toContain(COULD_NOT_LOAD);
 	});
 
@@ -136,7 +162,11 @@ describe("an item's screenshots", () => {
 		expect(dialog?.hasAttribute("open")).toBe(true);
 		expect(dialog?.querySelector(".dialog-lede")?.textContent).toContain("The whole page");
 		const full = dialog?.querySelector(".item-shot-full img");
-		expect([full?.getAttribute("width"), full?.getAttribute("height"), full?.getAttribute("referrerpolicy")]).toEqual(["1280", "6000", "no-referrer"]);
+		expect([full?.getAttribute("width"), full?.getAttribute("height"), full?.getAttribute("referrerpolicy")]).toEqual([
+			"1280",
+			"6000",
+			"no-referrer",
+		]);
 		// Fresh links: nothing more is asked.
 		expect(ask).toHaveBeenCalledTimes(1);
 		// Escape reaches a <dialog> as its `cancel` event.
@@ -146,7 +176,10 @@ describe("an item's screenshots", () => {
 
 	it("asks again before the full-size view when the links are about to expire", async () => {
 		const shots = [shot("a_1")];
-		const ask = await show(shots, vi.fn(async () => linksOf(shots).map((link) => ({ ...link, expiresAt: Date.now() + 10_000 }))));
+		const ask = await show(
+			shots,
+			vi.fn(async () => linksOf(shots).map(link => ({ ...link, expiresAt: Date.now() + 10_000 }))),
+		);
 		await act(async () => (host.querySelector("button.item-shot-open") as HTMLButtonElement).click());
 		expect(ask).toHaveBeenCalledTimes(2);
 	});
@@ -160,7 +193,11 @@ describe("an item's screenshots", () => {
 		expect(none).not.toHaveBeenCalled();
 		expect(host.textContent).toBe(`Screenshots${removedLine()}`);
 		expect(removedLine()).toBe("The screenshots of this item were removed after it ended.");
-		await show([shot("a_1", { state: "removed" })], vi.fn(async () => []), 180);
+		await show(
+			[shot("a_1", { state: "removed" })],
+			vi.fn(async () => []),
+			180,
+		);
 		expect(host.textContent).toContain("The screenshots of this item were removed 180 days after it ended.");
 
 		await show([shot("a_1"), shot("a_2", { state: "removed" })]);
@@ -181,12 +218,21 @@ describe("a report's screenshot blocks", () => {
 		const ask = async () => linksOf(shots);
 		function Report() {
 			const links = useAttachmentLinks(ask, "a_1,a_2");
-			return createElement(ReviewBlocks, { blocks, records: [], verdict: null, author: "The agent", screenshots: { shots, links } });
+			return createElement(ReviewBlocks, {
+				blocks,
+				records: [],
+				verdict: null,
+				author: "The agent",
+				screenshots: { shots, links },
+			});
 		}
 		await act(async () => root.render(createElement(Report)));
 		expect(host.textContent).not.toContain("not shown");
 		expect(host.querySelectorAll("dl > div")).toHaveLength(1);
 		const group = host.querySelector("dl + .item-shots");
-		expect([...(group?.querySelectorAll("img") ?? [])].map((img) => img.getAttribute("alt"))).toEqual(["The page a_2", "The page a_1"]);
+		expect([...(group?.querySelectorAll("img") ?? [])].map(img => img.getAttribute("alt"))).toEqual([
+			"The page a_2",
+			"The page a_1",
+		]);
 	});
 });

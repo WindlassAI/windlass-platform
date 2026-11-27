@@ -9,7 +9,19 @@ type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
 function Svg({ size = 16, children, ...rest }: IconProps & { children: ReactNode }) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...rest}>
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={1.6}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+			focusable="false"
+			{...rest}
+		>
 			{children}
 		</svg>
 	);
@@ -82,12 +94,6 @@ export const ArrowDownIcon = (props: IconProps) => (
 export const ArrowLeftIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M13 8H3.6M7.2 4L3.2 8l4 4" />
-	</Svg>
-);
-
-export const SendIcon = (props: IconProps) => (
-	<Svg {...props}>
-		<path d="M8 13V3.6M4 7.2L8 3.2l4 4" />
 	</Svg>
 );
 
@@ -253,9 +259,28 @@ export const UserIcon = (props: IconProps) => (
  * its side and down to a link. With `turning` the drum turns, which is how the interface says an
  * agent is at work.
  */
-export function Mark({ size = 20, turning = false, className }: { size?: number; turning?: boolean; className?: string }) {
+export function Mark({
+	size = 20,
+	turning = false,
+	className,
+}: {
+	size?: number;
+	turning?: boolean;
+	className?: string;
+}) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false" className={`mark${turning ? " mark-turning" : ""}${className ? ` ${className}` : ""}`}>
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 28 28"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={2}
+			strokeLinecap="round"
+			aria-hidden="true"
+			focusable="false"
+			className={`mark${turning ? " mark-turning" : ""}${className ? ` ${className}` : ""}`}
+		>
 			<g className="mark-drum">
 				<circle cx="11.5" cy="11.5" r="7.5" />
 				<path d="M11.5 4v4.2M5 15.25l3.64-2.1M18 15.25l-3.64-2.1" />
@@ -332,31 +357,5 @@ export const SlidersIcon = (props: IconProps) => (
 export const ArrowUpIcon = (props: IconProps) => (
 	<Svg {...props} strokeWidth={1.8}>
 		<path d="M8 13V3.5M4 7.5l4-4 4 4" />
-	</Svg>
-);
-
-/** The Factory: a sawtooth roof. */
-export const FactoryIcon = (props: IconProps) => (
-	<Svg {...props} strokeWidth={1.4}>
-		<path d="M2.5 13.5V7l3.5 2V7l3.5 2V3.5h4v10z" />
-	</Svg>
-);
-
-/** Orchestrated: one piece of work split into parts. */
-export const SplitIcon = (props: IconProps) => (
-	<Svg {...props}>
-		<rect x="2.2" y="6.3" width="3.4" height="3.4" rx="0.8" />
-		<path d="M5.6 8h1.8M7.4 3.6v8.8M7.4 3.6h2.4M7.4 8h2.4M7.4 12.4h2.4" />
-		<rect x="9.8" y="2.3" width="3.6" height="2.6" rx="0.8" />
-		<rect x="9.8" y="6.7" width="3.6" height="2.6" rx="0.8" />
-		<rect x="9.8" y="11.1" width="3.6" height="2.6" rx="0.8" />
-	</Svg>
-);
-
-/** A single piece of work. */
-export const SingleIcon = (props: IconProps) => (
-	<Svg {...props}>
-		<rect x="3.2" y="5.2" width="9.6" height="5.6" rx="1.4" />
-		<path d="M6 8h4" />
 	</Svg>
 );

@@ -52,10 +52,18 @@ async function request(api: string, path: string, fetcher: typeof fetch): Promis
 	let response: Response;
 	let body: unknown;
 	try {
-		response = await fetcher(`${api}${path}`, { signal: abort.signal, headers: { accept: "application/json" }, cache: "no-store" });
+		response = await fetcher(`${api}${path}`, {
+			signal: abort.signal,
+			headers: { accept: "application/json" },
+			cache: "no-store",
+		});
 		body = await response.json().catch(() => null);
 	} catch (error) {
-		if (abort.signal.aborted) throw new RouteFailure(new PlatformError("network", `The server at ${api} did not answer.`, { cause: error }), true);
+		if (abort.signal.aborted)
+			throw new RouteFailure(
+				new PlatformError("network", `The server at ${api} did not answer.`, { cause: error }),
+				true,
+			);
 		throw new RouteFailure(toPlatformError(error, api), true);
 	} finally {
 		clearTimeout(timer);
@@ -103,8 +111,19 @@ function readConnection(body: unknown): PlatformConnection | null {
 	if ((endpoint !== null && typeof endpoint !== "string") || typeof namespace !== "string") return null;
 	if (token === null) return { endpoint, namespace, token: null };
 	if (typeof token !== "object") return null;
-	const { token: value, expiresAt, validForMs } = token as { token?: unknown; expiresAt?: unknown; validForMs?: unknown };
-	if (typeof value !== "string" || value === "" || typeof expiresAt !== "number" || typeof validForMs !== "number" || !Number.isFinite(validForMs)) return null;
+	const {
+		token: value,
+		expiresAt,
+		validForMs,
+	} = token as { token?: unknown; expiresAt?: unknown; validForMs?: unknown };
+	if (
+		typeof value !== "string" ||
+		value === "" ||
+		typeof expiresAt !== "number" ||
+		typeof validForMs !== "number" ||
+		!Number.isFinite(validForMs)
+	)
+		return null;
 	return { endpoint, namespace, token: { token: value, expiresAt, validForMs } };
 }
 
@@ -124,7 +143,7 @@ export class ConnectionSource {
 		// Called bare: a browser's `fetch` refuses any other `this`.
 		this.fetch = options.fetch ?? ((input, init) => fetch(input, init));
 		this.now = options.now ?? Date.now;
-		this.sleep = options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+		this.sleep = options.sleep ?? (ms => new Promise(done => setTimeout(done, ms)));
 	}
 
 	/**
@@ -157,7 +176,8 @@ export class ConnectionSource {
 		const held = this.held;
 		if (!options.forceRefresh && held && this.now() < held.goodUntil - held.margin) return held.token;
 		const answer = await this.load();
-		if (answer.token === null) throw new PlatformError("internal", `The server at ${this.api} handed out no connection token.`);
+		if (answer.token === null)
+			throw new PlatformError("internal", `The server at ${this.api} handed out no connection token.`);
 		return answer.token.token;
 	};
 
@@ -187,7 +207,11 @@ export class ConnectionSource {
 			const sentAt = this.now();
 			try {
 				const answer = readConnection(await request(this.api, PLATFORM_CONNECTION_PATH, this.fetch));
-				if (answer === null) throw new RouteFailure(new PlatformError("internal", `The server at ${this.api} did not say how to connect.`), false);
+				if (answer === null)
+					throw new RouteFailure(
+						new PlatformError("internal", `The server at ${this.api} did not say how to connect.`),
+						false,
+					);
 				this.problem = null;
 				this.first ??= { endpoint: answer.endpoint, namespace: answer.namespace, tokens: answer.token !== null };
 				if (answer.token) {

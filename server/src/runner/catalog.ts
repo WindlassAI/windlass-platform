@@ -20,14 +20,20 @@ export function optionsDigest(options: HarnessOptions) {
 }
 
 /** Also splits inline options from reports saved or sent by an earlier release. */
-export function compactReport(report: Report, catalog?: (id: CatalogId, options: HarnessOptions, digest: string) => void): Report {
+export function compactReport(
+	report: Report,
+	catalog?: (id: CatalogId, options: HarnessOptions, digest: string) => void,
+): Report {
 	if (!report.harnesses) return report;
-	return { ...report, harnesses: report.harnesses.map(({ options, ...entry }) => {
-		if (!options) return entry;
-		const digest = optionsDigest(options);
-		catalog?.(entry.id, options, digest);
-		return { ...entry, optionsDigest: digest, optionsCheckedAt: options.checkedAt };
-	}) };
+	return {
+		...report,
+		harnesses: report.harnesses.map(({ options, ...entry }) => {
+			if (!options) return entry;
+			const digest = optionsDigest(options);
+			catalog?.(entry.id, options, digest);
+			return { ...entry, optionsDigest: digest, optionsCheckedAt: options.checkedAt };
+		}),
+	};
 }
 
 /** Per control connection. Its first inventory reestablishes all catalog references. */

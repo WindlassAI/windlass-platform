@@ -32,7 +32,14 @@
  * scripts/network-check.ts runs them against a database of its own.
  */
 
-import { MAX_REPOSITORY_HOSTS, NETWORK_PRESETS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
+import {
+	MAX_REPOSITORY_HOSTS,
+	NETWORK_PRESETS,
+	WIDE_HOSTS,
+	type NetworkPreset,
+	type NetworkProposal,
+	type NetworkRequest,
+} from "./contract.js";
 import { refuseAtRepositoryCap, type DefaultsDb } from "./repository-defaults.js";
 import { MAX_HOSTS, PRESETS, isHostName } from "./sandbox/hosted-network.js";
 
@@ -49,7 +56,12 @@ export class NetworkProblem extends Error {}
 
 /** The presets as a client shows them. */
 export function networkPresets(): NetworkPreset[] {
-	return NETWORK_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, about: preset.about, hosts: [...preset.hosts] }));
+	return NETWORK_PRESETS.map(preset => ({
+		id: preset.id,
+		name: preset.name,
+		about: preset.about,
+		hosts: [...preset.hosts],
+	}));
 }
 
 /** One entry as it is saved: a preset's id, or an exact DNS name, lower case, without a trailing dot. Null for anything else. */
@@ -91,7 +103,8 @@ export function fits(hosts: readonly string[], deploymentHosts: readonly string[
  */
 export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = [], maxHosts = MAX_HOSTS): string[] {
 	if (!Array.isArray(raw)) throw new NetworkProblem("The network list must be a list.");
-	if (raw.length > MAX_ENTRIES) throw new NetworkProblem(`A network list can have ${MAX_ENTRIES} entries; this one has ${raw.length}.`);
+	if (raw.length > MAX_ENTRIES)
+		throw new NetworkProblem(`A network list can have ${MAX_ENTRIES} entries; this one has ${raw.length}.`);
 	const entries: string[] = [];
 	for (const item of raw) {
 		const entry = cleanEntry(item);
@@ -99,7 +112,7 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 			const shown = typeof item === "string" ? `"${item.trim().slice(0, 80)}"` : "An entry";
 			throw new NetworkProblem(
 				typeof item === "string" && item.trim().startsWith("@")
-					? `${shown} is no preset. The presets are ${NETWORK_PRESETS.map((preset) => preset.id).join(", ")}.`
+					? `${shown} is no preset. The presets are ${NETWORK_PRESETS.map(preset => preset.id).join(", ")}.`
 					: `${shown} is not an exact host name. Give names such as registry.example.com: no addresses, ports, paths or wildcards.`,
 			);
 		}
@@ -197,7 +210,7 @@ function parsed(text: string | undefined): string[] {
 	if (text === undefined) return [];
 	try {
 		const value: unknown = JSON.parse(text);
-		return Array.isArray(value) ? value.flatMap((item) => (cleanEntry(item) === null ? [] : [cleanEntry(item)!])) : [];
+		return Array.isArray(value) ? value.flatMap(item => (cleanEntry(item) === null ? [] : [cleanEntry(item)!])) : [];
 	} catch {
 		return [];
 	}
@@ -205,25 +218,49 @@ function parsed(text: string | undefined): string[] {
 
 /** The list saved for a project; none when there is no row. Entries this code would not save are left out. */
 export async function readNetwork(db: DefaultsDb, project: string): Promise<SavedNetwork> {
-	const [row] = await db.execute<{ entries: string; updated_at: number }>("SELECT entries, updated_at FROM repository_network WHERE project = ?", project);
+	const [row] = await db.execute<{ entries: string; updated_at: number }>(
+		"SELECT entries, updated_at FROM repository_network WHERE project = ?",
+		project,
+	);
 	const entries = parsed(row?.entries);
 	return { entries, hosts: expandEntries(entries), updatedAt: row?.updated_at ?? null };
 }
 
 /** The requests of a project, the newest first, without those the list allows now. */
-export async function readRequests(db: DefaultsDb, project: string, allowed: readonly string[] = []): Promise<NetworkRequest[]> {
-	const rows = await db.execute<{ host: string; session: string | null; at: number }>("SELECT host, session, at FROM network_request WHERE project = ? ORDER BY at DESC, host LIMIT ?", project, MAX_REQUESTS_PER_REPOSITORY);
+export async function readRequests(
+	db: DefaultsDb,
+	project: string,
+	allowed: readonly string[] = [],
+): Promise<NetworkRequest[]> {
+	const rows = await db.execute<{ host: string; session: string | null; at: number }>(
+		"SELECT host, session, at FROM network_request WHERE project = ? ORDER BY at DESC, host LIMIT ?",
+		project,
+		MAX_REQUESTS_PER_REPOSITORY,
+	);
 	const skip = new Set(allowed);
-	return rows.filter((row) => !skip.has(row.host)).map((row) => ({ host: row.host, at: row.at, sessionId: row.session ?? null }));
+	return rows
+		.filter(row => !skip.has(row.host))
+		.map(row => ({ host: row.host, at: row.at, sessionId: row.session ?? null }));
 }
 
 /** Takes the requests the hosts answer off. */
 async function settleRequests(db: DefaultsDb, project: string, hosts: readonly string[]): Promise<void> {
-	if (hosts.length > 0) await db.execute("DELETE FROM network_request WHERE project = ? AND host IN (SELECT value FROM json_each(?))", project, JSON.stringify(hosts));
+	if (hosts.length > 0)
+		await db.execute(
+			"DELETE FROM network_request WHERE project = ? AND host IN (SELECT value FROM json_each(?))",
+			project,
+			JSON.stringify(hosts),
+		);
 }
 
 /** Saves a list that was cleaned already, in place of the project's earlier one; an empty list removes the row. Requests it answers are taken off. */
-export async function saveNetwork(db: DefaultsDb, project: string, label: string, entries: readonly string[], now: number): Promise<SavedNetwork> {
+export async function saveNetwork(
+	db: DefaultsDb,
+	project: string,
+	label: string,
+	entries: readonly string[],
+	now: number,
+): Promise<SavedNetwork> {
 	if (entries.length === 0) await db.execute("DELETE FROM repository_network WHERE project = ?", project);
 	else {
 		await refuseAtRepositoryCap(db, "repository_network", project, MAX_NETWORK_REPOSITORIES, "network lists");
@@ -245,11 +282,22 @@ export async function saveNetwork(db: DefaultsDb, project: string, label: string
  * still what was read, and reads again otherwise, so an entry another call added meanwhile stays.
  * Throws NetworkProblem when the list would not fit.
  */
-export async function addEntry(db: DefaultsDb, project: string, label: string, entry: string, deploymentHosts: readonly string[], now: number, maxHosts = MAX_HOSTS): Promise<SavedNetwork> {
+export async function addEntry(
+	db: DefaultsDb,
+	project: string,
+	label: string,
+	entry: string,
+	deploymentHosts: readonly string[],
+	now: number,
+	maxHosts = MAX_HOSTS,
+): Promise<SavedNetwork> {
 	const clean = cleanEntry(entry);
 	if (clean === null) throw new NetworkProblem(`"${entry.slice(0, 80)}" is not an exact host name.`);
 	for (let attempt = 0; attempt < 5; attempt += 1) {
-		const [row] = await db.execute<{ entries: string }>("SELECT entries FROM repository_network WHERE project = ?", project);
+		const [row] = await db.execute<{ entries: string }>(
+			"SELECT entries FROM repository_network WHERE project = ?",
+			project,
+		);
 		const entries = parsed(row?.entries);
 		if (entries.includes(clean) || expandEntries(entries).includes(clean)) {
 			await settleRequests(db, project, expandEntries(entries));
@@ -257,8 +305,22 @@ export async function addEntry(db: DefaultsDb, project: string, label: string, e
 		}
 		const next = cleanEntries([...entries, clean], deploymentHosts, maxHosts);
 		const written = row
-			? await db.execute<{ project: string }>("UPDATE repository_network SET entries = ?, updated_at = MAX(updated_at + 1, ?), label = CASE WHEN ? = '' THEN label ELSE ? END WHERE project = ? AND entries = ? RETURNING project", JSON.stringify(next), now, label, label, project, row.entries)
-			: await db.execute<{ project: string }>("INSERT INTO repository_network (project, label, entries, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO NOTHING RETURNING project", project, label, JSON.stringify(next), now);
+			? await db.execute<{ project: string }>(
+					"UPDATE repository_network SET entries = ?, updated_at = MAX(updated_at + 1, ?), label = CASE WHEN ? = '' THEN label ELSE ? END WHERE project = ? AND entries = ? RETURNING project",
+					JSON.stringify(next),
+					now,
+					label,
+					label,
+					project,
+					row.entries,
+				)
+			: await db.execute<{ project: string }>(
+					"INSERT INTO repository_network (project, label, entries, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO NOTHING RETURNING project",
+					project,
+					label,
+					JSON.stringify(next),
+					now,
+				);
 		if (written.length > 0) {
 			const saved = await readNetwork(db, project);
 			await settleRequests(db, project, saved.hosts);
@@ -276,14 +338,28 @@ export async function addEntry(db: DefaultsDb, project: string, label: string, e
  * command looks up by the hundred cannot push out a request the person may want. A host waiting
  * already is only moved up.
  */
-export async function fileRequests(db: DefaultsDb, project: string, hosts: readonly string[], sessionId: string | null, now: number): Promise<{ filed: string[]; full: string[] }> {
+export async function fileRequests(
+	db: DefaultsDb,
+	project: string,
+	hosts: readonly string[],
+	sessionId: string | null,
+	now: number,
+): Promise<{ filed: string[]; full: string[] }> {
 	const allowed = new Set((await readNetwork(db, project)).hosts);
-	const wanted = [...new Set(hosts.map((host) => host.toLowerCase()))].filter((host) => isHostName(host) && !allowed.has(host));
+	const wanted = [...new Set(hosts.map(host => host.toLowerCase()))].filter(
+		host => isHostName(host) && !allowed.has(host),
+	);
 	if (wanted.length === 0) return { filed: [], full: [] };
 	const filed = new Set<string>();
 	for (const host of wanted) {
 		// One statement each, so the room is counted where the row is written, whatever else is filed meanwhile.
-		const [moved] = await db.execute<{ host: string }>("UPDATE network_request SET session = ?, at = ? WHERE project = ? AND host = ? RETURNING host", sessionId, now, project, host);
+		const [moved] = await db.execute<{ host: string }>(
+			"UPDATE network_request SET session = ?, at = ? WHERE project = ? AND host = ? RETURNING host",
+			sessionId,
+			now,
+			project,
+			host,
+		);
 		const [added] = moved
 			? [moved]
 			: await db.execute<{ host: string }>(
@@ -298,7 +374,7 @@ export async function fileRequests(db: DefaultsDb, project: string, hosts: reado
 				);
 		if (added) filed.add(host);
 	}
-	return { filed: wanted.filter((host) => filed.has(host)), full: wanted.filter((host) => !filed.has(host)) };
+	return { filed: wanted.filter(host => filed.has(host)), full: wanted.filter(host => !filed.has(host)) };
 }
 
 export async function dismissRequest(db: DefaultsDb, project: string, host: string): Promise<void> {
@@ -327,33 +403,115 @@ const MAX_SOURCES = 5;
 /** How long one "where found" may be: a path and a key of a manifest are the repository's text, of any length. */
 export const MAX_SOURCE_CHARS = 200;
 
-const SKIPPED_DIRS = new Set(["node_modules", "vendor", "third_party", "third-party", ".git", "dist", "build", "target", "out", ".venv", "venv", "__pycache__", "fixtures", "testdata", "examples", "docs"]);
+const SKIPPED_DIRS = new Set([
+	"node_modules",
+	"vendor",
+	"third_party",
+	"third-party",
+	".git",
+	"dist",
+	"build",
+	"target",
+	"out",
+	".venv",
+	"venv",
+	"__pycache__",
+	"fixtures",
+	"testdata",
+	"examples",
+	"docs",
+]);
 
-type Kind = "package" | "npm-lock" | "pnpm-lock" | "yarn-lock" | "lock" | "npmrc" | "yarnrc" | "python" | "toml" | "shell" | "ci" | "gyp" | "devcontainer" | "manifest";
+type Kind =
+	| "package"
+	| "npm-lock"
+	| "pnpm-lock"
+	| "yarn-lock"
+	| "lock"
+	| "npmrc"
+	| "yarnrc"
+	| "python"
+	| "toml"
+	| "shell"
+	| "ci"
+	| "gyp"
+	| "devcontainer"
+	| "manifest";
 
 /** What kind of file a path is for the scan, or null when it does not read it. */
 export function scanKind(path: string): Kind | null {
 	const parts = path.split("/");
 	const base = parts.at(-1)!.toLowerCase();
 	const dir = parts.slice(0, -1).join("/").toLowerCase();
-	if (parts.length - 1 > SCAN_DEPTH || parts.slice(0, -1).some((part) => SKIPPED_DIRS.has(part.toLowerCase()))) return null;
+	if (parts.length - 1 > SCAN_DEPTH || parts.slice(0, -1).some(part => SKIPPED_DIRS.has(part.toLowerCase())))
+		return null;
 	if (/^\.github\/workflows$/.test(dir) && /\.ya?ml$/.test(base)) return "ci";
-	if (base === ".gitlab-ci.yml" || base === ".travis.yml" || base === "azure-pipelines.yml" || base === "bitbucket-pipelines.yml" || (dir === ".circleci" && base === "config.yml") || (dir === ".buildkite" && /\.ya?ml$/.test(base))) return "ci";
+	if (
+		base === ".gitlab-ci.yml" ||
+		base === ".travis.yml" ||
+		base === "azure-pipelines.yml" ||
+		base === "bitbucket-pipelines.yml" ||
+		(dir === ".circleci" && base === "config.yml") ||
+		(dir === ".buildkite" && /\.ya?ml$/.test(base))
+	)
+		return "ci";
 	if (base === "package.json") return "package";
 	if (base === "package-lock.json" || base === "npm-shrinkwrap.json") return "npm-lock";
 	if (base === "pnpm-lock.yaml") return "pnpm-lock";
 	if (base === "yarn.lock") return "yarn-lock";
-	if (["bun.lock", "poetry.lock", "uv.lock", "pipfile.lock", "cargo.lock", "gemfile.lock", "composer.lock", "go.sum", "pdm.lock"].includes(base)) return "lock";
+	if (
+		[
+			"bun.lock",
+			"poetry.lock",
+			"uv.lock",
+			"pipfile.lock",
+			"cargo.lock",
+			"gemfile.lock",
+			"composer.lock",
+			"go.sum",
+			"pdm.lock",
+		].includes(base)
+	)
+		return "lock";
 	if (base === ".npmrc") return "npmrc";
 	if (base === ".yarnrc" || base === ".yarnrc.yml") return "yarnrc";
-	if (/^(requirements|constraints)[\w.-]*\.(txt|in)$/.test(base) || base === "pip.conf" || base === "setup.cfg" || base === "pipfile") return "python";
-	if (base === "pyproject.toml" || base === "cargo.toml" || (dir.endsWith(".cargo") && (base === "config.toml" || base === "config"))) return "toml";
+	if (
+		/^(requirements|constraints)[\w.-]*\.(txt|in)$/.test(base) ||
+		base === "pip.conf" ||
+		base === "setup.cfg" ||
+		base === "pipfile"
+	)
+		return "python";
+	if (
+		base === "pyproject.toml" ||
+		base === "cargo.toml" ||
+		(dir.endsWith(".cargo") && (base === "config.toml" || base === "config"))
+	)
+		return "toml";
 	if (base === "binding.gyp") return "gyp";
 	if (dir === ".devcontainer" && base.endsWith(".json")) return "devcontainer";
-	if (base === "go.mod" || base === "gemfile" || base === "composer.json" || base === "pom.xml" || /^(build|settings)\.gradle(\.kts)?$/.test(base)) return "manifest";
-	if (base === "makefile" || base === "justfile" || base === "taskfile.yml" || base === "dockerfile" || base.startsWith("dockerfile.") || base.endsWith(".dockerfile") || base.endsWith(".sh") || /^(install|setup|bootstrap)(\.\w+)?$/.test(base)) {
+	if (
+		base === "go.mod" ||
+		base === "gemfile" ||
+		base === "composer.json" ||
+		base === "pom.xml" ||
+		/^(build|settings)\.gradle(\.kts)?$/.test(base)
+	)
+		return "manifest";
+	if (
+		base === "makefile" ||
+		base === "justfile" ||
+		base === "taskfile.yml" ||
+		base === "dockerfile" ||
+		base.startsWith("dockerfile.") ||
+		base.endsWith(".dockerfile") ||
+		base.endsWith(".sh") ||
+		/^(install|setup|bootstrap)(\.\w+)?$/.test(base)
+	) {
 		// Scripts at the top, or in the directories scripts usually live in.
-		return parts.length === 1 || /^(scripts|script|bin|tools|ci|\.devcontainer|\.github)(\/|$)/.test(dir) ? "shell" : null;
+		return parts.length === 1 || /^(scripts|script|bin|tools|ci|\.devcontainer|\.github)(\/|$)/.test(dir)
+			? "shell"
+			: null;
 	}
 	return null;
 }
@@ -366,16 +524,23 @@ const isLock = (kind: Kind) => kind === "npm-lock" || kind === "pnpm-lock" || ki
  * the most it may be). `more` when others matched and are not read. `maxBytes` is the whole budget
  * and `maxFileBytes` the most one file may be, for the reader to hold the blobs to (github/app.ts `scanFiles`).
  */
-export function scanPaths(tree: readonly ScanEntry[]): { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number } {
+export function scanPaths(tree: readonly ScanEntry[]): {
+	paths: string[];
+	more: boolean;
+	maxBytes: number;
+	maxFileBytes: number;
+} {
 	const matching = tree
-		.filter((entry) => entry.type === "blob")
-		.flatMap((entry) => {
+		.filter(entry => entry.type === "blob")
+		.flatMap(entry => {
 			const kind = scanKind(entry.path);
 			if (kind === null) return [];
 			if (entry.size !== null && entry.size > (isLock(kind) ? SCAN_LOCK_BYTES : SCAN_FILE_BYTES)) return [];
 			return [{ path: entry.path, depth: entry.path.split("/").length, kind, size: entry.size }];
 		})
-		.sort((a, b) => a.depth - b.depth || Number(isLock(a.kind)) - Number(isLock(b.kind)) || a.path.localeCompare(b.path));
+		.sort(
+			(a, b) => a.depth - b.depth || Number(isLock(a.kind)) - Number(isLock(b.kind)) || a.path.localeCompare(b.path),
+		);
 	const paths: string[] = [];
 	let bytes = 0;
 	for (const item of matching) {
@@ -397,10 +562,11 @@ function ignoredHost(host: string): boolean {
 	);
 }
 
-const URL_HOST = /\b(?:https?|git\+https?|git\+ssh|ssh|git|wss?|s3|registry\+https?|sparse\+https?):\/\/(?:[^\s@/'"<>]+@)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)\.?(?::\d+)?/g;
+const URL_HOST =
+	/\b(?:https?|git\+https?|git\+ssh|ssh|git|wss?|s3|registry\+https?|sparse\+https?):\/\/(?:[^\s@/'"<>]+@)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)\.?(?::\d+)?/g;
 /** The hosts of the addresses in a text. */
 function urlHosts(text: string): string[] {
-	return [...text.matchAll(URL_HOST)].map((match) => match[1]!.toLowerCase());
+	return [...text.matchAll(URL_HOST)].map(match => match[1]!.toLowerCase());
 }
 
 /** What a command line implies: the presets of the tools it runs that fetch. */
@@ -417,7 +583,10 @@ const COMMAND_PRESETS: ReadonlyArray<[RegExp, string, string]> = [
 
 /** The npm packages whose own install downloads more, and what. */
 const PACKAGE_PRESETS: ReadonlyArray<[RegExp, string]> = [
-	[/^(@playwright\/test|playwright|playwright-core|playwright-chromium|playwright-firefox|playwright-webkit)$/, "@playwright"],
+	[
+		/^(@playwright\/test|playwright|playwright-core|playwright-chromium|playwright-firefox|playwright-webkit)$/,
+		"@playwright",
+	],
 	[/^(prisma|@prisma\/client|@prisma\/engines)$/, "@prisma"],
 	[/^node-gyp$/, "@node"],
 ];
@@ -436,7 +605,8 @@ class Found {
 		if (sources.size < MAX_SOURCES) sources.add(clip(source, MAX_SOURCE_CHARS));
 		this.items.set(key, sources);
 		// Playwright's Chromium for x86_64 is a redirect to Google Cloud Storage, a preset of its own for how much else it reaches.
-		if (key === "@playwright") this.add("@gcs", `${clip(source, MAX_SOURCE_CHARS - 50)} (Playwright's Chromium redirects there)`);
+		if (key === "@playwright")
+			this.add("@gcs", `${clip(source, MAX_SOURCE_CHARS - 50)} (Playwright's Chromium redirects there)`);
 	}
 	/** A host an address names: proposed as itself, also when a preset has it, since a preset may allow more than the file needs. */
 	host(host: string, source: string): void {
@@ -448,13 +618,25 @@ class Found {
 			const trimmed = line.trim();
 			if (trimmed.startsWith("#") || trimmed.startsWith("//")) return;
 			for (const host of urlHosts(line)) this.host(host, source(index));
-			if (commands) for (const [pattern, preset] of COMMAND_PRESETS) if (pattern.test(line)) this.add(preset, source(index));
+			if (commands)
+				for (const [pattern, preset] of COMMAND_PRESETS) if (pattern.test(line)) this.add(preset, source(index));
 		});
 	}
 }
 
 /** Keys of package.json whose addresses are pages about the package, not where anything is fetched from. */
-const PACKAGE_PAGES = new Set(["homepage", "repository", "bugs", "funding", "author", "contributors", "maintainers", "license", "description", "keywords"]);
+const PACKAGE_PAGES = new Set([
+	"homepage",
+	"repository",
+	"bugs",
+	"funding",
+	"author",
+	"contributors",
+	"maintainers",
+	"license",
+	"description",
+	"keywords",
+]);
 
 function readPackage(found: Found, path: string, text: string): void {
 	let json: Record<string, unknown>;
@@ -467,8 +649,10 @@ function readPackage(found: Found, path: string, text: string): void {
 	const walk = (value: unknown, at: string): void => {
 		if (typeof value === "string") {
 			for (const host of urlHosts(value)) found.host(host, `${path} ${at}`);
-			if (at.startsWith("scripts.")) for (const [pattern, preset] of COMMAND_PRESETS) if (pattern.test(value)) found.add(preset, `${path} ${at}`);
-		} else if (typeof value === "object" && value !== null) for (const [key, inner] of Object.entries(value)) walk(inner, at === "" ? key : `${at}.${key}`);
+			if (at.startsWith("scripts."))
+				for (const [pattern, preset] of COMMAND_PRESETS) if (pattern.test(value)) found.add(preset, `${path} ${at}`);
+		} else if (typeof value === "object" && value !== null)
+			for (const [key, inner] of Object.entries(value)) walk(inner, at === "" ? key : `${at}.${key}`);
 	};
 	for (const [key, value] of Object.entries(json)) {
 		if (PACKAGE_PAGES.has(key)) continue;
@@ -478,15 +662,20 @@ function readPackage(found: Found, path: string, text: string): void {
 		const deps = json[field];
 		if (typeof deps !== "object" || deps === null) continue;
 		for (const [name, spec] of Object.entries(deps)) {
-			for (const [pattern, preset] of PACKAGE_PRESETS) if (pattern.test(name)) found.add(preset, `${path} ${field}.${name}`);
+			for (const [pattern, preset] of PACKAGE_PRESETS)
+				if (pattern.test(name)) found.add(preset, `${path} ${field}.${name}`);
 			// "github:owner/repo" and "owner/repo" are fetched from GitHub.
-			if (typeof spec === "string" && /^(github:|[\w.-]+\/[\w.-]+(#.*)?$)/.test(spec)) found.add("@github", `${path} ${field}.${name}`);
+			if (typeof spec === "string" && /^(github:|[\w.-]+\/[\w.-]+(#.*)?$)/.test(spec))
+				found.add("@github", `${path} ${field}.${name}`);
 		}
 	}
 }
 
 function readNpmLock(found: Found, path: string, text: string): void {
-	let json: { packages?: Record<string, { resolved?: unknown }>; dependencies?: Record<string, { resolved?: unknown }> };
+	let json: {
+		packages?: Record<string, { resolved?: unknown }>;
+		dependencies?: Record<string, { resolved?: unknown }>;
+	};
 	try {
 		json = JSON.parse(text);
 	} catch {
@@ -517,7 +706,8 @@ function readLockLines(found: Found, path: string, text: string, fetched: RegExp
 }
 
 /** Keys of TOML manifests whose addresses are pages about the project. */
-const TOML_PAGES = /^\s*(homepage|repository|documentation|changelog|issues|bug[-_ ]?tracker|funding|source|download)\s*=/i;
+const TOML_PAGES =
+	/^\s*(homepage|repository|documentation|changelog|issues|bug[-_ ]?tracker|funding|source|download)\s*=/i;
 
 function readToml(found: Found, path: string, text: string): void {
 	let section = "";
@@ -527,7 +717,14 @@ function readToml(found: Found, path: string, text: string): void {
 			section = header[1]!.trim().toLowerCase();
 			return;
 		}
-		if (line.trim().startsWith("#") || section === "project.urls" || section === "tool.poetry.urls" || section === "package.metadata" || (TOML_PAGES.test(line) && !/\bindex\b|\bregistry\b/.test(section))) return;
+		if (
+			line.trim().startsWith("#") ||
+			section === "project.urls" ||
+			section === "tool.poetry.urls" ||
+			section === "package.metadata" ||
+			(TOML_PAGES.test(line) && !/\bindex\b|\bregistry\b/.test(section))
+		)
+			return;
 		for (const host of urlHosts(line)) found.host(host, lineOf(path, index));
 	});
 	if (path.toLowerCase().endsWith("cargo.toml")) found.add("@crates", path);
@@ -557,7 +754,11 @@ function readCi(found: Found, path: string, text: string): void {
  * a file says is taken for more than a proposal. `reachable` are the hosts its sandboxes reach
  * already: neither they nor a preset whose hosts all are among them is proposed.
  */
-export function scanForHosts(files: ReadonlyArray<{ path: string; text: string }>, setup: string, reachable: Iterable<string>): NetworkProposal[] {
+export function scanForHosts(
+	files: ReadonlyArray<{ path: string; text: string }>,
+	setup: string,
+	reachable: Iterable<string>,
+): NetworkProposal[] {
 	const found = new Found();
 	for (const { path, text } of files) {
 		const kind = scanKind(path);
@@ -576,14 +777,20 @@ export function scanForHosts(files: ReadonlyArray<{ path: string; text: string }
 				break;
 			case "lock":
 				if (path.toLowerCase().endsWith("go.sum")) found.add("@go", path);
-				else readLockLines(found, path, text, /\b(url|source|registry|remote|resolved|dist|sdist|wheels?)\b|https?:\/\/\S+\.(tgz|tar\.gz|whl|zip|crate)\b|"https?:\/\/[^"]+"\s*[,\]]/i);
+				else
+					readLockLines(
+						found,
+						path,
+						text,
+						/\b(url|source|registry|remote|resolved|dist|sdist|wheels?)\b|https?:\/\/\S+\.(tgz|tar\.gz|whl|zip|crate)\b|"https?:\/\/[^"]+"\s*[,\]]/i,
+					);
 				break;
 			case "npmrc":
 			case "yarnrc":
-				found.text(text, (index) => lineOf(path, index), false);
+				found.text(text, index => lineOf(path, index), false);
 				break;
 			case "python":
-				found.text(text, (index) => lineOf(path, index), false);
+				found.text(text, index => lineOf(path, index), false);
 				found.add("@pypi", path);
 				break;
 			case "toml":
@@ -597,26 +804,28 @@ export function scanForHosts(files: ReadonlyArray<{ path: string; text: string }
 				break;
 			case "devcontainer":
 			case "shell":
-				found.text(text, (index) => lineOf(path, index));
+				found.text(text, index => lineOf(path, index));
 				break;
 			case "manifest":
 				if (path.toLowerCase().endsWith("go.mod")) found.add("@go", path);
-				else found.text(text, (index) => lineOf(path, index), false);
+				else found.text(text, index => lineOf(path, index), false);
 				break;
 			default:
 				break;
 		}
 	}
-	if (setup.trim() !== "") found.text(setup, (index) => `the setup command, line ${index + 1}`);
+	if (setup.trim() !== "") found.text(setup, index => `the setup command, line ${index + 1}`);
 
 	const skip = new Set(reachable);
 	const proposals: NetworkProposal[] = [];
 	for (const [entry, sources] of found.items) {
 		const hosts = entry.startsWith("@") ? [...(PRESETS[entry] ?? [])] : [entry];
-		if (hosts.length === 0 || hosts.every((host) => skip.has(host))) continue;
+		if (hosts.length === 0 || hosts.every(host => skip.has(host))) continue;
 		proposals.push({ entry, hosts, sources: [...sources] });
 	}
 	return proposals
-		.sort((a, b) => Number(!a.entry.startsWith("@")) - Number(!b.entry.startsWith("@")) || a.entry.localeCompare(b.entry))
+		.sort(
+			(a, b) => Number(!a.entry.startsWith("@")) - Number(!b.entry.startsWith("@")) || a.entry.localeCompare(b.entry),
+		)
 		.slice(0, MAX_PROPOSALS);
 }

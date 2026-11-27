@@ -1,0 +1,76 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": [
+			"**/*.ts",
+			"**/*.tsx",
+			"**/*.mjs",
+			"**/*.cjs",
+			"!fixtures",
+			"!runner/src/public-suffixes.ts",
+			"!web/public",
+			"!design"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"lineWidth": 120,
+		"lineEnding": "lf"
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"jsxQuoteStyle": "double",
+			"semicolons": "always",
+			"arrowParentheses": "asNeeded",
+			"trailingCommas": "all"
+		}
+	},
+	"json": {
+		"formatter": {
+			"enabled": false
+		}
+	},
+	"css": {
+		"formatter": {
+			"enabled": false
+		}
+	},
+	"assist": {
+		"enabled": false
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "none",
+			"correctness": {
+				"noUnusedImports": "error",
+				"noUnusedVariables": "warn",
+				"noUnreachable": "error",
+				"noSelfAssign": "error",
+				"noConstantCondition": "warn"
+			},
+			"suspicious": {
+				"noExplicitAny": "warn",
+				"noDebugger": "error",
+				"noDuplicateObjectKeys": "error",
+				"noDuplicateCase": "error",
+				"noSelfCompare": "error",
+				"noAsyncPromiseExecutor": "error",
+				"noShadowRestrictedNames": "error"
+			},
+			"complexity": {
+				"noUselessCatch": "error",
+				"noUselessRename": "error",
+				"noUselessTernary": "error",
+				"noUselessConstructor": "error"
+			}
+		}
+	}
+}

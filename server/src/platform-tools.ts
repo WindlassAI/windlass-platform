@@ -59,15 +59,38 @@
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
-import { SECRET_TOOL, ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
+import {
+	SECRET_TOOL,
+	ASK_TOOL,
+	FETCH_BASE_TOOL,
+	PUBLISH_SERVER,
+	PUBLISH_TOOL,
+	PUSH_TOOL,
+	REPORT_TOOL,
+	callArguments,
+	platformTools,
+	type HostToolDeclaration,
+} from "./agent-publish.js";
 import { config } from "./config.js";
 import type { RunTurnInput, TurnPublishRequest } from "./sandbox/api.js";
+import { isRecord } from "./util.js";
 
 export const PLAN_REVIEW_TOOL = "file_plan_review";
 export const PLAN_TOOL = "file_plan";
 
 /** One of the platform's tools. */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof SECRET_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL | typeof PLAN_REVIEW_TOOL | "file_repo_setup" | "file_repo_setup_review";
+export type PlatformTool =
+	| typeof PUBLISH_TOOL
+	| typeof REPORT_TOOL
+	| typeof SECRET_TOOL
+	| typeof ASK_TOOL
+	| typeof PUSH_TOOL
+	| typeof FETCH_BASE_TOOL
+	| typeof REVIEW_TOOL
+	| typeof PLAN_TOOL
+	| typeof PLAN_REVIEW_TOOL
+	| "file_repo_setup"
+	| "file_repo_setup_review";
 
 /** What decides and does a call: the agent is told what it resolves with. */
 export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
@@ -97,19 +120,30 @@ export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "ho
 });
 
 /** The tools that can be served over MCP, in the order they are listed. */
-export const MCP_TOOLS = Object.freeze((Object.keys(TOOL_REACH) as PlatformTool[]).filter(tool => TOOL_REACH[tool] !== "host"));
+export const MCP_TOOLS = Object.freeze(
+	(Object.keys(TOOL_REACH) as PlatformTool[]).filter(tool => TOOL_REACH[tool] !== "host"),
+);
 
 /**
  * How many calls of a tool one turn may make over MCP. Each push and fetch mints a GitHub token and runs
  * Git in the sandbox, and any process there can make the call: a turn's worth is enough for an agent that
  * pushes after each piece of work, and bounds what a rogue process can make the platform do.
  */
-export const MCP_LIMITS: Readonly<Partial<Record<PlatformTool, number>>> = Object.freeze({ [PUSH_TOOL]: 5, [FETCH_BASE_TOOL]: 3, [REVIEW_TOOL]: 1 });
+export const MCP_LIMITS: Readonly<Partial<Record<PlatformTool, number>>> = Object.freeze({
+	[PUSH_TOOL]: 5,
+	[FETCH_BASE_TOOL]: 3,
+	[REVIEW_TOOL]: 1,
+});
 
 /** What the agent is told of a call over its turn's limit (`MCP_LIMITS`), and the timeline's line. */
 export function overLimit(tool: PlatformTool, limit: number): { told: string; said: string } {
 	const times = `${limit} time${limit === 1 ? "" : "s"}`;
-	const [verb, done] = tool === PUSH_TOOL ? ["push", "Not pushed"] : tool === FETCH_BASE_TOOL ? ["fetch the base", "Not fetched"] : [`call ${tool}`, "Not done"];
+	const [verb, done] =
+		tool === PUSH_TOOL
+			? ["push", "Not pushed"]
+			: tool === FETCH_BASE_TOOL
+				? ["fetch the base", "Not fetched"]
+				: [`call ${tool}`, "Not done"];
 	return {
 		told: `${done}. One turn may ${verb} at most ${times}, and this turn has. The work stays in the workspace as it is; do not try another way to ${verb}.`,
 		said: `A call over MCP asked to ${verb} after this turn had done so ${times}, the most one turn may, so the platform refused it. Any process in the sandbox may have made the call, not only the agent.`,
@@ -117,7 +151,8 @@ export function overLimit(tool: PlatformTool, limit: number): { told: string; sa
 }
 
 /** What the agent is told when the platform's own handling of a call of one of its tools failed. */
-export const CALL_NOT_HANDLED = "The platform could not handle this call. Tell the user; do not try another way to do it.";
+export const CALL_NOT_HANDLED =
+	"The platform could not handle this call. Tell the user; do not try another way to do it.";
 /** A call that came when the turn it was made in is over. */
 export const CALL_AFTER_TURN = "The turn this call was made in has ended, so the platform did nothing with it.";
 /** A call whose id an earlier call of the turn had (`PlatformMcpServer`). */
@@ -131,7 +166,10 @@ export const CALL_UNKNOWN = "This session has no such tool of the platform's.";
  * for a builder) in an item's, with `push` and `fetch_base` beside either. With `reach` "sandbox",
  * only those that may be served over MCP (`MCP_TOOLS`).
  */
-export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox" = "host"): Map<PlatformTool, PlatformToolHandler> {
+export function turnPlatformTools(
+	input: RunTurnInput,
+	reach: "host" | "sandbox" = "host",
+): Map<PlatformTool, PlatformToolHandler> {
 	const tools = new Map<PlatformTool, PlatformToolHandler>();
 	if (input.onSetupReview) tools.set("file_repo_setup_review", input.onSetupReview);
 	else if (input.onSetup) tools.set("file_repo_setup", input.onSetup);
@@ -155,21 +193,40 @@ export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox"
 }
 
 /** The declarations of a turn's tools (agent-publish.ts, `platformTools`). */
-export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, options: { screenshots?: boolean; crossRepo?: boolean; mcp?: boolean } = {}): HostToolDeclaration[] {
+export function platformToolDeclarations(
+	tools: ReadonlyMap<string, unknown>,
+	options: { screenshots?: boolean; crossRepo?: boolean; mcp?: boolean } = {},
+): HostToolDeclaration[] {
 	const plan = tools.has(PLAN_TOOL);
-	return platformTools({
-		setup: tools.has("file_repo_setup"), setupReview: tools.has("file_repo_setup_review"), planReview: tools.has(PLAN_REVIEW_TOOL), plan, ...(options.crossRepo && plan && { crossRepo: true }),
-		publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL),
-		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), secret: tools.has(SECRET_TOOL), screenshots: options.screenshots,
-		...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),
-	}, config.questionTimeoutMs).filter(tool => tools.has(tool.name));
+	return platformTools(
+		{
+			setup: tools.has("file_repo_setup"),
+			setupReview: tools.has("file_repo_setup_review"),
+			planReview: tools.has(PLAN_REVIEW_TOOL),
+			plan,
+			...(options.crossRepo && plan && { crossRepo: true }),
+			publish: tools.has(PUBLISH_TOOL),
+			report: tools.has(REPORT_TOOL),
+			push: tools.has(PUSH_TOOL),
+			review: tools.has(REVIEW_TOOL),
+			ask: tools.has(ASK_TOOL),
+			secret: tools.has(SECRET_TOOL),
+			screenshots: options.screenshots,
+			...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),
+		},
+		config.questionTimeoutMs,
+	).filter(tool => tools.has(tool.name));
 }
 
 /**
  * One call, run by its handler: what the agent is told, and whether it is an error. Never rejects; a
  * handler that fails, or answers nothing, is the platform's failure, which the agent is told of.
  */
-export async function runPlatformTool(handler: PlatformToolHandler, call: TurnPublishRequest, signal: AbortSignal): Promise<{ ok: boolean; output: string }> {
+export async function runPlatformTool(
+	handler: PlatformToolHandler,
+	call: TurnPublishRequest,
+	signal: AbortSignal,
+): Promise<{ ok: boolean; output: string }> {
 	try {
 		const text = await handler(call, signal);
 		return { ok: true, output: typeof text === "string" && text !== "" ? text : CALL_NOT_HANDLED };
@@ -188,12 +245,15 @@ const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 /** The server's id on the connection. Fixed, so that Claude Code's managed policy can allow exactly its endpoint (sandbox/harness/claude/managed-settings.json). */
 export const PLATFORM_MCP_SERVER_ID = "windlass-platform";
 /** The server as a session declares it: the name the model sees its tools under (`mcp__windlass_platform__report`, `windlass_platform_report`). */
-export const PLATFORM_MCP_SERVER = Object.freeze({ type: "acp", name: PUBLISH_SERVER, serverId: PLATFORM_MCP_SERVER_ID });
+export const PLATFORM_MCP_SERVER = Object.freeze({
+	type: "acp",
+	name: PUBLISH_SERVER,
+	serverId: PLATFORM_MCP_SERVER_ID,
+});
 
 /** An inner MCP outcome, as an `mcp/message` response carries it. */
 export type McpOutcome = { result: Record<string, unknown> } | { error: { code: number; message: string } };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const mcpError = (code: number, message: string): McpOutcome => ({ error: { code, message } });
 
 /**
@@ -211,34 +271,56 @@ export class PlatformMcpServer {
 	private readonly listed: Array<Record<string, unknown>>;
 	private readonly calls = new Map<string, number>();
 	private readonly counted = new Set<string>();
-	constructor(private readonly tools: ReadonlyMap<string, PlatformToolHandler>, declarations: HostToolDeclaration[], private readonly live: () => boolean, private readonly onRefused?: (said: string) => void) {
+	constructor(
+		private readonly tools: ReadonlyMap<string, PlatformToolHandler>,
+		declarations: HostToolDeclaration[],
+		private readonly live: () => boolean,
+		private readonly onRefused?: (said: string) => void,
+	) {
 		// Claude Code defers MCP tools behind its tool search unless a tool says to load it at once: these are few and short, and the agent is to know them.
-		this.listed = declarations.filter(tool => tools.has(tool.name)).map(tool => ({
-			name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
-			annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-			_meta: { "anthropic/alwaysLoad": true },
-		}));
+		this.listed = declarations
+			.filter(tool => tools.has(tool.name))
+			.map(tool => ({
+				name: tool.name,
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+				annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+				_meta: { "anthropic/alwaysLoad": true },
+			}));
 	}
 
-	get size() { return this.listed.length; }
+	get size() {
+		return this.listed.length;
+	}
 
 	/** One `mcp/message` request's params. Resolves with the outcome the response carries; never rejects. */
 	async handle(params: Record<string, unknown>, signal: AbortSignal): Promise<McpOutcome> {
 		if (params.serverId !== PLATFORM_MCP_SERVER_ID) return mcpError(-32602, "No such server on this connection.");
-		const inner = isObject(params.params) ? params.params : {};
-		const meta = isObject(inner._meta) ? inner._meta : {};
+		const inner = isRecord(params.params) ? params.params : {};
+		const meta = isRecord(inner._meta) ? inner._meta : {};
 		if (meta[META_VERSION] !== MCP_PROTOCOL_VERSION) return mcpError(-32022, "Unsupported protocol version");
 		switch (params.method) {
 			case "server/discover":
 				// `resultType`: Codex 0.171's MCP client takes a discover result only with it.
-				return { result: { resultType: "complete", supportedVersions: [MCP_PROTOCOL_VERSION], capabilities: { tools: { listChanged: false } }, serverInfo: { name: PUBLISH_SERVER, version: "1" }, ttlMs: 0, cacheScope: "private" } };
+				return {
+					result: {
+						resultType: "complete",
+						supportedVersions: [MCP_PROTOCOL_VERSION],
+						capabilities: { tools: { listChanged: false } },
+						serverInfo: { name: PUBLISH_SERVER, version: "1" },
+						ttlMs: 0,
+						cacheScope: "private",
+					},
+				};
 			case "ping":
 				return { result: {} };
 			case "tools/list":
 				return { result: { tools: this.listed } };
 			case "tools/call": {
 				const name = typeof inner.name === "string" ? inner.name : "";
-				const text = (output: string, isError: boolean) => ({ result: { content: [{ type: "text", text: output }], isError } });
+				const text = (output: string, isError: boolean) => ({
+					result: { content: [{ type: "text", text: output }], isError },
+				});
 				const handler = this.tools.get(name);
 				if (!this.live() || signal.aborted) return text(CALL_AFTER_TURN, true);
 				if (!handler) return text(CALL_UNKNOWN, true);
@@ -253,10 +335,19 @@ export class PlatformMcpServer {
 				const limit = MCP_LIMITS[name as PlatformTool];
 				if (limit !== undefined && made > limit) {
 					const refused = overLimit(name as PlatformTool, limit);
-					try { this.onRefused?.(refused.said); } catch { /* A listener's failure must not change the answer. */ }
+					try {
+						this.onRefused?.(refused.said);
+					} catch {
+						/* A listener's failure must not change the answer. */
+					}
 					return text(refused.told, true);
 				}
-				const call: TurnPublishRequest = { messageId: "", callId: typeof params.requestId === "string" ? params.requestId : "", arguments: callArguments(inner.arguments), via: "mcp" };
+				const call: TurnPublishRequest = {
+					messageId: "",
+					callId: typeof params.requestId === "string" ? params.requestId : "",
+					arguments: callArguments(inner.arguments),
+					via: "mcp",
+				};
 				const done = await runPlatformTool(handler, call, signal);
 				return text(done.output, !done.ok);
 			}

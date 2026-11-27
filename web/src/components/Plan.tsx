@@ -8,7 +8,16 @@ import type { BillingPeriod, BillingView, HostedMonth, PlanInfo, UsageNumbers } 
 import { useCallback, useEffect, useId, useState } from "react";
 import { sizeName } from "../lib/sizes";
 import { count } from "../lib/format";
-import { dollars, minutes, monthName, monthReset, monthSentence, monthState, periodWords, withOverage } from "../lib/hosted";
+import {
+	dollars,
+	minutes,
+	monthName,
+	monthReset,
+	monthSentence,
+	monthState,
+	periodWords,
+	withOverage,
+} from "../lib/hosted";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { CheckIcon, InfoIcon, WarnIcon } from "./Icons";
@@ -24,7 +33,10 @@ export function useBilling() {
 	const [error, setError] = useState<string | null>(null);
 	const reload = useCallback(() => {
 		setError(null);
-		client.user(auth).billing().then(setView, (failure: unknown) => setError(explain(failure)));
+		client
+			.user(auth)
+			.billing()
+			.then(setView, (failure: unknown) => setError(explain(failure)));
 	}, [client, auth, explain]);
 	useEffect(reload, [reload]);
 	return { view, error, reload, replace: setView };
@@ -41,7 +53,10 @@ function useGoTo() {
 		setError(null);
 		try {
 			const user = client.user(auth);
-			const { url } = what === "checkout" ? await user.billingCheckout({ period, origin: location.origin }) : await user.billingPortal({ origin: location.origin });
+			const { url } =
+				what === "checkout"
+					? await user.billingCheckout({ period, origin: location.origin })
+					: await user.billingPortal({ origin: location.origin });
 			location.assign(url);
 		} catch (failure) {
 			setError(explain(failure));
@@ -56,10 +71,20 @@ function MonthMeter({ month }: { month: HostedMonth }) {
 	const scale = Math.max(month.limitSeconds, used, 1);
 	const share = (seconds: number) => `${Math.min(100, (seconds / scale) * 100)}%`;
 	return (
-		<div className="usage-meter billing-meter" role="meter" aria-label={`Hosted time used or held ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(used, month.limitSeconds)} aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} min of hosted time`}>
+		<div
+			className="usage-meter billing-meter"
+			role="meter"
+			aria-label={`Hosted time used or held ${periodWords(month)}`}
+			aria-valuemin={0}
+			aria-valuemax={month.limitSeconds}
+			aria-valuenow={Math.min(used, month.limitSeconds)}
+			aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} min of hosted time`}
+		>
 			{month.usedSeconds > 0 ? <span className="usage-meter-used" style={{ width: share(month.usedSeconds) }} /> : null}
 			{month.heldSeconds > 0 ? <span className="usage-meter-held" style={{ width: share(month.heldSeconds) }} /> : null}
-			{withOverage(month) ? <span className="billing-meter-mark" style={{ left: share(month.includedSeconds) }} aria-hidden="true" /> : null}
+			{withOverage(month) ? (
+				<span className="billing-meter-mark" style={{ left: share(month.includedSeconds) }} aria-hidden="true" />
+			) : null}
 		</div>
 	);
 }
@@ -68,8 +93,11 @@ function MonthMeter({ month }: { month: HostedMonth }) {
 function leftWords(month: HostedMonth): string {
 	if (month.leftSeconds < 60) return "none left";
 	const used = month.usedSeconds + month.heldSeconds;
-	if (withOverage(month) && used < month.includedSeconds) return `${minutes(month.includedSeconds - used)} left, then overage`;
-	return withOverage(month) ? `${minutes(month.leftSeconds)} left under your cap` : `${minutes(month.leftSeconds)} left`;
+	if (withOverage(month) && used < month.includedSeconds)
+		return `${minutes(month.includedSeconds - used)} left, then overage`;
+	return withOverage(month)
+		? `${minutes(month.leftSeconds)} left under your cap`
+		: `${minutes(month.leftSeconds)} left`;
 }
 
 /** Counted time and the allowance still available to start work. */
@@ -80,7 +108,11 @@ export function MonthFigure({ month }: { month: HostedMonth }) {
 		<>
 			<p className="usage-figure">
 				<strong>{minutes(used)}</strong>
-				<span> of {minutes(month.includedSeconds)} min of hosted time used{over > 0 ? `, and ${minutes(over)} past them` : ""}</span>
+				<span>
+					{" "}
+					of {minutes(month.includedSeconds)} min of hosted time used
+					{over > 0 ? `, and ${minutes(over)} past them` : ""}
+				</span>
 				<span className="usage-figure-left">{leftWords(month)}</span>
 			</p>
 			<MonthMeter month={month} />
@@ -90,7 +122,9 @@ export function MonthFigure({ month }: { month: HostedMonth }) {
 
 function planPrice(plan: PlanInfo, period: BillingPeriod): string {
 	if (plan.monthlyCents === 0) return "$0";
-	return period === "year" && plan.yearlyCents !== null ? `${dollars(Math.round(plan.yearlyCents / 12))} a month` : `${dollars(plan.monthlyCents)} a month`;
+	return period === "year" && plan.yearlyCents !== null
+		? `${dollars(Math.round(plan.yearlyCents / 12))} a month`
+		: `${dollars(plan.monthlyCents)} a month`;
 }
 
 /** The Plan section of Settings: the plan, this month's hosted minutes, the spend cap, and Upgrade or Manage billing. */
@@ -106,7 +140,13 @@ export function PlanSection() {
 		<section className="usage-section billing" id="plan" aria-labelledby="settings-plan">
 			<h3 className="usage-title" id="settings-plan">
 				Plan
-				{view?.enabled ? <span className="usage-count">{view.plan === "pro" ? `Pro${view.period === "year" ? " · yearly" : view.period === "month" ? " · monthly" : ""}` : "Free"}</span> : null}
+				{view?.enabled ? (
+					<span className="usage-count">
+						{view.plan === "pro"
+							? `Pro${view.period === "year" ? " · yearly" : view.period === "month" ? " · monthly" : ""}`
+							: "Free"}
+					</span>
+				) : null}
 			</h3>
 			{view === null ? (
 				error ? (
@@ -134,23 +174,39 @@ export function PlanSection() {
 	);
 }
 
-function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace(view: BillingView): void; go: ReturnType<typeof useGoTo>["go"]; busy: "checkout" | "portal" | null; goError: string | null }) {
-	const plan = view.plans.find((one) => one.id === view.plan)!;
-	const pro = view.plans.find((one) => one.id === "pro") ?? null;
+function PlanBody({
+	view,
+	replace,
+	go,
+	busy,
+	goError,
+}: {
+	view: Enabled;
+	replace(view: BillingView): void;
+	go: ReturnType<typeof useGoTo>["go"];
+	busy: "checkout" | "portal" | null;
+	goError: string | null;
+}) {
+	const plan = view.plans.find(one => one.id === view.plan)!;
+	const pro = view.plans.find(one => one.id === "pro") ?? null;
 	const month = view.month;
-	const date = (at: number) => new Date(at).toLocaleDateString("en-US", { day: "numeric", month: "long", timeZone: "UTC" });
+	const date = (at: number) =>
+		new Date(at).toLocaleDateString("en-US", { day: "numeric", month: "long", timeZone: "UTC" });
 	return (
 		<>
-			<p className="usage-lede">
-				Your plan includes hosted time. Runs on your machines are free.
-			</p>
+			<p className="usage-lede">Your plan includes hosted time. Runs on your machines are free.</p>
 			{view.status === "paused" ? (
-				<p className="callout callout-warn" role="status">Your subscription is paused. {view.plan === "pro" && view.graceUntil ? `Pro’s limits stay until ${date(view.graceUntil)}. ` : ""}Open Manage billing to resume it.</p>
+				<p className="callout callout-warn" role="status">
+					Your subscription is paused.{" "}
+					{view.plan === "pro" && view.graceUntil ? `Pro’s limits stay until ${date(view.graceUntil)}. ` : ""}Open
+					Manage billing to resume it.
+				</p>
 			) : view.status === "past_due" && view.graceUntil !== null ? (
 				<p className="callout callout-warn billing-callout" role="status">
 					<WarnIcon />
 					<span>
-						Your last payment didn't go through. Pro's limits stay until {date(view.graceUntil)}; after that the account moves to Free's limits. Nothing is deleted. Update your card under Manage billing.
+						Your last payment didn't go through. Pro's limits stay until {date(view.graceUntil)}; after that the account
+						moves to Free's limits. Nothing is deleted. Update your card under Manage billing.
 					</span>
 				</p>
 			) : null}
@@ -165,20 +221,33 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					<div>
 						<dt>Plan</dt>
 						<dd>
-							{plan.name}, {plan.id === "pro" ? (view.period === "year" && plan.yearlyCents !== null ? `${dollars(plan.yearlyCents)} a year` : `${dollars(plan.monthlyCents)} a month`) : "$0"}
-							{view.periodEnd !== null ? <span className="billing-gloss"> · {view.cancelAtPeriodEnd ? `ends ${date(view.periodEnd)}` : `renews ${date(view.periodEnd)}`}</span> : null}
+							{plan.name},{" "}
+							{plan.id === "pro"
+								? view.period === "year" && plan.yearlyCents !== null
+									? `${dollars(plan.yearlyCents)} a year`
+									: `${dollars(plan.monthlyCents)} a month`
+								: "$0"}
+							{view.periodEnd !== null ? (
+								<span className="billing-gloss">
+									{" "}
+									· {view.cancelAtPeriodEnd ? `ends ${date(view.periodEnd)}` : `renews ${date(view.periodEnd)}`}
+								</span>
+							) : null}
 						</dd>
 					</div>
 					<div>
 						<dt>Includes</dt>
 						<dd>
-							{count(plan.hostedMinutes)} min of hosted time a month, {plan.hostedRunning} hosted at once, up to {plan.machines} machines
+							{count(plan.hostedMinutes)} min of hosted time a month, {plan.hostedRunning} hosted at once, up to{" "}
+							{plan.machines} machines
 						</dd>
 					</div>
 					{month ? (
 						<div>
 							<dt>Resets</dt>
-							<dd>{monthReset(month)}, {new Date(month.resetsAt).toISOString().slice(11, 16)} UTC</dd>
+							<dd>
+								{monthReset(month)}, {new Date(month.resetsAt).toISOString().slice(11, 16)} UTC
+							</dd>
 						</div>
 					) : null}
 					{view.period === "month" && plan.overageCentsPer1000 !== null ? (
@@ -186,8 +255,13 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 							<div>
 								<dt>Overage</dt>
 								<dd>
-									{count(view.overageMinutes)} {view.overageMinutes === 1 ? "minute" : "minutes"} {month ? periodWords(month) : "this billing period"}, {dollars(Math.ceil((view.overageMinutes * plan.overageCentsPer1000) / 1000))}
-									<span className="billing-gloss"> · ${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute past the included ones</span>
+									{count(view.overageMinutes)} {view.overageMinutes === 1 ? "minute" : "minutes"}{" "}
+									{month ? periodWords(month) : "this billing period"},{" "}
+									{dollars(Math.ceil((view.overageMinutes * plan.overageCentsPer1000) / 1000))}
+									<span className="billing-gloss">
+										{" "}
+										· ${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute past the included ones
+									</span>
 								</dd>
 							</div>
 							<div>
@@ -200,7 +274,12 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					) : (
 						<div>
 							<dt>At the limit</dt>
-							<dd>{view.plan === "pro" && view.period === "year" ? "Yearly Pro has no overage, so no spend cap applies. Switch to monthly Pro for overage." : "Hosted agents stop until the month resets."} Agents on your own machines keep running.</dd>
+							<dd>
+								{view.plan === "pro" && view.period === "year"
+									? "Yearly Pro has no overage, so no spend cap applies. Switch to monthly Pro for overage."
+									: "Hosted agents stop until the month resets."}{" "}
+								Agents on your own machines keep running.
+							</dd>
 						</div>
 					)}
 				</dl>
@@ -211,7 +290,9 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 						<a className="button button-primary" {...linkProps({ name: "plans" })}>
 							Upgrade to Pro
 						</a>
-						<span className="billing-gloss">{pro ? `${dollars(pro.monthlyCents)} a month, ${count(pro.hostedMinutes)} min of hosted time` : null}</span>
+						<span className="billing-gloss">
+							{pro ? `${dollars(pro.monthlyCents)} a month, ${count(pro.hostedMinutes)} min of hosted time` : null}
+						</span>
 					</>
 				) : (
 					<>
@@ -246,7 +327,8 @@ function CapForm({ view, plan, onSaved }: { view: Enabled; plan: PlanInfo; onSav
 	const cents = Math.round(dollarsAsked * 100);
 	const valid = draft.trim() !== "" && Number.isFinite(dollarsAsked) && cents >= 0 && cents <= view.maxCapCents;
 	const changed = valid && cents !== view.capCents;
-	const capMinutes = plan.overageCentsPer1000 === null ? 0 : Math.floor((view.capCents * 1000) / plan.overageCentsPer1000);
+	const capMinutes =
+		plan.overageCentsPer1000 === null ? 0 : Math.floor((view.capCents * 1000) / plan.overageCentsPer1000);
 	const save = async () => {
 		setBusy(true);
 		setError(null);
@@ -261,32 +343,65 @@ function CapForm({ view, plan, onSaved }: { view: Enabled; plan: PlanInfo; onSav
 		}
 	};
 	return (
-		<form className="billing-cap" onSubmit={(event) => { event.preventDefault(); if (changed) void save(); }}>
-			<label className="visually-hidden" htmlFor={id}>Monthly overage spend cap in US dollars</label>
+		<form
+			className="billing-cap"
+			onSubmit={event => {
+				event.preventDefault();
+				if (changed) void save();
+			}}
+		>
+			<label className="visually-hidden" htmlFor={id}>
+				Monthly overage spend cap in US dollars
+			</label>
 			<span className="billing-cap-field">
 				<span aria-hidden="true">$</span>
-				<input id={id} className={`input input-mono${valid ? "" : " input-invalid"}`} inputMode="decimal" value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} aria-describedby={`${id}-note`} />
+				<input
+					id={id}
+					className={`input input-mono${valid ? "" : " input-invalid"}`}
+					inputMode="decimal"
+					value={draft}
+					disabled={busy}
+					onChange={event => setDraft(event.target.value)}
+					aria-describedby={`${id}-note`}
+				/>
 			</span>
 			<Button size="sm" variant="secondary" type="submit" disabled={!changed || busy}>
 				{busy ? "Saving…" : "Save"}
 			</Button>
 			<span className="billing-gloss" id={`${id}-note`}>
-				{valid ? `a month, at most ${dollars(view.maxCapCents)}: ${count(capMinutes)} overage minutes. At the cap hosted agents stop; 0 means no overage.` : `Enter an amount from $0 to ${dollars(view.maxCapCents)}.`}
+				{valid
+					? `a month, at most ${dollars(view.maxCapCents)}: ${count(capMinutes)} overage minutes. At the cap hosted agents stop; 0 means no overage.`
+					: `Enter an amount from $0 to ${dollars(view.maxCapCents)}.`}
 			</span>
-			{error ? <span className="billing-cap-error" role="alert">{error}</span> : null}
+			{error ? (
+				<span className="billing-cap-error" role="alert">
+					{error}
+				</span>
+			) : null}
 		</form>
 	);
 }
 
 const FEATURES: Array<{ label: string; of(plan: PlanInfo, period: BillingPeriod): string | boolean }> = [
-	{ label: "My machines", of: (plan) => `Unlimited runs, up to ${plan.machines} machines` },
-	{ label: "Hosted time", of: (plan) => `${count(plan.hostedMinutes)} min a month` },
-	{ label: "Hosted at once", of: (plan) => String(plan.hostedRunning) },
-	{ label: "Sandbox sizes", of: (plan) => plan.sizes.map(sizeName).join(", ") },
+	{ label: "My machines", of: plan => `Unlimited runs, up to ${plan.machines} machines` },
+	{ label: "Hosted time", of: plan => `${count(plan.hostedMinutes)} min a month` },
+	{ label: "Hosted at once", of: plan => String(plan.hostedRunning) },
+	{ label: "Sandbox sizes", of: plan => plan.sizes.map(sizeName).join(", ") },
 	{ label: "The Factory", of: () => "All of it: plan first, checks, CI fixes, review" },
-	{ label: "Features over two repositories", of: (plan) => plan.crossRepo },
-	{ label: "Items filed from GitHub or Linear", of: (plan) => `${count(plan.githubItemsPerDay)} a day, GitHub and Linear together` },
-	{ label: "Past the included minutes", of: (plan, period) => (plan.overageCentsPer1000 === null ? "Hosted agents stop until the month resets" : period === "year" ? "No overage: hosted agents stop at 1,800 minutes a month" : `$${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute, up to a spend cap you set (default $20)`) },
+	{ label: "Features over two repositories", of: plan => plan.crossRepo },
+	{
+		label: "Items filed from GitHub or Linear",
+		of: plan => `${count(plan.githubItemsPerDay)} a day, GitHub and Linear together`,
+	},
+	{
+		label: "Past the included minutes",
+		of: (plan, period) =>
+			plan.overageCentsPer1000 === null
+				? "Hosted agents stop until the month resets"
+				: period === "year"
+					? "No overage: hosted agents stop at 1,800 minutes a month"
+					: `$${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute, up to a spend cap you set (default $20)`,
+	},
 ];
 
 /** Free and Pro side by side, with monthly or yearly, and Upgrade. */
@@ -294,15 +409,23 @@ export function PlanCompare({ view }: { view: Enabled }) {
 	const { go, busy, error } = useGoTo();
 	const [period, setPeriod] = useState<BillingPeriod>("month");
 	const name = useId();
-	const pro = view.plans.find((plan) => plan.id === "pro");
-	const saving = pro && pro.yearlyCents !== null ? Math.round(100 - (pro.yearlyCents / (pro.monthlyCents * 12)) * 100) : 0;
+	const pro = view.plans.find(plan => plan.id === "pro");
+	const saving =
+		pro && pro.yearlyCents !== null ? Math.round(100 - (pro.yearlyCents / (pro.monthlyCents * 12)) * 100) : 0;
 	return (
 		<>
 			<div className="billing-period">
 				<div className="segmented" role="radiogroup" aria-label="Billing period">
-					{(["month", "year"] as const).map((one) => (
+					{(["month", "year"] as const).map(one => (
 						<label key={one} className={`segment${one === period ? " segment-chosen" : ""}`}>
-							<input className="segment-radio" type="radio" name={name} value={one} checked={one === period} onChange={() => setPeriod(one)} />
+							<input
+								className="segment-radio"
+								type="radio"
+								name={name}
+								value={one}
+								checked={one === period}
+								onChange={() => setPeriod(one)}
+							/>
 							{one === "month" ? "Monthly" : "Yearly"}
 						</label>
 					))}
@@ -310,10 +433,14 @@ export function PlanCompare({ view }: { view: Enabled }) {
 				{saving > 0 ? <span className="billing-gloss">Yearly saves {saving}%</span> : null}
 			</div>
 			<div className="billing-grid">
-				{view.plans.map((plan) => {
+				{view.plans.map(plan => {
 					const current = plan.id === view.plan;
 					return (
-						<article key={plan.id} className={`usage-card billing-offer${current ? " billing-offer-current" : ""}`} aria-labelledby={`plan-${plan.id}`}>
+						<article
+							key={plan.id}
+							className={`usage-card billing-offer${current ? " billing-offer-current" : ""}`}
+							aria-labelledby={`plan-${plan.id}`}
+						>
 							<header className="billing-offer-head">
 								<h2 className="billing-offer-name" id={`plan-${plan.id}`}>
 									{plan.name}
@@ -321,22 +448,35 @@ export function PlanCompare({ view }: { view: Enabled }) {
 								</h2>
 								<p className="billing-offer-price">
 									<strong>{planPrice(plan, period)}</strong>
-									{plan.id === "pro" && period === "year" && plan.yearlyCents !== null ? <span className="billing-gloss"> · {dollars(plan.yearlyCents)} billed yearly</span> : plan.id === "pro" ? <span className="billing-gloss"> · billed monthly</span> : null}
+									{plan.id === "pro" && period === "year" && plan.yearlyCents !== null ? (
+										<span className="billing-gloss"> · {dollars(plan.yearlyCents)} billed yearly</span>
+									) : plan.id === "pro" ? (
+										<span className="billing-gloss"> · billed monthly</span>
+									) : null}
 								</p>
 							</header>
 							<ul className="billing-offer-list">
-								{FEATURES.map((feature) => {
+								{FEATURES.map(feature => {
 									const value = feature.of(plan, period);
-									if (value === false) return (
-										<li key={feature.label} className="billing-offer-no">
-											<span className="billing-offer-label">{feature.label}</span>
-											<span>Not included</span>
-										</li>
-									);
+									if (value === false)
+										return (
+											<li key={feature.label} className="billing-offer-no">
+												<span className="billing-offer-label">{feature.label}</span>
+												<span>Not included</span>
+											</li>
+										);
 									return (
 										<li key={feature.label}>
 											<span className="billing-offer-label">{feature.label}</span>
-											<span>{value === true ? <><CheckIcon size={14} /> Included</> : value}</span>
+											<span>
+												{value === true ? (
+													<>
+														<CheckIcon size={14} /> Included
+													</>
+												) : (
+													value
+												)}
+											</span>
 										</li>
 									);
 								})}
@@ -344,18 +484,26 @@ export function PlanCompare({ view }: { view: Enabled }) {
 							<div className="billing-offer-action">
 								{plan.id === "pro" ? (
 									current || view.status === "paused" || view.status === "past_due" ? (
-										<Button variant="secondary" disabled={busy !== null || !view.portal} onClick={() => void go("portal")}>
+										<Button
+											variant="secondary"
+											disabled={busy !== null || !view.portal}
+											onClick={() => void go("portal")}
+										>
 											{busy === "portal" ? "Opening…" : "Manage billing"}
 										</Button>
 									) : (
 										<Button variant="primary" disabled={busy !== null} onClick={() => void go("checkout", period)}>
-											{busy === "checkout" ? "Opening checkout…" : `Upgrade to Pro${period === "year" ? ", yearly" : ""}`}
+											{busy === "checkout"
+												? "Opening checkout…"
+												: `Upgrade to Pro${period === "year" ? ", yearly" : ""}`}
 										</Button>
 									)
 								) : current ? (
 									<span className="billing-gloss">You're on Free.</span>
 								) : (
-									<span className="billing-gloss">Cancel Pro under Manage billing to move to Free at the end of the period.</span>
+									<span className="billing-gloss">
+										Cancel Pro under Manage billing to move to Free at the end of the period.
+									</span>
 								)}
 							</div>
 						</article>
@@ -384,7 +532,10 @@ export function HostedNotice({ numbers, pro }: { numbers: UsageNumbers | null; p
 	if (!numbers?.hosted || state === "plenty" || sentence === null) return null;
 	const month = numbers.hosted;
 	return (
-		<div className={`callout ${state === "used" ? "callout-warn" : "callout-info"} billing-notice`} role={state === "used" ? "alert" : "status"}>
+		<div
+			className={`callout ${state === "used" ? "callout-warn" : "callout-info"} billing-notice`}
+			role={state === "used" ? "alert" : "status"}
+		>
 			{state === "used" ? <WarnIcon /> : <InfoIcon />}
 			<div>
 				<p className="callout-text">{sentence}</p>

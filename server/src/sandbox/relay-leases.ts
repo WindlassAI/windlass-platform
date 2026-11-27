@@ -83,20 +83,36 @@ export interface Placeholder {
 
 /** A placeholder's payload, or null for anything this deployment did not sign, or signed for something else, or that expired. */
 export function readPlaceholder(bearer: string, now = Date.now()): Placeholder | null {
-	const payload = readSignedPayload(bearer, PREFIX, 1024, (kind) => (kind === "m" || kind === "f" || kind === "h" ? "model-relay" : null));
+	const payload = readSignedPayload(bearer, PREFIX, 1024, kind =>
+		kind === "m" || kind === "f" || kind === "h" ? "model-relay" : null,
+	);
 	if (payload === null) return null;
 	const { u, s, n, exp, machine } = payload;
-	if (typeof u !== "string" || typeof s !== "string" || typeof n !== "string" || !/^[a-f0-9]{32}$/.test(n) || typeof exp !== "number" || exp <= now) return null;
+	if (
+		typeof u !== "string" ||
+		typeof s !== "string" ||
+		typeof n !== "string" ||
+		!/^[a-f0-9]{32}$/.test(n) ||
+		typeof exp !== "number" ||
+		exp <= now
+	)
+		return null;
 	const placeholder = { uid: u, sessionId: s, nonce: n, expiresAt: exp };
 	if (payload.k !== "f") return machine === undefined ? placeholder : null;
 	return typeof machine === "string" && machine ? { ...placeholder, machine } : null;
 }
 
-export async function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now(), consume = false): Promise<RelayToken | "limit" | null> {
+export async function leaseToken(
+	nonce: string,
+	uid: string,
+	sessionId: string,
+	now = Date.now(),
+	consume = false,
+): Promise<RelayToken | "limit" | null> {
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId || lease.expiresAt <= now) return null;
 	if (consume && lease.takeRequest) {
-		if (!await lease.takeRequest()) return "limit";
+		if (!(await lease.takeRequest())) return "limit";
 	} else if (consume && lease.remaining !== undefined) {
 		if (lease.remaining <= 0) return "limit";
 		lease.remaining--;
@@ -114,15 +130,29 @@ export interface RemoteLease {
 export const relayTransitSubject = (uid: string, session: string, lease: string, request: string) =>
 	JSON.stringify(["model-relay", uid, session, lease, request]);
 
-export async function remoteLease(nonce: string, uid: string, sessionId: string, request: string, consume = false): Promise<RemoteLease> {
+export async function remoteLease(
+	nonce: string,
+	uid: string,
+	sessionId: string,
+	request: string,
+	consume = false,
+): Promise<RemoteLease> {
 	if (!/^[a-f0-9]{32}$/.test(request)) throw new Error("Invalid relay request nonce");
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId) return { held: false, token: null };
 	const token = await leaseToken(nonce, uid, sessionId, Date.now(), consume);
 	if (token === "limit") return { held: true, token: null, limited: true };
-	return { held: true, token: token?.kind === "access"
-		? serverSealer().seal("transit", relayTransitSubject(uid, sessionId, nonce, request), JSON.stringify({ ...token, exp: Date.now() + 60_000 }))
-		: token };
+	return {
+		held: true,
+		token:
+			token?.kind === "access"
+				? serverSealer().seal(
+						"transit",
+						relayTransitSubject(uid, sessionId, nonce, request),
+						JSON.stringify({ ...token, exp: Date.now() + 60_000 }),
+					)
+				: token,
+	};
 }
 
 /** Whether this process has the lease at all (live or not yet handed a token). */
@@ -145,7 +175,15 @@ export function trackRequest(nonce: string, controller: AbortController): (() =>
  * A turn's lease. `origin`: WLP_PUBLIC_URL, the address the sandbox reaches the route at. `ttlMs`: how long
  * the placeholder's signature counts, at most; the lease itself ends with the turn, before that.
  */
-type LeaseInput = { uid: string; sessionId: string; origin: string; ttlMs: number; signal?: AbortSignal; requestLimit?: number; takeRequest?: TakeRelayRequest };
+type LeaseInput = {
+	uid: string;
+	sessionId: string;
+	origin: string;
+	ttlMs: number;
+	signal?: AbortSignal;
+	requestLimit?: number;
+	takeRequest?: TakeRelayRequest;
+};
 
 function closeLease(nonce: string, lease: Lease) {
 	if (!leases.delete(nonce)) return;
@@ -160,13 +198,24 @@ export function revokeMachineLeases(uid: string, machine: string) {
 
 export function openRelayLease(input: LeaseInput & { key?: undefined }): TurnModelRelay;
 export function openRelayLease(input: LeaseInput & { key: KeyReference; machine?: string }): KeyTurnRelay;
-export function openRelayLease(input: LeaseInput & { key?: KeyReference; machine?: string }): TurnModelRelay | KeyTurnRelay {
+export function openRelayLease(
+	input: LeaseInput & { key?: KeyReference; machine?: string },
+): TurnModelRelay | KeyTurnRelay {
 	input.signal?.throwIfAborted();
 	const now = Date.now();
 	for (const [nonce, lease] of leases) if (lease.expiresAt <= now) closeLease(nonce, lease);
 	const nonce = randomBytes(16).toString("hex");
 	const expiresAt = now + input.ttlMs;
-	const lease: Lease = { remaining: input.requestLimit, takeRequest: input.takeRequest, machine: input.machine, uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
+	const lease: Lease = {
+		remaining: input.requestLimit,
+		takeRequest: input.takeRequest,
+		machine: input.machine,
+		uid: input.uid,
+		sessionId: input.sessionId,
+		token: input.key ? { ...input.key, kind: "key" } : null,
+		expiresAt,
+		requests: new Set(),
+	};
 	leases.set(nonce, lease);
 	const close = () => {
 		input.signal?.removeEventListener("abort", close);
@@ -175,15 +224,28 @@ export function openRelayLease(input: LeaseInput & { key?: KeyReference; machine
 	input.signal?.addEventListener("abort", close, { once: true });
 	const relay = {
 		// A route that predates a key lease’s constraints must reject its signed kind.
-		placeholder: signedPayload(PREFIX, "model-relay", { k: input.machine ? "f" : input.key ? "h" : "m", u: input.uid, s: input.sessionId, n: nonce, exp: expiresAt, machine: input.machine }),
-		env: { WINDLASS_MODEL_BASE_URL: input.origin + RELAY_PREFIX + wires[input.key?.provider ?? "chatgpt"].base, WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin },
+		placeholder: signedPayload(PREFIX, "model-relay", {
+			k: input.machine ? "f" : input.key ? "h" : "m",
+			u: input.uid,
+			s: input.sessionId,
+			n: nonce,
+			exp: expiresAt,
+			machine: input.machine,
+		}),
+		env: {
+			WINDLASS_MODEL_BASE_URL: input.origin + RELAY_PREFIX + wires[input.key?.provider ?? "chatgpt"].base,
+			WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin,
+		},
 		close: async () => close(),
 	};
 	if (input.key) return relay;
-	return { ...relay, hand: async (token: AccessToken) => {
-		if (!leases.has(nonce)) throw new Error("This relay lease has ended.");
-		lease.token = { kind: "access", accessToken: token.accessToken, expiresAt: token.expiresAt };
-	} };
+	return {
+		...relay,
+		hand: async (token: AccessToken) => {
+			if (!leases.has(nonce)) throw new Error("This relay lease has ended.");
+			lease.token = { kind: "access", accessToken: token.accessToken, expiresAt: token.expiresAt };
+		},
+	};
 }
 
 // Only used with a placeholder we just signed or verified. Its signing-key id survives key rotation.
@@ -191,7 +253,14 @@ function proofKey(placeholder: string): string {
 	return keyedDigest("model-relay", "forward-proof/" + placeholder, placeholder.split(".")[1]!).toString("base64url");
 }
 
-export function verifiedMachine(placeholder: string, machine: string, proof: string | undefined, method: string, path: string, now: number): string | undefined {
+export function verifiedMachine(
+	placeholder: string,
+	machine: string,
+	proof: string | undefined,
+	method: string,
+	path: string,
+	now: number,
+): string | undefined {
 	if (!proof || !/^[1-9]\d{12}\.[A-Za-z0-9_-]{43}$/.test(proof)) return;
 	const time = Number(proof.split(".")[0]);
 	if (Math.abs(now - time) > 60_000) return;
@@ -200,22 +269,45 @@ export function verifiedMachine(placeholder: string, machine: string, proof: str
 }
 
 /** Keep the Settings key on the platform. The Docker relay forwards with a second, turn-scoped placeholder. */
-export async function forwardKeyLease(uid: string, sessionId: string, key: KeyReference, machine: string | undefined,
-	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>, signal?: AbortSignal, takeRequest?: TakeRelayRequest): Promise<KeyTurnRelay> {
+export async function forwardKeyLease(
+	uid: string,
+	sessionId: string,
+	key: KeyReference,
+	machine: string | undefined,
+	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>,
+	signal?: AbortSignal,
+	takeRequest?: TakeRelayRequest,
+): Promise<KeyTurnRelay> {
 	signal?.throwIfAborted();
 	const url = config.modelRelay.url;
-	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
+	if (!config.modelRelay.on || !url || !sessionId)
+		throw new Error("A saved provider key requires a platform model relay.");
 	const ttlMs = config.turnTimeoutMs + 60_000;
 	const expiresAt = Date.now() + ttlMs;
-	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs, signal, takeRequest, requestLimit: machine ? undefined : config.modelRelay.turnRequests });
+	const platform = openRelayLease({
+		uid,
+		sessionId,
+		key,
+		machine,
+		origin: url.origin,
+		ttlMs,
+		signal,
+		takeRequest,
+		requestLimit: machine ? undefined : config.modelRelay.turnRequests,
+	});
 	let local: KeyTurnRelay | undefined;
 	let closing: Promise<void> | undefined;
 	const close = () => {
-		return closing ??= Promise.all([platform.close(), local?.close()]).then(() => {});
+		return (closing ??= Promise.all([platform.close(), local?.close()]).then(() => {}));
 	};
 	try {
-		local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt,
-			...(machine && { proofKey: proofKey(platform.placeholder) }) });
+		local = await open({
+			provider: key.provider,
+			host: url.host,
+			placeholder: platform.placeholder,
+			expiresAt,
+			...(machine && { proofKey: proofKey(platform.placeholder) }),
+		});
 		signal?.throwIfAborted();
 		return { env: local.env, placeholder: local.placeholder, close };
 	} catch (error) {
@@ -245,8 +337,16 @@ export interface RelayLimits {
 }
 
 export const ROUTE_LIMITS: RelayLimits = {
-	sessionRequests: 8, sessionWaiting: 32, userRequests: 16, totalRequests: 64, totalWaiting: 256, waitMs: 90_000,
-	userPerMinute: 300, userBurst: 100, bodyBytes: 32 * 1024 * 1024, totalBodyBytes: 256 * 1024 * 1024,
+	sessionRequests: 8,
+	sessionWaiting: 32,
+	userRequests: 16,
+	totalRequests: 64,
+	totalWaiting: 256,
+	waitMs: 90_000,
+	userPerMinute: 300,
+	userBurst: 100,
+	bodyBytes: 32 * 1024 * 1024,
+	totalBodyBytes: 256 * 1024 * 1024,
 };
 
 /** A user's requests per minute, as a bucket that refills: what a placeholder that keeps being sent costs is bounded before it is looked up. */
@@ -263,7 +363,9 @@ export class UserRate {
 		bucket.at = now;
 		if (this.buckets.size > 65_536 && !this.buckets.has(uid)) {
 			// Full buckets say nothing: they go first.
-			for (const [key, b] of this.buckets) if (Math.min(this.limits.userBurst, b.tokens + (now - b.at) * rate) >= this.limits.userBurst) this.buckets.delete(key);
+			for (const [key, b] of this.buckets)
+				if (Math.min(this.limits.userBurst, b.tokens + (now - b.at) * rate) >= this.limits.userBurst)
+					this.buckets.delete(key);
 		}
 		this.buckets.delete(uid);
 		this.buckets.set(uid, bucket);
@@ -312,7 +414,12 @@ export class RelayLimiter {
 	private total = 0;
 	private readonly waiting: Waiter[] = [];
 
-	constructor(private readonly limits: Pick<RelayLimits, "sessionRequests" | "sessionWaiting" | "userRequests" | "totalRequests" | "totalWaiting" | "waitMs"> = ROUTE_LIMITS) {}
+	constructor(
+		private readonly limits: Pick<
+			RelayLimits,
+			"sessionRequests" | "sessionWaiting" | "userRequests" | "totalRequests" | "totalWaiting" | "waitMs"
+		> = ROUTE_LIMITS,
+	) {}
 
 	private add(map: Map<string, number>, key: string, n: number): void {
 		const value = (map.get(key) ?? 0) + n;
@@ -321,12 +428,18 @@ export class RelayLimiter {
 	}
 
 	private room(lease: string, uid: string): boolean {
-		return (this.leaseInFlight.get(lease) ?? 0) < this.limits.sessionRequests && (this.userInFlight.get(uid) ?? 0) < this.limits.userRequests && this.total < this.limits.totalRequests;
+		return (
+			(this.leaseInFlight.get(lease) ?? 0) < this.limits.sessionRequests &&
+			(this.userInFlight.get(uid) ?? 0) < this.limits.userRequests &&
+			this.total < this.limits.totalRequests
+		);
 	}
 
 	private full(lease: string, uid: string): string {
-		if ((this.leaseInFlight.get(lease) ?? 0) >= this.limits.sessionRequests) return `Too many model requests at once from this session (${this.limits.sessionRequests}).`;
-		if ((this.userInFlight.get(uid) ?? 0) >= this.limits.userRequests) return `Too many model requests at once from your sessions (${this.limits.userRequests}).`;
+		if ((this.leaseInFlight.get(lease) ?? 0) >= this.limits.sessionRequests)
+			return `Too many model requests at once from this session (${this.limits.sessionRequests}).`;
+		if ((this.userInFlight.get(uid) ?? 0) >= this.limits.userRequests)
+			return `Too many model requests at once from your sessions (${this.limits.userRequests}).`;
 		return `Too many model requests at once on this server (${this.limits.totalRequests}).`;
 	}
 
@@ -360,9 +473,15 @@ export class RelayLimiter {
 			};
 		};
 		if (this.room(lease, uid)) return Promise.resolve(take());
-		if ((this.leaseWaiting.get(lease) ?? 0) >= this.limits.sessionWaiting) return Promise.resolve({ refused: `Too many model requests waiting from this session (${this.limits.sessionWaiting}).` });
-		if (this.waiting.length >= this.limits.totalWaiting) return Promise.resolve({ refused: `Too many model requests waiting on this server (${this.limits.totalWaiting}).` });
-		return new Promise((resolve) => {
+		if ((this.leaseWaiting.get(lease) ?? 0) >= this.limits.sessionWaiting)
+			return Promise.resolve({
+				refused: `Too many model requests waiting from this session (${this.limits.sessionWaiting}).`,
+			});
+		if (this.waiting.length >= this.limits.totalWaiting)
+			return Promise.resolve({
+				refused: `Too many model requests waiting on this server (${this.limits.totalWaiting}).`,
+			});
+		return new Promise(resolve => {
 			const leave = () => {
 				const at = this.waiting.indexOf(entry);
 				if (at < 0) return false;

@@ -27,6 +27,7 @@ import type { SignInCommands } from "./commands.js";
 import { SignInHolder, type StoredSignIn } from "./holder.js";
 import { type SignInMaterial, signInOnly } from "./material.js";
 import type { Sealer } from "./seal.js";
+import { errorText } from "../util.js";
 
 export interface SignInDirectory {
 	/** Replaces the user's sign-in with `sealed`: a finished sign-in, sealed for that user. */
@@ -51,7 +52,7 @@ export type SignInProblem =
 	| { kind: "other"; message: string };
 
 export function problemOf(error: unknown): SignInProblem {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = errorText(error);
 	if (error instanceof SandboxUserError) return { kind: "user", message };
 	if (error instanceof SignInRefreshError) return { kind: "refresh", message, code: error.code };
 	return { kind: "other", message };
@@ -138,16 +139,17 @@ export class ActorSignInDirectory implements SignInDirectory {
 		} catch (error) {
 			if (isActorGone(error)) throw new SandboxUserError(NOT_SIGNED_IN);
 			// What the engine or the actor said about a call that did not get through. It never holds a token: none was sent.
-			throw new Error(`the user's sign-in could not be asked: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(`the user's sign-in could not be asked: ${errorText(error)}`);
 		}
 		if (!answer.ok) throw errorOf(answer.problem);
 		let token: { accessToken?: unknown; expiresAt?: unknown };
 		try {
 			token = JSON.parse(this.sealer.open("transit", tokenSubject(uid, nonce), answer.sealed)) as typeof token;
 		} catch (error) {
-			throw new Error(`the answer to the request for the user's access token does not open: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(`the answer to the request for the user's access token does not open: ${errorText(error)}`);
 		}
-		if (typeof token.accessToken !== "string" || typeof token.expiresAt !== "number") throw new Error("the answer to the request for the user's access token holds no token");
+		if (typeof token.accessToken !== "string" || typeof token.expiresAt !== "number")
+			throw new Error("the answer to the request for the user's access token holds no token");
 		return { accessToken: token.accessToken, expiresAt: token.expiresAt };
 	}
 }
@@ -191,7 +193,7 @@ export class MemorySignInDirectory implements SignInDirectory {
 						const row = rows.get(uid);
 						return row === undefined ? null : { ...row };
 					},
-					save: async (row) => {
+					save: async row => {
 						rows.set(uid, { ...row });
 					},
 				},
@@ -228,7 +230,11 @@ export class MemorySignInDirectory implements SignInDirectory {
 	 */
 	put(uid: string, material: SignInMaterial): void {
 		const row = this.rows.get(uid);
-		this.rows.set(uid, { sealed: this.options.sealer.seal("user", uid, JSON.stringify(signInOnly(material))), generation: (row?.generation ?? 0) + 1, shortNoted: false });
+		this.rows.set(uid, {
+			sealed: this.options.sealer.seal("user", uid, JSON.stringify(signInOnly(material))),
+			generation: (row?.generation ?? 0) + 1,
+			shortNoted: false,
+		});
 	}
 
 	/** The key this directory's blobs are sealed with, for checks that look into one. */

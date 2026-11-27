@@ -75,9 +75,16 @@ export class StartClock {
 	}
 
 	record(): StartTimes {
-		const span = (from: number | null | undefined, to: number | null | undefined) => (from == null || to == null ? undefined : Math.max(0, to - from));
+		const span = (from: number | null | undefined, to: number | null | undefined) =>
+			from == null || to == null ? undefined : Math.max(0, to - from);
 		const { process, initialized, prompted, output } = this.at;
-		const times: StartTimes = { turn: this.turn, at: this.began, harness: this.harness, place: this.place, newSandbox: this.isNew };
+		const times: StartTimes = {
+			turn: this.turn,
+			at: this.began,
+			harness: this.harness,
+			place: this.place,
+			newSandbox: this.isNew,
+		};
 		const put = <K extends keyof StartTimes>(key: K, value: StartTimes[K] | undefined | null) => {
 			if (value !== undefined && value !== null) times[key] = value;
 		};
@@ -107,7 +114,19 @@ export function keepStartTimes(kept: readonly StartTimes[] | undefined, times: S
 
 /** One log line, `[wlp] session.start_times …`, with every duration in ms. No secrets: durations, ids and names. */
 export function startTimesLog(sessionId: string, times: StartTimes): string {
-	const fields: (keyof StartTimes)[] = ["waited", "image", "sandbox", "runnerCreate", "setup", "prepare", "relay", "agent", "session", "firstOutput", "total"];
-	const ms = fields.filter((key) => typeof times[key] === "number").map((key) => `${key}_ms=${times[key]}`);
+	const fields: (keyof StartTimes)[] = [
+		"waited",
+		"image",
+		"sandbox",
+		"runnerCreate",
+		"setup",
+		"prepare",
+		"relay",
+		"agent",
+		"session",
+		"firstOutput",
+		"total",
+	];
+	const ms = fields.filter(key => typeof times[key] === "number").map(key => `${key}_ms=${times[key]}`);
 	return `[wlp] session.start_times session=${sessionId} turn=${times.turn} harness=${times.harness} place=${times.place} new=${times.newSandbox}${times.spare ? " spare=true" : ""}${times.pulled ? " pulled=true" : ""} ${ms.join(" ")}`.trimEnd();
 }

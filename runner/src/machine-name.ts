@@ -11,7 +11,8 @@ async function dockerHost() {
 export async function resolveMachineName(requested?: string, probe = dockerHost): Promise<string> {
 	const configured = requested ?? read("name.json");
 	if (configured !== undefined) {
-		if (!validMachineName(configured)) throw new RunnerError("Give --name a printable machine name of 1 to 64 characters.");
+		if (!validMachineName(configured))
+			throw new RunnerError("Give --name a printable machine name of 1 to 64 characters.");
 		if (requested !== undefined) save("name.json", requested);
 		return configured;
 	}

@@ -14,7 +14,14 @@ import type { MemorySignInDirectory } from "../signin/directory.js";
 import { type SignInLogins, type SignInTokens, actorSignIns, memorySignIns } from "../signin/facade.js";
 import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
-import { dropSessionVolume, ensureSessionVolume, ensureUserVolume, removeTokenFiles, sessionVolume, userVolume } from "./volumes.js";
+import {
+	dropSessionVolume,
+	ensureSessionVolume,
+	ensureUserVolume,
+	removeTokenFiles,
+	sessionVolume,
+	userVolume,
+} from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 import { IMAGE } from "./docker.js";
 import { forwardKeyLease } from "./relay-leases.js";
@@ -62,14 +69,25 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 	const signIns =
 		options.signIns === "memory"
 			? memorySignIns({
-					commands: new WindlassSignIns(new DockerLoginRunner({ image, network: options.tokenNetwork, extraFlags: options.signInHelperFlags })),
-					revoke: (uid) => removeTokenFiles(uid, image),
+					commands: new WindlassSignIns(
+						new DockerLoginRunner({ image, network: options.tokenNetwork, extraFlags: options.signInHelperFlags }),
+					),
+					revoke: uid => removeTokenFiles(uid, image),
 					ensureUserData,
 				})
 			: { ...actorSignIns({ ensureUserData }), directory: null };
 	const relayOptions = options.modelRelay ?? (options.signIns !== "memory" && config.modelRelay.on ? {} : "off");
-	const modelRelay = relayOptions === "off" ? undefined
-		: new DockerModelRelay({ machine: "", forwardKeyLease, image: image ?? IMAGE, requests: config.modelRelay.requests, userRequests: HOSTED_RELAY_USER_REQUESTS, ...relayOptions });
+	const modelRelay =
+		relayOptions === "off"
+			? undefined
+			: new DockerModelRelay({
+					machine: "",
+					forwardKeyLease,
+					image: image ?? IMAGE,
+					requests: config.modelRelay.requests,
+					userRequests: HOSTED_RELAY_USER_REQUESTS,
+					...relayOptions,
+				});
 	return {
 		// The hosted provider: its containers carry no machine, and mount the user's volume of this machine.
 		sandboxes: new DockerSandboxes({

@@ -32,7 +32,15 @@ export function parseDiff(text: string): DiffFile[] {
 	let newNumber = 0;
 
 	const begin = (path: string): DiffFile => {
-		const created: DiffFile = { path, oldPath: null, status: "modified", binary: false, added: 0, removed: 0, hunks: [] };
+		const created: DiffFile = {
+			path,
+			oldPath: null,
+			status: "modified",
+			binary: false,
+			added: 0,
+			removed: 0,
+			hunks: [],
+		};
 		files.push(created);
 		hunk = null;
 		return created;
@@ -87,7 +95,8 @@ export function parseDiff(text: string): DiffFile[] {
 			hunk.lines.push({ kind: "meta", text: line.slice(2), oldNumber: null, newNumber: null });
 		} else if (line === "") {
 			// A context line whose single space was trimmed away, unless it is the newline that ends the text.
-			if (index < lines.length - 1 && !(lines[index + 1] ?? "").startsWith("diff --git ")) hunk.lines.push({ kind: "context", text: "", oldNumber: oldNumber++, newNumber: newNumber++ });
+			if (index < lines.length - 1 && !(lines[index + 1] ?? "").startsWith("diff --git "))
+				hunk.lines.push({ kind: "context", text: "", oldNumber: oldNumber++, newNumber: newNumber++ });
 		} else {
 			hunk = null;
 		}

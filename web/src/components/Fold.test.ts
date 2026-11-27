@@ -67,8 +67,8 @@ describe("LongText", () => {
 describe("FoldList", () => {
 	const lines = ["one", "two", "three", "four", "five", "six"];
 	it("shows three, then Show N more, then Hide", () => {
-		render(createElement(FoldList<string>, { items: lines, render: (line) => line }));
-		expect([...host.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two", "three"]);
+		render(createElement(FoldList<string>, { items: lines, render: line => line }));
+		expect([...host.querySelectorAll("li")].map(li => li.textContent)).toEqual(["one", "two", "three"]);
 		expect(button()?.textContent).toBe("Show 3 more");
 		click(button());
 		expect(host.querySelectorAll("li")).toHaveLength(6);
@@ -78,7 +78,7 @@ describe("FoldList", () => {
 	it("never folds away a single item", () => {
 		expect(listFolds(4)).toBe(false);
 		expect(listFolds(5)).toBe(true);
-		render(createElement(FoldList<string>, { items: lines.slice(0, 4), render: (line) => line }));
+		render(createElement(FoldList<string>, { items: lines.slice(0, 4), render: line => line }));
 		expect(host.querySelectorAll("li")).toHaveLength(4);
 		expect(button()).toBeNull();
 	});

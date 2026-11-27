@@ -43,14 +43,14 @@ export function Dialog({ title, lede, onClose, size = "medium", children, footer
 			className={`dialog dialog-${size}`}
 			tabIndex={-1}
 			aria-labelledby={titleId}
-			onCancel={(event) => {
+			onCancel={event => {
 				// Escape: close through React so the route and state follow. A dialog opened from inside this one is
 				// its child to React wherever it is in the page, and its Escape arrives here too: that one is not ours.
 				if (event.target !== ref.current) return;
 				event.preventDefault();
 				if (dismissable) onClose();
 			}}
-			onClick={(event) => {
+			onClick={event => {
 				// A click on the backdrop lands on the dialog element itself.
 				if (event.target === ref.current && dismissable) onClose();
 			}}

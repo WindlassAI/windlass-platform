@@ -37,8 +37,19 @@
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
+import {
+	MAX_PUBLISH_BODY_CHARS,
+	MAX_PUBLISH_TITLE_CHARS,
+	REVIEW_LIMITS,
+	type SecretRequest,
+	type ItemAttachment,
+	type PublishMessage,
+	type PullRequestInfo,
+	type QuestionChoice,
+	type QuestionPublish,
+} from "./contract.js";
 import { unavailableSecretName, validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
+import { isRecord } from "./util.js";
 
 export { PUBLISH_SERVER } from "./personal-server-definition.js";
 
@@ -91,30 +102,37 @@ const DESCRIPTION = [
 	"The result says what was published and gives the pull request's address, or says why nothing was published. Tell the user what it says, and do not try another way to publish.",
 ].join(" ");
 
-export const BUILDER_ASSUMPTIONS = 'When the task leaves something open, choose the most reasonable option, record it in your report as "Assumed: …", and go on.';
-export const ASK_WHEN_BLOCKED = "Use ask_person only when blocked on a product decision you cannot settle from the repository, the task or its acceptance criteria.";
+export const BUILDER_ASSUMPTIONS =
+	'When the task leaves something open, choose the most reasonable option, record it in your report as "Assumed: …", and go on.';
+export const ASK_WHEN_BLOCKED =
+	"Use ask_person only when blocked on a product decision you cannot settle from the repository, the task or its acceptance criteria.";
 
-const reportDescription = (screenshots: boolean, push: boolean) => [
-	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
-	`Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes ${push ? "whatever you did not push with `push`" : "your work"}.`,
-	BUILDER_ASSUMPTIONS,
-	screenshots ? "Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours." : "Screenshots are unavailable in this sandbox. File your report without them.",
-	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
-].join(" ");
+const reportDescription = (screenshots: boolean, push: boolean) =>
+	[
+		"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
+		`Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes ${push ? "whatever you did not push with `push`" : "your work"}.`,
+		BUILDER_ASSUMPTIONS,
+		screenshots
+			? "Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours."
+			: "Screenshots are unavailable in this sandbox. File your report without them.",
+		"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
+	].join(" ");
 
 /** `pushes`: at most so many a turn (over MCP), or as many as the agent wants. */
-const pushDescription = (pushes?: number) => [
-	"Push this session's branch to GitHub: the platform commits whatever is uncommitted in the workspace with your message and pushes the session's own branch. Nobody is asked.",
-	`You have no GitHub credential and \`git push\` does not work here: this is how your commits get to GitHub. ${pushes === undefined ? "Push whenever you want, as often as you want" : `Push whenever you want, at most ${pushes} times a turn`}, for example after each piece of work worth keeping.`,
-	"The platform names the branch; you cannot choose another, and never the repository's default branch. It opens no pull request.",
-	"To bring in what changed on the branch the session started from: call `fetch_base`, rebase onto what it fetched (or merge it), and push again. A rebased branch replaces what the platform pushed last, and never a commit someone else pushed to the branch.",
-].join(" ");
+const pushDescription = (pushes?: number) =>
+	[
+		"Push this session's branch to GitHub: the platform commits whatever is uncommitted in the workspace with your message and pushes the session's own branch. Nobody is asked.",
+		`You have no GitHub credential and \`git push\` does not work here: this is how your commits get to GitHub. ${pushes === undefined ? "Push whenever you want, as often as you want" : `Push whenever you want, at most ${pushes} times a turn`}, for example after each piece of work worth keeping.`,
+		"The platform names the branch; you cannot choose another, and never the repository's default branch. It opens no pull request.",
+		"To bring in what changed on the branch the session started from: call `fetch_base`, rebase onto what it fetched (or merge it), and push again. A rebased branch replaces what the platform pushed last, and never a commit someone else pushed to the branch.",
+	].join(" ");
 
-const fetchBaseDescription = (fetches?: number) => [
-	"Fetch the branch this session started from, as it is at GitHub now, into the workspace as `origin/<that branch>`, and the session's own branch as `origin/<your branch>` once it is at GitHub (to merge what someone else pushed there). Nobody is asked.",
-	"It changes neither your working tree nor your branch: rebase or merge onto it yourself, then call `push`.",
-	...(fetches === undefined ? [] : [`At most ${fetches} times a turn.`]),
-].join(" ");
+const fetchBaseDescription = (fetches?: number) =>
+	[
+		"Fetch the branch this session started from, as it is at GitHub now, into the workspace as `origin/<that branch>`, and the session's own branch as `origin/<your branch>` once it is at GitHub (to merge what someone else pushed there). Nobody is asked.",
+		"It changes neither your working tree nor your branch: rebase or merge onto it yourself, then call `push`.",
+		...(fetches === undefined ? [] : [`At most ${fetches} times a turn.`]),
+	].join(" ");
 
 /** What a question of the agent's may hold. */
 export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120 } as const;
@@ -130,8 +148,18 @@ const ASK_DESCRIPTION = [
 const ASK_SCHEMA = {
 	type: "object",
 	properties: {
-		question: { type: "string", minLength: 1, maxLength: ASK_LIMITS.questionChars, description: `The question, in plain text (not Markdown), at most ${ASK_LIMITS.questionChars} characters: what you need decided, and what you will do with each answer.` },
-		options: { type: "array", maxItems: ASK_LIMITS.options, items: { type: "string", minLength: 1, maxLength: ASK_LIMITS.optionChars }, description: `Up to ${ASK_LIMITS.options} short answers the person can pick, each at most ${ASK_LIMITS.optionChars} characters. Left out when the answer is open.` },
+		question: {
+			type: "string",
+			minLength: 1,
+			maxLength: ASK_LIMITS.questionChars,
+			description: `The question, in plain text (not Markdown), at most ${ASK_LIMITS.questionChars} characters: what you need decided, and what you will do with each answer.`,
+		},
+		options: {
+			type: "array",
+			maxItems: ASK_LIMITS.options,
+			items: { type: "string", minLength: 1, maxLength: ASK_LIMITS.optionChars },
+			description: `Up to ${ASK_LIMITS.options} short answers the person can pick, each at most ${ASK_LIMITS.optionChars} characters. Left out when the answer is open.`,
+		},
 	},
 	required: ["question"],
 	additionalProperties: false,
@@ -140,14 +168,38 @@ const ASK_SCHEMA = {
 const REPORT_SCHEMA = {
 	type: "object",
 	properties: {
-		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.` },
-		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
-		screenshots: { type: "array", maxItems: 4, items: { type: "object", additionalProperties: false, required: ["file", "caption"], properties: {
-			file: { type: "string", description: "The .wlp-shots/<name>.png file saved with wlp-shot." },
-			caption: { type: "string", minLength: 1, maxLength: 200 }, shows: { enum: ["after", "before"] }, page: { type: "string", maxLength: 300 },
-		} } },
-		look_at: { type: "string", description: `Where the reader should look in the change, at most ${REVIEW_LIMITS.lookAtChars} characters.` },
-		concerns: { type: "string", description: "What you are unsure of, did not finish, or did differently from what was asked; left out when there is nothing." },
+		title: {
+			type: "string",
+			description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.`,
+		},
+		description: {
+			type: "string",
+			description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.`,
+		},
+		screenshots: {
+			type: "array",
+			maxItems: 4,
+			items: {
+				type: "object",
+				additionalProperties: false,
+				required: ["file", "caption"],
+				properties: {
+					file: { type: "string", description: "The .wlp-shots/<name>.png file saved with wlp-shot." },
+					caption: { type: "string", minLength: 1, maxLength: 200 },
+					shows: { enum: ["after", "before"] },
+					page: { type: "string", maxLength: 300 },
+				},
+			},
+		},
+		look_at: {
+			type: "string",
+			description: `Where the reader should look in the change, at most ${REVIEW_LIMITS.lookAtChars} characters.`,
+		},
+		concerns: {
+			type: "string",
+			description:
+				"What you are unsure of, did not finish, or did differently from what was asked; left out when there is nothing.",
+		},
 	},
 	required: ["title"],
 	additionalProperties: false,
@@ -156,10 +208,23 @@ const REPORT_SCHEMA = {
 const INPUT_SCHEMA = {
 	type: "object",
 	properties: {
-		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.` },
-		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
-		commit_message: { type: "string", description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the title.` },
-		branch: { type: "string", description: "Leave it out. The work goes to the session's own branch, and a request that names any other branch is refused." },
+		title: {
+			type: "string",
+			description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.`,
+		},
+		description: {
+			type: "string",
+			description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.`,
+		},
+		commit_message: {
+			type: "string",
+			description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the title.`,
+		},
+		branch: {
+			type: "string",
+			description:
+				"Leave it out. The work goes to the session's own branch, and a request that names any other branch is refused.",
+		},
 	},
 	required: ["title"],
 };
@@ -167,8 +232,15 @@ const INPUT_SCHEMA = {
 const PUSH_SCHEMA = {
 	type: "object",
 	properties: {
-		message: { type: "string", description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the session's title. Not used when you committed everything yourself.` },
-		branch: { type: "string", description: "Leave it out. The push goes to the session's own branch, and a request that names any other branch is refused." },
+		message: {
+			type: "string",
+			description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the session's title. Not used when you committed everything yourself.`,
+		},
+		branch: {
+			type: "string",
+			description:
+				"Leave it out. The push goes to the session's own branch, and a request that names any other branch is refused.",
+		},
 	},
 };
 
@@ -236,7 +308,12 @@ export interface PlatformToolOffer {
  */
 export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: number): HostToolDeclaration[] {
 	const publishSeconds = Math.min(HOST_CALL_LIMIT_SECONDS, Math.ceil(questionTimeoutMs / 1000) + PUBLISHING_SECONDS);
-	const tool = (name: string, description: string, inputSchema: Record<string, unknown>, timeoutSeconds?: number): HostToolDeclaration => ({
+	const tool = (
+		name: string,
+		description: string,
+		inputSchema: Record<string, unknown>,
+		timeoutSeconds?: number,
+	): HostToolDeclaration => ({
 		name,
 		description,
 		inputSchema,
@@ -244,86 +321,243 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		untrustedResult: false,
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
-	if (offer.setupReview) return [tool("file_repo_setup_review", "Review every drafted file once. For each path give verdict ok, fix or drop and up to three short findings.", {
-		type: "object", required: ["files"], properties: { files: { type: "array", items: { type: "object", required: ["path", "verdict", "findings"],
-			properties: { path: { type: "string" }, verdict: { enum: ["ok", "fix", "drop"] }, findings: { type: "array", items: { type: "string" } } } } } },
-	})];
+	if (offer.setupReview)
+		return [
+			tool(
+				"file_repo_setup_review",
+				"Review every drafted file once. For each path give verdict ok, fix or drop and up to three short findings.",
+				{
+					type: "object",
+					required: ["files"],
+					properties: {
+						files: {
+							type: "array",
+							items: {
+								type: "object",
+								required: ["path", "verdict", "findings"],
+								properties: {
+									path: { type: "string" },
+									verdict: { enum: ["ok", "fix", "drop"] },
+									findings: { type: "array", items: { type: "string" } },
+								},
+							},
+						},
+					},
+				},
+			),
+		];
 	if (offer.setup) {
-		const text = { type: "string" }, number = { type: "integer" };
+		const text = { type: "string" },
+			number = { type: "integer" };
 		const rows = (properties: Record<string, unknown>, required: string[]) => ({
-			type: "array", items: { type: "object", properties, required },
+			type: "array",
+			items: { type: "object", properties, required },
 		});
-		const evidence = { type: "object", description: "A repository file with an optional one-based line (install lockfile or manifest, script definition, or workflow run line), an exact saved setup or check command with command alone, or a verified path check with command, exit and said.",
-			properties: { file: text, line: number, command: text, exit: number, said: text } };
-		return [tool("file_repo_setup", "Submit the complete proposed guides for review. Use one-based line numbers and repository-relative evidence paths. Correct any refused filing and call again.", {
-			type: "object", required: ["score", "files"], properties: {
-				score: rows({ id: { type: "string", enum: ["setup", "checks", "guide"] }, pass: { type: "boolean" }, reason: text }, ["id", "pass", "reason"]),
-				files: rows({ kind: { type: "string", enum: ["guide", "area", "skill"] }, path: text, content: text,
-					lines: rows({ line: number, noteId: text, evidence }, ["line", "evidence"]),
-					removed: rows({ line: number, evidence }, ["line", "evidence"]) }, ["kind", "path", "content", "lines"]),
-				notes: rows({ noteId: text, verdict: { type: "string", enum: ["team", "personal", "private", "secret", "stale", "question", "duplicate"] },
-					reason: text, question: text }, ["noteId", "verdict", "reason"]),
-			},
-		})];
+		const evidence = {
+			type: "object",
+			description:
+				"A repository file with an optional one-based line (install lockfile or manifest, script definition, or workflow run line), an exact saved setup or check command with command alone, or a verified path check with command, exit and said.",
+			properties: { file: text, line: number, command: text, exit: number, said: text },
+		};
+		return [
+			tool(
+				"file_repo_setup",
+				"Submit the complete proposed guides for review. Use one-based line numbers and repository-relative evidence paths. Correct any refused filing and call again.",
+				{
+					type: "object",
+					required: ["score", "files"],
+					properties: {
+						score: rows(
+							{ id: { type: "string", enum: ["setup", "checks", "guide"] }, pass: { type: "boolean" }, reason: text },
+							["id", "pass", "reason"],
+						),
+						files: rows(
+							{
+								kind: { type: "string", enum: ["guide", "area", "skill"] },
+								path: text,
+								content: text,
+								lines: rows({ line: number, noteId: text, evidence }, ["line", "evidence"]),
+								removed: rows({ line: number, evidence }, ["line", "evidence"]),
+							},
+							["kind", "path", "content", "lines"],
+						),
+						notes: rows(
+							{
+								noteId: text,
+								verdict: {
+									type: "string",
+									enum: ["team", "personal", "private", "secret", "stale", "question", "duplicate"],
+								},
+								reason: text,
+								question: text,
+							},
+							["noteId", "verdict", "reason"],
+						),
+					},
+				},
+			),
+		];
 	}
-	if (offer.planReview) return [tool("file_plan_review", "File the independent decision and concise findings on the proposed plan.", {
-		type: "object", required: ["decision", "findings"], properties: {
-			decision: { enum: ["approve", "revise"] }, findings: { type: "array", items: { type: "string" } },
-		},
-	})];
-	if (offer.plan) return [tool("file_plan",
-		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?,why?,recommended?}] (each question's text one short sentence of at most 140 characters ending in a question mark, each option and optional recommended answer at most 80 characters, recommended must match an option when listed, and why, optional, at most 400 characters of background the owner can open), and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens}}]. Give each subtask a short title beginning with a verb and naming a concrete result, for example “Add the CSV writer”. Independent subtasks run in parallel. Split work by file, list accurate paths in owns, and use dependsOn only for real prerequisites. A subtask's budget is one figure: cost-weighted tokens, where cached input counts at a tenth, between the least and most a subtask may have (the prompt's Budget lines give the figures). The feature's budget is its subtasks' together, and its own allowance for planning, summary and review on top; when a subtask uses its budget, it asks the owner for more instead of stopping work. Each subtask inherits the resolved place and agent for its repository. To change the place, propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?, hostedSize?}. A larger hosted size requires the owner’s approval. Request it explicitly in hostedSize when needed. Use the read-only owner descriptions, tags and sandbox capacity. Omit agent to inherit the resolved choice, or propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run on a signed-in machine or on a hosted key profile with a matching Settings provider. On hosted choose their default model. They work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
-			+ (offer.crossRepo ? " For a feature over two repositories (the prompt names them), also give repos[], each subtask's repo alias, mergeOrder [{repo, prerequisite[], intermediate, evidence, fallback}], releaseGate request and finalIntegration {runFrom, command, inputs[], profile: actions, timeoutSeconds, requiredCases[], artifactOutputs[]}." : ""),
-		{ type: "object", required: ["spec", "questions", "subtasks"], properties: {
-			overflow: { type: "boolean" }, spec: { type: "object" },
-			questions: { type: "array", items: { type: "object", required: ["id", "text"], properties: {
-				id: { type: "string" }, text: { type: "string" }, options: { type: "array", items: { type: "string" } },
-				why: { type: "string" }, recommended: { type: "string", minLength: 1, maxLength: 80 },
-			} } },
-			// Only a cross-repo planning turn is offered these: a one-repository plan's schema is what it always was.
-			...(offer.crossRepo && {
-				repos: { type: "array", items: { type: "string" } }, mergeOrder: { type: "array", items: { type: "object" } },
-				releaseGate: { enum: ["request", "wait"] }, earlyChecks: { type: "array", items: { type: "object" } }, finalIntegration: { type: "object" },
+	if (offer.planReview)
+		return [
+			tool("file_plan_review", "File the independent decision and concise findings on the proposed plan.", {
+				type: "object",
+				required: ["decision", "findings"],
+				properties: {
+					decision: { enum: ["approve", "revise"] },
+					findings: { type: "array", items: { type: "string" } },
+				},
 			}),
-			subtasks: { type: "array", items: { type: "object", properties: {
-				...(offer.crossRepo && { repo: { type: "string" } }),
-				place: { type: "object", required: ["prefer", "reason"], properties: {
-					prefer: { type: "string" }, reason: { type: "string", maxLength: 200 }, allow: { type: "array", items: { type: "string" } },
-				} },
-				needs: { type: "object", additionalProperties: false, properties: {
-					tags: { type: "array", items: { type: "string" } }, screenshots: { type: "boolean" },
-					egress: { enum: ["open", "restricted"] }, profile: { enum: ["docker-hardened", "docker-windlass-sandbox", "e2b-open", "daytona"] },
-					hostedSize: { enum: ["small", "standard", "large"] }, cpus: { type: "number", description: "More than 0." }, memoryGiB: { type: "number", description: "More than 0." },
-				} },
-				agent: { type: "object", additionalProperties: false, required: ["harness"], properties: {
-					harness: { enum: ["windlass", ...SUBTASK_AGENTS.map(h => h.id)] }, model: { type: "string", maxLength: 200 }, effort: { type: "string", maxLength: 64 },
-				} },
-			} } }, singleSuggested: { type: ["string", "null"] },
-		} })];
-	if (offer.review) return [tool(REVIEW_TOOL,
-		offer.mcp ? "File your recommendation and typed review blocks for this commit. You have one call." : "File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
-		{ type: "object", properties: {
-			...(!offer.mcp && { commands: { type: "boolean" } }),
-			recommendation: { type: "string", enum: ["approve", "changes_requested", "needs_person"] },
-			blocks: { type: "array", items: { type: "object" } },
-		}, additionalProperties: false }, 180)];
+		];
+	if (offer.plan)
+		return [
+			tool(
+				"file_plan",
+				`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?,why?,recommended?}] (each question's text one short sentence of at most 140 characters ending in a question mark, each option and optional recommended answer at most 80 characters, recommended must match an option when listed, and why, optional, at most 400 characters of background the owner can open), and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens}}]. Give each subtask a short title beginning with a verb and naming a concrete result, for example “Add the CSV writer”. Independent subtasks run in parallel. Split work by file, list accurate paths in owns, and use dependsOn only for real prerequisites. A subtask's budget is one figure: cost-weighted tokens, where cached input counts at a tenth, between the least and most a subtask may have (the prompt's Budget lines give the figures). The feature's budget is its subtasks' together, and its own allowance for planning, summary and review on top; when a subtask uses its budget, it asks the owner for more instead of stopping work. Each subtask inherits the resolved place and agent for its repository. To change the place, propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?, hostedSize?}. A larger hosted size requires the owner’s approval. Request it explicitly in hostedSize when needed. Use the read-only owner descriptions, tags and sandbox capacity. Omit agent to inherit the resolved choice, or propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run on a signed-in machine or on a hosted key profile with a matching Settings provider. On hosted choose their default model. They work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.` +
+					(offer.crossRepo
+						? " For a feature over two repositories (the prompt names them), also give repos[], each subtask's repo alias, mergeOrder [{repo, prerequisite[], intermediate, evidence, fallback}], releaseGate request and finalIntegration {runFrom, command, inputs[], profile: actions, timeoutSeconds, requiredCases[], artifactOutputs[]}."
+						: ""),
+				{
+					type: "object",
+					required: ["spec", "questions", "subtasks"],
+					properties: {
+						overflow: { type: "boolean" },
+						spec: { type: "object" },
+						questions: {
+							type: "array",
+							items: {
+								type: "object",
+								required: ["id", "text"],
+								properties: {
+									id: { type: "string" },
+									text: { type: "string" },
+									options: { type: "array", items: { type: "string" } },
+									why: { type: "string" },
+									recommended: { type: "string", minLength: 1, maxLength: 80 },
+								},
+							},
+						},
+						// Only a cross-repo planning turn is offered these: a one-repository plan's schema is what it always was.
+						...(offer.crossRepo && {
+							repos: { type: "array", items: { type: "string" } },
+							mergeOrder: { type: "array", items: { type: "object" } },
+							releaseGate: { enum: ["request", "wait"] },
+							earlyChecks: { type: "array", items: { type: "object" } },
+							finalIntegration: { type: "object" },
+						}),
+						subtasks: {
+							type: "array",
+							items: {
+								type: "object",
+								properties: {
+									...(offer.crossRepo && { repo: { type: "string" } }),
+									place: {
+										type: "object",
+										required: ["prefer", "reason"],
+										properties: {
+											prefer: { type: "string" },
+											reason: { type: "string", maxLength: 200 },
+											allow: { type: "array", items: { type: "string" } },
+										},
+									},
+									needs: {
+										type: "object",
+										additionalProperties: false,
+										properties: {
+											tags: { type: "array", items: { type: "string" } },
+											screenshots: { type: "boolean" },
+											egress: { enum: ["open", "restricted"] },
+											profile: { enum: ["docker-hardened", "docker-windlass-sandbox", "e2b-open", "daytona"] },
+											hostedSize: { enum: ["small", "standard", "large"] },
+											cpus: { type: "number", description: "More than 0." },
+											memoryGiB: { type: "number", description: "More than 0." },
+										},
+									},
+									agent: {
+										type: "object",
+										additionalProperties: false,
+										required: ["harness"],
+										properties: {
+											harness: { enum: ["windlass", ...SUBTASK_AGENTS.map(h => h.id)] },
+											model: { type: "string", maxLength: 200 },
+											effort: { type: "string", maxLength: 64 },
+										},
+									},
+								},
+							},
+						},
+						singleSuggested: { type: ["string", "null"] },
+					},
+				},
+			),
+		];
+	if (offer.review)
+		return [
+			tool(
+				REVIEW_TOOL,
+				offer.mcp
+					? "File your recommendation and typed review blocks for this commit. You have one call."
+					: "File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
+				{
+					type: "object",
+					properties: {
+						...(!offer.mcp && { commands: { type: "boolean" } }),
+						recommendation: { type: "string", enum: ["approve", "changes_requested", "needs_person"] },
+						blocks: { type: "array", items: { type: "object" } },
+					},
+					additionalProperties: false,
+				},
+				180,
+			),
+		];
 	const { screenshots, ...textFields } = REPORT_SCHEMA.properties;
 	return [
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
-		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false, offer.push), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
+		...(offer.report
+			? [
+					tool(
+						REPORT_TOOL,
+						reportDescription(offer.screenshots !== false, offer.push),
+						offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA,
+						180,
+					),
+				]
+			: []),
 		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
-		...(offer.secret ? [tool(SECRET_TOOL, "Ask your person to set a missing environment variable. Give its name and a short reason. Never include a value. Stop after the request is recorded.",
-			{ type: "object", required: ["name", "why"], additionalProperties: false, properties: {
-				name: { type: "string", minLength: 2, maxLength: 64 }, why: { type: "string", minLength: 1, maxLength: 240 },
-			} }, 30)] : []),
-		...(offer.push ? [tool(PUSH_TOOL, pushDescription(offer.mcp?.pushes), PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, fetchBaseDescription(offer.mcp?.fetches), { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
+		...(offer.secret
+			? [
+					tool(
+						SECRET_TOOL,
+						"Ask your person to set a missing environment variable. Give its name and a short reason. Never include a value. Stop after the request is recorded.",
+						{
+							type: "object",
+							required: ["name", "why"],
+							additionalProperties: false,
+							properties: {
+								name: { type: "string", minLength: 2, maxLength: 64 },
+								why: { type: "string", minLength: 1, maxLength: 240 },
+							},
+						},
+						30,
+					),
+				]
+			: []),
+		...(offer.push
+			? [
+					tool(PUSH_TOOL, pushDescription(offer.mcp?.pushes), PUSH_SCHEMA, PUBLISHING_SECONDS),
+					tool(
+						FETCH_BASE_TOOL,
+						fetchBaseDescription(offer.mcp?.fetches),
+						{ type: "object", properties: {} },
+						PUBLISHING_SECONDS,
+					),
+				]
+			: []),
 	];
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
 /** A call's input as the platform reads it: an object, or none. Windlass checked it against the schema, which is the declaration's and asks for little. */
-export const callArguments = (input: unknown): Record<string, unknown> => (isObject(input) ? input : {});
+export const callArguments = (input: unknown): Record<string, unknown> => (isRecord(input) ? input : {});
 
 /** A builder report after the host tool has checked and cleaned every field. */
 export interface AgentReport {
@@ -335,7 +569,8 @@ export interface AgentReport {
 }
 
 /** What the agent is told when its report was taken. */
-export const REPORT_TAKEN = "Your report was filed. The platform publishes your work when your turn ends; end your turn now.";
+export const REPORT_TAKEN =
+	"Your report was filed. The platform publishes your work when your turn ends; end your turn now.";
 
 // ---------------------------------------------------------------------------------------------
 // What a request may hold
@@ -363,7 +598,8 @@ export interface AgentAsk {
 }
 
 /** What the agent is told when its question was recorded. */
-export const ASK_TAKEN = "Recorded as a question to the person. End your turn now; their answer will come as your next message.";
+export const ASK_TAKEN =
+	"Recorded as a question to the person. End your turn now; their answer will come as your next message.";
 /** A second question in one turn. */
 export const ASK_AGAIN = "You already asked in this turn. End your turn; the answer comes as your next message.";
 /** No question offered to this turn. */
@@ -383,15 +619,36 @@ export interface AskTaken {
  * limits is refused with the limit, so that the agent can ask again. `already`: this turn has asked;
  * `left`: the questions the turn was offered (one). Neither of those records anything.
  */
-export function askPerson(given: Record<string, unknown>, state: { already: boolean; left: number }, redactor: Redactor): AskTaken {
+export function askPerson(
+	given: Record<string, unknown>,
+	state: { already: boolean; left: number },
+	redactor: Redactor,
+): AskTaken {
 	const refuse = (told: string, said: string): AskTaken => ({ asked: null, told, said });
-	if (state.already) return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
-	if (state.left <= 0) return refuse(ASK_NONE_LEFT, "The agent asked a question in a turn that may not ask, and was told to decide itself.");
+	if (state.already)
+		return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
+	if (state.left <= 0)
+		return refuse(
+			ASK_NONE_LEFT,
+			"The agent asked a question in a turn that may not ask, and was told to decide itself.",
+		);
 	// Invisible characters go before secrets are taken out, so a secret split by one cannot slip past and be rejoined.
-	const clean = (value: string) => redactor.text(value.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "").replace(HIDDEN, ""));
-	if (typeof given.question !== "string") return refuse(`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`, "The agent asked a question that is not text, so it was not recorded.");
-	const text = clean(given.question).replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
-	if (text === "") return refuse(`Not recorded. The question is empty. Call ${ASK_TOOL} again with your question.`, "The agent asked an empty question, so it was not recorded.");
+	const clean = (value: string) =>
+		redactor.text(value.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "").replace(HIDDEN, ""));
+	if (typeof given.question !== "string")
+		return refuse(
+			`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`,
+			"The agent asked a question that is not text, so it was not recorded.",
+		);
+	const text = clean(given.question)
+		.replace(/[ \t]+$/gm, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+	if (text === "")
+		return refuse(
+			`Not recorded. The question is empty. Call ${ASK_TOOL} again with your question.`,
+			"The agent asked an empty question, so it was not recorded.",
+		);
 	if (text.length > ASK_LIMITS.questionChars) {
 		return refuse(
 			`Not recorded. The question is ${text.length} characters long and the limit is ${ASK_LIMITS.questionChars}. Shorten it and call ${ASK_TOOL} again.`,
@@ -399,37 +656,75 @@ export function askPerson(given: Record<string, unknown>, state: { already: bool
 		);
 	}
 	const listed = given.options;
-	if (listed !== undefined && listed !== null && !Array.isArray(listed)) return refuse(`Not recorded. The options have to be a list of short texts. Call ${ASK_TOOL} again.`, "The agent asked with options that are not a list, so the question was not recorded.");
+	if (listed !== undefined && listed !== null && !Array.isArray(listed))
+		return refuse(
+			`Not recorded. The options have to be a list of short texts. Call ${ASK_TOOL} again.`,
+			"The agent asked with options that are not a list, so the question was not recorded.",
+		);
 	const options: string[] = [];
 	for (const option of (listed ?? []) as unknown[]) {
-		if (typeof option !== "string") return refuse(`Not recorded. Each option has to be text. Call ${ASK_TOOL} again.`, "The agent asked with an option that is not text, so the question was not recorded.");
+		if (typeof option !== "string")
+			return refuse(
+				`Not recorded. Each option has to be text. Call ${ASK_TOOL} again.`,
+				"The agent asked with an option that is not text, so the question was not recorded.",
+			);
 		const one = clean(option).replace(/\s+/g, " ").trim();
 		if (one === "") continue;
-		if (one.length > ASK_LIMITS.optionChars) return refuse(`Not recorded. An option is ${one.length} characters long and the limit is ${ASK_LIMITS.optionChars}. Shorten it and call ${ASK_TOOL} again.`, `The agent asked with an option of ${one.length} characters, and the limit is ${ASK_LIMITS.optionChars}, so the question was not recorded.`);
+		if (one.length > ASK_LIMITS.optionChars)
+			return refuse(
+				`Not recorded. An option is ${one.length} characters long and the limit is ${ASK_LIMITS.optionChars}. Shorten it and call ${ASK_TOOL} again.`,
+				`The agent asked with an option of ${one.length} characters, and the limit is ${ASK_LIMITS.optionChars}, so the question was not recorded.`,
+			);
 		if (!options.includes(one)) options.push(one);
 	}
-	if (options.length > ASK_LIMITS.options) return refuse(`Not recorded. Give at most ${ASK_LIMITS.options} options. Call ${ASK_TOOL} again.`, `The agent asked with ${options.length} options, and the limit is ${ASK_LIMITS.options}, so the question was not recorded.`);
+	if (options.length > ASK_LIMITS.options)
+		return refuse(
+			`Not recorded. Give at most ${ASK_LIMITS.options} options. Call ${ASK_TOOL} again.`,
+			`The agent asked with ${options.length} options, and the limit is ${ASK_LIMITS.options}, so the question was not recorded.`,
+		);
 	// The line is the platform's, which the session's timeline labels so and turns addresses into links: the agent's words are not in it. Its call, beside it, has them as the agent's.
-	return { asked: { text, options }, told: ASK_TAKEN, said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer." };
+	return {
+		asked: { text, options },
+		told: ASK_TAKEN,
+		said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer.",
+	};
 }
 
 export function secretRequestNotice(sandbox: boolean, account: boolean): string {
-	const source = sandbox ? "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it." : "This request came through the agent's host tool connection.";
-	const scope = account ? "If supplied, this will be saved for your account: every agent of yours will have it." : "If supplied, this will be saved for this repository with agent scope.";
+	const source = sandbox
+		? "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it."
+		: "This request came through the agent's host tool connection.";
+	const scope = account
+		? "If supplied, this will be saved for your account: every agent of yours will have it."
+		: "If supplied, this will be saved for this repository with agent scope.";
 	return source + "\n" + scope;
 }
 
-export function requestSecret(given: Record<string, unknown>, already: boolean, untrusted: boolean, redactor: Redactor): { request?: SecretRequest; told: string } {
+export function requestSecret(
+	given: Record<string, unknown>,
+	already: boolean,
+	untrusted: boolean,
+	redactor: Redactor,
+): { request?: SecretRequest; told: string } {
 	if (untrusted) return { told: "A request coming from third-party text was not shown as a secret prompt." };
 	if (already) return { told: ASK_AGAIN };
 	const { name, why } = given;
-	if (!validRequestedSecretName(name) || redactor.text(name) !== name) return {
-		told: unavailableSecretName(typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && redactor.text(name) === name ? name : "That name"),
-	};
-	if (typeof why !== "string" || Object.keys(given).some(key => key !== "name" && key !== "why")) return { told: "Supply only a name and a short reason." };
+	if (!validRequestedSecretName(name) || redactor.text(name) !== name)
+		return {
+			told: unavailableSecretName(
+				typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && redactor.text(name) === name
+					? name
+					: "That name",
+			),
+		};
+	if (typeof why !== "string" || Object.keys(given).some(key => key !== "name" && key !== "why"))
+		return { told: "Supply only a name and a short reason." };
 	const reason = redactor.text(why.replace(CONTROL, "").replace(HIDDEN, "").replace(/\s+/g, " ").trim());
 	if (!reason || reason.length > 240) return { told: "Give a reason of 1 to 240 characters." };
-	return { request: { name, why: reason }, told: `Asked your person for ${name}; stop here and say what you will do once it is set.` };
+	return {
+		request: { name, why: reason },
+		told: `Asked your person for ${name}; stop here and say what you will do once it is set.`,
+	};
 }
 
 export type PublishRequest =
@@ -446,9 +741,14 @@ export type PublishRequest =
  * can ask again. A request that names a branch other than the session's, or a base other than the
  * branch the session started from, is refused: the session's work goes to the session's branch.
  */
-export function publishRequest(given: Record<string, unknown>, where: { branch: string; base: string }, redactor: Redactor): PublishRequest {
+export function publishRequest(
+	given: Record<string, unknown>,
+	where: { branch: string; base: string },
+	redactor: Redactor,
+): PublishRequest {
 	const refuse = (said: string, told: string): PublishRequest => ({ ok: false, said, told });
-	const named = (value: unknown) => (typeof value === "string" ? value.trim() : value === undefined || value === null ? "" : JSON.stringify(value));
+	const named = (value: unknown) =>
+		typeof value === "string" ? value.trim() : value === undefined || value === null ? "" : JSON.stringify(value);
 	const shown = (value: string) => JSON.stringify(redactor.text(value.replace(CONTROL, "")).slice(0, 120));
 
 	const branch = named(given.branch) || named(given.head);
@@ -475,11 +775,21 @@ export function publishRequest(given: Record<string, unknown>, where: { branch: 
 	for (const field of fields) {
 		const value = given[field.key];
 		if (value !== undefined && value !== null && typeof value !== "string") {
-			return refuse(`The agent asked to publish with a ${field.name} that is not text, so nothing was published.`, `Not published. The ${field.name} has to be text. Call the tool again.`);
+			return refuse(
+				`The agent asked to publish with a ${field.name} that is not text, so nothing was published.`,
+				`Not published. The ${field.name} has to be text. Call the tool again.`,
+			);
 		}
-		const text = redactor.text(typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").replace(CONTROL, "");
+		const text = redactor
+			.text(typeof value === "string" ? value : "")
+			.replace(/\r\n?/g, "\n")
+			.replace(CONTROL, "");
 		const kept = field.oneLine ? text.replace(/\s+/g, " ").trim() : text.trim();
-		if (field.needed && kept === "") return refuse(`The agent asked to publish without a ${field.name}, so nothing was published.`, `Not published. Give the pull request a ${field.name} and call the tool again.`);
+		if (field.needed && kept === "")
+			return refuse(
+				`The agent asked to publish without a ${field.name}, so nothing was published.`,
+				`Not published. Give the pull request a ${field.name} and call the tool again.`,
+			);
 		if (kept.length > field.limit) {
 			return refuse(
 				`The agent asked to publish with a ${field.name} of ${kept.length} characters, and the limit is ${field.limit}, so nothing was published.`,
@@ -489,7 +799,14 @@ export function publishRequest(given: Record<string, unknown>, where: { branch: 
 		clean[field.key] = kept;
 	}
 	const title = clean.title ?? "";
-	return { ok: true, message: { title, body: clean.description ?? "", commit: (clean.commit_message ?? "") === "" ? title : (clean.commit_message as string) } };
+	return {
+		ok: true,
+		message: {
+			title,
+			body: clean.description ?? "",
+			commit: (clean.commit_message ?? "") === "" ? title : (clean.commit_message as string),
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -521,9 +838,10 @@ export const publishAsksEveryTime = (agent: string) =>
 	`${agent} asks you every time it wants to publish: its publish tool is reached from inside the sandbox, where any process could call it, so it cannot publish without asking.`;
 
 /** Said in the timeline of each push, fetch and publish that came over MCP (`TurnPublishRequest.via`). */
-export const MCP_CALL_WORDS = "The call came over MCP from inside the sandbox, so any process there may have made it, not only the agent.";
+export const MCP_CALL_WORDS =
+	"The call came over MCP from inside the sandbox, so any process there may have made it, not only the agent.";
 /** A timeline line about a call, with `MCP_CALL_WORDS` when it came over MCP. */
-export const callLine = (via: "mcp" | undefined, line: string) => via === "mcp" ? `${line} ${MCP_CALL_WORDS}` : line;
+export const callLine = (via: "mcp" | undefined, line: string) => (via === "mcp" ? `${line} ${MCP_CALL_WORDS}` : line);
 
 export interface PublishQuestionInput {
 	/** "owner/name". */
@@ -540,12 +858,20 @@ export interface PublishQuestionInput {
 }
 
 /** The question about a request of the agent's, as the session's question box shows it. */
-export function publishQuestionWords(input: PublishQuestionInput): { title: string; subject: string; details: string[]; choices: QuestionChoice[]; publish: QuestionPublish } {
+export function publishQuestionWords(input: PublishQuestionInput): {
+	title: string;
+	subject: string;
+	details: string[];
+	choices: QuestionChoice[];
+	publish: QuestionPublish;
+} {
 	const { open } = input;
 	// "For this session" only where no command can make the call: Windlass's sandbox holds them, and the call came by Windlass.
 	const forSession = input.sandbox === "windlass" && input.via !== "mcp";
 	return {
-		title: open ? `Allow the agent to push to pull request #${open.number}?` : "Allow the agent to open a pull request?",
+		title: open
+			? `Allow the agent to push to pull request #${open.number}?`
+			: "Allow the agent to open a pull request?",
 		subject: input.message.title,
 		details: [
 			open
@@ -553,15 +879,39 @@ export function publishQuestionWords(input: PublishQuestionInput): { title: stri
 				: "The platform commits what is uncommitted in the workspace with this message, pushes it to the session's branch, and opens the pull request under this title and description.",
 			"What is in the workspace and not yet at GitHub goes there as it is: Changes, in the session's panel, lists it.",
 			"The agent is given no GitHub access: the platform pushes, and tells the agent the pull request's address.",
-			...(input.via === "mcp" ? ["This request came over MCP from inside the sandbox: any process there could have made it in the agent's name, so it is asked every time."]
-				: input.sandbox === "windlass" ? [] : ["In this sandbox a command the agent ran could have asked this in the agent's name: its commands are not held in Windlass's sandbox."]),
+			...(input.via === "mcp"
+				? [
+						"This request came over MCP from inside the sandbox: any process there could have made it in the agent's name, so it is asked every time.",
+					]
+				: input.sandbox === "windlass"
+					? []
+					: [
+							"In this sandbox a command the agent ran could have asked this in the agent's name: its commands are not held in Windlass's sandbox.",
+						]),
 		],
 		choices: [
 			{ id: PUBLISH_ONCE, label: "Allow once", approve: true, remembers: null },
-			...(forSession ? [{ id: PUBLISH_SESSION, label: "Allow for this session", approve: true, remembers: "publishing for the agent without asking, for the rest of this session" }] : []),
+			...(forSession
+				? [
+						{
+							id: PUBLISH_SESSION,
+							label: "Allow for this session",
+							approve: true,
+							remembers: "publishing for the agent without asking, for the rest of this session",
+						},
+					]
+				: []),
 			{ id: PUBLISH_DENY, label: "Don't allow", approve: false, remembers: null },
 		],
-		publish: { repository: input.repository, branch: input.branch, base: input.base, commit: input.message.commit, title: input.message.title, description: input.message.body, pullRequest: open ? open.number : null },
+		publish: {
+			repository: input.repository,
+			branch: input.branch,
+			base: input.base,
+			commit: input.message.commit,
+			title: input.message.title,
+			description: input.message.body,
+			pullRequest: open ? open.number : null,
+		},
 	};
 }
 
@@ -575,15 +925,32 @@ export type PublishAllowed = "unasked" | "once" | "session";
 /** The first sentence of the line about a request that was allowed: who allowed it. */
 export function publishAllowedWords(allowed: PublishAllowed): string {
 	if (allowed === "once") return "The agent asked to publish, and you allowed it once.";
-	if (allowed === "session") return "The agent asked to publish, and you allowed it for the rest of this session: it is not asked about again, unless Pull request in the session's panel says otherwise.";
+	if (allowed === "session")
+		return "The agent asked to publish, and you allowed it for the rest of this session: it is not asked about again, unless Pull request in the session's panel says otherwise.";
 	return "The agent asked to publish, which this session allows without asking.";
 }
 
 /** What was published, for the agent: the pull request's address first. */
-export function publishedForAgent(input: { repository: string; pull: PullRequestInfo; opened: boolean; pushed: boolean; retitled: boolean; files: number | null }): string {
+export function publishedForAgent(input: {
+	repository: string;
+	pull: PullRequestInfo;
+	opened: boolean;
+	pushed: boolean;
+	retitled: boolean;
+	files: number | null;
+}): string {
 	const { pull } = input;
-	const did = input.opened ? `Opened pull request #${pull.number}` : input.pushed ? `Pushed to pull request #${pull.number}${input.retitled ? " and gave it this title and description" : ""}` : `Gave pull request #${pull.number} this title and description; there was nothing new to push`;
-	const files = input.files === null || !input.pushed ? "" : input.files === 0 ? " The commits were your own: nothing was uncommitted." : ` The platform's commit holds ${input.files === 1 ? "1 file" : `${input.files} files`}.`;
+	const did = input.opened
+		? `Opened pull request #${pull.number}`
+		: input.pushed
+			? `Pushed to pull request #${pull.number}${input.retitled ? " and gave it this title and description" : ""}`
+			: `Gave pull request #${pull.number} this title and description; there was nothing new to push`;
+	const files =
+		input.files === null || !input.pushed
+			? ""
+			: input.files === 0
+				? " The commits were your own: nothing was uncommitted."
+				: ` The platform's commit holds ${input.files === 1 ? "1 file" : `${input.files} files`}.`;
 	return `Published. ${did}: ${pull.url}\nThe work is on the branch ${pull.branch} of ${input.repository}, to be merged into ${pull.base}.${files}\nGive the user the pull request's address.`;
 }
 
@@ -591,7 +958,10 @@ export function publishedForAgent(input: { repository: string; pull: PullRequest
 export function publishDeclined(note: string | undefined): { said: string; told: string } {
 	const words = (note ?? "").trim();
 	return {
-		said: words === "" ? "The agent asked to publish, and you did not allow it. Nothing was published." : `The agent asked to publish, and you did not allow it: ${JSON.stringify(words)}. Nothing was published.`,
+		said:
+			words === ""
+				? "The agent asked to publish, and you did not allow it. Nothing was published."
+				: `The agent asked to publish, and you did not allow it: ${JSON.stringify(words)}. Nothing was published.`,
 		told: `Not published. The user did not allow it${words === "" ? "." : `, and wrote: ${words}`}\nThe work is still in the workspace. Do not try another way to publish.`,
 	};
 }
@@ -625,8 +995,17 @@ export type PushRequest = { ok: true; commit: string } | { ok: false; said: stri
  * the message is cleaned of saved secrets and control characters, and one past the limit is
  * refused. Without a message the commit is named for the session (`title`).
  */
-export function pushRequest(given: Record<string, unknown>, where: { branch: string; title: string }, redactor: Redactor): PushRequest {
-	const branch = typeof given.branch === "string" ? given.branch.trim() : given.branch === undefined || given.branch === null ? "" : JSON.stringify(given.branch);
+export function pushRequest(
+	given: Record<string, unknown>,
+	where: { branch: string; title: string },
+	redactor: Redactor,
+): PushRequest {
+	const branch =
+		typeof given.branch === "string"
+			? given.branch.trim()
+			: given.branch === undefined || given.branch === null
+				? ""
+				: JSON.stringify(given.branch);
 	if (branch !== "" && branch !== where.branch) {
 		return {
 			ok: false,
@@ -635,8 +1014,17 @@ export function pushRequest(given: Record<string, unknown>, where: { branch: str
 		};
 	}
 	const value = given.message;
-	if (value !== undefined && value !== null && typeof value !== "string") return { ok: false, said: "The agent asked to push with a commit message that is not text, so nothing was pushed.", told: "Not pushed. The message has to be text. Call the tool again." };
-	const message = redactor.text(typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").replace(CONTROL, "").trim();
+	if (value !== undefined && value !== null && typeof value !== "string")
+		return {
+			ok: false,
+			said: "The agent asked to push with a commit message that is not text, so nothing was pushed.",
+			told: "Not pushed. The message has to be text. Call the tool again.",
+		};
+	const message = redactor
+		.text(typeof value === "string" ? value : "")
+		.replace(/\r\n?/g, "\n")
+		.replace(CONTROL, "")
+		.trim();
 	if (message.length > MAX_PUBLISH_COMMIT_CHARS) {
 		return {
 			ok: false,
@@ -648,24 +1036,47 @@ export function pushRequest(given: Record<string, unknown>, where: { branch: str
 }
 
 /** What the agent is told of a push that went out. `pull` is the session's open pull request, which now shows it. */
-export function pushedForAgent(input: { branch: string; head: string | null; forced: boolean; files: number | null; pull: PullRequestInfo | null }): string {
+export function pushedForAgent(input: {
+	branch: string;
+	head: string | null;
+	forced: boolean;
+	files: number | null;
+	pull: PullRequestInfo | null;
+}): string {
 	const head = input.head === null ? "" : ` (${input.head.slice(0, 7)})`;
-	const files = input.files === null ? "" : input.files === 0 ? " Nothing was uncommitted: your own commits went as they were." : ` The platform's commit holds ${input.files === 1 ? "1 file" : `${input.files} files`}.`;
+	const files =
+		input.files === null
+			? ""
+			: input.files === 0
+				? " Nothing was uncommitted: your own commits went as they were."
+				: ` The platform's commit holds ${input.files === 1 ? "1 file" : `${input.files} files`}.`;
 	const forced = input.forced ? " It replaced what the platform had pushed to the branch before." : "";
-	const pull = input.pull === null ? " No pull request was opened." : ` Pull request #${input.pull.number} shows it: ${input.pull.url}`;
+	const pull =
+		input.pull === null
+			? " No pull request was opened."
+			: ` Pull request #${input.pull.number} shows it: ${input.pull.url}`;
 	return `Pushed to ${input.branch}${head}.${files}${forced}${pull}`;
 }
 
 /** The timeline's line for a push the agent asked for. */
-export function agentPushedLine(input: { branch: string; head: string | null; forced: boolean; pull: PullRequestInfo | null }): string {
+export function agentPushedLine(input: {
+	branch: string;
+	head: string | null;
+	forced: boolean;
+	pull: PullRequestInfo | null;
+}): string {
 	const head = input.head === null ? "" : ` (${input.head.slice(0, 7)})`;
 	const forced = input.forced ? ", replacing what the platform had pushed there before" : "";
-	const pull = input.pull === null ? "" : ` Pull request #${input.pull.number} shows it${input.pull.verified ? `; its description reports: ${input.pull.verified}` : ""}.`;
+	const pull =
+		input.pull === null
+			? ""
+			: ` Pull request #${input.pull.number} shows it${input.pull.verified ? `; its description reports: ${input.pull.verified}` : ""}.`;
 	return `The agent pushed its work to ${input.branch}${head}${forced}.${pull}`;
 }
 
 /** What the agent is told of a push that found nothing GitHub lacks. */
-export const nothingToPush = (branch: string) => `Nothing to push: ${branch} at GitHub already has everything in the workspace.`;
+export const nothingToPush = (branch: string) =>
+	`Nothing to push: ${branch} at GitHub already has everything in the workspace.`;
 
 /** What the agent is told once the base was fetched. */
 export const fetchedForAgent = (base: string, work: string | null) =>

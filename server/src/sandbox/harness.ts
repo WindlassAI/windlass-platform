@@ -2,7 +2,13 @@
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
 import type { HarnessId } from "../contract.js";
 import { AcpHarness } from "./acp-harness.js";
-import { capabilitiesOf, hostedHarness, machineHarnesses, WINDLASS_CAPABILITIES, type HarnessCapabilities } from "./harnesses.js";
+import {
+	capabilitiesOf,
+	hostedHarness,
+	machineHarnesses,
+	WINDLASS_CAPABILITIES,
+	type HarnessCapabilities,
+} from "./harnesses.js";
 
 export type { HarnessId } from "../contract.js";
 

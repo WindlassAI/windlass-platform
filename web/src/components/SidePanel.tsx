@@ -12,7 +12,15 @@
  *
  * Amber is kept for what needs the user now, with the way to fix it: an open sandbox is said in plain ink.
  */
-import type { EgressMode, HostedSizeOption, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
+import type {
+	EgressMode,
+	HostedSizeOption,
+	PendingQuestion,
+	SandboxProfile,
+	SessionSummary,
+	TurnUsage,
+	WorkspaceFile,
+} from "@contract";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { acpHarnessName, contextWords, costWords, HARNESS_NAMES, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
@@ -20,7 +28,17 @@ import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/f
 import { linkProps } from "../lib/router";
 import { perHour, sizeName } from "../lib/sizes";
 import { startHeadline, startLine, startRows } from "../lib/start-times";
-import { blockedRequests, cachedShare, lastTurn, openStep, sessionUsage, turnNetwork, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
+import {
+	blockedRequests,
+	cachedShare,
+	lastTurn,
+	openStep,
+	sessionUsage,
+	turnNetwork,
+	turnUsage,
+	type ModelCall,
+	type SessionView,
+} from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
@@ -84,12 +102,16 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 					<dd>{absoluteTime(summary.createdAt)}</dd>
 					<dt>id</dt>
 					<dd className="kv-mono" title={id ?? undefined}>
-						{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>}
+						{id ? (
+							<code className="plain-code">{shortId(id)}</code>
+						) : (
+							<span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>
+						)}
 					</dd>
 				</dl>
 				<StartTimesFacts summary={summary} />
 				{harness && summary.harnessModels && (
-					<details className="panel-more" onToggle={(event) => setShowOptions(event.currentTarget.open)}>
+					<details className="panel-more" onToggle={event => setShowOptions(event.currentTarget.open)}>
 						<summary>
 							<ChevronIcon size={12} className="panel-more-chevron" />
 							Models and modes it offers
@@ -98,7 +120,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 							<div className="panel-catalog">
 								<strong>Models</strong>
 								<ul aria-label="Available models">
-									{summary.harnessModels.models.map((model) => (
+									{summary.harnessModels.models.map(model => (
 										<li key={model.id}>
 											{model.name || model.id}
 											{model.efforts.length > 0 && <small> · {model.efforts.join(", ")}</small>}
@@ -109,7 +131,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 									<>
 										<strong>Modes</strong>
 										<ul aria-label="Available modes">
-											{summary.availableModes.map((one) => (
+											{summary.availableModes.map(one => (
 												<li key={one.id} title={one.description ?? undefined}>
 													{one.name}
 												</li>
@@ -145,7 +167,7 @@ export function BlockedNetworkLine({ view }: { view: SessionView }) {
 			<a
 				className="link"
 				href={`#${target}`}
-				onClick={(event) => {
+				onClick={event => {
 					const row = document.getElementById(target);
 					if (!row) return;
 					event.preventDefault();
@@ -163,13 +185,33 @@ function sizeWords(summary: SessionSummary, offered: readonly HostedSizeOption[]
 	if (summary.place.kind !== "hosted" || !offered?.length) return null;
 	// A session made without a size runs at the smallest (agent-session.ts reserves "small").
 	const size = summary.hostedSize ?? "small";
-	const price = perHour(offered.find((one) => one.id === size)?.usdPerHour);
+	const price = perHour(offered.find(one => one.id === size)?.usdPerHour);
 	return `${sizeName(size)}${price ? ` · ${price}` : ""}`;
 }
 
-function WhereItRuns({ summary, profile, view, machineName, egress }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView; machineName: string | null; egress?: EgressMode }) {
+function WhereItRuns({
+	summary,
+	profile,
+	view,
+	machineName,
+	egress,
+}: {
+	summary: SessionSummary;
+	profile: SandboxProfile;
+	view: SessionView;
+	machineName: string | null;
+	egress?: EgressMode;
+}) {
 	const { platform } = useApp();
-	const claude = summary.harness && summary.harness !== "windlass" ? { hosted: summary.place.kind === "hosted", codex: summary.harness === "codex", opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null;
+	const claude =
+		summary.harness && summary.harness !== "windlass"
+			? {
+					hosted: summary.place.kind === "hosted",
+					codex: summary.harness === "codex",
+					opencode: summary.harness === "opencode",
+					mode: currentMode(summary, profile),
+				}
+			: null;
 	const size = sizeWords(summary, platform.info?.hostedSizes);
 	const place = summary.place.kind === "hosted" ? "Hosted" : (machineName ?? "Your machine");
 	return (
@@ -179,11 +221,15 @@ function WhereItRuns({ summary, profile, view, machineName, egress }: { summary:
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-where">
-				<span className="panel-where-place" title={place}>{place}</span>
+				<span className="panel-where-place" title={place}>
+					{place}
+				</span>
 				<span className="panel-where-profile">{profile.name}</span>
 				{size ? <span className="panel-where-size">{size}</span> : null}
 			</p>
-			<IsolationOutcomes outcomes={isolationOutcomes(profile, claude, summary.place.kind === "machine" ? egress : undefined)} />
+			<IsolationOutcomes
+				outcomes={isolationOutcomes(profile, claude, summary.place.kind === "machine" ? egress : undefined)}
+			/>
 			<BlockedNetworkLine view={view} />
 			<details className="panel-more">
 				<summary>
@@ -194,7 +240,9 @@ function WhereItRuns({ summary, profile, view, machineName, egress }: { summary:
 				<Layers profile={profile} />
 				{summary.environment ? (
 					<p className="panel-env" title={absoluteTime(summary.environment.validatedAt)}>
-						Started from a prepared environment: setup and {summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed at <code>{summary.environment.commit.slice(0, 10)}</code>.
+						Started from a prepared environment: setup and{" "}
+						{summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed
+						at <code>{summary.environment.commit.slice(0, 10)}</code>.
 					</p>
 				) : null}
 			</details>
@@ -215,7 +263,7 @@ function StartTimesFacts({ summary }: { summary: SessionSummary }) {
 				Last start: {startHeadline(last)}
 			</summary>
 			<dl className="kv kv-wide" aria-label={`How turn ${last.turn} started`}>
-				{startRows(last).map((row) => (
+				{startRows(last).map(row => (
 					<Fragment key={row.label}>
 						<dt title={row.hint}>{row.label}</dt>
 						<dd>{row.value}</dd>
@@ -224,7 +272,9 @@ function StartTimesFacts({ summary }: { summary: SessionSummary }) {
 			</dl>
 			{earlier.length > 0 && (
 				<ul className="panel-start-earlier" aria-label="Earlier starts">
-					{earlier.map((times) => <li key={times.turn}>{startLine(times)}</li>)}
+					{earlier.map(times => (
+						<li key={times.turn}>{startLine(times)}</li>
+					))}
 				</ul>
 			)}
 		</details>
@@ -232,7 +282,7 @@ function StartTimesFacts({ summary }: { summary: SessionSummary }) {
 }
 
 /** Whether any turn reported its tokens: a turn of an agent that counts per call, or one that answered its prompt with them. */
-const reportsTokens = (view: SessionView) => view.calls.length > 0 || view.turns.some((one) => one.end?.usage != null);
+const reportsTokens = (view: SessionView) => view.calls.length > 0 || view.turns.some(one => one.end?.usage != null);
 
 /** Every token count, this agent's and its last turn's. `perCall`: counted per model call, with how many calls (`usage` "tokens"); else per turn only. */
 function TokenTable({ view, perCall }: { view: SessionView; perCall: boolean }) {
@@ -240,7 +290,7 @@ function TokenTable({ view, perCall }: { view: SessionView; perCall: boolean }) 
 	const last = lastTurn(view);
 	const turn: TurnUsage | null = last ? turnUsage(last) : null;
 	const calls = view.calls.length;
-	const lastCalls = last ? view.calls.filter((call) => call.turn === last.turn).length : 0;
+	const lastCalls = last ? view.calls.filter(call => call.turn === last.turn).length : 0;
 	const unreported = tokensUnreported(view);
 	const lastUnreported = last !== null && last.end !== null && last.end.usage === null && lastCalls === 0;
 	const cell = (value: number | null) => (value === null ? "–" : count(value));
@@ -294,7 +344,10 @@ function TokenTable({ view, perCall }: { view: SessionView; perCall: boolean }) 
 }
 
 /** A scripted model reports no usage at all: the panel says so rather than show zeros. */
-const tokensUnreported = (view: SessionView) => view.turns.some((one) => one.end !== null) && view.calls.length === 0 && view.turns.every((one) => one.end === null || one.end.usage === null);
+const tokensUnreported = (view: SessionView) =>
+	view.turns.some(one => one.end !== null) &&
+	view.calls.length === 0 &&
+	view.turns.every(one => one.end === null || one.end.usage === null);
 
 /**
  * What is not counted yet while a turn runs, in a sentence; null when everything so far is. An agent that counts
@@ -335,20 +388,36 @@ function Usage({ view, summary }: { view: SessionView; summary: SessionSummary }
 				<span className="panel-title-aside">this agent</span>
 			</h2>
 			{usage === "context" && !context ? (
-				<p className="panel-empty">{summary.turns === 0 ? `${harness} says what it used once a turn has run.` : `${harness} has not said what it used.`}</p>
+				<p className="panel-empty">
+					{summary.turns === 0
+						? `${harness} says what it used once a turn has run.`
+						: `${harness} has not said what it used.`}
+				</p>
 			) : null}
 			<div className="figures">
-				{context ? <Figure value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} label="so far" /> : null}
+				{context ? (
+					<Figure value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} label="so far" />
+				) : null}
 				{context ? (
 					<div className="figure">
 						<p className="figure-value">{contextWords(context).replace(/ used$/, "")}</p>
-						<div className="stat-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
+						<div
+							className="stat-meter"
+							role="meter"
+							aria-label="Context used"
+							aria-valuemin={0}
+							aria-valuemax={context.size}
+							aria-valuenow={Math.min(context.size, context.used)}
+							aria-valuetext={contextWords(context)}
+						>
 							{share > 0 ? <span style={{ width: `${share * 100}%` }} /> : null}
 						</div>
 						<p className="figure-label">context</p>
 					</div>
 				) : null}
-				{context?.fiveHourUsedPct != null ? <Figure value={`${Math.round(context.fiveHourUsedPct)}%`} label="5-hour window" /> : null}
+				{context?.fiveHourUsedPct != null ? (
+					<Figure value={`${Math.round(context.fiveHourUsedPct)}%`} label="5-hour window" />
+				) : null}
 				{perCall || (tokens && !context) ? (
 					<>
 						<Figure value={unreported || uncounted?.none ? "–" : compact(session.inputTokens)} label="tokens in" />
@@ -356,7 +425,11 @@ function Usage({ view, summary }: { view: SessionView; summary: SessionSummary }
 					</>
 				) : null}
 			</div>
-			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : uncounted && (perCall || !context) ? <p className="panel-empty panel-note">{uncounted.text}</p> : null}
+			{unreported ? (
+				<p className="panel-empty panel-note">No token counts were reported.</p>
+			) : uncounted && (perCall || !context) ? (
+				<p className="panel-empty panel-note">{uncounted.text}</p>
+			) : null}
 			{tokens && !unreported ? (
 				<details className="panel-more">
 					<summary>
@@ -386,7 +459,7 @@ const MAX_BARS = 40;
 function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean }) {
 	const shown = calls.slice(-MAX_BARS);
 	const offset = calls.length - shown.length;
-	const scale = Math.max(1, ...shown.map((call) => call.inputTokens));
+	const scale = Math.max(1, ...shown.map(call => call.inputTokens));
 	return (
 		<div className="cache-calls">
 			<p className="cache-calls-title">
@@ -401,17 +474,30 @@ function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean 
 				</span>
 			</p>
 			{shown.length === 0 ? (
-				<p className="panel-empty">{anyTurns ? "No model call has reported its token counts." : "One bar per model call will appear here."}</p>
+				<p className="panel-empty">
+					{anyTurns ? "No model call has reported its token counts." : "One bar per model call will appear here."}
+				</p>
 			) : (
 				<>
-					{offset > 0 ? <p className="panel-empty">Showing the last {MAX_BARS} of {calls.length} calls.</p> : null}
-					<ol className="bars" aria-label="Input tokens per model call: the part read from the prompt cache and the new part">
+					{offset > 0 ? (
+						<p className="panel-empty">
+							Showing the last {MAX_BARS} of {calls.length} calls.
+						</p>
+					) : null}
+					<ol
+						className="bars"
+						aria-label="Input tokens per model call: the part read from the prompt cache and the new part"
+					>
 						{shown.map((call, index) => {
 							const fresh = Math.max(0, call.inputTokens - call.cachedInputTokens);
 							const share = cachedShare(call);
 							const label = `Call ${offset + index + 1}: ${count(call.inputTokens)} input tokens, ${count(call.cachedInputTokens)} from the cache (${percent(share)}), ${count(fresh)} new${call.failed ? "; the call did not complete" : ""}`;
 							return (
-								<li key={`${call.turn}-${call.messageId}-${index}`} className={`bar-row${call.failed ? " bar-row-failed" : ""}`} title={label}>
+								<li
+									key={`${call.turn}-${call.messageId}-${index}`}
+									className={`bar-row${call.failed ? " bar-row-failed" : ""}`}
+									title={label}
+								>
 									<span className="bar-index" aria-hidden="true">
 										{offset + index + 1}
 									</span>
@@ -436,14 +522,35 @@ function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean 
 	);
 }
 
-const GIT_STATUS: Record<string, string> = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "unmerged", "?": "untracked", "!": "ignored" };
+const GIT_STATUS: Record<string, string> = {
+	M: "modified",
+	A: "added",
+	D: "deleted",
+	R: "renamed",
+	C: "copied",
+	U: "unmerged",
+	"?": "untracked",
+	"!": "ignored",
+};
 
 function statusOf(status: string): { letter: string; word: string } {
 	const letter = status.trim().charAt(0) || "M";
 	return { letter, word: GIT_STATUS[letter] ?? "changed" };
 }
 
-function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { sessionId: string; summary: SessionSummary; turnsEnded: number; reloads: number; onFiles(count: number | null): void }) {
+function Changes({
+	sessionId,
+	summary,
+	turnsEnded,
+	reloads,
+	onFiles,
+}: {
+	sessionId: string;
+	summary: SessionSummary;
+	turnsEnded: number;
+	reloads: number;
+	onFiles(count: number | null): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [files, setFiles] = useState<WorkspaceFile[] | null>(null);
@@ -459,7 +566,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 			.session(auth, sessionId)
 			.changes()
 			.then(
-				(list) => {
+				list => {
 					if (!current) return;
 					setFiles(list);
 					onFiles(list.length);
@@ -489,8 +596,8 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 			.session(auth, sessionId)
 			.diff()
 			.then(
-				(text) => setDiff((current) => (current ? { text, error: null } : null)),
-				(failure: unknown) => setDiff((current) => (current ? { text: null, error: explain(failure) } : null)),
+				text => setDiff(current => (current ? { text, error: null } : null)),
+				(failure: unknown) => setDiff(current => (current ? { text: null, error: explain(failure) } : null)),
 			);
 	};
 
@@ -500,13 +607,23 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 				Changes
 				{files && files.length > 0 ? <span className="panel-title-aside">{plural(files.length, "file")}</span> : null}
 				{hasSandbox ? (
-					<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Reload the changed files" title="Reload">
+					<button
+						type="button"
+						className="icon-button icon-button-small"
+						onClick={load}
+						disabled={loading}
+						aria-label="Reload the changed files"
+						title="Reload"
+					>
 						<RefreshIcon size={13} className={loading ? "spin" : undefined} />
 					</button>
 				) : null}
 			</h2>
 			{!hasSandbox ? (
-				<p className="panel-empty">The sandbox is created on {summary.item ? "the work item's first prompt" : "the first prompt"}. Files the agent changes will be listed here.</p>
+				<p className="panel-empty">
+					The sandbox is created on {summary.item ? "the work item's first prompt" : "the first prompt"}. Files the
+					agent changes will be listed here.
+				</p>
 			) : error ? (
 				<p className="panel-empty tone-bad" role="alert">
 					<WarnIcon size={13} /> {error}
@@ -520,7 +637,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 			) : (
 				<>
 					<ul className="changes" aria-label="Files that differ from the last commit">
-						{files.map((file) => {
+						{files.map(file => {
 							const { letter, word } = statusOf(file.status);
 							return (
 								<li key={file.path}>
@@ -529,7 +646,9 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 										<span className="visually-hidden"> {word}</span>
 									</span>
 									<span className="change-path" title={file.path}>
-										<span className="change-dir">{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/") + 1) : ""}</span>
+										<span className="change-dir">
+											{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/") + 1) : ""}
+										</span>
 										<span className="change-name">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
 									</span>
 								</li>
@@ -542,7 +661,12 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 				</>
 			)}
 			{diff ? (
-				<Dialog title="Changes" lede={`${summary.title} · the workspace against its last commit${files ? ` · ${plural(files.length, "file")}` : ""}`} size="full" onClose={() => setDiff(null)}>
+				<Dialog
+					title="Changes"
+					lede={`${summary.title} · the workspace against its last commit${files ? ` · ${plural(files.length, "file")}` : ""}`}
+					size="full"
+					onClose={() => setDiff(null)}
+				>
 					{diff.error ? (
 						<div className="state state-error" role="alert">
 							<WarnIcon size={22} />
@@ -566,11 +690,33 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	);
 }
 
-export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress, hosted, domains, machineName = null }: { egress?: EgressMode; hosted?: boolean; domains?: number; machineName?: string | null; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
+export function SidePanel({
+	sessionId,
+	summary,
+	profile,
+	view,
+	turnsEnded,
+	question = null,
+	egress,
+	hosted,
+	domains,
+	machineName = null,
+}: {
+	egress?: EgressMode;
+	hosted?: boolean;
+	domains?: number;
+	machineName?: string | null;
+	sessionId: string;
+	summary: SessionSummary;
+	profile: SandboxProfile;
+	view: SessionView;
+	turnsEnded: number;
+	question?: PendingQuestion | null;
+}) {
 	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
-	const published = useCallback(() => setReloads((value) => value + 1), []);
+	const published = useCallback(() => setReloads(value => value + 1), []);
 	const { usage } = summary.capabilities;
 	return (
 		<aside className="panel" id="details" aria-label="Agent details">
@@ -578,8 +724,22 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			<WhereItRuns summary={summary} profile={profile} view={view} machineName={machineName} egress={egress} />
 			{usage === "tokens" || usage === "context" ? <Usage view={view} summary={summary} /> : null}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
-			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
-			<RepositorySetupSection sessionId={sessionId} summary={summary} question={question} egress={egress} hosted={hosted} domains={domains} />
+			<PullRequestSection
+				sessionId={sessionId}
+				summary={summary}
+				profile={profile}
+				turnsEnded={turnsEnded}
+				files={files}
+				onPublished={published}
+			/>
+			<RepositorySetupSection
+				sessionId={sessionId}
+				summary={summary}
+				question={question}
+				egress={egress}
+				hosted={hosted}
+				domains={domains}
+			/>
 		</aside>
 	);
 }

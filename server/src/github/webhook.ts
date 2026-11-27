@@ -9,7 +9,8 @@ import type { Registry } from "../registry.js";
 import { edge, type Delivery } from "./events.js";
 
 const LIMIT = 2 * 1024 * 1024;
-const json = (status: number, body: unknown) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
+const json = (status: number, body: unknown) =>
+	Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const error = (status: number, code: string, message: string) => json(status, { code, message });
 
 const refusals = new AddressBudget(config.httpLimits.webhookRefusals);
@@ -21,14 +22,20 @@ let throttled = 0;
 function refuse(request: Request, status: number, code: string, message: string): Response {
 	const address = clientAddress(request);
 	const admission = refusals.refusal(address);
-	if (refused++ === 0) setTimeout(() => {
-		console.warn(`github.webhook.refused count=${refused} bad_signature=${badSignatures} rate_limited=${throttled}`);
-		refused = badSignatures = throttled = 0;
-	}, MINUTE_MS).unref();
+	if (refused++ === 0)
+		setTimeout(() => {
+			console.warn(`github.webhook.refused count=${refused} bad_signature=${badSignatures} rate_limited=${throttled}`);
+			refused = badSignatures = throttled = 0;
+		}, MINUTE_MS).unref();
 	if (code === "bad_signature") badSignatures++;
 	if (admission) {
 		throttled++;
-		return rateLimited(admission, address === null ? "Too many refused webhook requests. Try again later." : "This address has sent too many refused webhook requests. Try again later.");
+		return rateLimited(
+			admission,
+			address === null
+				? "Too many refused webhook requests. Try again later."
+				: "This address has sent too many refused webhook requests. Try again later.",
+		);
 	}
 	return error(status, code, message);
 }
@@ -38,20 +45,23 @@ async function receive(delivery: Delivery) {
 	const client = createClient<Registry>({
 		endpoint: ownEngineEndpoint(),
 		disableMetadataLookup: true,
-		fetch: (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }),
+		fetch: (url, init) =>
+			fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }),
 	});
 	const options = { params: serviceParams() };
 	async function admit() {
 		if (delivery.event !== "installation" && delivery.event !== "installation_repositories") {
 			const hooks = client.githubHooks.getOrCreate(["app"], options);
-			if (!await hooks.internalLinked(delivery.installationId)) return "unlinked";
+			if (!(await hooks.internalLinked(delivery.installationId))) return "unlinked";
 		}
 		return client.githubInbox.getOrCreate([String(delivery.installationId)], options).internalReceive(delivery);
 	}
 	// Bound directory lookup and inbox admission together, including client retries.
 	return Promise.race([
 		admit(),
-		new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("inbox timeout")), { once: true })),
+		new Promise<never>((_, reject) =>
+			signal.addEventListener("abort", () => reject(new Error("inbox timeout")), { once: true }),
+		),
 	]);
 }
 
@@ -66,7 +76,11 @@ export async function webhookRoute(request: Request): Promise<Response | null> {
 	const event = request.headers.get("x-github-event") ?? "";
 	const guid = request.headers.get("x-github-delivery") ?? "";
 	const signature = request.headers.get("x-hub-signature-256") ?? "";
-	if (!/^[a-z_]{1,64}$/.test(event) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(guid) || !/^sha256=[a-fA-F0-9]{64}$/.test(signature))
+	if (
+		!/^[a-z_]{1,64}$/.test(event) ||
+		!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(guid) ||
+		!/^sha256=[a-fA-F0-9]{64}$/.test(signature)
+	)
 		return refuse(request, 400, "bad_headers", "Required delivery headers are missing or malformed.");
 
 	let size = 0;
@@ -113,6 +127,8 @@ export async function webhookRoute(request: Request): Promise<Response | null> {
 		const result = await receive(delivery);
 		if (result === "unlinked") return json(202, { taken: false });
 		if (result !== "busy") return json(202, { taken: result === "duplicate" ? "duplicate" : true });
-	} catch { /* A lost reply can be retried under the same GUID. */ }
+	} catch {
+		/* A lost reply can be retried under the same GUID. */
+	}
 	return error(503, "inbox_unavailable", "The inbox could not take the delivery. Try again.");
 }

@@ -33,7 +33,8 @@ const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" :
 /** One check of the last run: how it ended, whose it is, and how often the agent was sent back over it; of one that was not started, why. */
 export function checkLine(check: VerifiedCheck): string {
 	const owner = check.whose === "user" ? (check.required ? "yours, required" : "yours") : "the repository's file";
-	if (check.startError !== undefined) return `was not started (${owner})${check.startError === "" ? "" : `: ${check.startError}`}`;
+	if (check.startError !== undefined)
+		return `was not started (${owner})${check.startError === "" ? "" : `: ${check.startError}`}`;
 	const how =
 		check.status === "passed"
 			? "passed"
@@ -54,8 +55,10 @@ export function checkLine(check: VerifiedCheck): string {
 export function unresolvedLine(verified: Verified): string | null {
 	if (verified.state !== "unresolved" || !verified.unresolved) return null;
 	const checks = verified.run?.checks ?? [];
-	const unstarted = "a check that was not started says nothing about the code: the agent was not sent back over it, and what there is to fix is the reason given with it";
-	if (verified.unresolved.reason === "not_started") return checks.every((check) => check.startError !== undefined) ? `nothing was verified: ${unstarted}` : unstarted;
+	const unstarted =
+		"a check that was not started says nothing about the code: the agent was not sent back over it, and what there is to fix is the reason given with it";
+	if (verified.unresolved.reason === "not_started")
+		return checks.every(check => check.startError !== undefined) ? `nothing was verified: ${unstarted}` : unstarted;
 	const why =
 		verified.unresolved.reason === "acknowledged"
 			? `the agent reported that it could not make them pass${verified.unresolved.said ? `: ${verified.unresolved.said}` : ""}`
@@ -64,7 +67,7 @@ export function unresolvedLine(verified: Verified): string | null {
 				: verified.unresolved.reason === "environment"
 					? "the sandbox could not run the command, which says nothing about the code, so the agent was not sent back"
 					: "the agent had been sent back as often as a turn allows";
-	return checks.some((check) => check.startError !== undefined) ? `${why}; ${unstarted}` : why;
+	return checks.some(check => check.startError !== undefined) ? `${why}; ${unstarted}` : why;
 }
 
 /** Where no check was needed because of the state the files are in: which state, and what verified it; null for a turn that changed no file, and where Windlass does not say. */
@@ -73,35 +76,47 @@ export function unneededLine(verified: Verified): string | null {
 	const { unneeded, run } = verified;
 	const passed = unneeded.on === "run" && run !== null ? `, in turn ${run.turn}` : null;
 	if (unneeded.reason === "state_unchanged")
-		return passed !== null ? `the files the checks cover are again as they were when the checks last passed${passed}` : unneeded.on === "start" ? "the files the checks cover are again as they were when the session started, a state no check has verified" : "the turn changed files and left them as they were before";
+		return passed !== null
+			? `the files the checks cover are again as they were when the checks last passed${passed}`
+			: unneeded.on === "start"
+				? "the files the checks cover are again as they were when the session started, a state no check has verified"
+				: "the turn changed files and left them as they were before";
 	return `no check covers the files that ${passed !== null ? `differ from the state the checks last passed on${passed}` : unneeded.on === "start" ? "differ from the state the session started from, which no check has verified" : "changed"}`;
 }
 
 /** Your checks that are not among the ones that ran, and why, in one line; null when there are none. */
 export function unrunLine(verified: Verified): string | null {
 	if (verified.unrun.length === 0) return null;
-	const names = verified.unrun.map((check) => check.name).join(", ");
+	const names = verified.unrun.map(check => check.name).join(", ");
 	const many = verified.unrun.length > 1;
-	if (verified.state === "passed" || verified.state === "unresolved") return `${names}: no changed file matches ${many ? "their" : "its"} patterns`;
+	if (verified.state === "passed" || verified.state === "unresolved")
+		return `${names}: no changed file matches ${many ? "their" : "its"} patterns`;
 	if (verified.state === "not_needed") return `${names}: the turn changed nothing ${many ? "they cover" : "it covers"}`;
-	if (verified.state === "stopped" || verified.state === "failed") return `${names}: the turn ended before ${many ? "they" : "it"} ran`;
+	if (verified.state === "stopped" || verified.state === "failed")
+		return `${names}: the turn ended before ${many ? "they" : "it"} ran`;
 	return names;
 }
 
 /** Where your checks were required ones and the repository's file had a say about checks: whom that held for; null otherwise. */
 export function overruledLine(verified: Verified): string | null {
-	return verified.overruled ? "the repository's .windlass/config.json says something about checks too: that holds for its own checks, and can neither replace your required checks nor switch them off" : null;
+	return verified.overruled
+		? "the repository's .windlass/config.json says something about checks too: that holds for its own checks, and can neither replace your required checks nor switch them off"
+		: null;
 }
 
 /** Where the checks that are listed ran in an earlier turn than the one that ended: which. */
 export function ranEarlier(verified: Verified): string | null {
-	return verified.run !== null && verified.run.turn !== verified.turn ? `${verified.putBack ? "as they passed" : "last ran"} in turn ${verified.run.turn}` : null;
+	return verified.run !== null && verified.run.turn !== verified.turn
+		? `${verified.putBack ? "as they passed" : "last ran"} in turn ${verified.run.turn}`
+		: null;
 }
 
 /** How many of the last run's checks passed, for a line that has no room for each. */
 export function runCount(verified: Verified): string | null {
 	const checks = verified.run?.checks ?? [];
 	if (checks.length === 0) return null;
-	const failing = checks.filter((check) => check.status !== "passed").length;
-	return failing === 0 ? `${plural(checks.length, "check")} passed` : `${failing} of ${plural(checks.length, "check")} failing`;
+	const failing = checks.filter(check => check.status !== "passed").length;
+	return failing === 0
+		? `${plural(checks.length, "check")} passed`
+		: `${failing} of ${plural(checks.length, "check")} failing`;
 }

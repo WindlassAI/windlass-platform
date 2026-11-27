@@ -12,12 +12,33 @@ import { ChatgptPlan } from "./ChatgptPlan";
 import { Dialog } from "./Dialog";
 import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
+import { Failure } from "./ui/Failure";
 
 const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string; keysUrl: string; logo?: ReactNode }> = {
-	openai: { name: "OpenAI", placeholder: "sk-proj-…", keysUrl: "https://platform.openai.com/api-keys", logo: <OpenAILogo /> },
-	anthropic: { name: "Anthropic", placeholder: "sk-ant-api03-…", keysUrl: "https://console.anthropic.com/settings/keys", logo: <AnthropicLogo /> },
-	google: { name: "Google Gemini", placeholder: "AIza…", keysUrl: "https://aistudio.google.com/apikey", logo: <GeminiLogo /> },
-	openrouter: { name: "OpenRouter", placeholder: "sk-or-v1-…", keysUrl: "https://openrouter.ai/settings/keys", logo: <OpenRouterLogo /> },
+	openai: {
+		name: "OpenAI",
+		placeholder: "sk-proj-…",
+		keysUrl: "https://platform.openai.com/api-keys",
+		logo: <OpenAILogo />,
+	},
+	anthropic: {
+		name: "Anthropic",
+		placeholder: "sk-ant-api03-…",
+		keysUrl: "https://console.anthropic.com/settings/keys",
+		logo: <AnthropicLogo />,
+	},
+	google: {
+		name: "Google Gemini",
+		placeholder: "AIza…",
+		keysUrl: "https://aistudio.google.com/apikey",
+		logo: <GeminiLogo />,
+	},
+	openrouter: {
+		name: "OpenRouter",
+		placeholder: "sk-or-v1-…",
+		keysUrl: "https://openrouter.ai/settings/keys",
+		logo: <OpenRouterLogo />,
+	},
 };
 
 function ProviderName({ provider }: { provider: ModelProvider }) {
@@ -40,17 +61,17 @@ function GetKey({ provider }: { provider: ModelProvider }) {
 	);
 }
 
-function Failure({ error }: { error: string | null }) {
-	if (!error) return null;
-	return (
-		<p className="callout callout-bad" role="alert">
-			<WarnIcon />
-			<span>{error}</span>
-		</p>
-	);
-}
-
-function KeyDialog({ provider, replacing, onClose, onSaved }: { provider: ModelProvider; replacing: boolean; onClose(): void; onSaved(status: ModelProviderCheck): void }) {
+function KeyDialog({
+	provider,
+	replacing,
+	onClose,
+	onSaved,
+}: {
+	provider: ModelProvider;
+	replacing: boolean;
+	onClose(): void;
+	onSaved(status: ModelProviderCheck): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [key, setKey] = useState("");
@@ -83,7 +104,8 @@ function KeyDialog({ provider, replacing, onClose, onSaved }: { provider: ModelP
 			}
 			lede={
 				<>
-					It is checked with the provider when it is saved, and never shown again: only its last four characters are. <GetKey provider={provider} />
+					It is checked with the provider when it is saved, and never shown again: only its last four characters are.{" "}
+					<GetKey provider={provider} />
 				</>
 			}
 			onClose={onClose}
@@ -104,7 +126,18 @@ function KeyDialog({ provider, replacing, onClose, onSaved }: { provider: ModelP
 					<label className="label" htmlFor={ids.key}>
 						API key
 					</label>
-					<input id={ids.key} className="input" type="password" autoComplete="off" spellCheck={false} value={key} placeholder={placeholder} onChange={(event) => setKey(event.target.value)} readOnly={busy} data-autofocus />
+					<input
+						id={ids.key}
+						className="input"
+						type="password"
+						autoComplete="off"
+						spellCheck={false}
+						value={key}
+						placeholder={placeholder}
+						onChange={event => setKey(event.target.value)}
+						readOnly={busy}
+						data-autofocus
+					/>
 				</div>
 				<Failure error={error} />
 			</form>
@@ -112,7 +145,15 @@ function KeyDialog({ provider, replacing, onClose, onSaved }: { provider: ModelP
 	);
 }
 
-function RemoveDialog({ provider, onClose, onRemoved }: { provider: ModelProvider; onClose(): void; onRemoved(): void }) {
+function RemoveDialog({
+	provider,
+	onClose,
+	onRemoved,
+}: {
+	provider: ModelProvider;
+	onClose(): void;
+	onRemoved(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState(false);
@@ -157,7 +198,10 @@ export function ModelProviders() {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const now = useNow(60_000);
-	const [state, setState] = useState<{ list: ModelProviderStatus[] | null; error: string | null }>({ list: null, error: null });
+	const [state, setState] = useState<{ list: ModelProviderStatus[] | null; error: string | null }>({
+		list: null,
+		error: null,
+	});
 	// What the last check said, for this visit: the saved status keeps only whether it passed.
 	const [checks, setChecks] = useState<Partial<Record<ModelProvider, { busy?: boolean; message?: string }>>>({});
 	const [editing, setEditing] = useState<{ provider: ModelProvider; replacing: boolean } | null>(null);
@@ -170,8 +214,9 @@ export function ModelProviders() {
 			.user(auth)
 			.modelProviders()
 			.then(
-				(list) => mine === asked.current && setState({ list, error: null }),
-				(failure: unknown) => mine === asked.current && setState((current) => ({ list: current.list, error: explain(failure) })),
+				list => mine === asked.current && setState({ list, error: null }),
+				(failure: unknown) =>
+					mine === asked.current && setState(current => ({ list: current.list, error: explain(failure) })),
 			);
 	}, [client, auth, explain]);
 
@@ -185,9 +230,9 @@ export function ModelProviders() {
 	const put = (provider: ModelProvider, status: ModelProviderCheck | null) => {
 		window.dispatchEvent(new Event(PROVIDERS_CHANGED));
 		asked.current += 1;
-		setChecks((current) => ({ ...current, [provider]: status?.message ? { message: status.message } : {} }));
-		setState((current) => {
-			const rest = (current.list ?? []).filter((one) => one.provider !== provider);
+		setChecks(current => ({ ...current, [provider]: status?.message ? { message: status.message } : {} }));
+		setState(current => {
+			const rest = (current.list ?? []).filter(one => one.provider !== provider);
 			if (!status) return { list: rest, error: null };
 			const { message: _message, ...saved } = status;
 			return { list: [...rest, saved], error: null };
@@ -195,11 +240,11 @@ export function ModelProviders() {
 	};
 
 	const check = async (provider: ModelProvider) => {
-		setChecks((current) => ({ ...current, [provider]: { busy: true } }));
+		setChecks(current => ({ ...current, [provider]: { busy: true } }));
 		try {
 			put(provider, await client.user(auth).checkModelProvider(provider));
 		} catch (failure) {
-			setChecks((current) => ({ ...current, [provider]: { message: explain(failure) } }));
+			setChecks(current => ({ ...current, [provider]: { message: explain(failure) } }));
 		}
 	};
 
@@ -224,11 +269,12 @@ export function ModelProviders() {
 			) : (
 				<ul className="settings-list" aria-label="Your model providers">
 					{!auth.profile.demo && <ChatgptPlan />}
-					{MODEL_PROVIDERS.map((provider) => {
+					{MODEL_PROVIDERS.map(provider => {
 						const { name } = PROVIDERS[provider];
-						const saved = list.find((one) => one.provider === provider);
+						const saved = list.find(one => one.provider === provider);
 						const last = checks[provider] ?? {};
-						const failed = last.message ?? (saved && saved.checkedAt !== null && !saved.ok ? "The last check failed." : undefined);
+						const failed =
+							last.message ?? (saved && saved.checkedAt !== null && !saved.ok ? "The last check failed." : undefined);
 						return (
 							<li key={provider} className="usage-kept-row provider-row" data-provider={provider}>
 								<div className="usage-kept-main">
@@ -239,40 +285,69 @@ export function ModelProviders() {
 										<p className="agent-meta">
 											<span className="provider-last4">…{saved.last4}</span>
 											<span>added {day(saved.addedAt)}</span>
-											{saved.ok && saved.models ? <span>{saved.models.length === 1 ? "1 model" : `${saved.models.length} models`}</span> : null}
-											{saved.checkedAt !== null ? <span title={absoluteTime(saved.checkedAt)}>checked {relativeTime(saved.checkedAt, now)}</span> : null}
+											{saved.ok && saved.models ? (
+												<span>{saved.models.length === 1 ? "1 model" : `${saved.models.length} models`}</span>
+											) : null}
+											{saved.checkedAt !== null ? (
+												<span title={absoluteTime(saved.checkedAt)}>checked {relativeTime(saved.checkedAt, now)}</span>
+											) : null}
 										</p>
 									) : null}
-									{saved?.needsWindlassCheck && <p className="field-note">Recheck this key to find its Windlass-compatible models.</p>}
-									{failed ? <p className="field-note tone-bad" role="status">{failed}</p> : null}
+									{saved?.needsWindlassCheck && (
+										<p className="field-note">Recheck this key to find its Windlass-compatible models.</p>
+									)}
+									{failed ? (
+										<p className="field-note tone-bad" role="status">
+											{failed}
+										</p>
+									) : null}
 								</div>
-								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>{saved ? (saved.ok ? "connected" : "check failed") : "no key"}</span>
+								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>
+									{saved ? (saved.ok ? "connected" : "check failed") : "no key"}
+								</span>
 								<div className="provider-actions">
 									{saved ? (
 										<>
-											<button type="button" className="button button-outline button-small" onClick={() => void check(provider)} disabled={last.busy}>
+											<button
+												type="button"
+												className="button button-outline button-small"
+												onClick={() => void check(provider)}
+												disabled={last.busy}
+											>
 												<span>
 													{last.busy ? "Checking…" : saved.needsWindlassCheck ? "Recheck" : "Check"}
 													<span className="visually-hidden"> {name}</span>
 												</span>
 											</button>
-											<button type="button" className="button button-outline button-small" onClick={() => setEditing({ provider, replacing: true })}>
+											<button
+												type="button"
+												className="button button-outline button-small"
+												onClick={() => setEditing({ provider, replacing: true })}
+											>
 												<span>
 													<span>
-												Replace<span className="visually-hidden"> {name}</span>…
-											</span>
+														Replace<span className="visually-hidden"> {name}</span>…
+													</span>
 												</span>
 											</button>
-											<button type="button" className="button button-outline button-small" onClick={() => setRemoving(provider)}>
+											<button
+												type="button"
+												className="button button-outline button-small"
+												onClick={() => setRemoving(provider)}
+											>
 												<span>
 													<span>
-												Remove<span className="visually-hidden"> {name}</span>…
-											</span>
+														Remove<span className="visually-hidden"> {name}</span>…
+													</span>
 												</span>
 											</button>
 										</>
 									) : (
-										<button type="button" className="button button-outline button-small" onClick={() => setEditing({ provider, replacing: false })}>
+										<button
+											type="button"
+											className="button button-outline button-small"
+											onClick={() => setEditing({ provider, replacing: false })}
+										>
 											<span>
 												Add key<span className="visually-hidden"> for {name}</span>…
 											</span>
@@ -284,9 +359,25 @@ export function ModelProviders() {
 					})}
 				</ul>
 			)}
-			{list !== null && state.error ? <p className="usage-note" role="status">{state.error} <button type="button" className="link" onClick={reload}>Try again</button></p> : null}
-			{editing ? <KeyDialog provider={editing.provider} replacing={editing.replacing} onClose={() => setEditing(null)} onSaved={(status) => put(editing.provider, status)} /> : null}
-			{removing ? <RemoveDialog provider={removing} onClose={() => setRemoving(null)} onRemoved={() => put(removing, null)} /> : null}
+			{list !== null && state.error ? (
+				<p className="usage-note" role="status">
+					{state.error}{" "}
+					<button type="button" className="link" onClick={reload}>
+						Try again
+					</button>
+				</p>
+			) : null}
+			{editing ? (
+				<KeyDialog
+					provider={editing.provider}
+					replacing={editing.replacing}
+					onClose={() => setEditing(null)}
+					onSaved={status => put(editing.provider, status)}
+				/>
+			) : null}
+			{removing ? (
+				<RemoveDialog provider={removing} onClose={() => setRemoving(null)} onRemoved={() => put(removing, null)} />
+			) : null}
 		</section>
 	);
 }

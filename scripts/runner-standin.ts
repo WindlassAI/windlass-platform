@@ -9,9 +9,11 @@ import { MIN_RUNNER_VERSION, parseConnection, parseServerFrame, sessionProof } f
 import type { Operation } from "../server/src/runner/protocol.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 import { FakeRunner } from "./runner-fake.js";
+import { sleep } from "./check-wait.js";
 
-const FIXTURE = fileURLToPath(new URL("../fixtures/windlass-events/demo-several-steps-in-one-turn.jsonl", import.meta.url));
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+const FIXTURE = fileURLToPath(
+	new URL("../fixtures/windlass-events/demo-several-steps-in-one-turn.jsonl", import.meta.url),
+);
 
 export function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
@@ -23,13 +25,19 @@ const ATTEMPT_MS = 15_000;
  * answers `service_unavailable` can be left without an answer: such an attempt is abandoned after
  * ATTEMPT_MS and the probe is asked again, so the wait still ends by its deadline.
  */
-export async function until<T>(what: string, probe: () => T | undefined | null | false | Promise<T | undefined | null | false>, ms = 30_000): Promise<T> {
+export async function until<T>(
+	what: string,
+	probe: () => T | undefined | null | false | Promise<T | undefined | null | false>,
+	ms = 30_000,
+): Promise<T> {
 	const end = Date.now() + ms;
 	for (;;) {
 		const attempt = Promise.resolve().then(probe);
 		attempt.catch(() => undefined);
 		let timer: Parameters<typeof clearTimeout>[0];
-		const abandoned = new Promise<undefined>((done) => { timer = setTimeout(done, Math.max(50, Math.min(ATTEMPT_MS, end - Date.now()))); });
+		const abandoned = new Promise<undefined>(done => {
+			timer = setTimeout(done, Math.max(50, Math.min(ATTEMPT_MS, end - Date.now())));
+		});
 		const value = await Promise.race([attempt, abandoned]).finally(() => clearTimeout(timer));
 		if (value !== undefined && value !== null && value !== false) return value;
 		if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
@@ -44,7 +52,11 @@ export function opened(ws: WebSocket): Promise<void> {
 	});
 }
 
-const RECORDED: WindlassEvent[] = readFileSync(FIXTURE, "utf8").split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as WindlassEvent).filter((event) => event.type !== "cli.summary");
+const RECORDED: WindlassEvent[] = readFileSync(FIXTURE, "utf8")
+	.split("\n")
+	.filter(line => line.trim() !== "")
+	.map(line => JSON.parse(line) as WindlassEvent)
+	.filter(event => event.type !== "cli.summary");
 
 /** The text of every `session/prompt` an engine of the stand-in was sent, oldest first: what a resumed turn was given. */
 export const enginePrompts: string[] = [];
@@ -56,14 +68,19 @@ class Engine {
 	private timers: ReturnType<typeof setTimeout>[] = [];
 	private prompt: unknown = null;
 
-	constructor(private readonly say: (line: string) => void, private readonly onOpen: (meta: Record<string, unknown>) => void, private readonly missingSession: () => boolean) {}
+	constructor(
+		private readonly say: (line: string) => void,
+		private readonly onOpen: (meta: Record<string, unknown>) => void,
+		private readonly missingSession: () => boolean,
+	) {}
 
 	input(data: string): void {
 		this.buffer += data;
 		for (let at = this.buffer.indexOf("\n"); at >= 0; at = this.buffer.indexOf("\n")) {
 			const line = this.buffer.slice(0, at);
 			this.buffer = this.buffer.slice(at + 1);
-			if (line.trim() !== "") this.handle(JSON.parse(line) as { id?: unknown; method?: string; params?: Record<string, unknown> });
+			if (line.trim() !== "")
+				this.handle(JSON.parse(line) as { id?: unknown; method?: string; params?: Record<string, unknown> });
 		}
 	}
 
@@ -79,7 +96,10 @@ class Engine {
 		const reply = (result: unknown) => this.send({ id: m.id, result });
 		switch (m.method) {
 			case "initialize":
-				return reply({ protocolVersion: 1, agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event"], openMeta: ["hostTools"] } } } });
+				return reply({
+					protocolVersion: 1,
+					agentCapabilities: { _meta: { windlass: { notifications: ["_windlass/event"], openMeta: ["hostTools"] } } },
+				});
 			case "session/new":
 				this.onOpen((m.params?._meta as { windlass?: Record<string, unknown> })?.windlass ?? {});
 				return reply({ sessionId: this.session });
@@ -87,7 +107,8 @@ class Engine {
 				this.session = String(m.params?.session);
 				return reply({ sessionId: this.session, cwd: "/workspace" });
 			case "session/resume":
-				if (this.missingSession()) return this.send({ id: m.id, error: { code: -32002, message: "The saved session is gone." } });
+				if (this.missingSession())
+					return this.send({ id: m.id, error: { code: -32002, message: "The saved session is gone." } });
 				this.onOpen((m.params?._meta as { windlass?: Record<string, unknown> })?.windlass ?? {});
 				return reply({});
 			case "session/close":
@@ -95,23 +116,56 @@ class Engine {
 			case "session/prompt": {
 				this.prompt = m.id;
 				const text = JSON.stringify(m.params?.prompt ?? "");
-				enginePrompts.push(((m.params?.prompt as Array<{ text?: unknown }> | undefined) ?? []).map((part) => String(part.text ?? "")).join(""));
+				enginePrompts.push(
+					((m.params?.prompt as Array<{ text?: unknown }> | undefined) ?? [])
+						.map(part => String(part.text ?? ""))
+						.join(""),
+				);
 				if (text.includes("(session title)")) {
-					this.send({ method: "session/update", params: { sessionId: this.session, update: { sessionUpdate: "session_info_update", title: "Inspect the files" } } });
+					this.send({
+						method: "session/update",
+						params: {
+							sessionId: this.session,
+							update: { sessionUpdate: "session_info_update", title: "Inspect the files" },
+						},
+					});
 				}
 				const gap = text.includes("(slow)") ? 120 : 5;
 				RECORDED.forEach((event, index) => {
-					this.timers.push(setTimeout(() => this.send({ method: "_windlass/event", params: { sessionId: this.session, event: { ...event, sessionId: this.session } } }), gap * (index + 1)));
+					this.timers.push(
+						setTimeout(
+							() =>
+								this.send({
+									method: "_windlass/event",
+									params: { sessionId: this.session, event: { ...event, sessionId: this.session } },
+								}),
+							gap * (index + 1),
+						),
+					);
 				});
 				this.timers.push(setTimeout(() => this.answer("end_turn", "succeeded"), gap * (RECORDED.length + 1)));
 				return;
 			}
 			case "session/cancel":
 				this.stop();
-				this.send({ method: "_windlass/event", params: { sessionId: this.session, event: { type: "execution.interrupted", v: 1, data: { executionId: "exe_1" }, sessionId: this.session, seq: 999, time: Date.now() } } });
+				this.send({
+					method: "_windlass/event",
+					params: {
+						sessionId: this.session,
+						event: {
+							type: "execution.interrupted",
+							v: 1,
+							data: { executionId: "exe_1" },
+							sessionId: this.session,
+							seq: 999,
+							time: Date.now(),
+						},
+					},
+				});
 				return this.answer("cancelled", "interrupted");
 			default:
-				if (m.id !== undefined && m.method !== undefined) this.send({ id: m.id, error: { code: -32601, message: `method not found: ${m.method}` } });
+				if (m.id !== undefined && m.method !== undefined)
+					this.send({ id: m.id, error: { code: -32601, message: `method not found: ${m.method}` } });
 		}
 	}
 
@@ -146,8 +200,21 @@ interface Served {
 }
 
 export class StandInRunner {
-	constructor(private readonly origin: string, private readonly endpoint: string, private readonly options: { claude?: boolean; stateDir?: string; getToken?: () => Promise<string>; namespace?: string; onAcpUpdate?: () => void } = {}) {
-		if (options.claude) this.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token" }];
+	constructor(
+		private readonly origin: string,
+		private readonly endpoint: string,
+		private readonly options: {
+			claude?: boolean;
+			stateDir?: string;
+			getToken?: () => Promise<string>;
+			namespace?: string;
+			onAcpUpdate?: () => void;
+		} = {},
+	) {
+		if (options.claude)
+			this.fake.report.harnesses = [
+				{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token" },
+			];
 	}
 
 	/** Messages received by the in-process fixture, for assertions about cancellation and steering. */
@@ -180,7 +247,10 @@ export class StandInRunner {
 	offline = false;
 	removed = false;
 
-	async pair(user: { claimMachine(input: { code: string }): Promise<unknown>; confirmMachine(input: { code: string; keyConfirmed: true }): Promise<{ machineId: string }> }): Promise<void> {
+	async pair(user: {
+		claimMachine(input: { code: string }): Promise<unknown>;
+		confirmMachine(input: { code: string; keyConfirmed: true }): Promise<{ machineId: string }>;
+	}): Promise<void> {
 		const pairing = await this.fake.pair(this.origin);
 		await user.claimMachine({ code: pairing.code });
 		await user.confirmMachine({ code: pairing.code, keyConfirmed: true });
@@ -190,7 +260,13 @@ export class StandInRunner {
 	}
 
 	private client() {
-		return createClient<Registry>({ endpoint: this.endpoint, token: "default", getToken: this.options.getToken, namespace: this.options.namespace ?? "default", disableMetadataLookup: true });
+		return createClient<Registry>({
+			endpoint: this.endpoint,
+			token: "default",
+			getToken: this.options.getToken,
+			namespace: this.options.namespace ?? "default",
+			disableMetadataLookup: true,
+		});
 	}
 
 	async openControl(version = MIN_RUNNER_VERSION) {
@@ -225,13 +301,17 @@ export class StandInRunner {
 			if (!this.offline && !this.removed) void this.reconnect();
 		});
 		await opened(control.ws);
-		await until("the machine's welcome", () => {
-			if (control.ws.readyState > 1) {
-				if (this.control?.ws === control.ws) this.control = null;
-				throw new Error("the control socket was refused");
-			}
-			return control.frames.some((frame) => frame.kind === "welcome");
-		}, 15_000);
+		await until(
+			"the machine's welcome",
+			() => {
+				if (control.ws.readyState > 1) {
+					if (this.control?.ws === control.ws) this.control = null;
+					throw new Error("the control socket was refused");
+				}
+				return control.frames.some(frame => frame.kind === "welcome");
+			},
+			15_000,
+		);
 	}
 
 	private async reconnect(): Promise<void> {
@@ -248,7 +328,12 @@ export class StandInRunner {
 	}
 
 	report(): void {
-		this.fake.report.sandboxes = [...this.boxes.values()].map(({ id, sessionId, state }) => ({ id, sessionId, state, usedAt: Date.now() }));
+		this.fake.report.sandboxes = [...this.boxes.values()].map(({ id, sessionId, state }) => ({
+			id,
+			sessionId,
+			state,
+			usedAt: Date.now(),
+		}));
 		this.control?.send(this.fake.report as never);
 	}
 
@@ -303,7 +388,12 @@ export class StandInRunner {
 		await opened(ws);
 		served.ws = ws;
 		this.usedTickets.push({ sessionId, ticket });
-		served.channel.attach(socketOf(ws), { runnerVersion: MIN_RUNNER_VERSION, machineId: this.id.machineId, ticket, signature: this.fake.sign(sessionProof(this.id.uid, sessionId, this.id.machineId, ticket)) });
+		served.channel.attach(socketOf(ws), {
+			runnerVersion: MIN_RUNNER_VERSION,
+			machineId: this.id.machineId,
+			ticket,
+			signature: this.fake.sign(sessionProof(this.id.uid, sessionId, this.id.machineId, ticket)),
+		});
 	}
 
 	private serve(sessionId: string): Served {
@@ -313,10 +403,10 @@ export class StandInRunner {
 			processes: new Map(),
 			runs: new Map(),
 			channel: new RunnerChannel({
-				onOperation: (op) => this.operation(served, sessionId, op),
+				onOperation: op => this.operation(served, sessionId, op),
 				onInput: (process, data) => served.processes.get(process)?.engine?.input(data),
-				onCloseIn: (process) => this.end(served, process, { code: 0, signal: null, error: null }),
-				onCancel: (id) => {
+				onCloseIn: process => this.end(served, process, { code: 0, signal: null, error: null }),
+				onCancel: id => {
 					const op = served.runs.get(id);
 					if (!op) return;
 					served.runs.delete(id);
@@ -325,11 +415,11 @@ export class StandInRunner {
 				},
 				onDrain: () => undefined,
 				// The orphan rule: what the ended conversation started gets its stdin closed.
-				onReset: (reason) => {
+				onReset: reason => {
 					served.resets.push(reason);
 					for (const id of [...served.processes.keys()]) this.end(served, id, { code: 0, signal: null, error: null });
 				},
-				onRefused: (reason) => served.resets.push(`refused: ${reason}`),
+				onRefused: reason => served.resets.push(`refused: ${reason}`),
 			}),
 		};
 		return served;
@@ -354,10 +444,23 @@ export class StandInRunner {
 			case "create": {
 				this.creates += 1;
 				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
-				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
+				const had = [...this.boxes.values()].find(existing => existing.sessionId === sessionId);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
-				if (!had && (this.full || (this.maxSandboxes !== undefined && this.boxes.size >= this.maxSandboxes))) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
-				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, size: op.args.size, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
+				if (!had && (this.full || (this.maxSandboxes !== undefined && this.boxes.size >= this.maxSandboxes)))
+					return channel.refuse(op, {
+						kind: "user",
+						message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.",
+					});
+				const made: Box = had ?? {
+					id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`,
+					sessionId,
+					size: op.args.size,
+					profile: op.args.profile,
+					harness: op.args.harness,
+					state: "running",
+					files: new Map(),
+					engines: new Set(),
+				};
 				this.boxes.set(made.id, made);
 				if (this.loseCreates > 0) {
 					// Before any report: the real runner reports at most once a minute, so the server cannot count on one.
@@ -391,7 +494,8 @@ export class StandInRunner {
 				return channel.respond(op, { exitCode: 0, timedOut: false, aborted: false, stdout: "", stderr: "" });
 			case "readTextFile": {
 				const content = box?.files.get(op.args.path);
-				if (!mine || content === undefined) return channel.refuse(op, { kind: "sandbox", message: `no such file: ${op.args.path}` });
+				if (!mine || content === undefined)
+					return channel.refuse(op, { kind: "sandbox", message: `no such file: ${op.args.path}` });
 				return channel.respond(op, content);
 			}
 			case "writeTextFile":
@@ -410,8 +514,21 @@ export class StandInRunner {
 						if (this.options.onAcpUpdate && JSON.parse(line).method === "session/update") this.options.onAcpUpdate();
 						channel.output(op.id, 1, line);
 					}, this.options.stateDir);
-					engine = { input: chunk => { this.acpInput.push(chunk); agent.input(chunk); }, stop: () => agent.stop() };
-				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta), () => this.missingSessions.has(sessionId)) : null;
+					engine = {
+						input: chunk => {
+							this.acpInput.push(chunk);
+							agent.input(chunk);
+						},
+						stop: () => agent.stop(),
+					};
+				} else
+					engine = isEngine
+						? new Engine(
+								line => channel.output(op.id, 1, line),
+								meta => this.opens.set(sessionId, meta),
+								() => this.missingSessions.has(sessionId),
+							)
+						: null;
 				if (engine) box.engines.add(engine);
 				if (engine) this.engineStarts += 1;
 				served.processes.set(op.id, { engine, box });
@@ -428,8 +545,8 @@ export class StandInRunner {
 				return channel.respond(op, { code: 127, stdout: "", stderr: "stand-in runner: no shell" });
 			case "stopLeftovers": {
 				// Engines a dead runner process left running, which no channel serves any more.
-				const live = new Set([...served.processes.values()].map((p) => p.engine));
-				const left = mine ? [...box.engines].filter((engine) => !live.has(engine)) : [];
+				const live = new Set([...served.processes.values()].map(p => p.engine));
+				const left = mine ? [...box.engines].filter(engine => !live.has(engine)) : [];
 				for (const engine of left) {
 					engine.stop();
 					box?.engines.delete(engine);
@@ -445,9 +562,9 @@ export class StandInRunner {
 
 function socketOf(ws: WebSocket): ChannelSocket {
 	return {
-		send: (text) => ws.send(text),
+		send: text => ws.send(text),
 		close: () => ws.close(),
-		onMessage: (listener) => ws.addEventListener("message", (event) => listener(event.data)),
-		onClose: (listener) => ws.addEventListener("close", () => listener()),
+		onMessage: listener => ws.addEventListener("message", event => listener(event.data)),
+		onClose: listener => ws.addEventListener("close", () => listener()),
 	};
 }

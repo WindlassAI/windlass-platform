@@ -83,7 +83,7 @@ export class ConnectionTokens {
 	constructor(private readonly options: ConnectionTokensOptions) {
 		this.fetch = options.fetch ?? fetch;
 		this.now = options.now ?? Date.now;
-		this.log = options.log ?? ((line) => console.error(line));
+		this.log = options.log ?? (line => console.error(line));
 	}
 
 	/**
@@ -113,13 +113,16 @@ export class ConnectionTokens {
 		if (this.failed && this.now() - this.failed.at < RETRY_MS) return this.lastResort(held, this.failed.error);
 		this.loading ??= this.issue()
 			.then(
-				(next) => {
+				next => {
 					this.held = next;
 					this.failed = null;
 					return next;
 				},
 				(error: unknown) => {
-					const failure = error instanceof ConnectionTokenError ? error : new ConnectionTokenError("the request for a connection token failed");
+					const failure =
+						error instanceof ConnectionTokenError
+							? error
+							: new ConnectionTokenError("the request for a connection token failed");
 					this.failed = { at: this.now(), error: failure };
 					this.log(`[wlp] connection.token_failed: ${failure.message}`);
 					throw failure;
@@ -156,21 +159,36 @@ export class ConnectionTokens {
 		try {
 			response = await this.fetch(`${endpoint}/auth/tokens`, {
 				method: "POST",
-				headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json", accept: "application/json" },
+				headers: {
+					authorization: `Bearer ${adminToken}`,
+					"content-type": "application/json",
+					accept: "application/json",
+				},
 				body: JSON.stringify({ namespace, duration: Math.max(1, Math.round(ttlMs / 1000)), grants: CONNECTION_GRANTS }),
 				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 				// An answer to the admin token is never to be taken from anywhere else.
 				redirect: "error",
 			});
 		} catch (error) {
-			throw new ConnectionTokenError(`the Rivet engine at ${endpoint} could not be asked for a connection token (${this.scrub(reasonOf(error))})`);
+			throw new ConnectionTokenError(
+				`the Rivet engine at ${endpoint} could not be asked for a connection token (${this.scrub(reasonOf(error))})`,
+			);
 		}
 		const body: unknown = await response.json().catch(() => null);
-		if (!response.ok) throw new ConnectionTokenError(`the Rivet engine at ${endpoint} refused to issue a connection token: ${response.status}${this.scrub(refusalOf(body))}`);
+		if (!response.ok)
+			throw new ConnectionTokenError(
+				`the Rivet engine at ${endpoint} refused to issue a connection token: ${response.status}${this.scrub(refusalOf(body))}`,
+			);
 		const issued = readIssued(body);
-		if (!issued) throw new ConnectionTokenError(`the Rivet engine at ${endpoint} answered a request for a connection token with something else`);
+		if (!issued)
+			throw new ConnectionTokenError(
+				`the Rivet engine at ${endpoint} answered a request for a connection token with something else`,
+			);
 		const lifetimeMs = issued.expiresAt - issued.issuedAt;
-		if (lifetimeMs <= 0) throw new ConnectionTokenError(`the Rivet engine at ${endpoint} issued a connection token that had already expired`);
+		if (lifetimeMs <= 0)
+			throw new ConnectionTokenError(
+				`the Rivet engine at ${endpoint} issued a connection token that had already expired`,
+			);
 		return { token: issued.token, expiresAt: issued.expiresAt, goodUntil: sentAt + lifetimeMs, lifetimeMs };
 	}
 
@@ -182,8 +200,13 @@ export class ConnectionTokens {
 
 function readIssued(body: unknown): { token: string; issuedAt: number; expiresAt: number } | null {
 	if (typeof body !== "object" || body === null) return null;
-	const { token, issued_ts: issuedAt, expires_ts: expiresAt } = body as { token?: unknown; issued_ts?: unknown; expires_ts?: unknown };
-	if (typeof token !== "string" || token === "" || typeof issuedAt !== "number" || typeof expiresAt !== "number") return null;
+	const {
+		token,
+		issued_ts: issuedAt,
+		expires_ts: expiresAt,
+	} = body as { token?: unknown; issued_ts?: unknown; expires_ts?: unknown };
+	if (typeof token !== "string" || token === "" || typeof issuedAt !== "number" || typeof expiresAt !== "number")
+		return null;
 	if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) return null;
 	return { token, issuedAt, expiresAt };
 }
@@ -199,9 +222,13 @@ function refusalOf(body: unknown): string {
 
 function reasonOf(error: unknown): string {
 	if (!(error instanceof Error)) return "unknown error";
-	if (error.name === "TimeoutError" || error.name === "AbortError") return `no answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`;
+	if (error.name === "TimeoutError" || error.name === "AbortError")
+		return `no answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`;
 	// Node's fetch says "fetch failed" and keeps the reason (ECONNREFUSED, ENOTFOUND, ...) in `cause`.
 	const cause = (error as { cause?: unknown }).cause;
-	const code = typeof cause === "object" && cause !== null && typeof (cause as { code?: unknown }).code === "string" ? (cause as { code: string }).code : null;
+	const code =
+		typeof cause === "object" && cause !== null && typeof (cause as { code?: unknown }).code === "string"
+			? (cause as { code: string }).code
+			: null;
 	return code ?? (error.message.replace(/\s+/g, " ").slice(0, 200) || "unknown error");
 }

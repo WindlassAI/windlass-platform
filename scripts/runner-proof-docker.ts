@@ -2,9 +2,17 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Map logical runner names to throwaway Docker resources, including archive requests. */
-export async function writeProofDocker(dir: string, prefix: string, realDocker: string, fixture?: { adapter: string; scenarios: string; lan: string }, extraPrefixes: string[] = []) {
+export async function writeProofDocker(
+	dir: string,
+	prefix: string,
+	realDocker: string,
+	fixture?: { adapter: string; scenarios: string; lan: string },
+	extraPrefixes: string[] = [],
+) {
 	await writeFile(join(dir, "package.json"), '{"type":"commonjs"}\n');
-	await writeFile(join(dir, "docker"), `#!/usr/bin/env node
+	await writeFile(
+		join(dir, "docker"),
+		`#!/usr/bin/env node
 const {spawnSync} = require("node:child_process");
 const {readFileSync} = require("node:fs");
 const pairs=[["wlp-session-", "${prefix}agent-"], ["wlp-harness-claude-", "${prefix}login-"], ...${JSON.stringify(extraPrefixes.map((name, i) => [name, prefix + i + "-"]))}];
@@ -33,5 +41,7 @@ const child=spawnSync(${JSON.stringify(realDocker)},args,{
 });
 if(listing) process.stdout.write(names(child.stdout.toString(),true));
 process.exit(child.status ?? 1);
-`, { mode: 0o755 });
+`,
+		{ mode: 0o755 },
+	);
 }

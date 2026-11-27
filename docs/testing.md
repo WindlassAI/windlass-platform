@@ -4,7 +4,7 @@ Both workflows run on pushes to `main`, `wip/**` and `windlass/**`, and on deman
 Pull requests from other branches run both workflows too. A PR from an agent branch skips the
 duplicate jobs because the push already ran them.
 
-- **CI** (`.github/workflows/ci.yml`) validates the AGENTS.md guides, typechecks, builds the web app and scans for secrets.
+- **CI** (`.github/workflows/ci.yml`) validates the AGENTS.md guides, checks formatting and lint with Biome (`biome.json`), typechecks, builds the web app and scans for secrets.
   Pushes to `main`, PRs from non-agent branches and manual runs also run the four fake test
   shards in parallel. The `test` check combines their results. A newer branch run cancels a
   superseded run of the same event and ref; CI on `main` keeps its runs.

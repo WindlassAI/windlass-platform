@@ -17,14 +17,21 @@ export class StepCounter {
 
 	/** One ACP update of the turn: true the moment it is a call past the limit, and only then. */
 	count(update: { sessionUpdate?: unknown; toolCallId?: unknown }): boolean {
-		if (update.sessionUpdate !== "tool_call" || typeof update.toolCallId !== "string" || this.calls.has(update.toolCallId)) return false;
+		if (
+			update.sessionUpdate !== "tool_call" ||
+			typeof update.toolCallId !== "string" ||
+			this.calls.has(update.toolCallId)
+		)
+			return false;
 		this.calls.add(update.toolCallId);
 		if (this.reached || this.limit === undefined || this.calls.size <= this.limit) return false;
 		this.reached = true;
 		return true;
 	}
 
-	get steps(): number { return this.calls.size; }
+	get steps(): number {
+		return this.calls.size;
+	}
 }
 
 /** The timeline's note when the platform stopped a turn at its step limit. */

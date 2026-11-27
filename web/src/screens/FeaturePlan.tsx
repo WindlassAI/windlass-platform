@@ -1,31 +1,76 @@
 import { afterWords } from "../lib/subtasks";
 import { perHour } from "../lib/sizes";
 import { modelWords } from "../lib/models";
-import { HOSTED_SIZE_NAMES, MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
+import {
+	HOSTED_SIZE_NAMES,
+	MAX_NOTE_CHARS,
+	type FeaturePlan,
+	type HarnessId,
+	type ItemBudget,
+	type SubtaskBudget,
+	type ItemQuestion,
+	type ItemSummary,
+	type ItemView,
+	type MachineSummary,
+	type ModelList,
+	type PlanSubtask,
+	type SubtaskAgent,
+	type Waiting,
+} from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning, subtaskHarness } from "../../../server/src/factory/feature-plan.js";
+import { usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
-import { showsSubtasks } from "./Subtasks";
+import { showsSubtasks } from "../components/Subtasks";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HARNESS_NAMES } from "../lib/acp";
 import { SOURCE_WORDS, placeName, payerWords, runModelName, sourceOf } from "../lib/run";
 import { runAgent, type ResolvedRun } from "../../../server/src/factory/resolve-run";
-import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
+import {
+	HOSTED,
+	OWNER_REASON,
+	needsWords,
+	routeWords,
+	secretsFor,
+	nextSubtask,
+	orchestratorOf,
+	parentPlaceName,
+	placeChanged,
+	placeDraftOf,
+	placedWords,
+	placeWord,
+	refusalFor,
+	refusedSubtask,
+	withPlace,
+	type PlaceDraft,
+} from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import type { useHostedProviders } from "../state/hooks";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { modelMenu as sharedModelMenu } from "../components/ModelPicker";
 import { effortGroup } from "../components/TrayControls";
-import { agentChanged, agentChoices, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
+import {
+	agentChanged,
+	agentChoices,
+	agentParts,
+	cleanAgent,
+	machineModels,
+	preferredMachine,
+	UNATTENDED_MEANS,
+	UNATTENDED_WORDS,
+	worksWithoutAsking,
+	type Catalogs,
+} from "../lib/subtask-agents";
 import { subtaskFloor, sumBudgets } from "../lib/feature";
 import type { PlanActing, PlanReview } from "./usePlanReview";
 import { linkProps } from "../lib/router";
-import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
+import { ItemGlyph, ItemTrack, itemTrack } from "../components/ItemRow";
+import { STATE_WORD } from "../lib/items";
 import { Check } from "../components/ui/Check";
 import { Tooltip } from "../components/ui/Tooltip";
 import { useDefaults } from "../components/StartComposer";
@@ -36,11 +81,26 @@ function approvalProblem(review: PlanReview, unconfirmed: number): string | null
 	if (review.edits) return "Save your changes, then approve this version.";
 	const unanswered = review.unansweredLeft;
 	if (unanswered) return `Answer ${unanswered === 1 ? "the question" : `the ${unanswered} questions`} first.`;
-	if (unconfirmed) return `Confirm ${unconfirmed === 1 ? "the agent that works" : `the ${unconfirmed} agents that work`} without asking first.`;
+	if (unconfirmed)
+		return `Confirm ${unconfirmed === 1 ? "the agent that works" : `the ${unconfirmed} agents that work`} without asking first.`;
 	return null;
 }
 
-export function PlanQuestion({ view, review, acting, when, conflicted, onSettingError }: { view: ItemView; review: PlanReview; acting: PlanActing; when: ReactNode; conflicted: boolean; onSettingError(): void }) {
+export function PlanQuestion({
+	view,
+	review,
+	acting,
+	when,
+	conflicted,
+	onSettingError,
+}: {
+	view: ItemView;
+	review: PlanReview;
+	acting: PlanActing;
+	when: ReactNode;
+	conflicted: boolean;
+	onSettingError(): void;
+}) {
 	const { plan } = review;
 	const title = useId();
 	const { client } = useApp();
@@ -66,7 +126,9 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	const offered = (id: string) => question.choices.some(choice => choice.id === id);
 	const canApprove = offered(single ? "run_single" : "approve");
 	const refused = review.refusal;
-	const unplaceable = single ? [] : plan.subtasks.filter(task => !view.completedSubtasks?.includes(task.key) && task.placementProblem);
+	const unplaceable = single
+		? []
+		: plan.subtasks.filter(task => !view.completedSubtasks?.includes(task.key) && task.placementProblem);
 	const unconfirmed = single ? 0 : review.unconfirmed;
 	const blocked = approvalProblem(review, unconfirmed);
 	// Only a permanent placement refusal blocks approval.
@@ -77,18 +139,50 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				It asks you
 				<span className="item-question-when">{when}</span>
 			</p>
-			<LongText className="item-question-text" lines={3}>{question.text}</LongText>
+			<LongText className="item-question-text" lines={3}>
+				{question.text}
+			</LongText>
 			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
-			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
-			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
+			{view.question.criticFindings && (
+				<div className="callout callout-warn">
+					<div>
+						Critic recommends revision
+						<ul>
+							{view.question.criticFindings.map((finding, i) => (
+								<li key={i}>{finding}</li>
+							))}
+						</ul>
+					</div>
+				</div>
+			)}
+			{plan.subtasks.length > 0 ? (
+				<PlanRoutes
+					view={view}
+					plan={plan}
+					machines={review.machines}
+					catalogs={review.catalogs}
+					accountModels={review.accountModels}
+					refusal={refused}
+				/>
+			) : null}
 
-			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} /> : null}
+			{!single && review.unattended.length > 0 ? (
+				<UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} />
+			) : null}
 
 			{plan.questions.length > 0 ? (
 				<div className="plan-asks">
-					{plan.questions.map((question) => (
-						<PlanAsk key={question.id} question={question} edit={{ value: review.answers[question.id] ?? "", disabled: busy, onChange: text => review.setAnswer(question.id, text) }} />
+					{plan.questions.map(question => (
+						<PlanAsk
+							key={question.id}
+							question={question}
+							edit={{
+								value: review.answers[question.id] ?? "",
+								disabled: busy,
+								onChange: text => review.setAnswer(question.id, text),
+							}}
+						/>
 					))}
 				</div>
 			) : null}
@@ -96,10 +190,18 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			{conflicted ? (
 				<p className="callout callout-warn" role="status">
 					<WarnIcon />
-					<span>The plan changed while you read it, here or in another tab: version {plan.version} is shown now. Check it, then approve again.</span>
+					<span>
+						The plan changed while you read it, here or in another tab: version {plan.version} is shown now. Check it,
+						then approve again.
+					</span>
 				</p>
 			) : null}
-			{ciBlock && <p className="callout callout-warn" role="status"><WarnIcon /><span>{ciBlock}</span></p>}
+			{ciBlock && (
+				<p className="callout callout-warn" role="status">
+					<WarnIcon />
+					<span>{ciBlock}</span>
+				</p>
+			)}
 			{refused && refused !== ciBlock ? (
 				<div className="callout callout-bad plan-refused" role="alert">
 					<WarnIcon />
@@ -115,7 +217,12 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			<div className="item-choices">
 				{review.edits || (!single && review.answersOnly) ? (
 					<>
-						<button type="button" className="button button-primary" disabled={busy || review.problems.any} onClick={() => void review.save()}>
+						<button
+							type="button"
+							className="button button-primary"
+							disabled={busy || review.problems.any}
+							onClick={() => void review.save()}
+						>
 							{acting.busy === "edit_plan" ? "Saving…" : `Save as version ${plan.version + 1}`}
 						</button>
 						<button type="button" className="button button-quiet" disabled={busy} onClick={review.reset}>
@@ -123,25 +230,55 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 						</button>
 					</>
 				) : canApprove ? (
-					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? { kind: "answer", question: question.id, choice: "run_single" } : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
-						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : `Approve version ${plan.version}`}
+					<button
+						type="button"
+						className="button button-primary"
+						disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null}
+						onClick={() =>
+							void approve(single ? { kind: "answer", question: question.id, choice: "run_single" } : undefined)
+						}
+						aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}
+					>
+						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single"
+							? "Approving…"
+							: single
+								? "Approve for one implementer"
+								: `Approve version ${plan.version}`}
 					</button>
 				) : null}
 				{canApprove && offerAutoApprove && !review.edits && (
 					<div className="plan-auto-approve">
-						<Check checked={autoApprove} disabled={busy} onChange={setAutoApprove} label={`Approve small plans automatically in ${view.repository.owner}/${view.repository.name}`} />
+						<Check
+							checked={autoApprove}
+							disabled={busy}
+							onChange={setAutoApprove}
+							label={`Approve small plans automatically in ${view.repository.owner}/${view.repository.name}`}
+						/>
 						<Tooltip content="Up to 3 parts and at most 3× a Quick item's budget. Any open question needs a recommended answer the reviewer accepts.">
-							<button type="button" className="icon-button icon-button-small" aria-label="Which plans can be approved automatically?"><InfoIcon size={15} /></button>
+							<button
+								type="button"
+								className="icon-button icon-button-small"
+								aria-label="Which plans can be approved automatically?"
+							>
+								<InfoIcon size={15} />
+							</button>
 						</Tooltip>
 					</div>
 				)}
-				{!review.edits && question.choices.filter(choice => choice.id !== "approve" && !(single && choice.id === "run_single")).map(choice => (
-					<button key={choice.id} type="button" className={`button ${choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
-						disabled={busy || (choice.id === "run_single" && review.unansweredLeft > 0)}
-						onClick={() => void acting.act({ kind: "answer", question: question.id, choice: choice.id })}>
-						{choice.label}
-					</button>
-				))}
+				{!review.edits &&
+					question.choices
+						.filter(choice => choice.id !== "approve" && !(single && choice.id === "run_single"))
+						.map(choice => (
+							<button
+								key={choice.id}
+								type="button"
+								className={`button ${choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+								disabled={busy || (choice.id === "run_single" && review.unansweredLeft > 0)}
+								onClick={() => void acting.act({ kind: "answer", question: question.id, choice: choice.id })}
+							>
+								{choice.label}
+							</button>
+						))}
 			</div>
 			{blocked && !review.edits ? (
 				<p className="field-note" id={`${title}-why`}>
@@ -151,13 +288,16 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				<p className="field-note plan-blocked-place" id={`${title}-why`}>
 					<span className="plan-blocked-dot" aria-hidden="true" />
 					<span>
-						<strong>{placeBlocked.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.placementProblem} Choose another place below and save, or ask for a new plan.
+						<strong>{placeBlocked.title}</strong>
+						{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed:{" "}
+						{placeBlocked.placementProblem} Choose another place below and save, or ask for a new plan.
 					</span>
 				</p>
 			) : null}
 
 			{!single && plan.subtasks.some(task => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) && (
-				<details className="field-note"><summary>How subtask sizes are chosen</summary>
+				<details className="field-note">
+					<summary>How subtask sizes are chosen</summary>
 					Hosted uses the chosen size. A larger resource request needs approval. A machine uses its own slots.
 				</details>
 			)}
@@ -166,18 +306,32 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 }
 
 /** Parts a re-plan adds and drops, against the subtasks already started or finished. */
-export function replanChanges(view: Pick<ItemView, "children" | "completedSubtasks">, plan: Pick<FeaturePlan, "subtasks">): { added: string[]; dropped: string[] } {
-	const started = new Set([...(view.completedSubtasks ?? []), ...(view.children ?? []).flatMap((child) => (child.parent ? [child.parent.key] : []))]);
-	const keys = new Set(plan.subtasks.map((task) => task.key));
+export function replanChanges(
+	view: Pick<ItemView, "children" | "completedSubtasks">,
+	plan: Pick<FeaturePlan, "subtasks">,
+): { added: string[]; dropped: string[] } {
+	const started = new Set([
+		...(view.completedSubtasks ?? []),
+		...(view.children ?? []).flatMap(child => (child.parent ? [child.parent.key] : [])),
+	]);
+	const keys = new Set(plan.subtasks.map(task => task.key));
 	return {
-		added: plan.subtasks.filter((task) => !started.has(task.key)).map((task) => task.title),
-		dropped: (view.children ?? []).filter((child) => child.parent && !keys.has(child.parent.key) && !["done", "cancelled", "failed"].includes(child.state)).map((child) => child.title),
+		added: plan.subtasks.filter(task => !started.has(task.key)).map(task => task.title),
+		dropped: (view.children ?? [])
+			.filter(
+				child => child.parent && !keys.has(child.parent.key) && !["done", "cancelled", "failed"].includes(child.state),
+			)
+			.map(child => child.title),
 	};
 }
 
 function changeWords({ added, dropped }: { added: string[]; dropped: string[] }): string | null {
-	const list = (titles: string[]) => titles.slice(0, 2).join("; ") + (titles.length > 2 ? ` and ${titles.length - 2} more` : "");
-	const words = [added.length ? `Adds ${plural(added.length, "part")}: ${list(added)}` : null, dropped.length ? `Drops ${plural(dropped.length, "part")}: ${list(dropped)}` : null].filter(Boolean);
+	const list = (titles: string[]) =>
+		titles.slice(0, 2).join("; ") + (titles.length > 2 ? ` and ${titles.length - 2} more` : "");
+	const words = [
+		added.length ? `Adds ${plural(added.length, "part")}: ${list(added)}` : null,
+		dropped.length ? `Drops ${plural(dropped.length, "part")}: ${list(dropped)}` : null,
+	].filter(Boolean);
 	return words.length ? `${words.join(". ")}.` : null;
 }
 
@@ -204,19 +358,33 @@ function PlanJump({ view, plan, replan }: { view: ItemView; plan: FeaturePlan; r
 	);
 }
 
-export function questionParts(question: Pick<FeaturePlan["questions"][number], "text" | "why">): { ask: string; why: string | null } {
+export function questionParts(question: Pick<FeaturePlan["questions"][number], "text" | "why">): {
+	ask: string;
+	why: string | null;
+} {
 	if (question.why) return { ask: question.text, why: question.why };
 	// Without separate background, keep the question sentence visible.
 	if (question.text.length <= ASK_SHORT) return { ask: question.text, why: null };
-	const sentences = question.text.match(/[^.?!]+(?:[.?!]+["”’)]?|$)\s*/g)?.filter((one) => one.trim() !== "") ?? [question.text];
-	const asking = [...sentences].reverse().find((one) => one.trim().endsWith("?")) ?? sentences[0]!;
-	const rest = sentences.filter((one) => one !== asking).join("").trim();
+	const sentences = question.text.match(/[^.?!]+(?:[.?!]+["”’)]?|$)\s*/g)?.filter(one => one.trim() !== "") ?? [
+		question.text,
+	];
+	const asking = [...sentences].reverse().find(one => one.trim().endsWith("?")) ?? sentences[0]!;
+	const rest = sentences
+		.filter(one => one !== asking)
+		.join("")
+		.trim();
 	return { ask: asking.trim(), why: rest || null };
 }
 
 const ASK_SHORT = 160;
 
-function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number]; edit?: { value: string; disabled: boolean; onChange(text: string): void } }) {
+function PlanAsk({
+	question,
+	edit,
+}: {
+	question: FeaturePlan["questions"][number];
+	edit?: { value: string; disabled: boolean; onChange(text: string): void };
+}) {
 	const id = useId();
 	const { ask, why } = questionParts(question);
 	const background = why ? (
@@ -233,7 +401,10 @@ function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number
 			<div className="plan-ask plan-ask-answered">
 				<p className="plan-ask-text">{ask}</p>
 				<p className="plan-ask-answer">
-					<span className="plan-ask-by">{question.answeredBy === "critic" ? "The plan reviewer's answer" : "Your answer"}</span> {question.answer}
+					<span className="plan-ask-by">
+						{question.answeredBy === "critic" ? "The plan reviewer's answer" : "Your answer"}
+					</span>{" "}
+					{question.answer}
 				</p>
 				{background}
 			</div>
@@ -249,16 +420,30 @@ function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number
 			{background}
 			{question.options?.length ? (
 				<div className="plan-ask-options" role="radiogroup" aria-labelledby={id}>
-					{question.options.map((option) => (
+					{question.options.map(option => (
 						<label key={option} className={`plan-ask-option${value === option ? " plan-ask-chosen" : ""}`}>
-							<input className="check-input" type="radio" name={id} value={option} checked={value === option} disabled={disabled} onChange={() => onChange(option)} />
+							<input
+								className="check-input"
+								type="radio"
+								name={id}
+								value={option}
+								checked={value === option}
+								disabled={disabled}
+								onChange={() => onChange(option)}
+							/>
 							<span className="plan-ask-dot" aria-hidden="true" />
 							<span className="plan-ask-label">{option}</span>
 						</label>
 					))}
 				</div>
 			) : (
-				<input className="input" aria-labelledby={id} value={value} readOnly={disabled} onChange={(event) => onChange(event.target.value)} />
+				<input
+					className="input"
+					aria-labelledby={id}
+					value={value}
+					readOnly={disabled}
+					onChange={event => onChange(event.target.value)}
+				/>
 			)}
 		</div>
 	);
@@ -271,18 +456,34 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const heading = useId();
 	const [opened, setOpened] = useState(false);
 	if (!plan || !pool) return null;
-	const singleSpend = view.mode === "single" || plan.subtasks.length === 0 ? (
-		<>
-			<p className="plan-single">Runs as one item after this plan</p>
-			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent)} fields={[{ key: "tokens", label: "Tokens", spelled: compact }]} />
-		</>
-	) : null;
+	const singleSpend =
+		view.mode === "single" || plan.subtasks.length === 0 ? (
+			<>
+				<p className="plan-single">Runs as one item after this plan</p>
+				<ItemSpend
+					spent={view.spent}
+					budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent)}
+					fields={[{ key: "tokens", label: "Tokens", spelled: compact }]}
+				/>
+			</>
+		) : null;
 	if (plan.status === "superseded") {
 		return (
-			<section className={`usage-section feature-plan plan-set-aside${opened ? " plan-set-aside-open" : ""}`} aria-labelledby={heading}>
+			<section
+				className={`usage-section feature-plan plan-set-aside${opened ? " plan-set-aside-open" : ""}`}
+				aria-labelledby={heading}
+			>
 				<h2 className="usage-title plan-set-aside-title" id={heading}>
-					<button type="button" className="plan-set-aside-row" aria-expanded={opened} onClick={() => setOpened((value) => !value)}>
-						<ChevronIcon size={12} className={`plan-set-aside-chevron${opened ? " plan-set-aside-chevron-open" : ""}`} />
+					<button
+						type="button"
+						className="plan-set-aside-row"
+						aria-expanded={opened}
+						onClick={() => setOpened(value => !value)}
+					>
+						<ChevronIcon
+							size={12}
+							className={`plan-set-aside-chevron${opened ? " plan-set-aside-chevron-open" : ""}`}
+						/>
 						<span className="plan-set-aside-name">The plan</span>
 						<span className="usage-count">
 							v{plan.version} · {plan.status}
@@ -292,7 +493,11 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 				</h2>
 				{opened ? (
 					<div className="plan-set-aside-body">
-						<p className="plan-set-aside-note">{view.mode === "single" ? "Set aside: the work runs as one item, under its own budget." : "Set aside: no subtask of it runs any more."}</p>
+						<p className="plan-set-aside-note">
+							{view.mode === "single"
+								? "Set aside: the work runs as one item, under its own budget."
+								: "Set aside: no subtask of it runs any more."}
+						</p>
 						<PlanBody view={view} review={review} acting={acting} pool={pool} />
 					</div>
 				) : null}
@@ -313,22 +518,33 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 			{plan.approvedBy === "critic" && (
 				<p className="field-note">
 					Plan approved automatically by an independent reviewer.{" "}
-					<a className="link" aria-label="Change work item approvals" {...linkProps({ name: "repository", id: view.repository.id, section: "autonomy" })}>Change</a>
+					<a
+						className="link"
+						aria-label="Change work item approvals"
+						{...linkProps({ name: "repository", id: view.repository.id, section: "autonomy" })}
+					>
+						Change
+					</a>
 				</p>
 			)}
 			{folds && !opened ? (
 				<>
-
 					<div className="long-text">
 						<p className="long-text-body plan-goal" data-clamped="true" style={{ "--lines": 3 } as CSSProperties}>
 							<Inline text={plan.spec.goal} />
 						</p>
 					</div>
 					{/* What was answered stays in sight while the rest of the plan is folded. */}
-					{plan.questions.filter((question) => question.answer).map((question) => <PlanAsk key={question.id} question={question} />)}
+					{plan.questions
+						.filter(question => question.answer)
+						.map(question => (
+							<PlanAsk key={question.id} question={question} />
+						))}
 					<p className="plan-folded">
 						<FoldToggle open={false} controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(true)} />
-						<span className="tone-dim">{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}</span>
+						<span className="tone-dim">
+							{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}
+						</span>
 					</p>
 				</>
 			) : (
@@ -346,10 +562,22 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	);
 }
 
-function PlanBody({ view, review, acting, pool }: { view: ItemView; review: PlanReview; acting: PlanActing; pool: SubtaskBudget }) {
+function PlanBody({
+	view,
+	review,
+	acting,
+	pool,
+}: {
+	view: ItemView;
+	review: PlanReview;
+	acting: PlanActing;
+	pool: SubtaskBudget;
+}) {
 	const plan = review.plan!;
 	const editing = review.open;
-	const children = new Map((view.children ?? []).filter((child) => child.parent).map((child) => [child.parent!.key, child]));
+	const children = new Map(
+		(view.children ?? []).filter(child => child.parent).map(child => [child.parent!.key, child]),
+	);
 	const single = plan.compare.singleBudget;
 	const floor = subtaskFloor(single);
 	const titles = new Map(plan.subtasks.map(task => [task.key, task.title]));
@@ -357,41 +585,65 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const machines = review.machines;
 	// A re-plan keeps finished subtasks as they ran: only the rest can change.
 	const done = new Set(view.completedSubtasks ?? []);
-	const placing = plan.subtasks.some((task) => task.place || task.needs || task.review) || plan.overflow === true || (view.children ?? []).some((child) => child.placement);
+	const placing =
+		plan.subtasks.some(task => task.place || task.needs || task.review) ||
+		plan.overflow === true ||
+		(view.children ?? []).some(child => child.placement);
 	const refusal = review.refusal;
 	// The subtask the feature waits to place: a machine wait is about the next one to start.
-	const waitingKey = plan.status === "approved" && view.wait?.reason === "machine" ? (nextSubtask(plan, view.children ?? [])?.key ?? null) : null;
+	const waitingKey =
+		plan.status === "approved" && view.wait?.reason === "machine"
+			? (nextSubtask(plan, view.children ?? [])?.key ?? null)
+			: null;
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = editing ? review.overflow : plan.overflow === true;
 	const place = (task: PlanSubtask, routeEdited: boolean): PlaceRow => {
 		const saved = !routeEdited && overflow === !!plan.overflow;
 		const preferred = task.review?.places[0];
 		return {
-			machines, parent: task.place && task.review ? placeName(task.review.inherited.place, machines) : preferred?.name ?? parent, overflow,
+			machines,
+			parent:
+				task.place && task.review ? placeName(task.review.inherited.place, machines) : (preferred?.name ?? parent),
+			overflow,
 			draft: review.places[task.key] ?? placeDraftOf(task),
-			problem: saved ? refusalFor(task, refusal) ?? task.placementProblem ?? null : null,
-			ahead: saved ? task.placementWait ?? null : "Save to check this placement.",
+			problem: saved ? (refusalFor(task, refusal) ?? task.placementProblem ?? null) : null,
+			ahead: saved ? (task.placementWait ?? null) : "Save to check this placement.",
 			wait: task.key === waitingKey ? view.wait : null,
-			secrets: name => saved && preferred?.name === name ? preferred.sendSecrets : secretsFor(name, machines),
+			secrets: name => (saved && preferred?.name === name ? preferred.sendSecrets : secretsFor(name, machines)),
 			onPlace: draft => review.setPlace(task.key, draft),
 		};
 	};
 	const agentRow = (task: PlanSubtask, edited: PlanSubtask): AgentRow => {
-		const draft = editing && task.key in review.agents ? review.agents[task.key] ?? undefined : task.agent;
+		const draft = editing && task.key in review.agents ? (review.agents[task.key] ?? undefined) : task.agent;
 		const later = view.editableAgents?.includes(task.key) === true;
 		const moved = editing && task.place?.prefer !== edited.place?.prefer;
-		const machine = preferredMachine(moved ? edited : task, task.review ? placeName(task.review.inherited.place, machines) : parent, machines);
+		const machine = preferredMachine(
+			moved ? edited : task,
+			task.review ? placeName(task.review.inherited.place, machines) : parent,
+			machines,
+		);
 		// With no agent of its own, a part runs the resolved default: the feature's, the repository's or yours.
 		const inherited = task.review?.inherited ?? (!task.agent ? task.resolved : undefined);
 		const harness = draft?.harness ?? inherited?.agent ?? "windlass";
 		return {
-			draft, inherited, resolved: edited.resolved,
+			draft,
+			inherited,
+			resolved: edited.resolved,
 			changed: editing && agentChanged(task, review.agents[task.key]),
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
-			hostedKeys: review.hostedKeys, keyProfile: review.keyProfile,
-			list: harness === "windlass" ? review.accountModels : harnessOptions(machine, harness, machine ? review.catalogs[machine.machineId]?.[harness] : undefined, review.hostedKeys).models,
-			onAgent: (agent) => (later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent)),
+			hostedKeys: review.hostedKeys,
+			keyProfile: review.keyProfile,
+			list: usesAccountModels(harness)
+				? review.accountModels
+				: harnessOptions(
+						machine,
+						harness,
+						machine ? review.catalogs[machine.machineId]?.[harness] : undefined,
+						review.hostedKeys,
+					).models,
+			onAgent: agent =>
+				later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent),
 		};
 	};
 	return (
@@ -409,9 +661,15 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 						{specParts(plan).join(" · ")}
 					</summary>
 					<dl className="plan-spec">
-						{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} /> : null}
-						{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
-						{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
+						{plan.spec.requirements.length > 0 ? (
+							<SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} />
+						) : null}
+						{plan.spec.acceptance.length > 0 ? (
+							<SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} />
+						) : null}
+						{plan.spec.outOfScope.length > 0 ? (
+							<SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} />
+						) : null}
 					</dl>
 				</details>
 			) : null}
@@ -421,16 +679,35 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					<p className="plan-card-head">
 						Subtasks <span className="plan-card-count">{plan.subtasks.length}</span>
 					</p>
-					{placing || editing ? <FeaturePlacement parent={parent} editing={editing} overflow={overflow} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
+					{placing || editing ? (
+						<FeaturePlacement
+							parent={parent}
+							editing={editing}
+							overflow={overflow}
+							disabled={acting.busy !== null}
+							onOverflow={review.setOverflow}
+						/>
+					) : null}
 					<ol className="plan-tasks" aria-label="Subtasks">
 						{review.rows.map(({ task, edited, routeEdited }, index) => (
-							<SubtaskRow key={task.key} task={task} child={children.get(task.key) ?? null}
-								place={placing || editing ? place(task, routeEdited) : null} agent={agentRow(task, edited)}
-								n={index + 1} titles={titles} setAside={setAside}
-								editing={editing && !done.has(task.key)} finished={editing && done.has(task.key)}
-								draft={review.budgets[task.key]} invalid={!!review.problems.fields[task.key]?.tokens}
-								floor={floor} single={single} disabled={acting.busy !== null}
-								onChange={text => review.setBudget(task.key, text)} />
+							<SubtaskRow
+								key={task.key}
+								task={task}
+								child={children.get(task.key) ?? null}
+								place={placing || editing ? place(task, routeEdited) : null}
+								agent={agentRow(task, edited)}
+								n={index + 1}
+								titles={titles}
+								setAside={setAside}
+								editing={editing && !done.has(task.key)}
+								finished={editing && done.has(task.key)}
+								draft={review.budgets[task.key]}
+								invalid={!!review.problems.fields[task.key]?.tokens}
+								floor={floor}
+								single={single}
+								disabled={acting.busy !== null}
+								onChange={text => review.setBudget(task.key, text)}
+							/>
 						))}
 					</ol>
 
@@ -441,9 +718,24 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	);
 }
 
-function PlanTotal({ view, pool, single, total }: { view: ItemView; pool: SubtaskBudget; single: number; total: number }) {
+function PlanTotal({
+	view,
+	pool,
+	single,
+	total,
+}: {
+	view: ItemView;
+	pool: SubtaskBudget;
+	single: number;
+	total: number;
+}) {
 	const share = Math.min(100, (total / Math.max(1, pool.tokens)) * 100);
-	const spent = view.children?.length ? { ...sumBudgets(view.children.map(child => child.spent)), raw: view.children.reduce((sum, child) => sum + (child.spent.rawTokens ?? child.spent.tokens), 0) } : null;
+	const spent = view.children?.length
+		? {
+				...sumBudgets(view.children.map(child => child.spent)),
+				raw: view.children.reduce((sum, child) => sum + (child.spent.rawTokens ?? child.spent.tokens), 0),
+			}
+		: null;
 	return (
 		<div className="plan-total" aria-label="Allotted to subtasks">
 			<p className="plan-total-head">Allotted to subtasks</p>
@@ -466,7 +758,11 @@ function PlanTotal({ view, pool, single, total }: { view: ItemView; pool: Subtas
 			</p>
 			<details className="usage-note">
 				<summary>Details</summary>
-				<p>{spent && <>{compact(spent.raw)} raw tokens reported by subtasks. </>}The remaining tokens cover planning, the summary and review. Cached input counts at a tenth. Giving a subtask more tokens increases the feature’s budget.</p>
+				<p>
+					{spent && <>{compact(spent.raw)} raw tokens reported by subtasks. </>}The remaining tokens cover planning, the
+					summary and review. Cached input counts at a tenth. Giving a subtask more tokens increases the feature’s
+					budget.
+				</p>
 			</details>
 		</div>
 	);
@@ -474,10 +770,22 @@ function PlanTotal({ view, pool, single, total }: { view: ItemView; pool: Subtas
 
 function specParts(plan: FeaturePlan): string[] {
 	const { requirements, acceptance, outOfScope } = plan.spec;
-	return [requirements.length > 0 ? plural(requirements.length, "requirement") : null, acceptance.length > 0 ? `${acceptance.length} done when` : null, outOfScope.length > 0 ? `${outOfScope.length} not in it` : null].filter((part): part is string => part !== null);
+	return [
+		requirements.length > 0 ? plural(requirements.length, "requirement") : null,
+		acceptance.length > 0 ? `${acceptance.length} done when` : null,
+		outOfScope.length > 0 ? `${outOfScope.length} not in it` : null,
+	].filter((part): part is string => part !== null);
 }
 
-function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | "acceptance" | "out"; lines: string[] }) {
+function SpecList({
+	term,
+	kind,
+	lines,
+}: {
+	term: string;
+	kind: "requirements" | "acceptance" | "out";
+	lines: string[];
+}) {
 	return (
 		<div className={`plan-spec-part plan-spec-${kind}`}>
 			<dt>
@@ -485,7 +793,7 @@ function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | 
 				<span className="plan-spec-count">{lines.length}</span>
 			</dt>
 			<dd>
-				<FoldList items={lines} shown={SPEC_SHOWN} render={(line) => <Inline text={line} />} />
+				<FoldList items={lines} shown={SPEC_SHOWN} render={line => <Inline text={line} />} />
 			</dd>
 		</div>
 	);
@@ -508,11 +816,46 @@ export function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, place, agent, n, titles, child, setAside, editing, finished, draft, invalid, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; titles: Map<string, string>; child: ItemSummary | null; setAside: boolean; editing: boolean; finished: boolean; draft: string | undefined; invalid: boolean; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(text: string): void }) {
+function SubtaskRow({
+	task,
+	place,
+	agent,
+	n,
+	titles,
+	child,
+	setAside,
+	editing,
+	finished,
+	draft,
+	invalid,
+	floor,
+	single,
+	disabled,
+	onChange,
+}: {
+	task: PlanSubtask;
+	place: PlaceRow | null;
+	agent: AgentRow;
+	n: number;
+	titles: Map<string, string>;
+	child: ItemSummary | null;
+	setAside: boolean;
+	editing: boolean;
+	finished: boolean;
+	draft: string | undefined;
+	invalid: boolean;
+	floor: SubtaskBudget;
+	single: Pick<ItemBudget, "tokens">;
+	disabled: boolean;
+	onChange(text: string): void;
+}) {
 	const input = `${useId()}-tokens`;
 	const reason = placeReason(task, child, place);
 	return (
-		<li data-key={task.key} className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}${finished ? " plan-task-finished" : ""}`}>
+		<li
+			data-key={task.key}
+			className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}${finished ? " plan-task-finished" : ""}`}
+		>
 			<span className="plan-task-n" aria-hidden="true">
 				{child ? <ItemGlyph item={child} /> : n}
 			</span>
@@ -532,15 +875,32 @@ function SubtaskRow({ task, place, agent, n, titles, child, setAside, editing, f
 				<p className="plan-task-brief plan-task-brief-short">{task.brief}</p>
 				<dl className="plan-task-facts">
 					{place ? <SubtaskPlace task={task} child={child} row={place} editing={editing} disabled={disabled} /> : null}
-					<SubtaskAgentFact title={task.title} child={child} row={agent} editing={agent.editable && !child} disabled={disabled} />
+					<SubtaskAgentFact
+						title={task.title}
+						child={child}
+						row={agent}
+						editing={agent.editable && !child}
+						disabled={disabled}
+					/>
 				</dl>
 				<SubtaskDetails task={task} reason={reason} />
 				{editing && draft !== undefined ? (
 					<div className="plan-budget" role="group" aria-label={`Budget of ${task.title}`}>
 						<div className="plan-budget-field">
-							<label className="plan-budget-label" htmlFor={input}>Millions of tokens</label>
+							<label className="plan-budget-label" htmlFor={input}>
+								Millions of tokens
+							</label>
 							<span className={`plan-budget-input${invalid ? " plan-budget-invalid" : ""}`}>
-								<input id={input} className="input input-mono" inputMode="decimal" value={draft} readOnly={disabled} aria-invalid={invalid || undefined} aria-describedby={`${input}-range`} onChange={event => onChange(event.target.value)} />
+								<input
+									id={input}
+									className="input input-mono"
+									inputMode="decimal"
+									value={draft}
+									readOnly={disabled}
+									aria-invalid={invalid || undefined}
+									aria-describedby={`${input}-range`}
+									onChange={event => onChange(event.target.value)}
+								/>
 							</span>
 							<span className={`plan-budget-range${invalid ? " tone-bad" : ""}`} id={`${input}-range`}>
 								{compact(floor.tokens)}–{compact(single.tokens)} tokens
@@ -550,10 +910,16 @@ function SubtaskRow({ task, place, agent, n, titles, child, setAside, editing, f
 				) : (
 					<p className="plan-budget-read">
 						{child?.agent?.tokens === "subscription" ? (
-							<span>{subscriptionSpend(child.spent)} <span className="tone-faint">not counted: your subscription</span></span>
+							<span>
+								{subscriptionSpend(child.spent)} <span className="tone-faint">not counted: your subscription</span>
+							</span>
 						) : (
 							<span>
-								{child ? <>{compact(child.spent.tokens)} <span className="tone-faint">of</span>{" "}</> : null}
+								{child ? (
+									<>
+										{compact(child.spent.tokens)} <span className="tone-faint">of</span>{" "}
+									</>
+								) : null}
 								{compact(task.budget.tokens)} <span className="tone-faint">tokens</span>
 							</span>
 						)}
@@ -570,7 +936,17 @@ function SubtaskRow({ task, place, agent, n, titles, child, setAside, editing, f
 						<span className="plan-task-word">{STATE_WORD[child.state].toLowerCase()}</span>
 					)
 				) : (
-					<span className={`plan-task-word${place?.wait ? "" : " tone-faint"}`}>{finished ? "done" : editing ? "planned" : setAside ? "not run" : place?.wait ? "waits for a machine" : "not started"}</span>
+					<span className={`plan-task-word${place?.wait ? "" : " tone-faint"}`}>
+						{finished
+							? "done"
+							: editing
+								? "planned"
+								: setAside
+									? "not run"
+									: place?.wait
+										? "waits for a machine"
+										: "not started"}
+					</span>
 				)}
 			</div>
 		</li>
@@ -605,7 +981,7 @@ function SubtaskDetails({ task, reason }: { task: PlanSubtask; reason: string | 
 				<div>
 					<dt>checked by</dt>
 					<dd>
-						<FoldList className="plan-checks" items={task.acceptance} render={(line) => <Inline text={line} />} />
+						<FoldList className="plan-checks" items={task.acceptance} render={line => <Inline text={line} />} />
 					</dd>
 				</div>
 			</dl>
@@ -633,7 +1009,19 @@ interface PlaceRow {
 	onPlace(draft: PlaceDraft): void;
 }
 
-function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: { parent: string; editing: boolean; overflow: boolean; disabled: boolean; onOverflow(on: boolean): void }) {
+function FeaturePlacement({
+	parent,
+	editing,
+	overflow,
+	disabled,
+	onOverflow,
+}: {
+	parent: string;
+	editing: boolean;
+	overflow: boolean;
+	disabled: boolean;
+	onOverflow(on: boolean): void;
+}) {
 	const id = useId();
 	return (
 		<div className="plan-placement" aria-label="Placement">
@@ -649,15 +1037,24 @@ function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: {
 				</span>
 				{editing ? (
 					<div className="segmented plan-overflow" role="radiogroup" aria-labelledby={id}>
-						{[false, true].map((on) => (
+						{[false, true].map(on => (
 							<label key={String(on)} className={`segment${overflow === on ? " segment-chosen" : ""}`}>
-								<input className="segment-radio" type="radio" name={id} checked={overflow === on} disabled={disabled} onChange={() => onOverflow(on)} />
+								<input
+									className="segment-radio"
+									type="radio"
+									name={id}
+									checked={overflow === on}
+									disabled={disabled}
+									onChange={() => onOverflow(on)}
+								/>
 								{on ? "Use another free place" : "Wait for the chosen place"}
 							</label>
 						))}
 					</div>
 				) : (
-					<strong className="plan-overflow-word">{overflow ? "Use another free place" : "Wait for the chosen place"}</strong>
+					<strong className="plan-overflow-word">
+						{overflow ? "Use another free place" : "Wait for the chosen place"}
+					</strong>
 				)}
 			</div>
 		</div>
@@ -665,34 +1062,76 @@ function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: {
 }
 
 function placeMenu(row: PlaceRow, current: string | null): MenuSpec {
-	const machineItems: MenuItem[] = (row.machines ?? []).map((machine) => {
+	const machineItems: MenuItem[] = (row.machines ?? []).map(machine => {
 		const name = machineLabel(machine);
 		const policy = orchestratorOf(machine);
 		return {
 			id: `m:${machine.machineId}`,
 			label: name,
 			textValue: name,
-			description: policy === "never" ? "Its owner keeps it out of features." : [machine.status, ...(machine.slots ? [`${machine.slots.busy} of ${machine.slots.max} slots busy`] : []), ...(policy === "named" ? ["when named"] : []), machine.sendSecrets ? "gets secrets" : "no secrets"].join(" · "),
+			description:
+				policy === "never"
+					? "Its owner keeps it out of features."
+					: [
+							machine.status,
+							...(machine.slots ? [`${machine.slots.busy} of ${machine.slots.max} slots busy`] : []),
+							...(policy === "named" ? ["when named"] : []),
+							machine.sendSecrets ? "gets secrets" : "no secrets",
+						].join(" · "),
 			disabled: policy === "never",
 			wrap: true,
 			checked: current === name,
-			onSelect: () => row.onPlace({ prefer: name, allow: row.draft.allow.filter((other) => other !== name) }),
+			onSelect: () => row.onPlace({ prefer: name, allow: row.draft.allow.filter(other => other !== name) }),
 		};
 	});
 	return {
 		label: "Runs on",
 		width: 320,
 		groups: [
-			{ id: "feature", items: [{ id: "inherit", label: "Use the resolved default", checked: current === null, onSelect: () => row.onPlace({ prefer: null, allow: [] }) }] },
+			{
+				id: "feature",
+				items: [
+					{
+						id: "inherit",
+						label: "Use the resolved default",
+						checked: current === null,
+						onSelect: () => row.onPlace({ prefer: null, allow: [] }),
+					},
+				],
+			},
 			...(machineItems.length > 0 ? [{ id: "machines", label: "My machines", items: machineItems }] : []),
-			{ id: "hosted", items: [{ id: "hosted", label: "Hosted", description: "Gets secrets", checked: current === HOSTED, onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter((other) => other !== HOSTED) }) }] },
+			{
+				id: "hosted",
+				items: [
+					{
+						id: "hosted",
+						label: "Hosted",
+						description: "Gets secrets",
+						checked: current === HOSTED,
+						onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter(other => other !== HOSTED) }),
+					},
+				],
+			},
 		],
 	};
 }
 
 function allowMenu(row: PlaceRow): MenuSpec {
-	const toggle = (name: string) => row.onPlace({ ...row.draft, allow: row.draft.allow.includes(name) ? row.draft.allow.filter((other) => other !== name) : [...row.draft.allow, name] });
-	const names = [...(row.machines ?? []).map((machine) => ({ name: machineLabel(machine), never: orchestratorOf(machine) === "never", secrets: machine.sendSecrets })), { name: HOSTED, never: false, secrets: true }].filter((place) => place.name !== row.draft.prefer);
+	const toggle = (name: string) =>
+		row.onPlace({
+			...row.draft,
+			allow: row.draft.allow.includes(name)
+				? row.draft.allow.filter(other => other !== name)
+				: [...row.draft.allow, name],
+		});
+	const names = [
+		...(row.machines ?? []).map(machine => ({
+			name: machineLabel(machine),
+			never: orchestratorOf(machine) === "never",
+			secrets: machine.sendSecrets,
+		})),
+		{ name: HOSTED, never: false, secrets: true },
+	].filter(place => place.name !== row.draft.prefer);
 	return {
 		label: "Alternatives",
 		width: 300,
@@ -700,10 +1139,14 @@ function allowMenu(row: PlaceRow): MenuSpec {
 		groups: [
 			{
 				id: "allow",
-				items: names.map((place) => ({
+				items: names.map(place => ({
 					id: place.name,
 					label: place.name === HOSTED ? "Hosted" : place.name,
-					description: place.never ? "Its owner keeps it out of features." : place.secrets ? "gets secrets" : "no secrets",
+					description: place.never
+						? "Its owner keeps it out of features."
+						: place.secrets
+							? "gets secrets"
+							: "no secrets",
 					disabled: place.never,
 					checked: row.draft.allow.includes(place.name),
 					keepOpen: true,
@@ -714,13 +1157,28 @@ function allowMenu(row: PlaceRow): MenuSpec {
 	};
 }
 
-function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubtask; child: ItemSummary | null; row: PlaceRow; editing: boolean; disabled: boolean }) {
+function SubtaskPlace({
+	task,
+	child,
+	row,
+	editing,
+	disabled,
+}: {
+	task: PlanSubtask;
+	child: ItemSummary | null;
+	row: PlaceRow;
+	editing: boolean;
+	disabled: boolean;
+}) {
 	const needs = needsWords(task.needs);
 	const prefer = editing ? row.draft.prefer : (task.place?.prefer ?? null);
 	const inheritedPlaces = !task.place && prefer === null ? task.review?.places.slice(1).map(p => p.name) : undefined;
-	const allow = (inheritedPlaces ?? (editing ? row.draft.allow : (task.place?.allow ?? []))).filter((name) => name !== prefer);
+	const allow = (inheritedPlaces ?? (editing ? row.draft.allow : (task.place?.allow ?? []))).filter(
+		name => name !== prefer,
+	);
 	const preferMoved = editing && prefer !== (task.place?.prefer ?? null);
-	const allowMoved = editing && JSON.stringify(allow) !== JSON.stringify((task.place?.allow ?? []).filter((name) => name !== prefer));
+	const allowMoved =
+		editing && JSON.stringify(allow) !== JSON.stringify((task.place?.allow ?? []).filter(name => name !== prefer));
 	const childWait = child?.wait?.reason === "machine" ? child.wait : null;
 	const ended = child && ["done", "failed", "cancelled"].includes(child.state);
 	return (
@@ -739,16 +1197,48 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 					<dd>
 						{editing ? (
 							<span className="plan-place-picks">
-								<Menu spec={placeMenu(row, prefer)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={preferMoved ? "changed" : null} dotLabel={preferMoved ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Runs on: ${prefer === null ? `resolved default, ${placeWord(row.parent)}` : placeWord(prefer)}`} secondary={prefer === null ? placeWord(row.parent) : undefined}>{prefer === null ? "Resolved default" : placeWord(prefer)}</Pill>} />
+								<Menu
+									spec={placeMenu(row, prefer)}
+									trigger={props => (
+										<Pill
+											{...props}
+											outlined
+											disabled={disabled}
+											dot={preferMoved ? "changed" : null}
+											dotLabel={preferMoved ? "changed, not saved" : undefined}
+											className="plan-place-pick"
+											aria-label={`Runs on: ${prefer === null ? `resolved default, ${placeWord(row.parent)}` : placeWord(prefer)}`}
+											secondary={prefer === null ? placeWord(row.parent) : undefined}
+										>
+											{prefer === null ? "Resolved default" : placeWord(prefer)}
+										</Pill>
+									)}
+								/>
 								{prefer !== null ? (
-									<Menu spec={allowMenu(row)} trigger={(props) => <Pill {...props} disabled={disabled} dot={allowMoved ? "changed" : null} dotLabel={allowMoved ? "changed, not saved" : undefined} className="plan-place-pick plan-place-allow" aria-label={`Alternatives: ${allow.length ? allow.map(placeWord).join(", ") : "none"}`}>{allow.length ? `or ${allow.map(placeWord).join(", ")}` : "No alternatives"}</Pill>} />
+									<Menu
+										spec={allowMenu(row)}
+										trigger={props => (
+											<Pill
+												{...props}
+												disabled={disabled}
+												dot={allowMoved ? "changed" : null}
+												dotLabel={allowMoved ? "changed, not saved" : undefined}
+												className="plan-place-pick plan-place-allow"
+												aria-label={`Alternatives: ${allow.length ? allow.map(placeWord).join(", ") : "none"}`}
+											>
+												{allow.length ? `or ${allow.map(placeWord).join(", ")}` : "No alternatives"}
+											</Pill>
+										)}
+									/>
 								) : null}
 								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
 								{inheritedPlaces?.length ? <span>or {inheritedPlaces.map(placeWord).join(", ")}</span> : null}
 							</span>
 						) : (
 							<>
-								<strong className="plan-place-name">{prefer === null ? placeWord(row.parent) : placeWord(prefer)}</strong>
+								<strong className="plan-place-name">
+									{prefer === null ? placeWord(row.parent) : placeWord(prefer)}
+								</strong>
 								{prefer === null ? <span className="tone-faint"> by default</span> : null}
 								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
 								{allow.length > 0 ? (
@@ -767,7 +1257,7 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 				<div>
 					<dt>needs</dt>
 					<dd className="plan-paths">
-						{needs.map((word) => (
+						{needs.map(word => (
 							<span key={word} className="plan-path plan-need">
 								{word}
 							</span>
@@ -836,16 +1326,31 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 		groups: [
 			{
 				id: "default",
-				items: [{ id: "default", label: "The default", description: inherited ? `${HARNESS_NAMES[inherited.agent]} · ${runModelName(inherited, inherited.agent === "windlass" ? row.list : null)}, ${SOURCE_WORDS[sourceOf(inherited, ["agent", "model"])]}.` : "What the feature runs with.", wrap: true, checked: current === null, onSelect: () => row.onAgent(null) }],
+				items: [
+					{
+						id: "default",
+						label: "The default",
+						description: inherited
+							? `${HARNESS_NAMES[inherited.agent]} · ${runModelName(inherited, usesAccountModels(inherited.agent) ? row.list : null)}, ${SOURCE_WORDS[sourceOf(inherited, ["agent", "model"])]}.`
+							: "What the feature runs with.",
+						wrap: true,
+						checked: current === null,
+						onSelect: () => row.onAgent(null),
+					},
+				],
 			},
 			{
 				id: "agents",
-				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
+				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map(choice => ({
 					id: choice.id,
 					label: choice.name,
-					description: choice.problem ?? (worksWithoutAsking(choice.id)
-						? row.machine ? `Runs on ${machineLabel(row.machine)} without asking.` : `Uses your ${choice.id === "claude" ? "Anthropic" : "API"} key.`
-						: undefined),
+					description:
+						choice.problem ??
+						(worksWithoutAsking(choice.id)
+							? row.machine
+								? `Runs on ${machineLabel(row.machine)} without asking.`
+								: `Uses your ${choice.id === "claude" ? "Anthropic" : "API"} key.`
+							: undefined),
 					disabled: choice.problem !== null,
 					wrap: true,
 					checked: current === choice.id,
@@ -857,34 +1362,71 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 }
 
 function modelMenu(row: AgentRow, harness: HarnessId): MenuSpec {
-	const entry = row.machine?.harnesses?.find((one) => one.id === harness) ?? null;
+	const entry = row.machine?.harnesses?.find(one => one.id === harness) ?? null;
 	return sharedModelMenu({
 		harness,
 		list: row.list,
 		chosen: row.draft?.model ?? "",
-		inherit: { label: harness === "windlass" ? "The feature's model" : "Its default model" },
+		inherit: { label: usesAccountModels(harness) ? "The feature's model" : "Its default model" },
 		entry,
 		machine: row.machine ? machineLabel(row.machine) : null,
-		onChoose: (model) => (model ? row.onAgent({ harness, model }) : row.onAgent(harness === "windlass" ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness })),
+		onChoose: model =>
+			model
+				? row.onAgent({ harness, model })
+				: row.onAgent(
+						usesAccountModels(harness)
+							? row.draft?.effort
+								? { harness, effort: row.draft.effort }
+								: null
+							: { harness },
+					),
 	});
 }
 
 function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[], model: string): MenuSpec {
 	const pick = (effort: string) => {
-		const next = { harness, ...(row.draft?.model && { model: row.draft.model }), ...(effort && effort !== "default" && { effort }) };
+		const next = {
+			harness,
+			...(row.draft?.model && { model: row.draft.model }),
+			...(effort && effort !== "default" && { effort }),
+		};
 		row.onAgent(cleanAgent(next) ?? null);
 	};
-	return { label: "Effort", width: 220, groups: [effortGroup(efforts, row.draft?.effort ?? "", model, pick)], hints: false };
+	return {
+		label: "Effort",
+		width: 220,
+		groups: [effortGroup(efforts, row.draft?.effort ?? "", model, pick)],
+		hints: false,
+	};
 }
 
-function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: string; child: ItemSummary | null; row: AgentRow; editing: boolean; disabled: boolean }) {
+function SubtaskAgentFact({
+	title,
+	child,
+	row,
+	editing,
+	disabled,
+}: {
+	title: string;
+	child: ItemSummary | null;
+	row: AgentRow;
+	editing: boolean;
+	disabled: boolean;
+}) {
 	const { inherited } = row;
-	const shown = row.resolved ? runAgent(row.resolved) : row.draft ?? (inherited && runAgent(inherited));
+	const shown = row.resolved ? runAgent(row.resolved) : (row.draft ?? (inherited && runAgent(inherited)));
 	const harness = shown?.harness ?? "windlass";
 	const parts = agentParts(shown, row.list);
-	const why = !row.draft && inherited ? <span className="plan-agent-why"> — {SOURCE_WORDS[sourceOf(inherited, ["agent", "model", "effort"])]}</span> : null;
+	const why =
+		!row.draft && inherited ? (
+			<span className="plan-agent-why"> — {SOURCE_WORDS[sourceOf(inherited, ["agent", "model", "effort"])]}</span>
+		) : null;
 	if (child?.agent) {
-		const ran = cleanAgent({ harness: child.agent.harness, model: child.agent.model, ...(child.agent.effort && { effort: child.agent.effort }) });
+		const ran = cleanAgent({
+			harness: child.agent.harness,
+			model: child.agent.model,
+			...(child.agent.effort && { effort: child.agent.effort }),
+		});
 		const words = agentParts(ran ?? { harness: child.agent.harness, model: child.agent.model }, null);
 		return (
 			<div className="plan-agent">
@@ -892,7 +1434,11 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 				<dd>
 					<AgentGlyph harness={child.agent.harness} size={11} inline />
 					<strong className="plan-agent-name">{words.name}</strong>
-					<span className="tone-dim"> · {modelWords(child.agent.model)}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
+					<span className="tone-dim">
+						{" "}
+						· {modelWords(child.agent.model)}
+						{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}
+					</span>
 					{words.unattended ? <UnattendedTag /> : null}
 				</dd>
 			</div>
@@ -902,16 +1448,59 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 	const list = row.list;
 	const model = shown?.model ?? list?.defaultModel ?? "";
 	const own = effortsOf(list, model);
-	const efforts = own.length > 0 || harness === "windlass" ? own : [...new Set((list?.models ?? []).flatMap((one) => one.efforts))];
+	const efforts =
+		own.length > 0 || usesAccountModels(harness) ? own : [...new Set((list?.models ?? []).flatMap(one => one.efforts))];
 	return (
 		<div className="plan-agent">
 			<dt>agent</dt>
 			<dd>
 				{editing ? (
 					<span className="plan-place-picks">
-						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" icon={<AgentGlyph harness={harness} size={11} />} aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
-						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
-						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts, parts.model)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
+						<Menu
+							spec={agentMenu(row, title)}
+							trigger={props => (
+								<Pill
+									{...props}
+									outlined
+									disabled={disabled}
+									dot={row.changed ? "changed" : null}
+									dotLabel={row.changed ? "changed, not saved" : undefined}
+									className="plan-place-pick"
+									icon={<AgentGlyph harness={harness} size={11} />}
+									aria-label={`Agent: ${parts.name}`}
+								>
+									{parts.name}
+								</Pill>
+							)}
+						/>
+						<Menu
+							spec={modelMenu(row, harness)}
+							trigger={props => (
+								<Pill
+									{...props}
+									disabled={disabled}
+									className="plan-place-pick plan-place-allow"
+									aria-label={`Model: ${parts.model}`}
+								>
+									{parts.model}
+								</Pill>
+							)}
+						/>
+						{efforts.length > 0 || row.draft?.effort ? (
+							<Menu
+								spec={effortMenu(row, harness, efforts, parts.model)}
+								trigger={props => (
+									<Pill
+										{...props}
+										disabled={disabled}
+										className="plan-place-pick plan-place-allow"
+										aria-label={`Effort: ${parts.effort ?? "default"}`}
+									>
+										{parts.effort ? `${parts.effort} effort` : "Default effort"}
+									</Pill>
+								)}
+							/>
+						) : null}
 						{why}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</span>
@@ -919,7 +1508,11 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 					<>
 						<AgentGlyph harness={harness} size={11} inline />
 						<strong className="plan-agent-name">{parts.name}</strong>
-						<span className="tone-dim"> · {parts.model}{parts.effort ? ` · ${parts.effort} effort` : ""}</span>
+						<span className="tone-dim">
+							{" "}
+							· {parts.model}
+							{parts.effort ? ` · ${parts.effort} effort` : ""}
+						</span>
 						{why}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</>
@@ -931,17 +1524,21 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 
 function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; review: PlanReview; disabled: boolean }) {
 	const heading = useId();
-	const tasks = plan.subtasks.filter((task) => review.unattended.includes(task.key));
+	const tasks = plan.subtasks.filter(task => review.unattended.includes(task.key));
 	return (
 		<div className="plan-unattended-confirm" role="group" aria-labelledby={heading}>
 			<p className="plan-routes-head" id={heading}>
 				Agents that work without asking
 			</p>
 			<p className="plan-unattended-note">
-				{UNATTENDED_MEANS} {tasks.every(task => task.agent) ? `The planner proposed ${tasks.length === 1 ? "this one" : "these"} from the item's text, which may come from an issue anyone could file.` : "These parts use an agent chosen in the plan or inherited from your settings."} Confirm each one, or choose Windlass for it below and save.
+				{UNATTENDED_MEANS}{" "}
+				{tasks.every(task => task.agent)
+					? `The planner proposed ${tasks.length === 1 ? "this one" : "these"} from the item's text, which may come from an issue anyone could file.`
+					: "These parts use an agent chosen in the plan or inherited from your settings."}{" "}
+				Confirm each one, or choose Windlass for it below and save.
 			</p>
 			<ul className="plan-unattended-list">
-				{tasks.map((task) => {
+				{tasks.map(task => {
 					const name = HARNESS_NAMES[subtaskHarness(task)];
 					return (
 						<li key={task.key}>
@@ -949,7 +1546,7 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 								className="plan-unattended-row"
 								checked={review.confirmed.includes(task.key)}
 								disabled={disabled}
-								onChange={(on) => review.setConfirmed(task.key, on)}
+								onChange={on => review.setConfirmed(task.key, on)}
 								label={
 									<>
 										Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
@@ -965,20 +1562,41 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 }
 
 function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boolean }) {
-	const words = sent === true ? (done ? "received secrets" : "gets secrets") : sent === false ? "no secrets" : "secrets unknown";
-	const means = sent === null ? "This place is missing from your machine list." : "Hosted gets the secrets allowed for this item. A machine gets them only when Send saved secrets is on in Machines.";
+	const words =
+		sent === true ? (done ? "received secrets" : "gets secrets") : sent === false ? "no secrets" : "secrets unknown";
+	const means =
+		sent === null
+			? "This place is missing from your machine list."
+			: "Hosted gets the secrets allowed for this item. A machine gets them only when Send saved secrets is on in Machines.";
 	// The space keeps the place and its secrets apart when read aloud.
 	return (
 		<>
 			{" "}
-			<span className={`plan-secrets plan-secrets-${sent === true ? "sent" : sent === false ? "none" : "unknown"}`} title={means}>
+			<span
+				className={`plan-secrets plan-secrets-${sent === true ? "sent" : sent === false ? "none" : "unknown"}`}
+				title={means}
+			>
 				{words}
 			</span>
 		</>
 	);
 }
 
-function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
+function PlanRoutes({
+	view,
+	plan,
+	machines,
+	catalogs,
+	accountModels,
+	refusal,
+}: {
+	view: ItemView;
+	plan: FeaturePlan;
+	machines: MachineSummary[] | null;
+	catalogs: Catalogs;
+	accountModels: ModelList | null;
+	refusal: string | null;
+}) {
 	const heading = useId();
 	const parent = parentPlaceName(view.place, machines);
 	const done = new Set(view.completedSubtasks ?? []);
@@ -986,7 +1604,6 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 		<div className="plan-routes" role="group" aria-labelledby={heading}>
 			<p className="plan-routes-head">
 				<span id={heading}>Where each subtask runs</span>
-
 			</p>
 			<ol className="plan-routes-list">
 				{plan.subtasks.map((task, index) => {
@@ -1006,7 +1623,12 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 					const problem = refusalFor(task, refusal) ?? task.placementProblem;
 					const wait = !problem && task.placementWait;
 					const harness = subtaskHarness(task);
-					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
+					const agent = agentParts(
+						task.resolved ? runAgent(task.resolved) : task.agent,
+						usesAccountModels(harness)
+							? accountModels
+							: machineModels(preferredMachine(task, parent, machines), harness, catalogs),
+					);
 					return (
 						<li key={task.key} className="plan-route">
 							<span className="plan-route-n" aria-hidden="true">
@@ -1017,7 +1639,11 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 								<p className="plan-route-agent">
 									<AgentGlyph harness={harness} size={11} inline />
 									<span className="plan-agent-name">{agent.name}</span>
-									<span className="tone-dim"> · {agent.model}{agent.effort ? ` · ${agent.effort} effort` : ""}</span>
+									<span className="tone-dim">
+										{" "}
+										· {agent.model}
+										{agent.effort ? ` · ${agent.effort} effort` : ""}
+									</span>
 									{agent.unattended ? <UnattendedTag /> : null}
 								</p>
 								{problem ? <p className="plan-route-problem">Can't be placed: {problem}</p> : null}
@@ -1030,7 +1656,13 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 										<span className="plan-place-name">{placeWord(name)}</span>
 										<SecretsTag sent={sendSecrets} />
 										{task.resolved && <span> · {payerWords({ ...task.resolved, payer }) ?? "Windlass usage"}</span>}
-										{place.kind === "hosted" && route.hosted && <p>Saved {HOSTED_SIZE_NAMES[route.hosted.saved]} · Proposed {HOSTED_SIZE_NAMES[route.hosted.size]} · {route.hosted.rate}× standard hosted rate{route.hosted.usdPerHour !== null && ` · est. ${perHour(route.hosted.usdPerHour)}`}</p>}
+										{place.kind === "hosted" && route.hosted && (
+											<p>
+												Saved {HOSTED_SIZE_NAMES[route.hosted.saved]} · Proposed {HOSTED_SIZE_NAMES[route.hosted.size]}{" "}
+												· {route.hosted.rate}× standard hosted rate
+												{route.hosted.usdPerHour !== null && ` · est. ${perHour(route.hosted.usdPerHour)}`}
+											</p>
+										)}
 									</li>
 								))}
 							</ul>
@@ -1042,7 +1674,19 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 	);
 }
 
-export function PlacementQuestion({ view, question, review, acting, when }: { view: ItemView; question: ItemQuestion; review: PlanReview; acting: PlanActing; when: ReactNode }) {
+export function PlacementQuestion({
+	view,
+	question,
+	review,
+	acting,
+	when,
+}: {
+	view: ItemView;
+	question: ItemQuestion;
+	review: PlanReview;
+	acting: PlanActing;
+	when: ReactNode;
+}) {
 	const ids = { title: useId(), note: useId() };
 	const about = refusedSubtask(view.plan ?? null, question.text);
 	const task = about?.task ?? null;
@@ -1057,12 +1701,28 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 	const route = task ? routeWords(task, parent, overflow) : null;
 	const moved = task !== null && placeChanged(task, draft);
 	const picked = task && moved ? withPlace(task, draft) : null;
-	const row: PlaceRow = { machines, parent, overflow, draft, problem: null, wait: null, ahead: null, secrets: name => secretsFor(name, machines), onPlace: setDraft };
+	const row: PlaceRow = {
+		machines,
+		parent,
+		overflow,
+		draft,
+		problem: null,
+		wait: null,
+		ahead: null,
+		secrets: name => secretsFor(name, machines),
+		onPlace: setDraft,
+	};
 	const revise = () => {
 		const words = [
-			...(picked ? [`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`] : []),
+			...(picked
+				? [
+						`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`,
+					]
+				: []),
 			...(note.trim() ? [note.trim()] : []),
-		].join(" ").slice(0, MAX_NOTE_CHARS);
+		]
+			.join(" ")
+			.slice(0, MAX_NOTE_CHARS);
 		return acting.act({ kind: "answer", question: question.id, choice: "revise", ...(words && { note: words }) });
 	};
 	return (
@@ -1100,10 +1760,23 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 						<label className="label" htmlFor={ids.note}>
 							A note to the planner<span className="label-optional">optional</span>
 						</label>
-						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS - 200} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+						<textarea
+							id={ids.note}
+							className="input textarea item-note"
+							value={note}
+							maxLength={MAX_NOTE_CHARS - 200}
+							onChange={event => setNote(event.target.value)}
+							readOnly={busy}
+						/>
 					</div>
 					<div className="item-choices">
-						<button type="button" className="button button-primary" disabled={busy} onClick={() => void revise()} aria-describedby={`${ids.title}-revise`}>
+						<button
+							type="button"
+							className="button button-primary"
+							disabled={busy}
+							onClick={() => void revise()}
+							aria-describedby={`${ids.title}-revise`}
+						>
 							{acting.busy === "revise" ? "Sending…" : "Ask for a revised plan"}
 						</button>
 						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRevising(false)}>
@@ -1112,8 +1785,8 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 					</div>
 					<p className="field-note" id={`${ids.title}-revise`}>
 						{picked
-								? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
-								: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
+							? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
+							: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
 					</p>
 				</div>
 			) : (
@@ -1121,19 +1794,34 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 					<div className="item-choices">
 						{question.choices.map((choice, index) => {
 							const edit = choice.id === "revise" && task;
-							return <button key={choice.id} type="button" className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
-								disabled={busy} onClick={() => edit ? setRevising(true) : void acting.act({ kind: "answer", question: question.id, choice: choice.id })}>
-								{choice.label}{edit ? "…" : ""}
-							</button>;
+							return (
+								<button
+									key={choice.id}
+									type="button"
+									className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+									disabled={busy}
+									onClick={() =>
+										edit
+											? setRevising(true)
+											: void acting.act({ kind: "answer", question: question.id, choice: choice.id })
+									}
+								>
+									{choice.label}
+									{edit ? "…" : ""}
+								</button>
+							);
 						})}
 					</div>
-					{again && <p className="field-note">
-						Retry once you have changed what refused it, on{" "}
-						<a className="link" {...linkProps({ name: "machines" })}>
-							Machines
-						</a>
-						. Giving up cancels the subtask; the planner then revises what is left for you to approve, or the feature stops.
-					</p>}
+					{again && (
+						<p className="field-note">
+							Retry once you have changed what refused it, on{" "}
+							<a className="link" {...linkProps({ name: "machines" })}>
+								Machines
+							</a>
+							. Giving up cancels the subtask; the planner then revises what is left for you to approve, or the feature
+							stops.
+						</p>
+					)}
 				</>
 			)}
 			{acting.error ? (

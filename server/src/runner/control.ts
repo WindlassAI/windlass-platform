@@ -37,9 +37,26 @@
  */
 import { createHash, createPublicKey } from "node:crypto";
 import { endpointShape, helloFields, removalFields, welcomeFields } from "./frame-auth.js";
-import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
+import { MACHINE_HARNESS_IDS, type HarnessOptions, type MachineProbe, type PlatformConnection } from "../contract.js";
 import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
-import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
+import {
+	type Assert,
+	type Of,
+	type Same,
+	boolean,
+	count,
+	either,
+	integer,
+	is,
+	json,
+	list,
+	nullable,
+	object,
+	oneOf,
+	optional,
+	plain,
+	text,
+} from "./check.js";
 import { MAX_STORE_BYTES, type StoreCaps } from "../sandbox/store-limits.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
@@ -83,7 +100,9 @@ export const PAIRING_POLL_MS = 2_000;
 export function machineKeyFingerprint(key: string): string | null {
 	let der: Buffer;
 	try {
-		const parsed = key.startsWith("-----BEGIN PUBLIC KEY-----") ? createPublicKey(key) : createPublicKey({ key: Buffer.from(key, "base64"), format: "der", type: "spki" });
+		const parsed = key.startsWith("-----BEGIN PUBLIC KEY-----")
+			? createPublicKey(key)
+			: createPublicKey({ key: Buffer.from(key, "base64"), format: "der", type: "spki" });
 		if (parsed.asymmetricKeyType !== "ed25519") return null;
 		der = parsed.export({ type: "spki", format: "der" });
 	} catch {
@@ -120,26 +139,32 @@ export function versionAtLeast(version: string, minimum: string): boolean {
 // ---- What is signed with the machine's key (Ed25519, the signature in base64url) ----
 
 /** Over the control socket's challenge. */
-export const controlProof = (uid: string, machineId: string, nonce: string) => `wlp-runner-control/1|${uid}|${machineId}|${nonce}`;
+export const controlProof = (uid: string, machineId: string, nonce: string) =>
+	`wlp-runner-control/1|${uid}|${machineId}|${nonce}`;
 /** With the session socket's hello (protocol.ts), over the ticket the `attach` frame carried, which the runner does not read. */
-export const sessionProof = (uid: string, sessionId: string, machineId: string, ticket: string) => `wlp-runner-session/1|${uid}|${sessionId}|${machineId}|${ticket}`;
+export const sessionProof = (uid: string, sessionId: string, machineId: string, ticket: string) =>
+	`wlp-runner-session/1|${uid}|${sessionId}|${machineId}|${ticket}`;
 /** With POST RUNNER_CONNECTION_PATH, over the runner's time corrected by the offset it was last told. */
-export const connectionProof = (uid: string, machineId: string, time: number, nonce?: string) => nonce ? `wlp-runner-connection/2|${uid}|${machineId}|${time}|${nonce}` : `wlp-runner-connection/1|${uid}|${machineId}|${time}`;
+export const connectionProof = (uid: string, machineId: string, time: number, nonce?: string) =>
+	nonce
+		? `wlp-runner-connection/2|${uid}|${machineId}|${time}|${nonce}`
+		: `wlp-runner-connection/1|${uid}|${machineId}|${time}`;
 
 // ---- Checks ----
 
 /** One line of text: what a machine says of itself, or a reason, shown on the page as it is. */
-const line = (max: number) => is<string>((v) => text(max)(v) && !/[\u0000-\u001f\u007f]/.test(v as string));
-const name = is<string>((v) => typeof v === "string" && NAME.test(v));
-const machineId = is<string>((v) => typeof v === "string" && MACHINE_ID.test(v));
-const version = is<string>((v) => typeof v === "string" && VERSION.test(v));
-const base64url = (length: number) => is<string>((v) => typeof v === "string" && v.length === length && /^[A-Za-z0-9_-]+$/.test(v));
+const line = (max: number) => is<string>(v => text(max)(v) && !/[\u0000-\u001f\u007f]/.test(v as string));
+const name = is<string>(v => typeof v === "string" && NAME.test(v));
+const machineId = is<string>(v => typeof v === "string" && MACHINE_ID.test(v));
+const version = is<string>(v => typeof v === "string" && VERSION.test(v));
+const base64url = (length: number) =>
+	is<string>(v => typeof v === "string" && v.length === length && /^[A-Za-z0-9_-]+$/.test(v));
 /** 32 random bytes. */
 const nonce = base64url(43);
 /** An Ed25519 signature: 64 bytes. */
 const signature = base64url(86);
-const epoch = is<string>((v) => typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v));
-const time = is<number>((v) => count(v) && (v as number) > 0);
+const epoch = is<string>(v => typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v));
+const time = is<number>(v => count(v) && (v as number) > 0);
 const sandboxId = line(255);
 const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), reason: line(500) }));
 
@@ -172,8 +197,26 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["environment-build", "warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "windlass-key-relay", "harness-key-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
-export type Capability = typeof SERVER_CAPABILITIES[number];
+export const SERVER_CAPABILITIES = [
+	"environment-build",
+	"warm-spares",
+	"spare-reseed",
+	"spare-setup-times",
+	"git-mirrors",
+	"egress-domains",
+	"session-volumes",
+	"model-relay",
+	"windlass-key-relay",
+	"harness-key-relay",
+	"start-times",
+	"store-limits",
+	"sign-in-reason",
+	"blocked-network",
+	"environment-image",
+	"resumable-conversation",
+	"memory-events",
+] as const;
+export type Capability = (typeof SERVER_CAPABILITIES)[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
  * welcome with it, so the actor names capabilities only to a runner whose hello reports this or later.
@@ -190,19 +233,29 @@ export const GIT_HOST_RUNNER_VERSION = "0.3.1";
  * welcome keys, so it never gets one and keeps its built-in limits (BUILT_IN_STORE_LIMITS).
  */
 export const STORE_LIMITS_RUNNER_VERSION = "0.3.2";
-const storeBytes = is<number>((v) => count(v) && (v as number) <= MAX_STORE_BYTES);
+const storeBytes = is<number>(v => count(v) && (v as number) <= MAX_STORE_BYTES);
 /** The deployment's caps on a machine's stores, in bytes: a ceiling on `machine` and `user`, a floor on `free`. Only those it sets. */
 const storeCaps = object({ machine: optional(storeBytes), user: optional(storeBytes), free: optional(storeBytes) });
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** A DNS name of two labels or more, lower case, no address: what an --egress-domains list can hold. */
-const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.split(".").length >= 2
-	&& v.split(".").every((label) => LABEL.test(label)) && !/^\d+$/.test(v.split(".").at(-1)!));
+const gitHost = is<string>(
+	v =>
+		typeof v === "string" &&
+		v.length <= 253 &&
+		v.split(".").length >= 2 &&
+		v.split(".").every(label => LABEL.test(label)) &&
+		!/^\d+$/.test(v.split(".").at(-1)!),
+);
 /**
  * The welcome's `capabilities` and `gitHost`, for a runner whose hello reported `runnerVersion`. `gitUrl`:
  * where the platform's git clones from (WLP_GITHUB_URL). Its host is named only for an https address on
  * the default port with a DNS name, the only kind a runner's list can reach (as hosted's, e2b/network.ts).
  */
-export function welcomeCapabilities(runnerVersion: string, gitUrl?: string, caps: StoreCaps = {}): { capabilities?: string[]; gitHost?: string; storeLimits?: StoreCaps } {
+export function welcomeCapabilities(
+	runnerVersion: string,
+	gitUrl?: string,
+	caps: StoreCaps = {},
+): { capabilities?: string[]; gitHost?: string; storeLimits?: StoreCaps } {
 	if (!versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION)) return {};
 	let host: string | undefined;
 	try {
@@ -210,8 +263,11 @@ export function welcomeCapabilities(runnerVersion: string, gitUrl?: string, caps
 		if (url.protocol === "https:" && url.port === "" && gitHost(url.hostname)) host = url.hostname;
 	} catch {}
 	const capped = Object.keys(caps).length > 0 && versionAtLeast(runnerVersion, STORE_LIMITS_RUNNER_VERSION);
-	return { capabilities: [...SERVER_CAPABILITIES], ...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }),
-		...(capped && { storeLimits: { ...caps } }) };
+	return {
+		capabilities: [...SERVER_CAPABILITIES],
+		...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }),
+		...(capped && { storeLimits: { ...caps } }),
+	};
 }
 
 const refusal = either(
@@ -224,11 +280,35 @@ const refusal = either(
 	 * is not this machine's key's. "bad-frame": the runner sent what this server does not read.
 	 * "other": a reason of a newer server's, made by `parseServerFrame`; only its sentence is read.
 	 */
-	object({ kind: oneOf("refused"), reason: oneOf("key-in-use", "unknown", "bad-frame", "signing-disabled", "other"), message: line(500) }),
+	object({
+		kind: oneOf("refused"),
+		reason: oneOf("key-in-use", "unknown", "bad-frame", "signing-disabled", "other"),
+		message: line(500),
+	}),
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), storeLimits: optional(storeCaps) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), storeLimits: optional(storeCaps), refusal: optional(refusal), ...welcomeFields }))),
+		either(
+			object({ kind: oneOf("challenge"), nonce }),
+			either(
+				object({
+					kind: oneOf("welcome"),
+					idleSuspendMs: count,
+					capabilities: optional(capabilities),
+					gitHost: optional(gitHost),
+					storeLimits: optional(storeCaps),
+				}),
+				object({
+					kind: oneOf("welcome"),
+					idleSuspendMs: count,
+					capabilities: optional(capabilities),
+					gitHost: optional(gitHost),
+					storeLimits: optional(storeCaps),
+					refusal: optional(refusal),
+					...welcomeFields,
+				}),
+			),
+		),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(
@@ -244,7 +324,11 @@ export type ServerFrame = Of<typeof serverFrame>;
 
 const slots = object({
 	max: is<number>(v => positiveLimit(v) && v <= 64),
-	unit: object({ cpus: is<number>(v => typeof v === "number" && Number.isFinite(v) && v > 0), memoryBytes: positiveLimit, pids: positiveLimit }),
+	unit: object({
+		cpus: is<number>(v => typeof v === "number" && Number.isFinite(v) && v > 0),
+		memoryBytes: positiveLimit,
+		pids: positiveLimit,
+	}),
 	reserve: object({ cpus: count, memoryBytes: count }),
 });
 
@@ -256,33 +340,85 @@ const slots = object({
  * `controlProof` (else "unknown"; a removed machine's key is kept to check it before "removed" is
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
-const helloBase = { kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, slots: optional(slots), maxTurns: optional(positiveLimit) };
-const hello = either(object({ ...helloBase, protocol: optional(oneOf(1)) }), object({ ...helloBase, protocol: oneOf(2), ...helloFields }));
+const helloBase = {
+	kind: oneOf("hello"),
+	runnerVersion: version,
+	epoch,
+	time,
+	signature,
+	slots: optional(slots),
+	maxTurns: optional(positiveLimit),
+};
+const hello = either(
+	object({ ...helloBase, protocol: optional(oneOf(1)) }),
+	object({ ...helloBase, protocol: oneOf(2), ...helloFields }),
+);
 const modelChoice = object({ id: line(512), name: nullable(line(512)), efforts: list(line(64), 16) });
 const optionsShape = object({
-	models: list(modelChoice, 16_384), defaultModel: line(512), checkedAt: time,
+	models: list(modelChoice, 16_384),
+	defaultModel: line(512),
+	checkedAt: time,
 	modes: list(object({ id: line(64), name: line(128), description: nullable(line(512)) }), 16),
 });
 /** Leave room for the sandbox inventory in the same control frame. */
-export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
-	&& v.models.some(model => model.id === v.defaultModel)
-	&& new Set(v.models.map(m => m.id)).size === v.models.length
-	&& Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES);
+export const validHarnessOptions = is<HarnessOptions>(
+	v =>
+		optionsShape(v) &&
+		v.models.some(model => model.id === v.defaultModel) &&
+		new Set(v.models.map(m => m.id)).size === v.models.length &&
+		Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES,
+);
 export function boundedCodexOptions(options: HarnessOptions) {
 	return options.models.length <= 32 && Buffer.byteLength(JSON.stringify(options)) <= 16 * 1024;
 }
-const harnessId = oneOf("claude", "opencode", "codex");
+const harnessId = oneOf(...MACHINE_HARNESS_IDS);
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const catalogShape = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
-const catalog = is<Of<typeof catalogShape>>(v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)));
-const harnessEntry = object({ id: harnessId, keyRelay: optional(oneOf(true)), machineProviders: optional(list(line(128), 512)), loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), signInReason: optional(line(300)), options: optional(validHarnessOptions) });
-const harnesses = list(is<Of<typeof harnessEntry>>(v => harnessEntry(v) && (v.id === "codex" ? !v.options || boundedCodexOptions(v.options) : v.method === undefined && v.modes === undefined && v.modeReason === undefined)), 4);
+const catalog = is<Of<typeof catalogShape>>(
+	v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)),
+);
+const harnessEntry = object({
+	id: harnessId,
+	keyRelay: optional(oneOf(true)),
+	machineProviders: optional(list(line(128), 512)),
+	loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))),
+	method: optional(oneOf("api-key", "chatgpt")),
+	modes: optional(list(line(64), 16)),
+	modeReason: optional(line(500)),
+	optionsDigest: optional(digest),
+	optionsCheckedAt: optional(time),
+	adapter: line(64),
+	image: line(128),
+	signIn: oneOf("token", "none", "unknown"),
+	signInReason: optional(line(300)),
+	options: optional(validHarnessOptions),
+});
+const harnesses = list(
+	is<Of<typeof harnessEntry>>(
+		v =>
+			harnessEntry(v) &&
+			(v.id === "codex"
+				? !v.options || boundedCodexOptions(v.options)
+				: v.method === undefined && v.modes === undefined && v.modeReason === undefined),
+	),
+	4,
+);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
-export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
+export const validAllowedProfiles = is<MachineProfile[]>(
+	v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length,
+);
 const nonnegative = is<number>(v => typeof v === "number" && Number.isFinite(v) && v >= 0);
-export const validMachineName = is<string>(v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v));
+export const validMachineName = is<string>(
+	v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v),
+);
 export const egressMode = oneOf("open", "restricted", "none");
-const host = object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegative(v) && v > 0), memoryBytes: count, memoryFreeBytes: count, load1: nullable(nonnegative) });
+const host = object({
+	cpus: positiveLimit,
+	sandboxCpus: is<number>(v => nonnegative(v) && v > 0),
+	memoryBytes: count,
+	memoryFreeBytes: count,
+	load1: nullable(nonnegative),
+});
 const hostFrame = object({ kind: oneOf("host"), host: nullable(host) });
 const report = object({
 	egress: optional(egressMode),
@@ -315,29 +451,54 @@ const report = object({
 	resumableConversation: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
-	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
+	sandboxes: list(
+		object({
+			resizePending: optional(oneOf(true)),
+			id: sandboxId,
+			sessionId: name,
+			state: oneOf("running", "paused"),
+			usedAt: count,
+		}),
+		MAX_REPORTED_SANDBOXES,
+	),
 	/**
 	 * The snapshot and Git mirror limits in force, in bytes: its owner's (`--snapshot-disk`, `--snapshot-user`,
 	 * `--keep-free`, or the defaults) held to the welcome's `storeLimits`; `capped` where those changed one.
 	 */
-	storeLimits: optional(object({ machine: storeBytes, user: storeBytes, free: storeBytes, capped: optional(oneOf(true)) })),
+	storeLimits: optional(
+		object({ machine: storeBytes, user: storeBytes, free: storeBytes, capped: optional(oneOf(true)) }),
+	),
 	/** The caps its owner set (`--max-running`, `--max-sandboxes`), left out where none is set. */
 	maxRunning: optional(positiveLimit),
 	maxSandboxes: optional(positiveLimit),
 });
-const runnerFrame = either(either(hello, either(report, either(catalog, hostFrame))), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
+const runnerFrame = either(
+	either(hello, either(report, either(catalog, hostFrame))),
+	either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })),
+);
 export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
 	// `start-times` has no field in the report: only a connect says it.
-	const fields: Partial<Record<Capability, keyof Report>> = { "environment-build": "environmentBuild", "warm-spares": "warmSpares", "blocked-network": "blockedNetwork", "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits", "resumable-conversation": "resumableConversation" };
+	const fields: Partial<Record<Capability, keyof Report>> = {
+		"environment-build": "environmentBuild",
+		"warm-spares": "warmSpares",
+		"blocked-network": "blockedNetwork",
+		"git-mirrors": "gitMirrors",
+		"egress-domains": "egressDomains",
+		"session-volumes": "sessionVolumes",
+		"model-relay": "modelRelay",
+		"store-limits": "storeLimits",
+		"resumable-conversation": "resumableConversation",
+	};
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];
 	// A field inside each harness entry: taken out of every entry for a server that does not read it.
-	if (!named?.includes("sign-in-reason") && kept.harnesses) kept.harnesses = kept.harnesses.map(({ signInReason: _, ...entry }) => entry);
+	if (!named?.includes("sign-in-reason") && kept.harnesses)
+		kept.harnesses = kept.harnesses.map(({ signInReason: _, ...entry }) => entry);
 	if (!named?.includes("harness-key-relay") && kept.harnesses)
 		kept.harnesses = kept.harnesses.map(({ keyRelay: _, machineProviders: __, ...entry }) => entry);
 	return kept as R;
@@ -368,7 +529,14 @@ function frameText(data: unknown, maxBytes = MAX_CONTROL_FRAME_BYTES): unknown {
 /** For the actor: null for anything a runner sent that is not a frame of this module. */
 export function parseRunnerFrame(data: unknown, allowLargeReport = true): RunnerFrame | null {
 	const v = frameText(data, allowLargeReport ? MAX_REPORT_BYTES : MAX_CONTROL_FRAME_BYTES);
-	if (plain(v) && v.kind !== "report" && v.kind !== "catalog" && typeof data === "string" && Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return null;
+	if (
+		plain(v) &&
+		v.kind !== "report" &&
+		v.kind !== "catalog" &&
+		typeof data === "string" &&
+		Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES
+	)
+		return null;
 	return runnerFrame(v) ? v : null;
 }
 
@@ -376,23 +544,52 @@ export function parseRunnerFrame(data: unknown, allowLargeReport = true): Runner
 export function parseServerFrame(data: unknown, strict = false): ServerFrame | null {
 	const v = frameText(data);
 	if (serverFrame(v)) return v;
-	if (!strict && plain(v) && v.kind === "refused" && line(500)(v.message)) return { kind: "refused", reason: "other", message: v.message };
+	if (!strict && plain(v) && v.kind === "refused" && line(500)(v.message))
+		return { kind: "refused", reason: "other", message: v.message };
 	return null;
 }
 
 /** The refusal, with the sentence the runner prints: made here so the actor and its stand-in say the same. */
-export function refuse(reason: "outdated" | "removed" | "key-in-use" | "unknown" | "bad-frame", detail: { minimum?: string; runnerVersion?: string; removeSandboxes?: boolean } = {}): Refusal {
+export function refuse(
+	reason: "outdated" | "removed" | "key-in-use" | "unknown" | "bad-frame",
+	detail: { minimum?: string; runnerVersion?: string; removeSandboxes?: boolean } = {},
+): Refusal {
 	switch (reason) {
 		case "outdated":
-			return { kind: "refused", reason, minimum: detail.minimum ?? MIN_RUNNER_VERSION, message: `This runner is ${detail.runnerVersion ?? "too old"}; the platform needs ${detail.minimum ?? MIN_RUNNER_VERSION} or later. Update it with the command on the Machines page.` };
+			return {
+				kind: "refused",
+				reason,
+				minimum: detail.minimum ?? MIN_RUNNER_VERSION,
+				message: `This runner is ${detail.runnerVersion ?? "too old"}; the platform needs ${detail.minimum ?? MIN_RUNNER_VERSION} or later. Update it with the command on the Machines page.`,
+			};
 		case "removed":
-			return { kind: "refused", reason, removeSandboxes: detail.removeSandboxes === true, message: detail.removeSandboxes ? "This machine was removed from its account. Its sandboxes and data volume are being removed; run `windlass-runner pair` to add it again." : "This machine was removed from its account; its sandboxes stay. Run `windlass-runner pair` to add it again." };
+			return {
+				kind: "refused",
+				reason,
+				removeSandboxes: detail.removeSandboxes === true,
+				message: detail.removeSandboxes
+					? "This machine was removed from its account. Its sandboxes and data volume are being removed; run `windlass-runner pair` to add it again."
+					: "This machine was removed from its account; its sandboxes stay. Run `windlass-runner pair` to add it again.",
+			};
 		case "key-in-use":
-			return { kind: "refused", reason, message: "Another runner with this machine's key is connected. If you copied the key, stop the other runner; if you did not, remove the machine on the Machines page." };
+			return {
+				kind: "refused",
+				reason,
+				message:
+					"Another runner with this machine's key is connected. If you copied the key, stop the other runner; if you did not, remove the machine on the Machines page.",
+			};
 		case "unknown":
-			return { kind: "refused", reason, message: "The platform does not know this machine's key. Run `windlass-runner pair` to add the machine again." };
+			return {
+				kind: "refused",
+				reason,
+				message: "The platform does not know this machine's key. Run `windlass-runner pair` to add the machine again.",
+			};
 		case "bad-frame":
-			return { kind: "refused", reason, message: "The platform could not read what this runner sent. Use the runner release the Machines page names." };
+			return {
+				kind: "refused",
+				reason,
+				message: "The platform could not read what this runner sent. Use the runner release the Machines page names.",
+			};
 	}
 }
 
@@ -403,7 +600,11 @@ export function refuse(reason: "outdated" | "removed" | "key-in-use" | "unknown"
  * restarted while its old socket was half open), and "refuse" ("key-in-use", recorded for the page's
  * warning) for a second runner process while the first is live.
  */
-export function secondHello(live: { epoch: string; heardAt: number } | null, hello: Pick<Hello, "epoch">, now: number): "accept" | "replace" | "refuse" {
+export function secondHello(
+	live: { epoch: string; heardAt: number } | null,
+	hello: Pick<Hello, "epoch">,
+	now: number,
+): "accept" | "replace" | "refuse" {
 	if (live === null) return "accept";
 	if (live.epoch === hello.epoch || now - live.heardAt > LIVE_MS) return "replace";
 	return "refuse";
@@ -434,15 +635,35 @@ const pairRequest = object({
 	arch: line(32),
 	runnerVersion: version,
 });
-const pairStarted = object({ code: is<string>((v) => typeof v === "string" && PAIRING_CODE.test(v)), pairing: base64url(43), pollSecret: base64url(43) });
+const pairStarted = object({
+	code: is<string>(v => typeof v === "string" && PAIRING_CODE.test(v)),
+	pairing: base64url(43),
+	pollSecret: base64url(43),
+});
 const pairPoll = object({ pairing: base64url(43), pollSecret: base64url(43) });
 const pairStatus = either(
 	object({ state: oneOf("waiting", "gone") }),
 	/** `githubLogin`: the account's GitHub login, for the runner to print; null when it has no GitHub connection. */
-	object({ state: oneOf("approved"), uid: name, machineId, githubLogin: nullable(line(64)), platformRoot: optional(text(80)), endpoint: optional(text(2048)) }),
+	object({
+		state: oneOf("approved"),
+		uid: name,
+		machineId,
+		githubLogin: nullable(line(64)),
+		platformRoot: optional(text(80)),
+		endpoint: optional(text(2048)),
+	}),
 );
 const connectionRequest = object({ uid: name, machineId, time, signature, nonce: optional(nonce) });
-const connectionRefusal = either(either(object({ reason: oneOf("clock"), serverTime: time }), either(object({ reason: oneOf("removed"), removeSandboxes: boolean }), object({ reason: oneOf("removed"), removeSandboxes: boolean, ...removalFields }))), object({ reason: oneOf("unknown") }));
+const connectionRefusal = either(
+	either(
+		object({ reason: oneOf("clock"), serverTime: time }),
+		either(
+			object({ reason: oneOf("removed"), removeSandboxes: boolean }),
+			object({ reason: oneOf("removed"), removeSandboxes: boolean, ...removalFields }),
+		),
+	),
+	object({ reason: oneOf("unknown") }),
+);
 
 export type PairRequest = Of<typeof pairRequest>;
 export type PairStarted = Of<typeof pairStarted>;
@@ -456,8 +677,10 @@ export const parsePairRequest = (body: unknown): PairRequest | null => (pairRequ
 export const parsePairStarted = (body: unknown): PairStarted | null => (pairStarted(body) ? body : null);
 export const parsePairPoll = (body: unknown): PairPoll | null => (pairPoll(body) ? body : null);
 export const parsePairStatus = (body: unknown): PairStatus | null => (pairStatus(body) ? body : null);
-export const parseConnectionRequest = (body: unknown): ConnectionRequest | null => (connectionRequest(body) ? body : null);
-export const parseConnectionRefusal = (body: unknown): ConnectionRefusal | null => (connectionRefusal(body) ? body : null);
+export const parseConnectionRequest = (body: unknown): ConnectionRequest | null =>
+	connectionRequest(body) ? body : null;
+export const parseConnectionRefusal = (body: unknown): ConnectionRefusal | null =>
+	connectionRefusal(body) ? body : null;
 
 const connection = object({
 	endpointChange: optional(endpointShape),
@@ -468,4 +691,9 @@ const connection = object({
 /** For the runner: the 200 answer of RUNNER_CONNECTION_PATH. */
 export const parseConnection = (body: unknown): Of<typeof connection> | null => (connection(body) ? body : null);
 
-export type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>, Assert<Same<Of<typeof storeCaps>, StoreCaps>>];
+export type Drift = [
+	Assert<Same<Of<typeof optionsShape>, HarnessOptions>>,
+	Assert<Same<Of<typeof probe>, MachineProbe>>,
+	Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>,
+	Assert<Same<Of<typeof storeCaps>, StoreCaps>>,
+];

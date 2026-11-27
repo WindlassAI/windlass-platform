@@ -7,14 +7,52 @@ import { describe, expect, it } from "vitest";
 import { feedKey, feedOf } from "./feed";
 import { NO_FILTERS } from "./workspace";
 
-const repo = (id: number, name: string) => ({ provider: "github" as const, id: id as GithubId, owner: "acme", name, branch: "main", private: false, url: `https://github.com/acme/${name}` });
+const repo = (id: number, name: string) => ({
+	provider: "github" as const,
+	id: id as GithubId,
+	owner: "acme",
+	name,
+	branch: "main",
+	private: false,
+	url: `https://github.com/acme/${name}`,
+});
 
 function session(id: string, over: Partial<SessionSummary> = {}): SessionSummary {
-	return { id, title: id, mode: "auto", availableModes: [], capabilities: {} as SessionSummary["capabilities"], place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "m", repoUrl: null, createdAt: 1, updatedAt: 1, status: "idle", turns: 1, lastOutcome: "succeeded", sandbox: "none", ...over } as SessionSummary;
+	return {
+		id,
+		title: id,
+		mode: "auto",
+		availableModes: [],
+		capabilities: {} as SessionSummary["capabilities"],
+		place: { kind: "hosted" },
+		profile: "docker-windlass-sandbox",
+		model: "m",
+		repoUrl: null,
+		createdAt: 1,
+		updatedAt: 1,
+		status: "idle",
+		turns: 1,
+		lastOutcome: "succeeded",
+		sandbox: "none",
+		...over,
+	} as SessionSummary;
 }
 
 function item(id: string, over: Partial<ItemSummary> = {}): ItemSummary {
-	return { id, title: id, repository: repo(1, "harbor"), place: { kind: "hosted" }, source: "web", state: "working", question: null, pullRequest: null, createdAt: 1, updatedAt: 1, sessionId: `s-${id}`, ...over } as ItemSummary;
+	return {
+		id,
+		title: id,
+		repository: repo(1, "harbor"),
+		place: { kind: "hosted" },
+		source: "web",
+		state: "working",
+		question: null,
+		pullRequest: null,
+		createdAt: 1,
+		updatedAt: 1,
+		sessionId: `s-${id}`,
+		...over,
+	} as ItemSummary;
 }
 
 const keys = (entries: ReturnType<typeof feedOf>["needs"]) => entries.map(feedKey);
@@ -30,7 +68,11 @@ describe("the feed", () => {
 		session("of-item", { status: "running", updatedAt: 99, item: { id: "asks" } as SessionSummary["item"] }),
 	];
 	const items = [
-		item("asks", { state: "waiting", question: { text: "Which one?", askedAt: 40 } as ItemSummary["question"], updatedAt: 1 }),
+		item("asks", {
+			state: "waiting",
+			question: { text: "Which one?", askedAt: 40 } as ItemSummary["question"],
+			updatedAt: 1,
+		}),
 		item("working", { state: "working", updatedAt: 25 }),
 		item("queued", { state: "queued", updatedAt: 15 }),
 		item("done", { state: "done", updatedAt: 60, pullRequest: { number: 3, url: "u" } }),
@@ -58,7 +100,9 @@ describe("the feed", () => {
 		expect(needs.recent).toEqual([]);
 		expect(keys(needs.needs)).toEqual(["i:asks", "a:waiting-new", "a:waiting-old"]);
 		const onlyItems = feedOf({ sessions, items, filters: { ...NO_FILTERS, kind: ["item"] } });
-		expect([...onlyItems.needs, ...onlyItems.working, ...onlyItems.recent].every((entry) => entry.kind === "item")).toBe(true);
+		expect([...onlyItems.needs, ...onlyItems.working, ...onlyItems.recent].every(entry => entry.kind === "item")).toBe(
+			true,
+		);
 		const none = feedOf({ sessions, items, scope: "none" });
 		expect([...none.needs, ...none.working, ...none.recent].map(feedKey).sort()).toEqual(["a:failed", "a:waiting-new"]);
 	});

@@ -40,29 +40,89 @@ export function ChatgptPlan() {
 			<div className="usage-kept-main">
 				<span className="usage-kept-title">ChatGPT plan</span>
 				<p className="agent-meta">
-					<span>{connected ? (status?.email ? `Connected as ${status.email}` : "Connected") : "Use your ChatGPT subscription"}</span>
+					<span>
+						{connected
+							? status?.email
+								? `Connected as ${status.email}`
+								: "Connected"
+							: "Use your ChatGPT subscription"}
+					</span>
 				</p>
 				{attempt ? (
-					<form className="chatgpt-plan-form" onSubmit={event => { event.preventDefault(); void change("finish"); }}>
-						<a className="link" href={attempt.url} target="_blank" rel="noopener noreferrer">Authorize your plan at OpenAI ↗</a>
-						<label className="field">Paste the full address from the page that ends at {attempt.redirectPrefix}.
-							<input className="input" type="url" autoComplete="off" value={callback} onChange={e => setCallback(e.target.value)} required />
+					<form
+						className="chatgpt-plan-form"
+						onSubmit={event => {
+							event.preventDefault();
+							void change("finish");
+						}}
+					>
+						<a className="link" href={attempt.url} target="_blank" rel="noopener noreferrer">
+							Authorize your plan at OpenAI ↗
+						</a>
+						<label className="field">
+							Paste the full address from the page that ends at {attempt.redirectPrefix}.
+							<input
+								className="input"
+								type="url"
+								autoComplete="off"
+								value={callback}
+								onChange={e => setCallback(e.target.value)}
+								required
+							/>
 						</label>
-						<div className="chatgpt-plan-actions"><button className="button button-primary button-small" disabled={busy || !callback.trim()}>Finish connecting</button>
-							<button type="button" className="button button-quiet button-small" disabled={busy} onClick={() => setAttempt(null)}>Cancel</button></div>
+						<div className="chatgpt-plan-actions">
+							<button className="button button-primary button-small" disabled={busy || !callback.trim()}>
+								Finish connecting
+							</button>
+							<button
+								type="button"
+								className="button button-quiet button-small"
+								disabled={busy}
+								onClick={() => setAttempt(null)}
+							>
+								Cancel
+							</button>
+						</div>
 					</form>
 				) : null}
-				{(error || statusError) && <p className="field-note tone-bad" role="alert">{error || statusError}</p>}
+				{(error || statusError) && (
+					<p className="field-note tone-bad" role="alert">
+						{error || statusError}
+					</p>
+				)}
 			</div>
-			<span className={`machine-used${connected ? " tone-good" : ""}`}>{connected ? "connected" : "not connected"}</span>
+			<span className={`machine-used${connected ? " tone-good" : ""}`}>
+				{connected ? "connected" : "not connected"}
+			</span>
 			<div className="provider-actions">
 				{attempt ? null : connected ? (
 					<>
-						<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("start")}>Reconnect</button>
-						<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("disconnect")}>Disconnect</button>
+						<button
+							type="button"
+							className="button button-outline button-small"
+							disabled={busy}
+							onClick={() => void change("start")}
+						>
+							Reconnect
+						</button>
+						<button
+							type="button"
+							className="button button-outline button-small"
+							disabled={busy}
+							onClick={() => void change("disconnect")}
+						>
+							Disconnect
+						</button>
 					</>
 				) : (
-					<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("start")}>Connect</button>
+					<button
+						type="button"
+						className="button button-outline button-small"
+						disabled={busy}
+						onClick={() => void change("start")}
+					>
+						Connect
+					</button>
 				)}
 			</div>
 		</li>
@@ -82,7 +142,8 @@ export function MockAuthorize() {
 				<p className="eyebrow">mock · stands in for OpenAI's sign-in page</p>
 				<h1 className="signin-title">Let Windlass use your ChatGPT account?</h1>
 				<p className="signin-text">
-					Approving sends this tab to <code>{redirect}</code>, which will fail to load. Copy that address and paste it into the tab you came from.
+					Approving sends this tab to <code>{redirect}</code>, which will fail to load. Copy that address and paste it
+					into the tab you came from.
 				</p>
 				<div className="mock-authorize-actions">
 					<a className="button button-primary" href={approve}>

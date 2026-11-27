@@ -24,11 +24,15 @@ const TAKE_UP_ARM_MS = 60_000;
 
 /** The runner conversation has something to store: frames to write ahead, or more received than committed. */
 export function conversationDirty(c: Ctx): void {
-	const journal = c.vars.journal ??= new OutgoingJournal(c.db, () => c.vars.runner?.channel ?? null, () => {
-		// What was received is committed with the timeline it produced: a write comes soon, items or not.
-		const channel = c.vars.runner?.channel;
-		if (channel && channel.receivedCount > 0) scheduleWrite(c);
-	});
+	const journal = (c.vars.journal ??= new OutgoingJournal(
+		c.db,
+		() => c.vars.runner?.channel ?? null,
+		() => {
+			// What was received is committed with the timeline it produced: a write comes soon, items or not.
+			const channel = c.vars.runner?.channel;
+			if (channel && channel.receivedCount > 0) scheduleWrite(c);
+		},
+	));
 	journal.dirty();
 }
 
@@ -37,7 +41,12 @@ function armTakeUp(c: Ctx): void {
 	const now = Date.now();
 	if (c.vars.stopping || now - c.vars.takeUpArmedAt < TAKE_UP_ARM_MS / 2) return;
 	c.vars.takeUpArmedAt = now;
-	void c.schedule.at(now + TAKE_UP_ARM_MS, "internalTakeUp").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that takes a machine turn up after a crash", error: describeError(error) }));
+	void c.schedule.at(now + TAKE_UP_ARM_MS, "internalTakeUp").catch((error: unknown) =>
+		c.log.warn({
+			msg: "could not schedule the wake that takes a machine turn up after a crash",
+			error: describeError(error),
+		}),
+	);
 }
 
 // Session actions interleave at await. A failed write must not block the next queued job.
@@ -60,15 +69,25 @@ export async function insertItems(db: Pick<RawAccess, "execute">, batch: Timelin
 
 function turnReceipts(meta: SessionMeta | null, batch: TimelineItem[]) {
 	return batch.flatMap(item => {
-		const key = item.kind === "turn.ended" || item.kind === "platform" || item.kind === "windlass" ? item.modelKey : undefined;
-		const tokens = key?.tokens ?? (meta && item.kind === "windlass" && usesPlatformModel(meta.harness) ? turnTokens(reportedModelUsage(item.event)) : 0);
+		const key =
+			item.kind === "turn.ended" || item.kind === "platform" || item.kind === "windlass" ? item.modelKey : undefined;
+		const tokens =
+			key?.tokens ??
+			(meta && item.kind === "windlass" && usesPlatformModel(meta.harness)
+				? turnTokens(reportedModelUsage(item.event))
+				: 0);
 		return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens, key }] : [];
 	});
 }
 
 // Timeline rows and their outbox receipts must commit together, including on replay.
-async function writeBatch(tx: RawAccess, batch: TimelineItem[], meta: SessionMeta | null,
-	receipts: ReturnType<typeof turnReceipts>, network: SessionMeta["blocked"]) {
+async function writeBatch(
+	tx: RawAccess,
+	batch: TimelineItem[],
+	meta: SessionMeta | null,
+	receipts: ReturnType<typeof turnReceipts>,
+	network: SessionMeta["blocked"],
+) {
 	await insertItems(tx, batch);
 	for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
 	if (network && meta) {
@@ -89,7 +108,8 @@ export async function writeItems(c: Ctx): Promise<void> {
 		if (receipts.length || network) {
 			// Queue usage with its original UTC day and sequence for idempotent retries.
 			await c.db.transaction(tx => writeBatch(tx, batch, meta, receipts, network), { name: "timeline.usage" });
-			if (!c.vars.stopping && (receipts.length || meta?.origin)) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
+			if (!c.vars.stopping && (receipts.length || meta?.origin))
+				await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
 		} else await insertItems(c.db, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
@@ -109,20 +129,23 @@ async function writeDurably(c: Ctx): Promise<void> {
 	const meta = c.vars.meta;
 	let flush = false;
 	let stored = false;
-	await c.db.transaction(async tx => {
-		for (let at = 0; at < items.length; at += WRITE_BATCH) {
-			const batch = items.slice(at, at + WRITE_BATCH);
-			const receipts = turnReceipts(meta, batch);
-			const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
-			await writeBatch(tx, batch, meta, receipts, network);
-			if (receipts.length || (network && meta?.origin)) flush = true;
-		}
-		// While a process waits to be taken up, the output kept for it is in no item yet: nothing of it counts as stored.
-		if (c.vars.runner?.holding) return;
-		stored = await saveReceived(tx, conversation, received);
-		// A checkpoint goes with the timeline of its moment; none (the turn is not one to take up) takes the old one out.
-		await saveCheckpoint(tx, turn?.number ?? 0, checkpoint);
-	}, { name: "timeline.durable" });
+	await c.db.transaction(
+		async tx => {
+			for (let at = 0; at < items.length; at += WRITE_BATCH) {
+				const batch = items.slice(at, at + WRITE_BATCH);
+				const receipts = turnReceipts(meta, batch);
+				const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
+				await writeBatch(tx, batch, meta, receipts, network);
+				if (receipts.length || (network && meta?.origin)) flush = true;
+			}
+			// While a process waits to be taken up, the output kept for it is in no item yet: nothing of it counts as stored.
+			if (c.vars.runner?.holding) return;
+			stored = await saveReceived(tx, conversation, received);
+			// A checkpoint goes with the timeline of its moment; none (the turn is not one to take up) takes the old one out.
+			await saveCheckpoint(tx, turn?.number ?? 0, checkpoint);
+		},
+		{ name: "timeline.durable" },
+	);
 	waiting.splice(0, items.length);
 	if (stored) channel.committed(conversation, received);
 	if (checkpoint) armTakeUp(c);
@@ -141,7 +164,7 @@ export function persist(c: Ctx): Promise<void> {
 		const partial = c.vars.turn?.stopping && c.vars.turn.openAcp?.();
 		if (partial) await insertItems(c.db, [numberItem(c, partial)]);
 		if (c.vars.meta) await c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(c.vars.meta));
-	}).catch((error) => {
+	}).catch(error => {
 		// The items stay in `unwritten`, so the next write tries again and snapshots still show them.
 		c.log.error({ msg: "could not write the session to SQLite", error: describeError(error) });
 	});
@@ -153,7 +176,7 @@ function queueWrite(c: Ctx): void {
 	void serial(c, async () => {
 		c.vars.flushQueued = false;
 		await writeItems(c);
-	}).catch((error) => {
+	}).catch(error => {
 		c.log.error({ msg: "could not write the timeline to SQLite", error: describeError(error) });
 	});
 }
@@ -175,7 +198,11 @@ function scheduleWrite(c: Ctx): void {
 function numberItem(c: Ctx, item: NewItem, at = Date.now()): TimelineItem {
 	// Network observations scrub their free text before aggregation. Keep protocol enum values intact.
 	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at } as TimelineItem;
+	const numbered = {
+		...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item),
+		seq: c.vars.nextSeq,
+		at,
+	} as TimelineItem;
 	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
 }
 
@@ -194,7 +221,10 @@ export function note(
 	turn: number,
 	level: "info" | "warn" | "error",
 	text: string,
-	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | { code: "turn_paused" | "turn_resumed"; modelKey?: ModelKeySpend } | null = null,
+	mark:
+		| { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } }
+		| { code: "turn_paused" | "turn_resumed"; modelKey?: ModelKeySpend }
+		| null = null,
 ): void {
 	append(c, { turn, kind: "platform", level, text, ...(mark ?? {}) });
 }
@@ -213,20 +243,24 @@ function settleDeltas(vars: SessionVars, durable: WindlassEvent): void {
 	let redundant: (event: WindlassEvent) => boolean;
 	switch (durable.type) {
 		case "text.ended":
-			redundant = (event) => event.type === "text.delta" && event.messageId === messageId;
+			redundant = event => event.type === "text.delta" && event.messageId === messageId;
 			break;
 		case "reasoning.ended":
-			redundant = (event) => event.type === "reasoning.delta" && event.messageId === messageId;
+			redundant = event => event.type === "reasoning.delta" && event.messageId === messageId;
 			break;
 		case "tool.called":
-			redundant = (event) => event.type === "tool.input.delta" && event.messageId === messageId && event.callId === callId;
+			redundant = event =>
+				event.type === "tool.input.delta" && event.messageId === messageId && event.callId === callId;
 			break;
 		case "tool.settled":
-			redundant = (event) => (event.type === "tool.progress" || event.type === "tool.input.delta") && event.messageId === messageId && event.callId === callId;
+			redundant = event =>
+				(event.type === "tool.progress" || event.type === "tool.input.delta") &&
+				event.messageId === messageId &&
+				event.callId === callId;
 			break;
 		case "step.ended":
 		case "step.failed":
-			redundant = (event) => event.messageId === messageId;
+			redundant = event => event.messageId === messageId;
 			break;
 		case "execution.succeeded":
 		case "execution.failed":
@@ -236,7 +270,7 @@ function settleDeltas(vars: SessionVars, durable: WindlassEvent): void {
 		default:
 			return;
 	}
-	vars.pending = vars.pending.filter((delta) => !("event" in delta && redundant(delta.event)));
+	vars.pending = vars.pending.filter(delta => !("event" in delta && redundant(delta.event)));
 }
 
 /** One durable item per contiguous run of text; a reconnect sees the same prefix as live clients. */
@@ -250,7 +284,13 @@ export function acpRecorder(c: Ctx, turn: number) {
 			items++;
 			return true;
 		}
-		if (!warned) note(c, turn, "warn", `Further ACP updates were omitted after ${MAX_PENDING.toLocaleString("en-US")} timeline items in this turn.`);
+		if (!warned)
+			note(
+				c,
+				turn,
+				"warn",
+				`Further ACP updates were omitted after ${MAX_PENDING.toLocaleString("en-US")} timeline items in this turn.`,
+			);
 		warned = true;
 		return false;
 	}
@@ -259,7 +299,13 @@ export function acpRecorder(c: Ctx, turn: number) {
 	}
 	function current(): NewItem | null {
 		if (!run) return null;
-		return { turn, kind: "acp", messageKey: run.key, update: textUpdate(run.kind, run.text), ...(run.truncated && { truncated: true }) };
+		return {
+			turn,
+			kind: "acp",
+			messageKey: run.key,
+			update: textUpdate(run.kind, run.text),
+			...(run.truncated && { truncated: true }),
+		};
 	}
 	if (c.vars.turn) c.vars.turn.openAcp = current;
 	function flush() {
@@ -274,13 +320,25 @@ export function acpRecorder(c: Ctx, turn: number) {
 		flush,
 		update(update: AcpUpdate) {
 			const kind = update.sessionUpdate;
-			if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.type === "text" && typeof update.content.text === "string") {
+			if (
+				(kind === "agent_message_chunk" || kind === "agent_thought_chunk") &&
+				update.content?.type === "text" &&
+				typeof update.content.text === "string"
+			) {
 				if (run?.kind !== kind) {
 					flush();
 					if (!admit()) return;
 					const key = `acp-${turn}-${c.vars.nextSeq}`;
 					// Other timeline events can advance seq before flush. Reserve both numbers and the marker now.
-					const envelope = { turn, kind: "acp", messageKey: key, update: textUpdate(kind, ""), seq: Number.MAX_SAFE_INTEGER, at: Number.MAX_SAFE_INTEGER, truncated: true };
+					const envelope = {
+						turn,
+						kind: "acp",
+						messageKey: key,
+						update: textUpdate(kind, ""),
+						seq: Number.MAX_SAFE_INTEGER,
+						at: Number.MAX_SAFE_INTEGER,
+						truncated: true,
+					};
 					run = { kind, key, text: "", remaining: ACP_ITEM_LIMIT - JSON.stringify(envelope).length, truncated: false };
 				}
 				if (run.truncated) return;
@@ -302,7 +360,13 @@ export function acpRecorder(c: Ctx, turn: number) {
 	};
 }
 
-export function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: WindlassEvent, key?: import("../../sandbox/provider.js").ModelKeyLease): void {
+export function onWindlassEvent(
+	c: Ctx,
+	meta: SessionMeta,
+	turn: number,
+	event: WindlassEvent,
+	key?: import("../../sandbox/provider.js").ModelKeyLease,
+): void {
 	if (typeof event !== "object" || event === null || typeof event.type !== "string") return;
 	if (typeof event.sessionId === "string" && event.sessionId !== "" && meta.windlassSessionId !== event.sessionId) {
 		// Remembered at once: if this turn is lost, the next one can still continue Windlass's session.

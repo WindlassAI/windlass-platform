@@ -14,32 +14,54 @@ export type CopyState = "idle" | "copied" | "failed";
 export const COPIED_MS = 1500;
 export const FAILED_MS = 4000;
 
-const ANNOUNCED: Record<CopyState, string> = { idle: "", copied: "Copied", failed: "Could not copy: the browser refused the clipboard" };
+const ANNOUNCED: Record<CopyState, string> = {
+	idle: "",
+	copied: "Copied",
+	failed: "Could not copy: the browser refused the clipboard",
+};
 
 /**
  * `text` is the text itself, or a function that reads it when the button is pressed: for text that
  * is still growing, a stable function keeps the button from re-rendering with every chunk.
  */
-export const CopyButton = memo(function CopyButton({ text, label, className }: { text: string | (() => string); label: string; className?: string }) {
+export const CopyButton = memo(function CopyButton({
+	text,
+	label,
+	className,
+}: {
+	text: string | (() => string);
+	label: string;
+	className?: string;
+}) {
 	// `attempt` restarts the timer when the button is pressed again before the check has gone.
 	const [status, setStatus] = useState<{ state: CopyState; attempt: number }>({ state: "idle", attempt: 0 });
 	const button = useRef<HTMLButtonElement>(null);
 
 	useEffect(() => {
 		if (status.state === "idle") return;
-		const timer = setTimeout(() => setStatus((current) => ({ ...current, state: "idle" })), status.state === "copied" ? COPIED_MS : FAILED_MS);
+		const timer = setTimeout(
+			() => setStatus(current => ({ ...current, state: "idle" })),
+			status.state === "copied" ? COPIED_MS : FAILED_MS,
+		);
 		return () => clearTimeout(timer);
 	}, [status]);
 
 	const onClick = async () => {
 		const copied = await copyText(typeof text === "function" ? text() : text, button.current);
-		setStatus((current) => ({ state: copied ? "copied" : "failed", attempt: current.attempt + 1 }));
+		setStatus(current => ({ state: copied ? "copied" : "failed", attempt: current.attempt + 1 }));
 	};
 
 	const { state } = status;
 	return (
 		<span className={`copy copy-${state}${className ? ` ${className}` : ""}`}>
-			<button ref={button} type="button" className="icon-button icon-button-small copy-button" aria-label={label} title={label} onClick={onClick}>
+			<button
+				ref={button}
+				type="button"
+				className="icon-button icon-button-small copy-button"
+				aria-label={label}
+				title={label}
+				onClick={onClick}
+			>
 				{state === "copied" ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
 			</button>
 			{state === "failed" ? (

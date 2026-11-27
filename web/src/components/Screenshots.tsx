@@ -42,7 +42,11 @@ const EMPTY: LinksState = { links: new Map(), answered: false, refused: false, g
  * then as `failed` and `freshen` say. Nothing is asked while `ids` is empty. A new `ask` alone asks
  * nothing: the latest is used for the next question.
  */
-export function useAttachmentLinks(ask: () => Promise<AttachmentLink[]>, ids: string, now: () => number = Date.now): ScreenshotLinks {
+export function useAttachmentLinks(
+	ask: () => Promise<AttachmentLink[]>,
+	ids: string,
+	now: () => number = Date.now,
+): ScreenshotLinks {
 	const [state, setState] = useState<LinksState>(EMPTY);
 	const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set());
 	const retried = useRef(new Set<string>());
@@ -59,15 +63,20 @@ export function useAttachmentLinks(ask: () => Promise<AttachmentLink[]>, ids: st
 		inFlight.current = true;
 		const mine = epoch.current;
 		asker.current().then(
-			(list) => {
+			list => {
 				if (mine !== epoch.current) return;
 				inFlight.current = false;
-				setState((was) => ({ links: new Map(list.map((link) => [link.id, link])), answered: true, refused: false, generation: was.generation + 1 }));
+				setState(was => ({
+					links: new Map(list.map(link => [link.id, link])),
+					answered: true,
+					refused: false,
+					generation: was.generation + 1,
+				}));
 			},
 			() => {
 				if (mine !== epoch.current) return;
 				inFlight.current = false;
-				setState((was) => ({ ...was, answered: true, refused: true, generation: was.generation + 1 }));
+				setState(was => ({ ...was, answered: true, refused: true, generation: was.generation + 1 }));
 			},
 		);
 	}, []);
@@ -84,7 +93,7 @@ export function useAttachmentLinks(ask: () => Promise<AttachmentLink[]>, ids: st
 	const failed = useCallback(
 		(id: string) => {
 			if (retried.current.has(id)) {
-				setBroken((was) => (was.has(id) ? was : new Set([...was, id])));
+				setBroken(was => (was.has(id) ? was : new Set([...was, id])));
 				return;
 			}
 			retried.current.add(id);
@@ -95,7 +104,7 @@ export function useAttachmentLinks(ask: () => Promise<AttachmentLink[]>, ids: st
 
 	const freshen = useCallback(() => {
 		const { links, answered } = latest.current;
-		if (answered && [...links.values()].some((link) => link.expiresAt - now() < FRESH_MS)) load();
+		if (answered && [...links.values()].some(link => link.expiresAt - now() < FRESH_MS)) load();
 	}, [load, now]);
 
 	const src = (id: string) => {
@@ -113,8 +122,8 @@ export function useScreenshotLinks(itemId: string, shots: ItemAttachment[]): Scr
 	const auth = useAuth();
 	const ask = useCallback(() => client.user(auth).itemAttachmentLinks(itemId), [client, auth, itemId]);
 	const ids = shots
-		.filter((shot) => shot.state === "kept")
-		.map((shot) => shot.id)
+		.filter(shot => shot.state === "kept")
+		.map(shot => shot.id)
 		.join(",");
 	return useAttachmentLinks(ask, ids);
 }
@@ -123,12 +132,19 @@ export const COULD_NOT_LOAD = "This screenshot could not be loaded.";
 
 /** Said when retention removed every screenshot of the item; `days` when the deployment's retention is known. */
 export function removedLine(days?: number): string {
-	return days === undefined ? "The screenshots of this item were removed after it ended." : `The screenshots of this item were removed ${days} days after it ended.`;
+	return days === undefined
+		? "The screenshots of this item were removed after it ended."
+		: `The screenshots of this item were removed ${days} days after it ended.`;
 }
 
 function whoLine(by: ItemAttachment["by"], head: string | null): string {
-	if (by === "builder") return head ? `Filed by the builder for commit ${head.slice(0, 7)}.` : "Filed by the builder. No published commit recorded yet.";
-	return head ? `Taken by the second reviewer in its own checkout of ${head.slice(0, 7)}.` : "Taken by the second reviewer in its own checkout.";
+	if (by === "builder")
+		return head
+			? `Filed by the builder for commit ${head.slice(0, 7)}.`
+			: "Filed by the builder. No published commit recorded yet.";
+	return head
+		? `Taken by the second reviewer in its own checkout of ${head.slice(0, 7)}.`
+		: "Taken by the second reviewer in its own checkout.";
 }
 
 /** The quiet words under a caption: "after · 1280 × 800", then the page it shows on a line of its own. */
@@ -162,7 +178,15 @@ function Picture({ shot, links, src }: { shot: ItemAttachment; links: Screenshot
 	);
 }
 
-function Shot({ shot, links, onOpen }: { shot: ItemAttachment; links: ScreenshotLinks; onOpen(shot: ItemAttachment): void }) {
+function Shot({
+	shot,
+	links,
+	onOpen,
+}: {
+	shot: ItemAttachment;
+	links: ScreenshotLinks;
+	onOpen(shot: ItemAttachment): void;
+}) {
 	const src = shot.state === "removed" ? null : links.src(shot.id);
 	const frame = { aspectRatio: `${shot.width} / ${shot.height}` };
 	return (
@@ -173,9 +197,19 @@ function Shot({ shot, links, onOpen }: { shot: ItemAttachment; links: Screenshot
 				) : src === null ? (
 					<p className="item-shot-missing">{COULD_NOT_LOAD}</p>
 				) : src === undefined ? (
-					<span className="item-shot-frame item-shot-waiting" style={frame} aria-busy="true" aria-label="Loading the screenshot" />
+					<span
+						className="item-shot-frame item-shot-waiting"
+						style={frame}
+						aria-busy="true"
+						aria-label="Loading the screenshot"
+					/>
 				) : (
-					<button type="button" className="item-shot-frame item-shot-open" onClick={() => onOpen(shot)} aria-label={`Open full size: ${shot.caption}`}>
+					<button
+						type="button"
+						className="item-shot-frame item-shot-open"
+						onClick={() => onOpen(shot)}
+						aria-label={`Open full size: ${shot.caption}`}
+					>
 						<Picture shot={shot} links={links} src={src} />
 					</button>
 				)}
@@ -205,7 +239,13 @@ function FullSize({ shot, links, onClose }: { shot: ItemAttachment; links: Scree
 				</>
 			}
 		>
-			<div className="item-shot-full">{src ? <Picture shot={shot} links={links} src={src} /> : <p className="item-shot-missing">{src === null ? COULD_NOT_LOAD : "Loading…"}</p>}</div>
+			<div className="item-shot-full">
+				{src ? (
+					<Picture shot={shot} links={links} src={src} />
+				) : (
+					<p className="item-shot-missing">{src === null ? COULD_NOT_LOAD : "Loading…"}</p>
+				)}
+			</div>
 		</Dialog>
 	);
 }
@@ -214,18 +254,37 @@ function FullSize({ shot, links, onClose }: { shot: ItemAttachment; links: Scree
  * Screenshots in filing order. Builder screenshots name the commit published for the report.
  * Reviewer screenshots name the checkout the reviewer inspected.
  */
-export function Screenshots({ by, head, shots, links, days, label = "Screenshots" }: { by: ItemAttachment["by"]; head: string | null; shots: ItemAttachment[]; links: ScreenshotLinks; days?: number; label?: ReactNode }) {
+export function Screenshots({
+	by,
+	head,
+	shots,
+	links,
+	days,
+	label = "Screenshots",
+}: {
+	by: ItemAttachment["by"];
+	head: string | null;
+	shots: ItemAttachment[];
+	links: ScreenshotLinks;
+	days?: number;
+	label?: ReactNode;
+}) {
 	const [open, setOpen] = useState<ItemAttachment | null>(null);
 	if (shots.length === 0) return null;
-	const kept = shots.some((shot) => shot.state === "kept");
+	const kept = shots.some(shot => shot.state === "kept");
 	return (
-		<section className="item-shots" aria-label={by === "builder" ? "Screenshots by the agent that made the change" : "Screenshots by the second reviewer"}>
+		<section
+			className="item-shots"
+			aria-label={
+				by === "builder" ? "Screenshots by the agent that made the change" : "Screenshots by the second reviewer"
+			}
+		>
 			<p className="machine-label item-shots-label">{label}</p>
 			{kept ? (
 				<>
 					<p className="usage-gloss">{whoLine(by, head)}</p>
 					<ul className="item-shots-list">
-						{shots.map((shot) => (
+						{shots.map(shot => (
 							<Shot key={shot.id} shot={shot} links={links} onOpen={setOpen} />
 						))}
 					</ul>

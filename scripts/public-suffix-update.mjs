@@ -11,12 +11,17 @@ const SOURCE = "https://publicsuffix.org/list/public_suffix_list.dat";
 const text = process.argv[2] ? readFileSync(process.argv[2], "utf8") : await (await fetch(SOURCE)).text();
 const version = /^\/\/ VERSION: (\S+)$/m.exec(text)?.[1];
 const commit = /^\/\/ COMMIT: ([0-9a-f]{40})$/m.exec(text)?.[1];
-if (!version || !commit || !text.includes("===BEGIN PRIVATE DOMAINS===")) throw new Error("not the Public Suffix List from " + SOURCE);
+if (!version || !commit || !text.includes("===BEGIN PRIVATE DOMAINS==="))
+	throw new Error("not the Public Suffix List from " + SOURCE);
 const rules = new Set();
 for (const line of text.split("\n")) {
 	const rule = line.trim().split(/\s/)[0];
 	if (!rule || rule.startsWith("//")) continue;
-	const [prefix, name] = rule.startsWith("*.") ? ["*.", rule.slice(2)] : rule.startsWith("!") ? ["!", rule.slice(1)] : ["", rule];
+	const [prefix, name] = rule.startsWith("*.")
+		? ["*.", rule.slice(2)]
+		: rule.startsWith("!")
+			? ["!", rule.slice(1)]
+			: ["", rule];
 	const ascii = domainToASCII(name);
 	if (!ascii || ascii.includes("*") || !/^[a-z0-9.-]+$/.test(ascii)) throw new Error("unexpected rule " + rule);
 	rules.add(prefix + ascii);

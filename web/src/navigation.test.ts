@@ -11,12 +11,28 @@ import { navigate } from "./lib/router";
 import { AppProvider } from "./state/app";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-window.matchMedia ??= ((media: string) => ({ media, matches: false, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false })) as typeof matchMedia;
+window.matchMedia ??= ((media: string) => ({
+	media,
+	matches: false,
+	onchange: null,
+	addListener() {},
+	removeListener() {},
+	addEventListener() {},
+	removeEventListener() {},
+	dispatchEvent: () => false,
+})) as typeof matchMedia;
 Element.prototype.scrollTo ??= () => {};
-HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
-HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+HTMLDialogElement.prototype.showModal ??= function () {
+	this.open = true;
+};
+HTMLDialogElement.prototype.close ??= function () {
+	this.open = false;
+};
 
-const auth: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const auth: AuthResult = {
+	token: "mock:user:u_ada:ada@example.com",
+	profile: { uid: "u_ada", email: "ada@example.com", demo: false },
+};
 let host: HTMLElement;
 let root: Root;
 let client: MockClient;
@@ -47,14 +63,20 @@ async function open(path: string) {
 // Let React draw updates from the mock feeds and browser history.
 function until(check: () => void) {
 	return vi.waitFor(async () => {
-		await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+		await act(async () => {
+			await new Promise(resolve => setTimeout(resolve, 5));
+		});
 		check();
 	});
 }
 
-const links = () => [...host.querySelectorAll<HTMLAnchorElement>("main .button[href]")].map(link => [link.textContent, link.pathname]);
+const links = () =>
+	[...host.querySelectorAll<HTMLAnchorElement>("main .button[href]")].map(link => [link.textContent, link.pathname]);
 const button = (label: string) => [...host.querySelectorAll("button")].find(one => one.textContent?.trim() === label);
-const docsLinks = () => [...host.querySelectorAll<HTMLAnchorElement>("a")].filter(link => link.textContent?.trim() === "Open Windlass").map(link => link.getAttribute("href"));
+const docsLinks = () =>
+	[...host.querySelectorAll<HTMLAnchorElement>("a")]
+		.filter(link => link.textContent?.trim() === "Open Windlass")
+		.map(link => link.getAttribute("href"));
 
 describe("missing pages", () => {
 	it("links a missing work item to the Factory and can go back to the previous page", async () => {
@@ -71,7 +93,9 @@ describe("missing pages", () => {
 		await open("/agents/" + agent.id);
 		await until(() => expect(document.title).toContain(agent.title));
 		await act(async () => client.user(auth).deleteSession(agent.id));
-		await until(() => expect(links()).toEqual(itemAgent ? [["Go to the Factory", "/factory"]] : [["Go to Agents", "/"]]));
+		await until(() =>
+			expect(links()).toEqual(itemAgent ? [["Go to the Factory", "/factory"]] : [["Go to Agents", "/"]]),
+		);
 	});
 
 	it("links to the Factory when an item's agent is already gone", async () => {
@@ -83,7 +107,12 @@ describe("missing pages", () => {
 	it.each(["/unknown", "/agents/unknown"])("offers both sections at %s when the object is unknown", async path => {
 		vi.spyOn(history, "length", "get").mockReturnValue(1);
 		await open(path);
-		await until(() => expect(links()).toEqual([["Go to the Factory", "/factory"], ["Go to Agents", "/"]]));
+		await until(() =>
+			expect(links()).toEqual([
+				["Go to the Factory", "/factory"],
+				["Go to Agents", "/"],
+			]),
+		);
 		expect(button("Back")).toBeUndefined();
 	});
 });

@@ -11,9 +11,11 @@ export const billingCustomers = actor({
 		assertOrigin(c);
 		requireServiceFor({ key: c.key, conn: { params } }, "billing");
 	},
-	db: db({ onMigrate: async db => {
-		await db.execute("CREATE TABLE IF NOT EXISTS customers (customer TEXT PRIMARY KEY, uid TEXT NOT NULL)");
-	} }),
+	db: db({
+		onMigrate: async db => {
+			await db.execute("CREATE TABLE IF NOT EXISTS customers (customer TEXT PRIMARY KEY, uid TEXT NOT NULL)");
+		},
+	}),
 	actions: {
 		lookup: async (c, customer: string): Promise<string | null> => {
 			requireServiceFor(c, "billing");
@@ -30,5 +32,7 @@ export const billingCustomers = actor({
 });
 
 export function customerDirectory(client: unknown) {
-	return (client as ReturnType<typeof createClient<Registry>>).billingCustomers.getOrCreate(["dodo"], { params: { token: issueServiceToken("billing") } });
+	return (client as ReturnType<typeof createClient<Registry>>).billingCustomers.getOrCreate(["dodo"], {
+		params: { token: issueServiceToken("billing") },
+	});
 }

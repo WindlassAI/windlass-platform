@@ -18,6 +18,11 @@ export function createE2bSandboxLayer(parts: LayerParts, options: E2bLayerOption
 	const client = options.client ?? createE2bSdkClient(readE2bKey());
 	const settings = options.settings ?? readE2bSettings();
 	let version = settings.windlassVersion;
-	const provider = new E2bProvider(client, settings, { ...options, onVersion: value => { version ??= value; } });
+	const provider = new E2bProvider(client, settings, {
+		...options,
+		onVersion: value => {
+			version ??= value;
+		},
+	});
 	return hostedLayer(parts, provider, async () => version, options.turn);
 }

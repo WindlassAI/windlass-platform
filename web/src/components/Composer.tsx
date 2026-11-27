@@ -107,7 +107,17 @@ function UsageLink() {
 }
 
 /** In the composer's place on a work item's agent: what sends its prompts, the way to the item, and Stop while a turn runs. On the item's second reviewer, that it is that. */
-export function ItemNote({ item, status, online, onStop }: { item: { id: string; role?: "builder" | "reviewer" }; status: SessionStatus; online: boolean; onStop(): Promise<void> }) {
+export function ItemNote({
+	item,
+	status,
+	online,
+	onStop,
+}: {
+	item: { id: string; role?: "builder" | "reviewer" };
+	status: SessionStatus;
+	online: boolean;
+	onStop(): Promise<void>;
+}) {
 	const [error, setError] = useState<string | null>(null);
 	const [stopping, setStopping] = useState(false);
 	const idle = status === "idle";
@@ -151,7 +161,13 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 					</p>
 				)}
 				{!idle ? (
-					<button type="button" className="button button-stop button-small" onClick={stop} disabled={status === "stopping" || stopping || !online} title="The item tries this step again. To end its work, cancel the item.">
+					<button
+						type="button"
+						className="button button-stop button-small"
+						onClick={stop}
+						disabled={status === "stopping" || stopping || !online}
+						title="The item tries this step again. To end its work, cancel the item."
+					>
 						<StopIcon size={13} />
 						<span>{status === "stopping" || stopping ? "Stopping" : "Stop the turn"}</span>
 					</button>
@@ -161,7 +177,24 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, modelProblem, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode, planMode = null }: ComposerProps) {
+export function Composer({
+	status,
+	online,
+	models,
+	model,
+	modelProblem,
+	onSend,
+	onStop,
+	initial,
+	suggestion,
+	limitNote,
+	closed,
+	harness = null,
+	modes = [],
+	mode = null,
+	onMode,
+	planMode = null,
+}: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -177,7 +210,9 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	/** Whether a mode was chosen while the running turn keeps its own: said beside the picker until the turn ends. */
 	const [modeLater, setModeLater] = useState(false);
 	/** The message that was sent and not taken, with its key: the same text again is another attempt of it. */
-	const untaken = useRef<Submission | null>(initial?.idempotencyKey ? { content: initial.text, idempotencyKey: initial.idempotencyKey } : null);
+	const untaken = useRef<Submission | null>(
+		initial?.idempotencyKey ? { content: initial.text, idempotencyKey: initial.idempotencyKey } : null,
+	);
 	/** A message the running turn's harness could not take: sent, with its key, once the turn ends. */
 	const [held, setHeld] = useState<Submission | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
@@ -203,7 +238,10 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const keyProblem = idle ? modelProblem?.(currentModel) : null;
 	const canSend = !keyProblem && writable && online && !sending && text.trim() !== "" && !tooLong;
-	const reason = closed || keyProblem || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
+	const reason =
+		closed ||
+		keyProblem ||
+		(!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
 
 	useEffect(() => {
 		if (notice === null) return;
@@ -228,7 +266,12 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	// Back to the field when a turn ends, if the user has not gone elsewhere.
 	const wasIdle = useRef(idle);
 	useEffect(() => {
-		if (idle && !wasIdle.current && (document.activeElement === document.body || document.activeElement?.closest(".composer"))) area.current?.focus();
+		if (
+			idle &&
+			!wasIdle.current &&
+			(document.activeElement === document.body || document.activeElement?.closest(".composer"))
+		)
+			area.current?.focus();
 		wasIdle.current = idle;
 		if (idle) setStopping(false);
 		if (idle) setModeLater(false);
@@ -260,7 +303,7 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 			() => setSending(false),
 			(failure: unknown) => {
 				untaken.current = message;
-				setText((current) => (current.trim() === "" ? message.content : current));
+				setText(current => (current.trim() === "" ? message.content : current));
 				setError(failure instanceof Error ? errorMessage(failure) : "The message could not be sent.");
 				setLimited(isLimitRefusal(failure));
 				setSending(false);
@@ -277,7 +320,16 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 		untaken.current = { content, idempotencyKey };
 		try {
 			// The model and effort do not apply to a steer.
-			await onSend(steering ? { text: content, idempotencyKey } : { text: content, idempotencyKey, model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined, effort: currentEffort || undefined });
+			await onSend(
+				steering
+					? { text: content, idempotencyKey }
+					: {
+							text: content,
+							idempotencyKey,
+							model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined,
+							effort: currentEffort || undefined,
+						},
+			);
 			untaken.current = null;
 			setText("");
 		} catch (failure) {
@@ -320,15 +372,24 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 		chosen: currentModel,
 		onChoose: setChosenModel,
 		credentials: harness === null,
-		footer: harness !== null && models ? <p className="ui-menu-note">{`The models ${harness} offered for this agent.`}</p> : undefined,
+		footer:
+			harness !== null && models ? (
+				<p className="ui-menu-note">{`The models ${harness} offered for this agent.`}</p>
+			) : undefined,
 	});
 	const modelTitle = idle ? undefined : "For the next turn; a message to the running turn uses its model and effort";
 	const modelPill = (
 		<Menu
 			spec={modelMenu}
 			side="top"
-			trigger={(props) => (
-				<Pill {...props} data-picker="model" data-value={currentModel} disabled={!idle} aria-label={`Model: ${harnessModelLabel(currentModel)}${modelTitle ? `. ${modelTitle}` : ""}`}>
+			trigger={props => (
+				<Pill
+					{...props}
+					data-picker="model"
+					data-value={currentModel}
+					disabled={!idle}
+					aria-label={`Model: ${harnessModelLabel(currentModel)}${modelTitle ? `. ${modelTitle}` : ""}`}
+				>
 					{harnessModelLabel(currentModel)}
 				</Pill>
 			)}
@@ -336,14 +397,25 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	);
 
 	// The chosen model's efforts, as their own picker beside the model: every agent whose model has efforts.
-	const effortMenu: MenuSpec = { label: "Effort", width: 220, groups: [effortGroup(efforts, currentEffort, harnessModelLabel(currentModel), setEffort)], hints: false };
+	const effortMenu: MenuSpec = {
+		label: "Effort",
+		width: 220,
+		groups: [effortGroup(efforts, currentEffort, harnessModelLabel(currentModel), setEffort)],
+		hints: false,
+	};
 	const effortPill =
 		efforts.length > 0 ? (
 			<Menu
 				spec={effortMenu}
 				side="top"
-				trigger={(props) => (
-					<Pill {...props} data-picker="effort" data-value={currentEffort} disabled={!idle} aria-label={`Effort: ${currentEffort || "default"}${modelTitle ? `. ${modelTitle}` : ""}`}>
+				trigger={props => (
+					<Pill
+						{...props}
+						data-picker="effort"
+						data-value={currentEffort}
+						disabled={!idle}
+						aria-label={`Effort: ${currentEffort || "default"}${modelTitle ? `. ${modelTitle}` : ""}`}
+					>
 						{currentEffort ? `effort ${currentEffort}` : "default effort"}
 					</Pill>
 				)}
@@ -360,8 +432,20 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 						id: "plan",
 						label: "Plan mode",
 						items: [
-							{ id: "off", label: "Off", description: "The agent works on the task", checked: !planMode.on, onSelect: () => planMode.onChange(false) },
-							{ id: "on", label: "On", description: "The agent plans and changes nothing", checked: planMode.on, onSelect: () => planMode.onChange(true) },
+							{
+								id: "off",
+								label: "Off",
+								description: "The agent works on the task",
+								checked: !planMode.on,
+								onSelect: () => planMode.onChange(false),
+							},
+							{
+								id: "on",
+								label: "On",
+								description: "The agent plans and changes nothing",
+								checked: planMode.on,
+								onSelect: () => planMode.onChange(true),
+							},
 						],
 					},
 				],
@@ -372,8 +456,15 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 			<Menu
 				spec={planMenu}
 				side="top"
-				trigger={(props) => (
-					<Pill {...props} data-picker="plan-mode" data-value={planMode.on ? "on" : "off"} disabled={!idle || !!closed} secondary={planMode.on ? "· on" : "· off"} aria-label={`Plan mode: ${planMode.on ? "on" : "off"}${idle ? "" : ". For the next turn; the running turn keeps its own"}`}>
+				trigger={props => (
+					<Pill
+						{...props}
+						data-picker="plan-mode"
+						data-value={planMode.on ? "on" : "off"}
+						disabled={!idle || !!closed}
+						secondary={planMode.on ? "· on" : "· off"}
+						aria-label={`Plan mode: ${planMode.on ? "on" : "off"}${idle ? "" : ". For the next turn; the running turn keeps its own"}`}
+					>
 						Plan mode
 					</Pill>
 				)}
@@ -383,7 +474,7 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	return (
 		<form
 			className={`composer${busy ? " composer-busy" : ""}${steering ? " composer-steering" : ""}`}
-			onSubmit={(event) => {
+			onSubmit={event => {
 				event.preventDefault();
 				void send();
 			}}
@@ -416,7 +507,7 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 							type="button"
 							className="link"
 							onClick={() => {
-								setText((current) => (current.trim() === "" ? held.content : `${held.content}\n${current}`));
+								setText(current => (current.trim() === "" ? held.content : `${held.content}\n${current}`));
 								untaken.current = held;
 								setHeld(null);
 								area.current?.focus();
@@ -438,7 +529,9 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 				<div className="composer-row">
 					<label className="composer-caret" htmlFor={ids.text}>
 						{holding ? <PauseIcon size={15} /> : steering ? <SteerIcon size={15} /> : <ChevronIcon size={16} />}
-						<span className="visually-hidden">{holding ? "Message held for the paused turn" : steering ? "Message to the running turn" : "Prompt"}</span>
+						<span className="visually-hidden">
+							{holding ? "Message held for the paused turn" : steering ? "Message to the running turn" : "Prompt"}
+						</span>
 					</label>
 					<textarea
 						ref={area}
@@ -446,8 +539,20 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 						className="composer-text"
 						rows={1}
 						value={text}
-						placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : holding ? "Held until the turn resumes — it reads this then" : steering ? "Steer — it reads this at its next step" : status === "stopping" ? "Stopping…" : "Starting…"}
-						onChange={(event) => setText(event.target.value)}
+						placeholder={
+							closed
+								? "Nothing can be sent to this agent"
+								: idle
+									? "Tell the agent what to do"
+									: holding
+										? "Held until the turn resumes — it reads this then"
+										: steering
+											? "Steer — it reads this at its next step"
+											: status === "stopping"
+												? "Stopping…"
+												: "Starting…"
+						}
+						onChange={event => setText(event.target.value)}
 						onKeyDown={onKeyDown}
 						disabled={!writable || sending}
 						aria-describedby={`${ids.reason} ${ids.keys}`}
@@ -457,7 +562,13 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 				<div className="composer-tools composer-selects">
 					{modes.length > 0 && shownMode !== null ? (
 						<>
-							<ModePicker modes={modes} current={shownMode} onChoose={chooseMode} disabled={!online || !!closed || !onMode} title={idle ? undefined : "For the next prompt; the running turn keeps its mode"} />
+							<ModePicker
+								modes={modes}
+								current={shownMode}
+								onChoose={chooseMode}
+								disabled={!online || !!closed || !onMode}
+								title={idle ? undefined : "For the next prompt; the running turn keeps its mode"}
+							/>
 							{modeLater && !idle ? (
 								<span className="mini-note" role="status">
 									applies from the next prompt
@@ -474,21 +585,55 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 						<>
 							{effortPill}
 							<span className="mini-note" title={`The model is the one ${harness} starts on; it offered no other.`}>
-								{offered.length === 1 && (currentModel !== "default" || models?.models[0]?.name) ? harnessModelLabel(currentModel) : `${harness}'s default model`}
+								{offered.length === 1 && (currentModel !== "default" || models?.models[0]?.name)
+									? harnessModelLabel(currentModel)
+									: `${harness}'s default model`}
 							</span>
 						</>
 					)}
 					{planPill}
 					<span className="composer-tools-end">
-						<KeyHints id={ids.keys} className="composer-keys" hints={holding ? [["↵", "hold"]] : steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
+						<KeyHints
+							id={ids.keys}
+							className="composer-keys"
+							hints={
+								holding
+									? [["↵", "hold"]]
+									: steering
+										? [["↵", "steer"]]
+										: [
+												["↵", "send"],
+												["⇧↵", "new line"],
+											]
+							}
+						/>
 						{!idle ? (
-							<button type="button" className="button button-stop button-small composer-action" onClick={stop} disabled={status === "stopping" || stopping || !online} aria-label={status === "stopping" || stopping ? "Stopping" : "Stop the turn"}>
+							<button
+								type="button"
+								className="button button-stop button-small composer-action"
+								onClick={stop}
+								disabled={status === "stopping" || stopping || !online}
+								aria-label={status === "stopping" || stopping ? "Stopping" : "Stop the turn"}
+							>
 								<StopIcon size={12} />
 								<span>{status === "stopping" || stopping ? "Stopping" : "Stop"}</span>
 							</button>
 						) : null}
 						{idle || steering ? (
-							<button type="submit" className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`} disabled={!canSend} aria-label={holding ? "Hold: given to the turn when it resumes" : steering ? "Steer: send to the running turn" : sending ? "Sending" : "Send"}>
+							<button
+								type="submit"
+								className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`}
+								disabled={!canSend}
+								aria-label={
+									holding
+										? "Hold: given to the turn when it resumes"
+										: steering
+											? "Steer: send to the running turn"
+											: sending
+												? "Sending"
+												: "Send"
+								}
+							>
 								{holding ? <PauseIcon size={14} /> : steering ? <SteerIcon size={14} /> : <ArrowUpIcon size={14} />}
 								<span>{sending ? "Sending" : holding ? "Hold" : steering ? "Steer" : "Send"}</span>
 							</button>
@@ -496,8 +641,19 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 					</span>
 				</div>
 			</div>
-			<p className={`composer-hint${reason ? " composer-reason" : steering ? " composer-steer-hint" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.reason} role={reason ? "status" : undefined}>
-				{tooLong ? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}` : (reason ?? (holding ? "The turn is paused: this is held, and the agent reads it when the turn resumes." : steering ? "The agent reads it after its current step." : null))}
+			<p
+				className={`composer-hint${reason ? " composer-reason" : steering ? " composer-steer-hint" : ""}${tooLong ? " tone-bad" : ""}`}
+				id={ids.reason}
+				role={reason ? "status" : undefined}
+			>
+				{tooLong
+					? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}`
+					: (reason ??
+						(holding
+							? "The turn is paused: this is held, and the agent reads it when the turn resumes."
+							: steering
+								? "The agent reads it after its current step."
+								: null))}
 			</p>
 		</form>
 	);

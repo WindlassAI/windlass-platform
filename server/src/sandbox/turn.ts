@@ -3,23 +3,72 @@
 import { within } from "./command.js";
 import { untrustedSource } from "../factory/untrusted.js";
 import { callArguments } from "../agent-publish.js";
-import { CALL_AFTER_TURN, CALL_UNKNOWN, platformToolDeclarations, runPlatformTool, turnPlatformTools, type PlatformToolHandler } from "../platform-tools.js";
-import { config } from "../config.js";
+import {
+	CALL_AFTER_TURN,
+	CALL_UNKNOWN,
+	platformToolDeclarations,
+	runPlatformTool,
+	turnPlatformTools,
+	type PlatformToolHandler,
+} from "../platform-tools.js";
 import { reportedModelUsage } from "../usage.js";
 import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
-import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, TURN_DEADLINE_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnCheckpoint, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
+import {
+	type ConfigServer,
+	type PlatformConfig,
+	PLATFORM_SERVERS_FILE,
+	TURN_DEADLINE_FILE,
+	WINDLASS_CONFIG_FILE,
+	platformConfig,
+	projectChecks,
+} from "../windlass-config.js";
+import type {
+	AccessTokens,
+	RunTurnInput,
+	RunTurnResult,
+	SandboxHandle,
+	ScriptedModel,
+	StartMark,
+	TurnAnswer,
+	TurnCheckpoint,
+	TurnChecks,
+	TurnControl,
+	TurnPublishRequest,
+	TurnQuestion,
+	TurnServer,
+	TurnServerOutcome,
+	TurnServerQuestion,
+	TurnUnaskedCall,
+	Windlass,
+} from "./api.js";
 import { PLATFORM_RESTART } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
-import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
-import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
+import {
+	ACCESS_TOKEN_FILE_ENV,
+	type Failure,
+	RELAY_REFUSED,
+	handedInFailure,
+	handedInProblem,
+	relayRefused,
+	tokenRanOut,
+	tokenSourceFailure,
+} from "./handoff.js";
+import {
+	sweepSessionProcesses,
+	type ProcessEnd,
+	type SandboxProcess,
+	type TurnSandbox,
+	isTurnSandbox,
+	randomId,
+} from "./provider.js";
 import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
 import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import { errorText, sleep } from "../util.js";
 
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
 
@@ -27,7 +76,10 @@ export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
 	return { cwd, mcpServers: [], _meta: { windlass: meta } };
 }
 
-export function turnAgentMeta(restrictedAgent: string | null, clearPlanner?: boolean): { agent?: string; children?: false } {
+export function turnAgentMeta(
+	restrictedAgent: string | null,
+	clearPlanner?: boolean,
+): { agent?: string; children?: false } {
 	// The agent definition refuses delegation. children controls only questions from a child.
 	if (restrictedAgent) return { agent: restrictedAgent, children: false };
 	return clearPlanner ? { agent: "none" } : {};
@@ -50,7 +102,11 @@ const EXT = {
 	hostCall: `_${NS}/host_call`,
 };
 const PROTOCOL_VERSION = 1;
-const INITIALIZE = { protocolVersion: PROTOCOL_VERSION, clientInfo: { name: "windlass-platform", title: "Windlass Platform", version: "0" }, clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } } };
+const INITIALIZE = {
+	protocolVersion: PROTOCOL_VERSION,
+	clientInfo: { name: "windlass-platform", title: "Windlass Platform", version: "0" },
+	clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } },
+};
 
 /**
  * What a session's sandboxed commands find at the home directory's path: a home of the session's own
@@ -98,8 +154,6 @@ const DEFINITION_TIMEOUT_MS = 10_000;
 
 const STREAMED = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 export interface TurnOptions {
 	/** Command serving ACP on stdio. Defaults to windlass acp. */
 	engineCommand?: string[];
@@ -134,8 +188,18 @@ export class SandboxWindlass implements Windlass {
 
 	async runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
 		if (!isTurnSandbox(sandbox)) throw new Error("runTurn needs a sandbox from this layer's connect()");
-		if (input.windlassSessionId !== undefined && !SESSION_ID.test(input.windlassSessionId)) throw new Error(`invalid Windlass session id: ${input.windlassSessionId}`);
-		if (input.signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null };
+		if (input.windlassSessionId !== undefined && !SESSION_ID.test(input.windlassSessionId))
+			throw new Error(`invalid Windlass session id: ${input.windlassSessionId}`);
+		if (input.signal?.aborted)
+			return {
+				exitCode: null,
+				aborted: true,
+				timedOut: false,
+				windlassSessionId: null,
+				summary: null,
+				stderrTail: "",
+				failure: null,
+			};
 		const provider = windlassProvider(input.model);
 		if (provider !== input.modelKey?.key.provider) throw new Error(hostedKeyMessage("windlass", input.model));
 		if (provider) input = { ...input, model: input.model!.slice(provider.length + 1) };
@@ -175,14 +239,15 @@ class Tally {
 	private usage: TurnUsage | null = null;
 	running: string | null = null;
 	/** The execution that ended last, and how its event says it ended. */
-	last: { executionId: string; sessionId: string; outcome: Outcome; message: string | null; time: number } | null = null;
+	last: { executionId: string; sessionId: string; outcome: Outcome; message: string | null; time: number } | null =
+		null;
 
 	note(event: WindlassEvent): void {
 		const data = (event.data ?? {}) as Record<string, unknown>;
 		const time = typeof event.time === "number" ? event.time : Date.now();
 		const usage = reportedModelUsage(event);
 		if (usage) {
-			const total = this.usage ??= { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+			const total = (this.usage ??= { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
 			total.inputTokens += usage.inputTokens;
 			total.outputTokens += usage.outputTokens;
 			total.cachedInputTokens += usage.cachedInputTokens;
@@ -206,7 +271,15 @@ class Tally {
 			case "execution.interrupted": {
 				const verification = data.verification as { status?: unknown } | undefined;
 				const outcome: Outcome =
-					event.type === "execution.succeeded" ? (verification?.status === "unresolved" ? "unresolved" : "succeeded") : event.type === "execution.failed" ? (data.cause === "approval" ? "stopped" : "failed") : "interrupted";
+					event.type === "execution.succeeded"
+						? verification?.status === "unresolved"
+							? "unresolved"
+							: "succeeded"
+						: event.type === "execution.failed"
+							? data.cause === "approval"
+								? "stopped"
+								: "failed"
+							: "interrupted";
 				this.running = null;
 				this.last = {
 					executionId: typeof data.executionId === "string" ? data.executionId : "",
@@ -221,7 +294,14 @@ class Tally {
 	}
 
 	save(): Record<string, unknown> {
-		return { startedAt: this.startedAt, steps: this.steps, summaryCalls: this.summaryCalls, usage: this.usage, running: this.running, last: this.last };
+		return {
+			startedAt: this.startedAt,
+			steps: this.steps,
+			summaryCalls: this.summaryCalls,
+			usage: this.usage,
+			running: this.running,
+			last: this.last,
+		};
 	}
 
 	load(saved: Record<string, unknown>): void {
@@ -243,10 +323,12 @@ class Tally {
 			requests: this.steps + this.summaryCalls,
 			durationMs: this.startedAt === null ? 0 : Math.max(0, last.time - this.startedAt),
 			usage,
-			cachedShare: usage === null || usage.inputTokens === 0 ? null : Math.round((usage.cachedInputTokens / usage.inputTokens) * 1000) / 1000,
+			cachedShare:
+				usage === null || usage.inputTokens === 0
+					? null
+					: Math.round((usage.cachedInputTokens / usage.inputTokens) * 1000) / 1000,
 		};
 	}
-
 }
 
 class Turn {
@@ -276,7 +358,9 @@ class Turn {
 	// Windlass looks up a title model for up to 5s and makes at most two 15s attempts.
 	private titleDeadline = 0;
 	private resolveTitle: () => void = () => {};
-	private readonly titled = new Promise<void>(resolve => { this.resolveTitle = resolve; });
+	private readonly titled = new Promise<void>(resolve => {
+		this.resolveTitle = resolve;
+	});
 
 	private failure: Failure | null = null;
 	private promptSent = false;
@@ -294,11 +378,11 @@ class Turn {
 	/** The turn's work is over, or was cut off: `control` rejects from here on. */
 	private over = false;
 	private resolveOver: () => void = () => {};
-	private readonly whenOver = new Promise<void>((resolve) => (this.resolveOver = resolve));
+	private readonly whenOver = new Promise<void>(resolve => (this.resolveOver = resolve));
 
 	private abortRequested = false;
 	private resolveAborted: () => void = () => {};
-	private readonly whenAborted = new Promise<"aborted">((resolve) => (this.resolveAborted = () => resolve("aborted")));
+	private readonly whenAborted = new Promise<"aborted">(resolve => (this.resolveAborted = () => resolve("aborted")));
 	private cancelSent = false;
 	private cancelTimer: ReturnType<typeof setTimeout> | undefined;
 	/** The cancel did not end the turn in time: it is cut off. */
@@ -307,7 +391,7 @@ class Turn {
 	private signalled = false;
 	/** Delay answers to withdrawn questions until the engine records the interrupt or its grace period expires. */
 	private resolveInterrupted: () => void = () => {};
-	private readonly whenInterrupted = new Promise<void>((resolve) => (this.resolveInterrupted = resolve));
+	private readonly whenInterrupted = new Promise<void>(resolve => (this.resolveInterrupted = resolve));
 	private readonly questions = new Set<AbortController>();
 	private questionLine: Promise<void> = Promise.resolve();
 
@@ -353,23 +437,32 @@ class Turn {
 		private readonly tokens: AccessTokens,
 	) {
 		// A scripted turn calls no model: it is handed no token.
-		this.tokenFile = input.script === undefined && !input.modelKey ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
+		this.tokenFile =
+			input.script === undefined && !input.modelKey ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
 		const mode = input.mode ?? sandbox.approval;
-		if (mode !== "ask" && mode !== sandbox.approval) throw new Error("This sandbox profile does not offer that approval mode.");
+		if (mode !== "ask" && mode !== sandbox.approval)
+			throw new Error("This sandbox profile does not offer that approval mode.");
 		this.approval = mode;
 		// A project definition takes precedence over a named user agent. Choose the name after checkout, on every open.
 		const saved = input.reattach?.harness === "windlass" ? input.reattach.state : null;
-		this.reviewerAgent = saved ? (saved.reviewerAgent as string | null) : (input.onReview || input.planner) ? `wlp-review-${randomId(16)}` : null;
+		this.reviewerAgent = saved
+			? (saved.reviewerAgent as string | null)
+			: input.onReview || input.planner
+				? `wlp-review-${randomId(16)}`
+				: null;
 		this.redactor = input.secrets?.redactor ?? NO_REDACTION;
 		this.peer = new AcpConnection(
-			(line) => this.process?.write(`${line}\n`) ?? false,
-			{ notification: (method, params) => this.notification(method, params), request: (method, params) => this.request(method, params) },
+			line => this.process?.write(`${line}\n`) ?? false,
+			{
+				notification: (method, params) => this.notification(method, params),
+				request: (method, params) => this.request(method, params),
+			},
 			NS,
-			(value) => this.redactor.deep(value),
+			value => this.redactor.deep(value),
 		);
 		const tokenFile = this.tokenFile;
 		// A token a command printed is taken out before the message is read: it reaches no event.
-		this.lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
+		this.lines = new LineSplitter(line => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
 		if (input.onCheckpoint !== undefined) {
 			try {
 				input.onCheckpoint(() => this.checkpoint());
@@ -390,12 +483,20 @@ class Turn {
 	async run(): Promise<RunTurnResult> {
 		const { sandbox, input } = this;
 		const saved = input.reattach?.harness === "windlass" ? input.reattach.state : null;
-		const scriptPath = saved ? (saved.scriptPath as string | null) : input.script === undefined ? null : `/tmp/.wlp-script-${randomId(6)}.json`;
+		const scriptPath = saved
+			? (saved.scriptPath as string | null)
+			: input.script === undefined
+				? null
+				: `/tmp/.wlp-script-${randomId(6)}.json`;
 		const tokenFile = this.tokenFile;
 		const configHome = this.reviewerAgent && `/tmp/${this.reviewerAgent}`;
 		const agentFile = configHome && `${configHome}/windlass/agents/${this.reviewerAgent}.md`;
 		// What the turn leaves in the sandbox besides its processes.
-		const files = [...(scriptPath === null ? [] : [scriptPath]), ...(tokenFile === null ? [] : tokenFile.files), ...(agentFile ? [agentFile] : [])];
+		const files = [
+			...(scriptPath === null ? [] : [scriptPath]),
+			...(tokenFile === null ? [] : tokenFile.files),
+			...(agentFile ? [agentFile] : []),
+		];
 		const onAbort = () => this.abort();
 		let release: (() => Promise<void>) | null = null;
 		let keyLease: import("./provider.js").KeyTurnRelay | undefined;
@@ -405,7 +506,10 @@ class Turn {
 			if (input.signal?.aborted) this.abort();
 			// Before anything is started in it: from here to the end of `finally` the provider keeps the sandbox running.
 			release = await sandbox.holdForTurn().catch((error: unknown) => {
-				this.failure = { reason: "engine", message: `the sandbox could not be kept running for the turn: ${error instanceof Error ? error.message : String(error)}` };
+				this.failure = {
+					reason: "engine",
+					message: `the sandbox could not be kept running for the turn: ${errorText(error)}`,
+				};
 				return null;
 			});
 			if (release !== null && input.reattach !== undefined) {
@@ -416,16 +520,35 @@ class Turn {
 			} else if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
 				if (input.repoSetup && configHome) {
 					// Relative paths keep reads inside the symlink-free checkout, including on an open machine.
-					const filter = '.tool.arguments | type == "object" and ((.path // ".") | type == "string" and (startswith("/") or startswith("~") | not) and (split("/") | all(. != "..")))';
-					await sandbox.writeTextFile(configHome + "/windlass/config.json", JSON.stringify({ hooks: { beforeTool: [{
-						name: "setup-files", tools: ["read", "ls"], sandbox: false, onError: "refuse",
-						command: `/usr/bin/jq -e '${filter}' >/dev/null || { echo "Read a relative path inside the repository."; exit 2; }`,
-					}] } }));
+					const filter =
+						'.tool.arguments | type == "object" and ((.path // ".") | type == "string" and (startswith("/") or startswith("~") | not) and (split("/") | all(. != "..")))';
+					await sandbox.writeTextFile(
+						configHome + "/windlass/config.json",
+						JSON.stringify({
+							hooks: {
+								beforeTool: [
+									{
+										name: "setup-files",
+										tools: ["read", "ls"],
+										sandbox: false,
+										onError: "refuse",
+										command: `/usr/bin/jq -e '${filter}' >/dev/null || { echo "Read a relative path inside the repository."; exit 2; }`,
+									},
+								],
+							},
+						}),
+					);
 				}
 				const ref = input.modelKey;
 				let keyEnv: Record<string, string> = {};
 				if (ref) {
-					keyLease = await openModelKeyRelay(sandbox, ref.sessionId, { ...ref.key, harness: "windlass" }, input.signal, ref.takeRequest);
+					keyLease = await openModelKeyRelay(
+						sandbox,
+						ref.sessionId,
+						{ ...ref.key, harness: "windlass" },
+						input.signal,
+						ref.takeRequest,
+					);
 					input.signal?.throwIfAborted();
 					keyEnv = hostedKeyEnv("windlass", ref.key.provider, keyLease);
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);
@@ -446,14 +569,17 @@ class Turn {
 					...(tokenFile === null ? {} : tokenFile.env),
 				};
 				// The repository's secrets that Windlass may have, for the MCP servers that name them: never one of the turn's own variables.
-				const secretEnv = { ...Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env))), ...keyEnv };
+				const secretEnv = {
+					...Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env))),
+					...keyEnv,
+				};
 				if (tokenFile?.relayMs != null) this.mark("relay", tokenFile.relayMs);
 				this.mark("process");
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
 					env,
 					secretEnv,
-					onStdout: (chunk) => lines.push(chunk),
-					onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
+					onStdout: chunk => lines.push(chunk),
+					onStderr: chunk => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
 				});
 				this.process = run;
 				this.engineEnv = { ...env, WLP_RUN_TAG: run.tag };
@@ -475,7 +601,9 @@ class Turn {
 			if (run !== null) {
 				// Whatever happened above, nothing of the turn stays behind in the sandbox. A process that ended on its own
 				// after an orderly close has nothing left to wait for; one whose client was cut off may still be shutting down inside.
-				const left = await sandbox.sweep(run.tag, { waitMs: this.orderly() ? 0 : WINDING_DOWN_MS, files }).catch(() => 0);
+				const left = await sandbox
+					.sweep(run.tag, { waitMs: this.orderly() ? 0 : WINDING_DOWN_MS, files })
+					.catch(() => 0);
 				if (left > 0) this.notes.push(`[platform] ${left} process(es) of the turn could not be stopped`);
 			} else {
 				await sandbox.removeFiles(files);
@@ -493,7 +621,7 @@ class Turn {
 		const said = [...this.notes, this.stderr.trimEnd()];
 		if (this.peer.notJson.length > 0) said.push(`[stdout, not protocol messages]\n${this.peer.notJson.join("\n")}`);
 		const scrub = (text: string) => this.redactor.text(tokenFile === null ? text : tokenFile.scrub(text));
-		const stderrTail = said.filter((part) => part !== "").join("\n");
+		const stderrTail = said.filter(part => part !== "").join("\n");
 		// A failure's sentence may quote the engine's last words: what the engine printed is scrubbed there as it is in the tail.
 		const failure = aborted ? null : await this.told(this.failure);
 		return {
@@ -516,7 +644,8 @@ class Turn {
 		if (failure === null) return failure;
 		const code = this.failureCode ?? this.stepFailureCode;
 		// The relay's own refusal of the turn's placeholder: never the user's sign-in.
-		if ((tokenFile?.relayed || this.input.modelKey) && relayRefused(code, failure.message, this.stepFailureMessage)) return { ...RELAY_REFUSED };
+		if ((tokenFile?.relayed || this.input.modelKey) && relayRefused(code, failure.message, this.stepFailureMessage))
+			return { ...RELAY_REFUSED };
 		if (tokenFile === null) return failure;
 		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
@@ -539,7 +668,10 @@ class Turn {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
 		const stopping = this.sandbox.stopLeftovers("windlass").then(count => {
-			if (count > 0) this.notes.push(`[platform] stopped ${count} Windlass run(s) left over in this sandbox before starting the turn`);
+			if (count > 0)
+				this.notes.push(
+					`[platform] stopped ${count} Windlass run(s) left over in this sandbox before starting the turn`,
+				);
 		});
 		if (this.tokenFile !== null || this.input.modelKey) {
 			// Finish both cleanup steps before starting any file writer or requesting a token.
@@ -548,7 +680,10 @@ class Turn {
 				await sweepSessionProcesses(this.sandbox, this.tokenFile?.path);
 				if (this.abortRequested) return false;
 			} catch (error) {
-				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+				this.failure = {
+					reason: "engine",
+					message: `the engine could not be started in the sandbox: ${errorText(error)}`,
+				};
 				return false;
 			}
 		}
@@ -556,18 +691,50 @@ class Turn {
 		const [stopped, script, agent, token] = await Promise.allSettled([
 			stopping,
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
-			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
-				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
-				this.input.onSetupReview ? "tools: ls, read, file_repo_setup_review" : this.input.onSetup ? "tools: ls, read, file_repo_setup" : this.input.repoSetup ? "tools: ls, read, report" : this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
-			].join("\n")),
+			agentFile === null
+				? undefined
+				: this.sandbox.writeTextFile(
+						agentFile,
+						[
+							"---",
+							`name: ${this.reviewerAgent}`,
+							this.input.planner
+								? "description: Read the repository and plan the feature."
+								: "description: Reviews this pull request independently.",
+							this.input.onSetupReview
+								? "tools: ls, read, file_repo_setup_review"
+								: this.input.onSetup
+									? "tools: ls, read, file_repo_setup"
+									: this.input.repoSetup
+										? "tools: ls, read, report"
+										: this.input.planner
+											? "disallowed-tools: write, edit, shell, subagent"
+											: this.input.reviewDirectory
+												? "disallowed-tools: write, edit, subagent"
+												: "disallowed-tools: subagent",
+							"---",
+							this.input.planner
+								? "Read the repository and file the requested artifact."
+								: "Review the change yourself.",
+							"",
+						].join("\n"),
+					),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
 		const setupError = [stopped, script, agent].find(result => result.status === "rejected");
-		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
+		const broken =
+			setupError?.status === "rejected"
+				? setupError.reason
+				: token.status === "rejected" && token.reason instanceof TokenFileError
+					? token.reason
+					: null;
 		if (broken !== null) {
-			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
+			this.failure = {
+				reason: "engine",
+				message: `the engine could not be started in the sandbox: ${errorText(broken)}`,
+			};
 			return false;
 		}
 		if (token.status === "rejected") {
@@ -584,7 +751,9 @@ class Turn {
 
 	/** Whether the process ended on its own after an orderly close: then nothing of it can still be shutting down inside the sandbox. */
 	private orderly(): boolean {
-		return this.processEnd !== null && this.processEnd.signal === null && this.processEnd.error === null && !this.signalled;
+		return (
+			this.processEnd !== null && this.processEnd.signal === null && this.processEnd.error === null && !this.signalled
+		);
 	}
 
 	// ---- the conversation ----
@@ -593,26 +762,43 @@ class Turn {
 	private async converse(): Promise<void> {
 		const { input, peer } = this;
 		try {
-			const init = await this.unlessAborted(peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: this.startTimeoutMs }));
+			const init = await this.unlessAborted(
+				peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: this.startTimeoutMs }),
+			);
 			if (init === "aborted") return;
 			this.mark("initialized");
 			const offered = init.agentCapabilities?._meta?.[NS] as { notifications?: unknown } | undefined;
 			if (!Array.isArray(offered?.notifications) || !offered.notifications.includes(EXT.event)) {
-				this.failure = { reason: "engine", message: `the engine process does not send Windlass's events (${EXT.event}); it may be another version` };
+				this.failure = {
+					reason: "engine",
+					message: `the engine process does not send Windlass's events (${EXT.event}); it may be another version`,
+				};
 				return;
 			}
 			const openKeys = openKeysIn(init);
 			this.promptKeys = promptKeysIn(init);
 			if (input.repoSetup && input.untrusted?.length && !this.promptKeys.includes(UNTRUSTED_KEY)) {
-				this.failure = { reason: "engine", message: "Update Windlass to a version that can mark imported notes as untrusted." };
+				this.failure = {
+					reason: "engine",
+					message: "Update Windlass to a version that can mark imported notes as untrusted.",
+				};
 				return;
 			}
 			if (!openKeys.includes("hostTools")) {
-				this.failure = { reason: "host_tools_required", message: "The sandbox needs Windlass 0.4.0 or later for host tools." };
+				this.failure = {
+					reason: "host_tools_required",
+					message: "The sandbox needs Windlass 0.4.0 or later for host tools.",
+				};
 				return;
 			}
-			if ((input.onReview || input.planner) && ["agent", "children", "requiredChecks"].some(key => !openKeys.includes(key))) {
-				this.failure = { reason: "engine", message: "This Windlass cannot open a restricted reviewer session with file_review." };
+			if (
+				(input.onReview || input.planner) &&
+				["agent", "children", "requiredChecks"].some(key => !openKeys.includes(key))
+			) {
+				this.failure = {
+					reason: "engine",
+					message: "This Windlass cannot open a restricted reviewer session with file_review.",
+				};
 				return;
 			}
 			this.hostTools = turnHostTools(input);
@@ -640,8 +826,15 @@ class Turn {
 		this.promptSent = true;
 		this.mark("prompted");
 		// The whole task, with its own sources, when the session this turn resumes was gone (`open`).
-		const given = this.freshened && input.fresh ? { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted } : input;
-		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: given.prompt }], ...promptMeta(given, this.promptKeys) };
+		const given =
+			this.freshened && input.fresh
+				? { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted }
+				: input;
+		const prompt = {
+			sessionId: this.session,
+			prompt: [{ type: "text", text: given.prompt }],
+			...promptMeta(given, this.promptKeys),
+		};
 		if (untrustedSource(given.untrusted) !== null && !this.promptKeys.includes(UNTRUSTED_KEY)) {
 			try {
 				input.onUntrustedUnmarked?.();
@@ -656,7 +849,7 @@ class Turn {
 	}
 
 	private follow(run: SandboxProcess): void {
-		void run.ended.then((end) => {
+		void run.ended.then(end => {
 			this.lines.flush();
 			this.processEnd = end;
 			this.peer.end(end.error !== null ? end.error.message : `the engine process ${describeEnd(end)}`);
@@ -682,7 +875,18 @@ class Turn {
 		if (this.input.reattach !== undefined && !this.takenUp) return this.input.reattach;
 		const run = this.process;
 		const process = run?.runnerProcess;
-		if (!run || !process || !this.promptSent || this.promptSettled || this.promptId === null || this.over || this.abortRequested || this.cancelSent || this.session === null) return null;
+		if (
+			!run ||
+			!process ||
+			!this.promptSent ||
+			this.promptSettled ||
+			this.promptId === null ||
+			this.over ||
+			this.abortRequested ||
+			this.cancelSent ||
+			this.session === null
+		)
+			return null;
 		const relay = this.tokenFile?.lease ?? null;
 		if (this.tokenFile?.relayed && relay === null) return null;
 		return {
@@ -755,8 +959,8 @@ class Turn {
 		this.promptId = saved.prompt as number;
 		this.answered(this.peer.expect<PromptResult>(this.promptId, "session/prompt"));
 		const run = this.sandbox.adopt(checkpoint.process, checkpoint.tag, {
-			onStdout: (chunk) => this.lines.push(chunk),
-			onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
+			onStdout: chunk => this.lines.push(chunk),
+			onStderr: chunk => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
 		});
 		if (!run) {
 			this.failure = { reason: "engine", message: TAKE_UP_FAILED };
@@ -768,9 +972,14 @@ class Turn {
 		this.follow(run);
 		if (this.tokenFile !== null) {
 			try {
-				await this.tokenFile.resume((saved.relay as { lease: string; placeholder: string; env: Record<string, string> } | null) ?? null);
+				await this.tokenFile.resume(
+					(saved.relay as { lease: string; placeholder: string; env: Record<string, string> } | null) ?? null,
+				);
 			} catch (error) {
-				this.failure = error instanceof TokenFileError ? { reason: "engine", message: `the engine could not be handed its token again: ${error.message}` } : tokenSourceFailure(error);
+				this.failure =
+					error instanceof TokenFileError
+						? { reason: "engine", message: `the engine could not be handed its token again: ${error.message}` }
+						: tokenSourceFailure(error);
 				this.abort();
 				return true;
 			}
@@ -782,17 +991,28 @@ class Turn {
 
 	private answered(request: Promise<PromptResult>): void {
 		void request.then(
-			(result) => {
+			result => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
-				const outcome = typeof turn?.outcome === "string" && ["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome) ? (turn.outcome as Outcome) : result?.stopReason === "cancelled" ? "interrupted" : null;
+				const outcome =
+					typeof turn?.outcome === "string" &&
+					["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome)
+						? (turn.outcome as Outcome)
+						: result?.stopReason === "cancelled"
+							? "interrupted"
+							: null;
 				this.stopReason = typeof result?.stopReason === "string" ? result.stopReason : undefined;
-				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome, stepLimit: result?.stopReason === "max_turn_requests" };
+				this.promptEnding = {
+					executionId: typeof turn?.executionId === "string" ? turn.executionId : null,
+					outcome,
+					stepLimit: result?.stopReason === "max_turn_requests",
+				};
 				this.promptSettled = true;
 				this.check();
 			},
 			(error: unknown) => {
 				// A connection that ended is told by the process's end; a session closed under the prompt is this turn's own doing.
-				if (!(error instanceof AcpError && (error.reason === "closed" || error.code === -32800))) this.refused(error, "execution_failed");
+				if (!(error instanceof AcpError && (error.reason === "closed" || error.code === -32800)))
+					this.refused(error, "execution_failed");
 				this.promptSettled = true;
 				this.check();
 			},
@@ -813,7 +1033,11 @@ class Turn {
 			unattended: "deny",
 			sandboxHome: SANDBOX_HOME,
 			// Reviewer commands use the image's read-only ~/.config/pnpm, while the engine uses its private config.
-			withholdEnv: ["WINDLASS_PROVIDER", ...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
+			withholdEnv: [
+				"WINDLASS_PROVIDER",
+				...(input.secrets?.withholdEnv ?? []),
+				...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : []),
+			],
 			passEnv: input.secrets?.passEnv ?? [],
 			requiredChecks: windlassChecks(input.checks ?? []),
 			...hostToolsMeta(this.hostTools, input.reportScreenshots, input.crossRepoPlan),
@@ -825,14 +1049,22 @@ class Turn {
 				return;
 			} catch (error) {
 				// Either the lookup or the open can discover that the saved conversation is gone.
-				if (!input.fresh || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found") throw error;
+				if (!input.fresh || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found")
+					throw error;
 			}
 		}
-		const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(input.reviewDirectory ?? this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
-		if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
+		const made = await peer.request<{ sessionId?: unknown }>(
+			"session/new",
+			sessionOpenParams(input.reviewDirectory ?? this.sandbox.cwd, meta),
+			{ timeoutMs: OPEN_TIMEOUT_MS },
+		);
+		if (typeof made?.sessionId !== "string")
+			throw new AcpError("the engine opened a session without naming it", 0, null);
 		if (input.windlassSessionId !== undefined) {
 			this.freshened = true;
-			this.notes.push("[platform] the engine no longer had the session this turn resumes; a new one was opened with the whole task");
+			this.notes.push(
+				"[platform] the engine no longer had the session this turn resumes; a new one was opened with the whole task",
+			);
 		}
 		this.adopt(made.sessionId);
 		input.onHostTools?.(meta.hostTools.map(tool => tool.name));
@@ -840,7 +1072,11 @@ class Turn {
 
 	private async resumeSession(prior: string, meta: Record<string, unknown>): Promise<void> {
 		const peer = this.peer;
-		const named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(EXT.resolve, { cwd: this.sandbox.cwd, session: prior }, { timeoutMs: OPEN_TIMEOUT_MS });
+		const named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(
+			EXT.resolve,
+			{ cwd: this.sandbox.cwd, session: prior },
+			{ timeoutMs: OPEN_TIMEOUT_MS },
+		);
 		const sessionId = typeof named?.sessionId === "string" ? named.sessionId : prior;
 		const cwd = typeof named?.cwd === "string" ? named.cwd : this.sandbox.cwd;
 		// Before the answer: what the open itself appends (a crashed turn's recovery) arrives ahead of it.
@@ -850,14 +1086,27 @@ class Turn {
 		for (;;) {
 			try {
 				// `archived: true` as the command line's --session: a session is opened whether or not it was archived.
-				await peer.request("session/resume", { sessionId, cwd, mcpServers: [], _meta: { [NS]: { ...meta, archived: true } } }, { timeoutMs: OPEN_TIMEOUT_MS });
+				await peer.request(
+					"session/resume",
+					{ sessionId, cwd, mcpServers: [], _meta: { [NS]: { ...meta, archived: true } } },
+					{ timeoutMs: OPEN_TIMEOUT_MS },
+				);
 				return;
 			} catch (error) {
 				// Right after a turn was cut off, its engine may still be letting go of the session: that is waited for, as
 				// the command line does. A session held by anything else is refused at once.
-				if (!(error instanceof AcpError) || error.reason !== "session_in_use" || error.holderPid === null || this.abortRequested) throw error;
+				if (
+					!(error instanceof AcpError) ||
+					error.reason !== "session_in_use" ||
+					error.holderPid === null ||
+					this.abortRequested
+				)
+					throw error;
 				if (Date.now() > deadline || !(await this.windingDown(error.holderPid))) throw error;
-				if (!told) this.notes.push(`[platform] the session was still held by the engine of an earlier turn (pid ${error.holderPid}); waited for it to shut down`);
+				if (!told)
+					this.notes.push(
+						`[platform] the session was still held by the engine of an earlier turn (pid ${error.holderPid}); waited for it to shut down`,
+					);
 				told = true;
 				await sleep(200);
 			}
@@ -866,7 +1115,10 @@ class Turn {
 
 	/** Whether `pid` in the sandbox is an engine (`windlass acp`): one that is not this turn's can only be an earlier turn's, on its way out. */
 	private async windingDown(pid: number): Promise<boolean> {
-		const result = await this.sandbox.ask(["sh", "-c", 'tr "\\0" "\\n" < "/proc/$1/cmdline" | tail -n 1', "sh", String(pid)], { timeoutMs: 10_000 });
+		const result = await this.sandbox.ask(
+			["sh", "-c", 'tr "\\0" "\\n" < "/proc/$1/cmdline" | tail -n 1', "sh", String(pid)],
+			{ timeoutMs: 10_000 },
+		);
 		return result !== null && result.code === 0 && result.stdout.trim() === "acp";
 	}
 
@@ -880,15 +1132,19 @@ class Turn {
 	private control(): TurnControl {
 		const ended = () => new Error("the turn has ended");
 		return {
-			steer: async (text) => {
+			steer: async text => {
 				if (this.over) throw ended();
 				if (this.cancelSent) throw new Error("the turn is being stopped");
 				this.steersInFlight += 1;
 				try {
-					const admitted = await this.peer.request<{ messageId?: unknown }>(EXT.steer, { sessionId: this.session, prompt: [{ type: "text", text }] });
-					if (typeof admitted?.messageId === "string" && !this.delivered.has(admitted.messageId)) this.undelivered.add(admitted.messageId);
+					const admitted = await this.peer.request<{ messageId?: unknown }>(EXT.steer, {
+						sessionId: this.session,
+						prompt: [{ type: "text", text }],
+					});
+					if (typeof admitted?.messageId === "string" && !this.delivered.has(admitted.messageId))
+						this.undelivered.add(admitted.messageId);
 				} catch (error) {
-					throw this.over ? ended() : new Error(error instanceof Error ? error.message : String(error));
+					throw this.over ? ended() : new Error(errorText(error));
 				} finally {
 					this.steersInFlight -= 1;
 					this.check();
@@ -897,10 +1153,17 @@ class Turn {
 			cancelCall: async (messageId, callId) => {
 				if (this.over) throw ended();
 				try {
-					const result = await this.peer.request<{ stopped?: unknown; message?: unknown }>(EXT.cancelCall, { sessionId: this.session, callId, messageId });
-					return { stopped: result?.stopped === true, message: typeof result?.message === "string" ? result.message : null };
+					const result = await this.peer.request<{ stopped?: unknown; message?: unknown }>(EXT.cancelCall, {
+						sessionId: this.session,
+						callId,
+						messageId,
+					});
+					return {
+						stopped: result?.stopped === true,
+						message: typeof result?.message === "string" ? result.message : null,
+					};
 				} catch (error) {
-					throw this.over ? ended() : new Error(error instanceof Error ? error.message : String(error));
+					throw this.over ? ended() : new Error(errorText(error));
 				}
 			},
 		};
@@ -922,7 +1185,13 @@ class Turn {
 		}
 		if (method !== EXT.event) return;
 		const event = params.event as WindlassEvent | undefined;
-		if (typeof params.sessionId !== "string" || typeof event !== "object" || event === null || typeof event.type !== "string") return;
+		if (
+			typeof params.sessionId !== "string" ||
+			typeof event !== "object" ||
+			event === null ||
+			typeof event.type !== "string"
+		)
+			return;
 		// History a load would replay: never part of this turn.
 		if (params.replay === true) return;
 		if (this.session === null) this.early.push({ sessionId: params.sessionId, event });
@@ -939,7 +1208,12 @@ class Turn {
 		if (this.sessionSeen === null && typeof event.sessionId === "string") this.sessionSeen = event.sessionId;
 		this.tally.note(event);
 		const data = (event.data ?? {}) as Record<string, unknown>;
-		if (this.input.modelKey && event.type === "inbox.enqueued" && typeof data.titlePrompt === "string" && data.titlePrompt.trim())
+		if (
+			this.input.modelKey &&
+			event.type === "inbox.enqueued" &&
+			typeof data.titlePrompt === "string" &&
+			data.titlePrompt.trim()
+		)
 			this.titleDeadline = Date.now() + 35_000;
 		if (event.type === "session.renamed") this.resolveTitle();
 		if ((event.type === "inbox.delivered" || event.type === "inbox.cancelled") && typeof data.messageId === "string") {
@@ -973,11 +1247,28 @@ class Turn {
 	// ---- the servers the platform hands the engine: the user's own ----
 
 	/** Read managed and project configuration together. Treat missing files as null. */
-	private async readConfiguration(): Promise<{ config: string | null; written: string | null; project: string | null } | null> {
+	private async readConfiguration(): Promise<{
+		config: string | null;
+		written: string | null;
+		project: string | null;
+	} | null> {
 		const mark = `wlp-${randomId(12)}`;
-		const script = 'mark=$1; shift; for file in "$@"; do if [ ! -e "$file" ]; then echo absent; elif [ -f "$file" ] && [ -r "$file" ]; then echo file; cat -- "$file"; else echo other; fi; printf "\\n%s\\n" "$mark"; done';
+		const script =
+			'mark=$1; shift; for file in "$@"; do if [ ! -e "$file" ]; then echo absent; elif [ -f "$file" ] && [ -r "$file" ]; then echo file; cat -- "$file"; else echo other; fi; printf "\\n%s\\n" "$mark"; done';
 		// The session's directory is the workspace, which is where Windlass looks for a project's file first.
-		const said = await this.sandbox.ask(["sh", "-c", script, "sh", mark, WINDLASS_CONFIG_FILE, PLATFORM_SERVERS_FILE, `${this.sandbox.cwd}/.windlass/config.json`], { timeoutMs: DEFINITION_TIMEOUT_MS });
+		const said = await this.sandbox.ask(
+			[
+				"sh",
+				"-c",
+				script,
+				"sh",
+				mark,
+				WINDLASS_CONFIG_FILE,
+				PLATFORM_SERVERS_FILE,
+				`${this.sandbox.cwd}/.windlass/config.json`,
+			],
+			{ timeoutMs: DEFINITION_TIMEOUT_MS },
+		);
 		if (said === null || said.code !== 0) return null;
 		const parts = said.stdout.split(`\n${mark}\n`);
 		if (parts.length < 4) return null;
@@ -1005,33 +1296,50 @@ class Turn {
 		if (endsAt === undefined) return;
 		const left = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
 		const script = 'mkdir -p "$(dirname "$2")" && echo $(( $(date +%s) + $1 )) > "$2.tmp" && mv -f "$2.tmp" "$2"';
-		const said = await this.sandbox.ask(["sh", "-c", script, "sh", String(left), TURN_DEADLINE_FILE], { timeoutMs: DEFINITION_TIMEOUT_MS }).catch(() => null);
+		const said = await this.sandbox
+			.ask(["sh", "-c", script, "sh", String(left), TURN_DEADLINE_FILE], { timeoutMs: DEFINITION_TIMEOUT_MS })
+			.catch(() => null);
 		if (said === null || said.code !== 0) await this.sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 	}
 
 	private async writeServers(): Promise<void> {
 		// The platform's own name is not a user's to have, whatever was saved.
-		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
+		const personal: ConfigServer[] = (this.input.servers ?? [])
+			.filter(server => !isReservedServerName(server.name))
+			.map(({ name, definition }) => ({ name, definition }));
 		const missed = personal.length > 0 ? "your own MCP servers were not started" : "";
 		this.checks = { project: null };
 		try {
 			const had = await this.readConfiguration();
 			if (had === null) {
-				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${missed}`);
+				if (missed !== "")
+					this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read, so ${missed}`);
 				return;
 			}
 			this.checks = { project: projectChecks(had.project) };
 			const next = platformConfig(had.config, had.written, personal);
 			if (next === null) {
-				if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${missed}`);
+				if (missed !== "")
+					this.notes.push(
+						`[platform] Windlass's configuration file in the sandbox could not be read as one, so ${missed}`,
+					);
 				return;
 			}
 			await this.storeConfiguration(next, had);
 			this.configWritten = next.written !== null;
-			this.personal = new Set(personal.map((server) => server.name));
-			this.unasked = this.taintSeen ? new Set() : new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
+			this.personal = new Set(personal.map(server => server.name));
+			this.unasked = this.taintSeen
+				? new Set()
+				: new Set(
+						(this.input.servers ?? [])
+							.filter(server => server.unasked === true && this.personal.has(server.name))
+							.map(server => server.name),
+					);
 		} catch (error) {
-			if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${missed}`);
+			if (missed !== "")
+				this.notes.push(
+					`[platform] Windlass's configuration file in the sandbox could not be written (${errorText(error)}), so ${missed}`,
+				);
 		}
 	}
 
@@ -1063,8 +1371,18 @@ class Turn {
 			return;
 		}
 		const call = mcpCall(data.name, data.input);
-		if (call === null || !this.unasked.has(call.server) || !this.servers.some((server) => server.name === call.server && server.origin === "user")) return;
-		this.unaskedCalls.set(key, { messageId: data.messageId, callId: data.callId, server: call.server, tool: call.tool });
+		if (
+			call === null ||
+			!this.unasked.has(call.server) ||
+			!this.servers.some(server => server.name === call.server && server.origin === "user")
+		)
+			return;
+		this.unaskedCalls.set(key, {
+			messageId: data.messageId,
+			callId: data.callId,
+			server: call.server,
+			tool: call.tool,
+		});
 	}
 
 	/** Hold incomplete secret prefixes between stream chunks and flush them when the stream ends. */
@@ -1082,7 +1400,10 @@ class Turn {
 			if (held === whole.length) return null;
 			return { ...event, [field]: held === 0 ? whole : whole.slice(0, whole.length - held) };
 		}
-		const data = (typeof event.data === "object" && event.data !== null ? event.data : {}) as { messageId?: unknown; callId?: unknown };
+		const data = (typeof event.data === "object" && event.data !== null ? event.data : {}) as {
+			messageId?: unknown;
+			callId?: unknown;
+		};
 		if (typeof data.messageId === "string" && this.heldBack.size > 0) {
 			const streams = `${data.messageId}\n${typeof data.callId === "string" ? data.callId : ""}\n`;
 			for (const key of [...this.heldBack.keys()]) if (key.startsWith(streams)) this.heldBack.delete(key);
@@ -1106,7 +1427,11 @@ class Turn {
 		// Windlass names a call `<messageId>/<callId>`, as the turn's events name it apart.
 		const id = typeof params.toolCallId === "string" ? params.toolCallId : "";
 		const at = id.indexOf("/");
-		const call: TurnPublishRequest = { messageId: at > 0 ? id.slice(0, at) : "", callId: at > 0 ? id.slice(at + 1) : id, arguments: callArguments(params.input) };
+		const call: TurnPublishRequest = {
+			messageId: at > 0 ? id.slice(0, at) : "",
+			callId: at > 0 ? id.slice(at + 1) : id,
+			arguments: callArguments(params.input),
+		};
 		const key = callKey(call.messageId, call.callId);
 		const controller = new AbortController();
 		this.hostCalls.get(key)?.abort();
@@ -1132,9 +1457,14 @@ class Turn {
 			// A call of a tool of one of the user's own servers whose tools run without asking: answered for the user
 			// where the question is the session's own and about using exactly that tool, and whoever keeps a record is told.
 			const unasked = this.unaskedCalls.get(key);
-			const allowed = unasked !== undefined && question.subagent === null && toolAsked(params) === `${unasked.server}/${unasked.tool}`;
+			const allowed =
+				unasked !== undefined &&
+				question.subagent === null &&
+				toolAsked(params) === `${unasked.server}/${unasked.tool}`;
 			if (allowed) {
-				const allow = question.choices.find((choice) => choice.approve && choice.remembers === null) ?? question.choices.find((choice) => choice.approve);
+				const allow =
+					question.choices.find(choice => choice.approve && choice.remembers === null) ??
+					question.choices.find(choice => choice.approve);
 				if (allow !== undefined) {
 					try {
 						this.input.onUnasked?.(unasked);
@@ -1147,11 +1477,13 @@ class Turn {
 		}
 		if (question === null || ask === undefined || params.sessionId !== this.session) return cancelled;
 		const controller = new AbortController();
-		const withdrawn = new Promise<null>((resolve) => controller.signal.addEventListener("abort", () => resolve(null), { once: true }));
+		const withdrawn = new Promise<null>(resolve =>
+			controller.signal.addEventListener("abort", () => resolve(null), { once: true }),
+		);
 		this.questions.add(controller);
 		const before = this.questionLine;
 		let done = () => {};
-		this.questionLine = new Promise<void>((resolve) => (done = resolve));
+		this.questionLine = new Promise<void>(resolve => (done = resolve));
 		try {
 			if (this.cancelSent || this.over) controller.abort();
 			await Promise.race([before, withdrawn]);
@@ -1171,9 +1503,17 @@ class Turn {
 				return cancelled;
 			}
 			// A rejection, or a choice the question does not offer: declined, which is what a cancelled request means to Windlass.
-			if (answer === null || typeof answer !== "object" || !question.choices.some((choice) => choice.id === answer.choice)) return cancelled;
+			if (
+				answer === null ||
+				typeof answer !== "object" ||
+				!question.choices.some(choice => choice.id === answer.choice)
+			)
+				return cancelled;
 			const note = typeof answer.note === "string" ? answer.note.trim() : "";
-			return { outcome: { outcome: "selected", optionId: answer.choice }, ...(note === "" ? {} : { _meta: { [NS]: { note } } }) };
+			return {
+				outcome: { outcome: "selected", optionId: answer.choice },
+				...(note === "" ? {} : { _meta: { [NS]: { note } } }),
+			};
 		} finally {
 			this.questions.delete(controller);
 			done();
@@ -1185,12 +1525,19 @@ class Turn {
 	/** Resolve waiting definitions before sending the first prompt. Approval may expose another waiting definition. */
 	private async askAboutServers(): Promise<void> {
 		// Also asked for the servers whose tools run without asking: whose a server is, by the engine's word, decides whether a call is acted on.
-		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && this.unasked.size === 0) return;
+		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && this.unasked.size === 0)
+			return;
 		try {
-			await this.peer.request(EXT.mcp, { sessionId: this.session }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
+			await this.peer.request(
+				EXT.mcp,
+				{ sessionId: this.session },
+				{ timeoutMs: SERVERS_TIMEOUT_MS, onResult: list => this.serversSaid(list) },
+			);
 		} catch (error) {
 			if (!(error instanceof AcpError && error.reason === "closed")) {
-				this.notes.push(`[platform] Windlass did not say which MCP servers of the project wait for approval (${error instanceof Error ? error.message : String(error)}); none was asked about`);
+				this.notes.push(
+					`[platform] Windlass did not say which MCP servers of the project wait for approval (${errorText(error)}); none was asked about`,
+				);
 			}
 			return;
 		}
@@ -1208,7 +1555,7 @@ class Turn {
 		for (const wake of [...this.serverWaiters]) wake();
 		if (this.over) return;
 		try {
-			this.input.onServers?.(servers.flatMap((server) => describeServer(server, this.personal)));
+			this.input.onServers?.(servers.flatMap(server => describeServer(server, this.personal)));
 		} catch {
 			// A listener's failure must not stop the turn.
 		}
@@ -1227,7 +1574,9 @@ class Turn {
 		const gone = () => this.over || this.abortRequested || this.cancelSent || this.peer.closed;
 		if (ask === undefined || gone() || !this.stillWaits(server)) return;
 		const controller = new AbortController();
-		const withdrawn = new Promise<null>((resolve) => controller.signal.addEventListener("abort", () => resolve(null), { once: true }));
+		const withdrawn = new Promise<null>(resolve =>
+			controller.signal.addEventListener("abort", () => resolve(null), { once: true }),
+		);
 		this.serverQuestions.add(controller);
 		try {
 			const reads = await Promise.race([this.variablesOf(server), withdrawn]);
@@ -1262,24 +1611,31 @@ class Turn {
 	}
 
 	private stillWaits(server: ServerState): boolean {
-		return this.servers.some((now) => now.name === server.name && now.state === "awaiting_approval" && now.fingerprint === server.fingerprint);
+		return this.servers.some(
+			now => now.name === server.name && now.state === "awaiting_approval" && now.fingerprint === server.fingerprint,
+		);
 	}
 
 	/** `_windlass/mcp_approve`, and what became of the server: Windlass starts it at once and says so (`_windlass/mcp_changed` comes before the answer). */
 	private async approveServer(question: TurnServerQuestion): Promise<TurnServerOutcome> {
 		let answer: { approved?: unknown } | null;
 		try {
-			answer = await this.peer.request<{ approved?: unknown } | null>(EXT.mcpApprove, { sessionId: this.session, name: question.name, fingerprint: question.fingerprint }, { timeoutMs: SERVERS_TIMEOUT_MS, onResult: (list) => this.serversSaid(list) });
+			answer = await this.peer.request<{ approved?: unknown } | null>(
+				EXT.mcpApprove,
+				{ sessionId: this.session, name: question.name, fingerprint: question.fingerprint },
+				{ timeoutMs: SERVERS_TIMEOUT_MS, onResult: list => this.serversSaid(list) },
+			);
 		} catch (error) {
-			return { state: "refused", reason: error instanceof Error ? error.message : String(error) };
+			return { state: "refused", reason: errorText(error) };
 		}
 		// No such server waited: the definition changed after the question was put.
 		if (answer?.approved !== true) return { state: "changed" };
 		const deadline = Date.now() + SERVER_START_WAIT_MS;
 		for (;;) {
-			const now = this.servers.find((server) => server.name === question.name);
+			const now = this.servers.find(server => server.name === question.name);
 			if (now?.state === "running") return { state: "running", tools: now.tools ?? 0 };
-			if (now?.state === "failed" || now?.state === "stopped") return { state: "failed", reason: now.error ?? "Windlass gave no reason" };
+			if (now?.state === "failed" || now?.state === "stopped")
+				return { state: "failed", reason: now.error ?? "Windlass gave no reason" };
 			const left = deadline - Date.now();
 			if (left <= 0 || this.over || this.peer.closed) return { state: "starting" };
 			await this.serversChange(left);
@@ -1288,7 +1644,7 @@ class Turn {
 
 	/** Resolves when Windlass next says its servers changed, the turn is over, or `ms` have passed. */
 	private serversChange(ms: number): Promise<void> {
-		return new Promise<void>((resolve) => {
+		return new Promise<void>(resolve => {
 			const done = () => {
 				clearTimeout(timer);
 				this.serverWaiters.delete(done);
@@ -1308,13 +1664,16 @@ class Turn {
 			const file = await this.sandbox.ask(["cat", "--", server.file], { timeoutMs: DEFINITION_TIMEOUT_MS });
 			if (file === null || file.code !== 0) return none;
 			const names = variablesRead(file.stdout, server.name);
-			const secrets = names.filter((name) => this.engineSecrets.has(name));
-			const others = names.filter((name) => !this.engineSecrets.has(name) && !(name in this.engineEnv));
+			const secrets = names.filter(name => this.engineSecrets.has(name));
+			const others = names.filter(name => !this.engineSecrets.has(name) && !(name in this.engineEnv));
 			if (others.length === 0) return { unset: [], secrets };
-			const said = await this.sandbox.ask(["sh", "-c", 'for name in "$@"; do printenv "$name" >/dev/null || echo "$name"; done', "sh", ...others], { timeoutMs: DEFINITION_TIMEOUT_MS });
+			const said = await this.sandbox.ask(
+				["sh", "-c", 'for name in "$@"; do printenv "$name" >/dev/null || echo "$name"; done', "sh", ...others],
+				{ timeoutMs: DEFINITION_TIMEOUT_MS },
+			);
 			if (said === null || said.code !== 0) return { unset: [], secrets };
-			const unset = new Set(said.stdout.split("\n").map((line) => line.trim()));
-			return { unset: others.filter((name) => unset.has(name)), secrets };
+			const unset = new Set(said.stdout.split("\n").map(line => line.trim()));
+			return { unset: others.filter(name => unset.has(name)), secrets };
 		} catch {
 			return none;
 		}
@@ -1330,7 +1689,8 @@ class Turn {
 	 */
 	private check(): void {
 		if (this.over || !this.promptSettled || this.steersInFlight > 0 || this.tally.running !== null) return;
-		const endedWell = this.tally.last !== null && (this.tally.last.outcome === "succeeded" || this.tally.last.outcome === "unresolved");
+		const endedWell =
+			this.tally.last !== null && (this.tally.last.outcome === "succeeded" || this.tally.last.outcome === "unresolved");
 		if (this.undelivered.size > 0 && endedWell && !this.cancelSent) {
 			// Its `execution.started` is on its way. Should it not come, the message stays in Windlass's inbox for the next turn.
 			this.followUpTimer ??= setTimeout(() => {
@@ -1409,7 +1769,11 @@ class Turn {
 		// With an execution still at work the turn was cut off before Windlass said how it ended: no summary then.
 		if (last !== null && this.tally.running === null) {
 			// How the prompt's answer says its execution ended; an execution a late message started has only its own event.
-			const answered = this.promptEnding !== null && (this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId) ? this.promptEnding : null;
+			const answered =
+				this.promptEnding !== null &&
+				(this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId)
+					? this.promptEnding
+					: null;
 			const summary = this.tally.summary(answered?.outcome ?? null);
 			if (summary !== null) {
 				if (answered?.stepLimit && this.input.maxSteps !== undefined) summary.stepLimit = this.input.maxSteps;
@@ -1421,13 +1785,20 @@ class Turn {
 				}
 			}
 			// A failed execution the prompt's answer did not report (the one a late message started).
-			if (last.outcome === "failed" && this.failure === null) this.failure = { reason: "execution_failed", message: last.message ?? "the turn failed" };
+			if (last.outcome === "failed" && this.failure === null)
+				this.failure = { reason: "execution_failed", message: last.message ?? "the turn failed" };
 		}
 		this.sealed = true;
 		if (this.failure === null && this.processEnd !== null && !this.abortRequested && this.summary === null) {
 			// A process the sandbox layer ended itself carries its sentence (a machine removed, its runner restarted): that is what a person can act on.
 			const end = this.processEnd;
-			this.failure = { reason: "engine", message: end.error !== null ? end.error.message : `the engine process ${describeEnd(end)} in the middle of the turn${this.lastWords()}` };
+			this.failure = {
+				reason: "engine",
+				message:
+					end.error !== null
+						? end.error.message
+						: `the engine process ${describeEnd(end)} in the middle of the turn${this.lastWords()}`,
+			};
 		}
 	}
 
@@ -1435,11 +1806,18 @@ class Turn {
 	private async closeSession(): Promise<void> {
 		if (this.closingSession) return this.closingSession;
 		if (this.session === null || this.peer.closed || this.process === null || this.process.hasEnded) return;
-		const shutdown = this.input.signal?.reason === PLATFORM_RESTART || (!!this.input.modelKey && this.tally.running === null);
-		this.closingSession = this.peer.request<void>("session/close", {
-			sessionId: this.session,
-			...(shutdown && { _meta: { [NS]: { shutdown: true } } }),
-		}, { timeoutMs: this.forced ? FORCED_WAIT_MS : CLOSE_TIMEOUT_MS }).catch(() => undefined);
+		const shutdown =
+			this.input.signal?.reason === PLATFORM_RESTART || (!!this.input.modelKey && this.tally.running === null);
+		this.closingSession = this.peer
+			.request<void>(
+				"session/close",
+				{
+					sessionId: this.session,
+					...(shutdown && { _meta: { [NS]: { shutdown: true } } }),
+				},
+				{ timeoutMs: this.forced ? FORCED_WAIT_MS : CLOSE_TIMEOUT_MS },
+			)
+			.catch(() => undefined);
 		return this.closingSession;
 	}
 
@@ -1470,11 +1848,20 @@ class Turn {
 	}
 
 	private failureOf(error: unknown, fallback = "engine"): Failure {
-		if (!(error instanceof AcpError)) return { reason: "engine", message: error instanceof Error ? error.message : String(error) };
+		if (!(error instanceof AcpError)) return { reason: "engine", message: errorText(error) };
 		// The engine is gone, or did not answer: its last words say more than "closed".
-		if (error.reason === "closed" || error.reason === "timeout") return { reason: "engine", message: `${error.message}${this.lastWords()}` };
+		if (error.reason === "closed" || error.reason === "timeout")
+			return { reason: "engine", message: `${error.message}${this.lastWords()}` };
 		// ACP's own codes carry no reason of Windlass's.
-		const reason = error.reason ?? (error.code === -32002 ? "session_not_found" : error.code === -32000 ? "auth_required" : error.code === -32602 ? "invalid_request" : fallback);
+		const reason =
+			error.reason ??
+			(error.code === -32002
+				? "session_not_found"
+				: error.code === -32000
+					? "auth_required"
+					: error.code === -32602
+						? "invalid_request"
+						: fallback);
 		return { reason, message: error.message };
 	}
 
@@ -1486,13 +1873,15 @@ class Turn {
 		if (end !== null) {
 			if (end.error !== null) return end.error.message;
 			const said = lastWords(this.stderr);
-			return said === null ? `the engine process ${describeEnd(end)} before it was ready` : `the engine could not start: ${said} (its process ${describeEnd(end)})`;
+			return said === null
+				? `the engine process ${describeEnd(end)} before it was ready`
+				: `the engine could not start: ${said} (its process ${describeEnd(end)})`;
 		}
 		if (error instanceof AcpError && error.reason === "timeout") {
 			const ms = this.startTimeoutMs;
 			return `the engine process did not start within ${ms < 10_000 ? (ms / 1000).toFixed(1) : String(Math.round(ms / 1000))} s; giving up`;
 		}
-		return `the engine process did not answer as expected: ${error instanceof Error ? error.message : String(error)}`;
+		return `the engine process did not answer as expected: ${errorText(error)}`;
 	}
 
 	private lastWords(): string {
@@ -1514,9 +1903,15 @@ function promptKeysIn(init: Initialized): string[] {
 }
 
 /** Send prompt metadata only for keys the engine advertised. */
-export function promptMeta(input: Pick<RunTurnInput, "maxSteps" | "untrusted">, promptKeys: readonly string[]): { _meta?: Record<string, unknown> } {
+export function promptMeta(
+	input: Pick<RunTurnInput, "maxSteps" | "untrusted">,
+	promptKeys: readonly string[],
+): { _meta?: Record<string, unknown> } {
 	const source = promptKeys.includes(UNTRUSTED_KEY) ? untrustedSource(input.untrusted) : null;
-	const meta = { ...(input.maxSteps === undefined ? {} : { "windlass/maxSteps": input.maxSteps }), ...(source === null ? {} : { [UNTRUSTED_KEY]: { source } }) };
+	const meta = {
+		...(input.maxSteps === undefined ? {} : { "windlass/maxSteps": input.maxSteps }),
+		...(source === null ? {} : { [UNTRUSTED_KEY]: { source } }),
+	};
 	return Object.keys(meta).length === 0 ? {} : { _meta: meta };
 }
 
@@ -1531,22 +1926,46 @@ function questionOf(params: Record<string, unknown>): TurnQuestion | null {
 	const meta = (params._meta as Record<string, unknown> | undefined)?.[NS] as Record<string, unknown> | undefined;
 	const approval = meta?.approval as Record<string, unknown> | undefined;
 	if (typeof approval !== "object" || approval === null) return null;
-	const question = approval.question as { title?: unknown; subject?: unknown; details?: unknown; choices?: unknown } | undefined;
-	if (typeof approval.messageId !== "string" || typeof approval.callId !== "string" || typeof question?.title !== "string" || !Array.isArray(question.choices)) return null;
+	const question = approval.question as
+		| { title?: unknown; subject?: unknown; details?: unknown; choices?: unknown }
+		| undefined;
+	if (
+		typeof approval.messageId !== "string" ||
+		typeof approval.callId !== "string" ||
+		typeof question?.title !== "string" ||
+		!Array.isArray(question.choices)
+	)
+		return null;
 	const choices = question.choices.flatMap((raw: unknown) => {
 		const choice = raw as { id?: unknown; label?: unknown; approve?: unknown; remembers?: unknown };
 		if (typeof choice?.id !== "string") return [];
-		return [{ id: choice.id, label: typeof choice.label === "string" ? choice.label : choice.id, approve: choice.approve === true, remembers: typeof choice.remembers === "string" ? choice.remembers : null }];
+		return [
+			{
+				id: choice.id,
+				label: typeof choice.label === "string" ? choice.label : choice.id,
+				approve: choice.approve === true,
+				remembers: typeof choice.remembers === "string" ? choice.remembers : null,
+			},
+		];
 	});
 	// A subagent's question names it: `{ sessionId, title, spawnId, toolCallId }`, the title being the first line of its task.
 	const subagent = approval.subagent as { title?: unknown; sessionId?: unknown } | string | undefined;
-	const label = typeof subagent === "string" ? subagent : typeof subagent?.title === "string" ? subagent.title : typeof subagent?.sessionId === "string" ? subagent.sessionId : null;
+	const label =
+		typeof subagent === "string"
+			? subagent
+			: typeof subagent?.title === "string"
+				? subagent.title
+				: typeof subagent?.sessionId === "string"
+					? subagent.sessionId
+					: null;
 	return {
 		messageId: approval.messageId,
 		callId: approval.callId,
 		title: question.title,
 		subject: typeof question.subject === "string" ? question.subject : "",
-		details: Array.isArray(question.details) ? question.details.filter((detail): detail is string => typeof detail === "string") : [],
+		details: Array.isArray(question.details)
+			? question.details.filter((detail): detail is string => typeof detail === "string")
+			: [],
 		choices,
 		subagent: label === null || label.trim() === "" ? null : label.trim(),
 	};
@@ -1558,7 +1977,9 @@ function questionOf(params: Record<string, unknown>): TurnQuestion | null {
  * is `<server>/<tool>`. Null for a question about anything else, or about more.
  */
 function toolAsked(params: Record<string, unknown>): string | null {
-	const meta = (params._meta as Record<string, unknown> | undefined)?.[NS] as { approval?: { needs?: unknown } } | undefined;
+	const meta = (params._meta as Record<string, unknown> | undefined)?.[NS] as
+		| { approval?: { needs?: unknown } }
+		| undefined;
 	const needs = meta?.approval?.needs;
 	if (!Array.isArray(needs) || needs.length !== 1) return null;
 	const need = needs[0] as { kind?: unknown; tool?: unknown } | null;
@@ -1587,8 +2008,25 @@ interface ServerState {
  */
 function describeServer(server: ServerState, personal: ReadonlySet<string>): TurnServer[] {
 	if (server.state === "disabled" || (server.origin === "user" && !personal.has(server.name))) return [];
-	const state = server.state === "awaiting_approval" ? "waiting" : server.state === "running" || server.state === "starting" || server.state === "failed" ? server.state : "stopped";
-	return [{ name: server.name, origin: server.origin === "user" ? "user" : "project", state, argv: server.argv, url: server.argv === null ? server.target : null, file: server.file, tools: server.tools, error: server.error, fingerprint: server.fingerprint }];
+	const state =
+		server.state === "awaiting_approval"
+			? "waiting"
+			: server.state === "running" || server.state === "starting" || server.state === "failed"
+				? server.state
+				: "stopped";
+	return [
+		{
+			name: server.name,
+			origin: server.origin === "user" ? "user" : "project",
+			state,
+			argv: server.argv,
+			url: server.argv === null ? server.target : null,
+			file: server.file,
+			tools: server.tools,
+			error: server.error,
+			fingerprint: server.fingerprint,
+		},
+	];
 }
 
 /** The servers in an answer to `_windlass/mcp` or `_windlass/mcp_approve`, or in `_windlass/mcp_changed`; null when it has none. */
@@ -1596,18 +2034,35 @@ function serversOf(raw: unknown): ServerState[] | null {
 	const servers = (raw as { servers?: unknown } | null | undefined)?.servers;
 	if (!Array.isArray(servers)) return null;
 	return servers.flatMap((item: unknown) => {
-		const server = item as { name?: unknown; state?: unknown; argv?: unknown; target?: unknown; tools?: unknown; error?: unknown; file?: unknown; origin?: unknown; question?: { fingerprint?: unknown } | null };
+		const server = item as {
+			name?: unknown;
+			state?: unknown;
+			argv?: unknown;
+			target?: unknown;
+			tools?: unknown;
+			error?: unknown;
+			file?: unknown;
+			origin?: unknown;
+			question?: { fingerprint?: unknown } | null;
+		};
 		if (typeof server?.name !== "string" || typeof server.state !== "string") return [];
 		return [
 			{
 				name: server.name,
 				state: server.state,
-				argv: Array.isArray(server.argv) && server.argv.every((argument): argument is string => typeof argument === "string") ? server.argv : null,
+				argv:
+					Array.isArray(server.argv) &&
+					server.argv.every((argument): argument is string => typeof argument === "string")
+						? server.argv
+						: null,
 				target: typeof server.target === "string" ? server.target : null,
 				tools: typeof server.tools === "number" ? server.tools : null,
 				error: typeof server.error === "string" && server.error !== "" ? server.error : null,
 				file: typeof server.file === "string" && server.file !== "" ? server.file : null,
-				fingerprint: typeof server.question?.fingerprint === "string" && server.question.fingerprint !== "" ? server.question.fingerprint : null,
+				fingerprint:
+					typeof server.question?.fingerprint === "string" && server.question.fingerprint !== ""
+						? server.question.fingerprint
+						: null,
 				origin: typeof server.origin === "string" ? server.origin : null,
 			},
 		];
@@ -1629,7 +2084,8 @@ export function variablesRead(text: string, name: string): string[] {
 	} catch {
 		return [];
 	}
-	const object = (value: unknown): Record<string, unknown> | null => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null);
+	const object = (value: unknown): Record<string, unknown> | null =>
+		typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 	const servers = object(object(object(parsed)?.mcp)?.servers);
 	const definition = servers !== null && Object.hasOwn(servers, name) ? object(servers[name]) : null;
 	if (definition === null) return [];
@@ -1654,13 +2110,15 @@ function describeEnd(end: ProcessEnd): string {
 function lastWords(stderr: string): string | null {
 	const lines = stderr
 		.split("\n")
-		.map((line) => line.trimEnd())
-		.filter((line) => line.trim() !== "");
+		.map(line => line.trimEnd())
+		.filter(line => line.trim() !== "");
 	const findLast = (test: (line: string) => boolean) => [...lines].reverse().find(test);
-	const own = findLast((line) => /^\S+ acp (error|warn): /.test(line));
+	const own = findLast(line => /^\S+ acp (error|warn): /.test(line));
 	if (own !== undefined) return own.replace(/^\S+ acp \w+: /, "");
-	const thrown = findLast((line) => /^(error|[A-Z]\w*Error|[A-Z]\w*Exception)(\[\w+\])?: \S/.test(line));
+	const thrown = findLast(line => /^(error|[A-Z]\w*Error|[A-Z]\w*Exception)(\[\w+\])?: \S/.test(line));
 	if (thrown !== undefined) return thrown.replace(/^error: /, "");
-	const plain = findLast((line) => !/^Bun v\d/.test(line) && !/^\s*\d+ \| /.test(line) && !/^\s+at /.test(line) && !/^\s*\^\s*$/.test(line));
+	const plain = findLast(
+		line => !/^Bun v\d/.test(line) && !/^\s*\d+ \| /.test(line) && !/^\s+at /.test(line) && !/^\s*\^\s*$/.test(line),
+	);
 	return plain === undefined ? null : plain.trim().slice(0, 500);
 }

@@ -10,7 +10,8 @@ import { navigate, pageFrom, rememberAppPage, usePageLabel, useRoute, type Route
 import { useTheme } from "./lib/theme";
 import { Factory } from "./screens/Factory";
 import { Item, useItem } from "./screens/Item";
-import { asking, useItems, type ItemsState } from "./screens/Items";
+import { asking } from "./lib/items";
+import { useItems, type ItemsState } from "./state/items";
 import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
@@ -26,7 +27,7 @@ import { useApp } from "./state/app";
 import { useSession } from "./state/hooks";
 
 /** The public docs, in their own chunk: the app reaches them when one of its links leads there without a page load. */
-const DocsApp = lazy(() => import("./docs/Docs").then((module) => ({ default: module.DocsApp })));
+const DocsApp = lazy(() => import("./docs/Docs").then(module => ({ default: module.DocsApp })));
 
 /** Whether the page is in a background tab. */
 function useHidden(): boolean {
@@ -46,7 +47,10 @@ function SessionRoute({ sessionId, bar }: { sessionId: string; bar: Bar }) {
 	const state = useSession(sessionId);
 	const { platform } = useApp();
 	// A work item's agent: its item, for the trail (its feature, for a subtask) and to say when it waits for an answer.
-	const item = useItem(state.summary?.item?.id ?? "", Boolean(state.summary?.item) && Boolean(platform.info?.items)).view;
+	const item = useItem(
+		state.summary?.item?.id ?? "",
+		Boolean(state.summary?.item) && Boolean(platform.info?.items),
+	).view;
 	// Read once for the bar and the session both: the machine an agent on one of the user's machines runs on.
 	const machine = useSessionMachine(state.summary?.place);
 	const hidden = useHidden();
@@ -63,7 +67,16 @@ function SessionRoute({ sessionId, bar }: { sessionId: string; bar: Bar }) {
 	return (
 		<div className="app app-fixed">
 			<TopBar {...bar} current={section}>
-				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} itemView={item} />
+				<SessionCrumb
+					title={state.summary?.title ?? null}
+					status={state.summary?.status ?? null}
+					place={state.summary?.place}
+					machine={machine}
+					item={state.summary?.item}
+					harness={state.summary?.harness}
+					summary={state.summary ?? null}
+					itemView={item}
+				/>
 			</TopBar>
 			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} item={item} />
 		</div>
@@ -75,7 +88,8 @@ function ItemRoute({ itemId, bar }: { itemId: string; bar: Bar }) {
 	const { platform } = useApp();
 	// Asked once the deployment says it offers work items (without them the page is not found); until then it is loading, or says why it is not.
 	const item = useItem(itemId, Boolean(platform.info?.items));
-	const page = platform.info === null && platform.error ? { ...item, error: platform.error, reload: platform.reload } : item;
+	const page =
+		platform.info === null && platform.error ? { ...item, error: platform.error, reload: platform.reload } : item;
 	const title = page.view?.title ?? null;
 	const asks = Boolean(page.view?.question);
 	useEffect(() => {
@@ -99,7 +113,8 @@ function ItemRoute({ itemId, bar }: { itemId: string; bar: Bar }) {
 function WorkspaceRoute({ selection, items, bar }: { selection: Selection; items: ItemsState; bar: Bar }) {
 	useEffect(() => {
 		// A repository's side names itself in the title.
-		if (selection.kind !== "repository") document.title = selection.kind === "none" ? "No repository · Agents · Windlass" : "Agents · Windlass";
+		if (selection.kind !== "repository")
+			document.title = selection.kind === "none" ? "No repository · Agents · Windlass" : "Agents · Windlass";
 	}, [selection.kind]);
 	return (
 		<div className="app app-workspace">
@@ -110,11 +125,22 @@ function WorkspaceRoute({ selection, items, bar }: { selection: Selection; items
 }
 
 /** The Factory page, its repository filter chosen in its rail. */
-function FactoryRoute({ route, items, bar }: { route: Extract<Route, { name: "factory" }>; items: ItemsState; bar: Bar }) {
+function FactoryRoute({
+	route,
+	items,
+	bar,
+}: {
+	route: Extract<Route, { name: "factory" }>;
+	items: ItemsState;
+	bar: Bar;
+}) {
 	useEffect(() => {
 		document.title = `${bar.asking > 0 ? `(${bar.asking}) ` : ""}Factory · Windlass`;
 	}, [bar.asking]);
-	const repository = route.repository === undefined ? null : (items.list?.find((item) => String(item.repository.id) === String(route.repository))?.repository.name ?? null);
+	const repository =
+		route.repository === undefined
+			? null
+			: (items.list?.find(item => String(item.repository.id) === String(route.repository))?.repository.name ?? null);
 	usePageLabel(factoryLabel(repository));
 	return (
 		<div className="app app-workspace">
@@ -141,20 +167,58 @@ export function App() {
 	}, [route]);
 
 	// Home is the landing page for someone who is not signed in, so it is the one list that does not send them to sign in.
-	const needsAuth = (route.name === "home" && route.scope === "none") || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "plans" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
+	const needsAuth =
+		(route.name === "home" && route.scope === "none") ||
+		route.name === "factory" ||
+		route.name === "new" ||
+		route.name === "usage" ||
+		route.name === "settings" ||
+		route.name === "plans" ||
+		route.name === "machines" ||
+		route.name === "session" ||
+		route.name === "item" ||
+		route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
-	const noItems = (route.name === "item" || route.name === "factory") && auth !== null && platform.info !== null && !platform.info.items;
+	const noItems =
+		(route.name === "item" || route.name === "factory") &&
+		auth !== null &&
+		platform.info !== null &&
+		!platform.info.items;
 	/** The repository chosen in the Agents home: its own address, or the address that once launched a new agent on it. */
-	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
+	const repositoryId =
+		route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
 		if (needsAuth && !auth) navigate({ name: "signin" }, { replace: true });
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
 		if (route.name === "docs") return;
-		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "plans" ? "Plans · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
+		if (
+			(route.name !== "session" &&
+				route.name !== "item" &&
+				route.name !== "home" &&
+				route.name !== "factory" &&
+				repositoryId === null) ||
+			noItems
+		)
+			document.title =
+				route.name === "signin"
+					? "Sign in · Windlass"
+					: route.name === "notfound" || noMachines || noItems
+						? "Not found · Windlass"
+						: route.name === "usage"
+							? "Usage · Windlass"
+							: route.name === "settings"
+								? "Settings · Windlass"
+								: route.name === "plans"
+									? "Plans · Windlass"
+									: route.name === "machines"
+										? "Machines · Windlass"
+										: route.name === "new"
+											? "New agent · Windlass"
+											: "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	useEffect(() => {
@@ -197,9 +261,28 @@ export function App() {
 
 	if (route.name === "item") return <ItemRoute key={route.id} itemId={route.id} bar={bar} />;
 
-	if (repositoryId !== null) return <WorkspaceRoute selection={{ kind: "repository", id: repositoryId, view: route.name === "repository" ? route.view : undefined, launching: route.name === "new" }} items={items} bar={bar} />;
+	if (repositoryId !== null)
+		return (
+			<WorkspaceRoute
+				selection={{
+					kind: "repository",
+					id: repositoryId,
+					view: route.name === "repository" ? route.view : undefined,
+					launching: route.name === "new",
+				}}
+				items={items}
+				bar={bar}
+			/>
+		);
 
-	if (route.name === "home") return <WorkspaceRoute selection={route.scope === "none" ? { kind: "none" } : { kind: "everything" }} items={items} bar={bar} />;
+	if (route.name === "home")
+		return (
+			<WorkspaceRoute
+				selection={route.scope === "none" ? { kind: "none" } : { kind: "everything" }}
+				items={items}
+				bar={bar}
+			/>
+		);
 
 	if (route.name === "usage") {
 		return (

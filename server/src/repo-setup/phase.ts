@@ -15,17 +15,29 @@ export class SetupPhase {
 	private stopReason: string | null = null;
 	private noteLines: string[] = [];
 
-	constructor(private readonly model: string, private readonly redactSaved: (text: string) => string) {}
+	constructor(
+		private readonly model: string,
+		private readonly redactSaved: (text: string) => string,
+	) {}
 
 	setNotes(notes: SetupNote[]) {
-		this.noteLines = notes.flatMap(note => [note.label, ...note.text.split(/\r?\n/)]).map(s => s.trim()).filter(Boolean);
+		this.noteLines = notes
+			.flatMap(note => [note.label, ...note.text.split(/\r?\n/)])
+			.map(s => s.trim())
+			.filter(Boolean);
 	}
 
 	clean(text: string, limit = 240) {
 		const scrubbed = redact(this.redactSaved(text));
-		if (privateLine(scrubbed, { owner: "", host: "github.com", read: new Map(), redact: s => s }) ||
-			this.noteLines.some(line => scrubbed.includes(line))) return "[redacted]";
-		return scrubbed.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, limit);
+		if (
+			privateLine(scrubbed, { owner: "", host: "github.com", read: new Map(), redact: s => s }) ||
+			this.noteLines.some(line => scrubbed.includes(line))
+		)
+			return "[redacted]";
+		return scrubbed
+			.replace(/[\x00-\x1f\x7f]+/g, " ")
+			.trim()
+			.slice(0, limit);
 	}
 
 	begin(phase: SetupDiagnosis["phase"]) {
@@ -38,39 +50,79 @@ export class SetupPhase {
 	}
 
 	startSkillFiling(files: unknown, revision: boolean): SkillFiling {
-		const candidates = Array.isArray(files) ? files.filter(f => f?.kind === "skill" || typeof f?.path === "string" && skillPath.test(f.path)) : [];
+		const candidates = Array.isArray(files)
+			? files.filter(f => f?.kind === "skill" || (typeof f?.path === "string" && skillPath.test(f.path)))
+			: [];
 		const proposals: SkillFiling["proposals"] = candidates.map(f => {
 			const lines: string[] = typeof f.content === "string" ? f.content.split(/\r?\n/) : [];
 			const parsed = skillFrontmatter(lines);
 			const body = parsed ? lines.slice(parsed.end + 1) : lines;
 			const description = parsed?.header?.description;
-			return { path: typeof f.path === "string" ? f.path : "(invalid skill path)",
-				description: this.clean(typeof description === "string" ? description : lines.find(line => /^(?:description:|# )/.test(line)) ?? ""),
-				body: this.clean(body.join("\n"), 300), outcome: "dropped", reason: "The review did not finish." };
+			return {
+				path: typeof f.path === "string" ? f.path : "(invalid skill path)",
+				description: this.clean(
+					typeof description === "string" ? description : (lines.find(line => /^(?:description:|# )/.test(line)) ?? ""),
+				),
+				body: this.clean(body.join("\n"), 300),
+				outcome: "dropped",
+				reason: "The review did not finish.",
+			};
 		});
-		const filing: SkillFiling = { phase: revision ? "revision" : "draft", proposed: proposals.length, proposals,
-			staticallyRejected: [], smokeTested: 0, droppedBySmoke: [], kept: 0 };
+		const filing: SkillFiling = {
+			phase: revision ? "revision" : "draft",
+			proposed: proposals.length,
+			proposals,
+			staticallyRejected: [],
+			smokeTested: 0,
+			droppedBySmoke: [],
+			kept: 0,
+		};
 		this.skills.filings.push(filing);
 		return filing;
 	}
 
 	diagnosis(): SetupDiagnosis {
-		const cleanDrop = ({ path, reason }: { path: string; reason: string }) => ({ path: this.clean(path), reason: this.clean(reason) });
-		const skills = { kept: this.skills.kept, droppedByReview: this.skills.droppedByReview.map(cleanDrop),
+		const cleanDrop = ({ path, reason }: { path: string; reason: string }) => ({
+			path: this.clean(path),
+			reason: this.clean(reason),
+		});
+		const skills = {
+			kept: this.skills.kept,
+			droppedByReview: this.skills.droppedByReview.map(cleanDrop),
 			filings: this.skills.filings.map(f => {
 				const drops = [...f.staticallyRejected, ...f.droppedBySmoke];
-				const proposals = f.proposals.map(p => ({ ...p, path: this.clean(p.path),
-					reason: this.clean(drops.find(d => d.path === p.path)?.reason ?? f.refused ?? p.reason) }));
-				return { ...f, proposals, staticallyRejected: f.staticallyRejected.map(cleanDrop), droppedBySmoke: f.droppedBySmoke.map(cleanDrop) };
-			}) };
-		return { skills, phase: this.phase, model: this.clean(this.model), toolOffered: this.offered, attempts: this.calls.size,
+				const proposals = f.proposals.map(p => ({
+					...p,
+					path: this.clean(p.path),
+					reason: this.clean(drops.find(d => d.path === p.path)?.reason ?? f.refused ?? p.reason),
+				}));
+				return {
+					...f,
+					proposals,
+					staticallyRejected: f.staticallyRejected.map(cleanDrop),
+					droppedBySmoke: f.droppedBySmoke.map(cleanDrop),
+				};
+			}),
+		};
+		return {
+			skills,
+			phase: this.phase,
+			model: this.clean(this.model),
+			toolOffered: this.offered,
+			attempts: this.calls.size,
 			...(this.leftOut.length > 0 && { leftOut: this.leftOut }),
 			rejections: [...this.calls.values()].filter((s): s is string => s !== null),
-			lastMessage: this.lastMessage, outcome: this.outcome, stopReason: this.stopReason };
+			lastMessage: this.lastMessage,
+			outcome: this.outcome,
+			stopReason: this.stopReason,
+		};
 	}
 
-	async file<T>(input: RunTurnInput, run: (input: RunTurnInput) => Promise<RunTurnResult>,
-		check: (args: TurnPublishRequest["arguments"], signal: AbortSignal) => T | Promise<T>) {
+	async file<T>(
+		input: RunTurnInput,
+		run: (input: RunTurnInput) => Promise<RunTurnResult>,
+		check: (args: TurnPublishRequest["arguments"], signal: AbortSignal) => T | Promise<T>,
+	) {
 		const reviewing = this.phase === "review";
 		const agent = reviewing ? "The reviewing agent" : "The drafting agent";
 		const tool = reviewing ? "file_repo_setup_review" : "file_repo_setup";
@@ -94,33 +146,56 @@ export class SetupPhase {
 				const reason = this.clean(error instanceof Error ? error.message : "Check the filing format.");
 				this.calls.set(id, reason);
 				return "Filing refused. " + reason + " Correct the filing and call " + tool + " again.";
-			} finally { checking = false; }
+			} finally {
+				checking = false;
+			}
 		};
-		const result = await run({ ...input,
-			onHostTools: names => { this.offered = names.includes(tool); },
+		const result = await run({
+			...input,
+			onHostTools: names => {
+				this.offered = names.includes(tool);
+			},
 			onEvent: event => {
 				const data = event.data;
-				if (event.type === "text.ended" && typeof data?.text === "string") this.lastMessage = this.clean(data.text, 300);
+				if (event.type === "text.ended" && typeof data?.text === "string")
+					this.lastMessage = this.clean(data.text, 300);
 				if (data && typeof data.callId === "string") {
 					const id = data.messageId + "/" + data.callId;
 					if (event.type === "tool.called" && data.name === tool && !this.calls.has(id)) this.calls.set(id, null);
 					if (event.type === "tool.settled" && data.outcome !== "success" && this.calls.has(id))
-						this.calls.set(id, this.clean(typeof data.output === "string" ? data.output : "Windlass refused the call."));
+						this.calls.set(
+							id,
+							this.clean(typeof data.output === "string" ? data.output : "Windlass refused the call."),
+						);
 				}
 				input.onEvent?.(event);
 			},
 			...(reviewing ? { onSetupReview: handle } : { onSetup: handle }),
 		});
 		const timeout = result.timedOut || input.signal?.reason?.name === "TimeoutError";
-		this.outcome = timeout ? "timed_out" : result.aborted ? "interrupted" : result.failure ? "failed" : String(result.summary?.outcome ?? "ended");
+		this.outcome = timeout
+			? "timed_out"
+			: result.aborted
+				? "interrupted"
+				: result.failure
+					? "failed"
+					: String(result.summary?.outcome ?? "ended");
 		this.stopReason = this.clean(result.failure?.reason ?? result.stopReason ?? "") || null;
 		if (timeout) throw Error(agent + " ran out of time. Run setup again.");
 		if (result.aborted) throw Error(agent + " was interrupted. Run setup again.");
-		if (result.failure) throw Error(agent + (this.offered ? " could not finish. " : " could not start. ") + this.clean(result.failure.message));
+		if (result.failure)
+			throw Error(
+				agent + (this.offered ? " could not finish. " : " could not start. ") + this.clean(result.failure.message),
+			);
 		if (filing === undefined) {
 			const refused = this.diagnosis().rejections.at(-1);
-			if (refused) throw Error((reviewing ? "The review was refused. " : "The proposed guides were refused. ") + refused);
-			throw Error(agent + (reviewing ? " stopped without filing a review." : " stopped without proposing any guides.") + " Run setup again.");
+			if (refused)
+				throw Error((reviewing ? "The review was refused. " : "The proposed guides were refused. ") + refused);
+			throw Error(
+				agent +
+					(reviewing ? " stopped without filing a review." : " stopped without proposing any guides.") +
+					" Run setup again.",
+			);
 		}
 		return { filed: filing, result };
 	}

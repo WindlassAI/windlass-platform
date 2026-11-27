@@ -3,7 +3,14 @@
  * The start composer against the mock: what pressing Enter sends, what each picker changes, what it
  * starts on, and what it keeps across the visit to GitHub.
  */
-import { promptTitle, type AuthResult, type CreateSessionInput, type GithubId, type MachineSummary, type PromptInput } from "@contract";
+import {
+	promptTitle,
+	type AuthResult,
+	type CreateSessionInput,
+	type GithubId,
+	type MachineSummary,
+	type PromptInput,
+} from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -17,7 +24,10 @@ import { AppProvider } from "../state/app";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const ada: AuthResult = {
+	token: "mock:user:u_ada:ada@example.com",
+	profile: { uid: "u_ada", email: "ada@example.com", demo: false },
+};
 const demo: AuthResult = { token: "mock:demo:demo_1:", profile: { uid: "demo_1", email: null, demo: true } };
 
 let host: HTMLElement;
@@ -46,7 +56,8 @@ afterEach(() => {
 
 /** Lets the mock answer, in steps: what one answer renders can ask the next. */
 async function settle(steps = 12): Promise<void> {
-	for (let step = 0; step < steps; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
+	for (let step = 0; step < steps; step++)
+		await act(async () => void (await new Promise(resolve => setTimeout(resolve, 2))));
 }
 
 /**
@@ -58,15 +69,24 @@ function mock(machines?: (list: MachineSummary[]) => MachineSummary[]): MockClie
 	const made = createMockClient({ pace: 0, origin: "http://localhost:5173" });
 	const user = made.user.bind(made);
 	const session = made.session.bind(made);
-	(made as { user: (auth: AuthResult) => UserApi }).user = (who) => {
+	(made as { user: (auth: AuthResult) => UserApi }).user = who => {
 		const api = user(who);
 		return {
 			...api,
-			createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(machines && input.harness === "claude" ? { ...input, model: undefined } : input)),
+			createSession: (input: CreateSessionInput) => (
+				created.push(input),
+				api.createSession(machines && input.harness === "claude" ? { ...input, model: undefined } : input)
+			),
 			...(machines
 				? {
 						machines: async () => machines(await api.machines()),
-						watch: (events: Parameters<UserApi["watch"]>[0]) => api.watch({ ...events, onMachines: events.onMachines ? (list: MachineSummary[]) => events.onMachines?.(machines(list)) : undefined }),
+						watch: (events: Parameters<UserApi["watch"]>[0]) =>
+							api.watch({
+								...events,
+								onMachines: events.onMachines
+									? (list: MachineSummary[]) => events.onMachines?.(machines(list))
+									: undefined,
+							}),
 					}
 				: {}),
 		};
@@ -79,12 +99,26 @@ function mock(machines?: (list: MachineSummary[]) => MachineSummary[]): MockClie
 }
 
 /** Signs in and shows the new agent's page, as `/new` or a repository's `/new` does. */
-async function show(options: { who?: AuthResult; repositoryId?: number; machines?: (list: MachineSummary[]) => MachineSummary[]; before?(client: MockClient): Promise<void> } = {}): Promise<void> {
+async function show(
+	options: {
+		who?: AuthResult;
+		repositoryId?: number;
+		machines?: (list: MachineSummary[]) => MachineSummary[];
+		before?(client: MockClient): Promise<void>;
+	} = {},
+): Promise<void> {
 	client = mock(options.machines);
 	saveAuth("mock", options.who ?? ada);
 	await options.before?.(client);
 	root ??= createRoot(host);
-	act(() => root?.render(createElement(AppProvider, { client, children: createElement(NewAgent, { repositoryId: options.repositoryId as GithubId | undefined }) })));
+	act(() =>
+		root?.render(
+			createElement(AppProvider, {
+				client,
+				children: createElement(NewAgent, { repositoryId: options.repositoryId as GithubId | undefined }),
+			}),
+		),
+	);
 	await settle();
 }
 
@@ -101,7 +135,10 @@ function write(text: string, into: HTMLTextAreaElement | HTMLInputElement = fiel
 
 /** Enter in the task's field. */
 async function enter(): Promise<void> {
-	await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+	await act(
+		async () =>
+			void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })),
+	);
 	await settle();
 }
 
@@ -110,16 +147,33 @@ async function enter(): Promise<void> {
  * repository are one pill ("on", "sandbox", "repo"), the effort is its own button beside the agent, and
  * the mode is in the options. Its value is what the control shows.
  */
-const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", effort: "effort", mode: "options", criteria: "criteria", setup: "setup" };
-const pill = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement | null;
-const value = (label: string) => (label === "sandbox" ? pill(label)?.dataset.sandbox : label === "repo" ? pill(label)?.dataset.repo : label === "effort" ? pill(label)?.dataset.effort : pill(label)?.dataset.value) ?? null;
+const PICKERS: Record<string, string> = {
+	repo: "where",
+	on: "where",
+	sandbox: "where",
+	agent: "agent",
+	effort: "effort",
+	mode: "options",
+	criteria: "criteria",
+	setup: "setup",
+};
+const pill = (label: string) =>
+	host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement | null;
+const value = (label: string) =>
+	(label === "sandbox"
+		? pill(label)?.dataset.sandbox
+		: label === "repo"
+			? pill(label)?.dataset.repo
+			: label === "effort"
+				? pill(label)?.dataset.effort
+				: pill(label)?.dataset.value) ?? null;
 /** Opens the control's picker. */
 const open = (label: string) => act(() => (pill(label) as HTMLButtonElement).click());
 /** Opens the repository's picker: its row in the where menu. */
 async function openRepo(): Promise<void> {
 	open("where");
 	act(() => (pop().querySelector('[data-value="repo"]') as HTMLElement).click());
-	await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 5))));
+	await act(async () => void (await new Promise(resolve => setTimeout(resolve, 5))));
 }
 /** The open picker, the newest one: a menu or a small form, drawn at the end of the page. */
 const pop = () => [...document.querySelectorAll(".ui-pop")].at(-1) as HTMLElement;
@@ -127,8 +181,18 @@ const pop = () => [...document.querySelectorAll(".ui-pop")].at(-1) as HTMLElemen
 const pick = (value: string) => act(() => (pop().querySelector(`[data-value="${value}"]`) as HTMLElement).click());
 /** Opens a row's submenu as the keyboard does (→ on the highlighted row), and chooses in it. */
 function pickIn(row: string, value: string): void {
-	act(() => void pop().querySelector(`[data-value="${row}"]`)?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
-	act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+	act(
+		() =>
+			void pop()
+				.querySelector(`[data-value="${row}"]`)
+				?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+	);
+	act(
+		() =>
+			void document.activeElement?.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+			),
+	);
 	act(() => (document.querySelector(`.ui-pop-sub [data-value="${value}"]`) as HTMLElement).click());
 }
 /** Chooses a model in the agent's menu, then an effort in the effort button's menu. */
@@ -138,25 +202,39 @@ function pickModelEffort(model: string, effort: string): void {
 	pick(effort);
 }
 /** Switches the open agent menu to another agent with its logo button; the menu stays open on that agent's models. */
-const switchAgent = (name: string) => act(() => (pop().querySelector(`[aria-label="Switch agent"] [aria-label="${name}"]`) as HTMLButtonElement).click());
+const switchAgent = (name: string) =>
+	act(() => (pop().querySelector(`[aria-label="Switch agent"] [aria-label="${name}"]`) as HTMLButtonElement).click());
 /** Chooses a mode in the options, by its name. */
 function mode(name: string): void {
 	open("options");
-	const option = [...pop().querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.querySelector(".ui-item-label")?.textContent === name) as HTMLElement;
+	const option = [...pop().querySelectorAll('[role="menuitemradio"]')].find(
+		candidate => candidate.querySelector(".ui-item-label")?.textContent === name,
+	) as HTMLElement;
 	act(() => option.click());
 }
 /** A button in the open picker, by its words. */
-const press = (words: string) => act(() => ([...pop().querySelectorAll("button")].find((button) => button.textContent === words) as HTMLButtonElement).click());
+const press = (words: string) =>
+	act(() =>
+		([...pop().querySelectorAll("button")].find(button => button.textContent === words) as HTMLButtonElement).click(),
+	);
 /** Chooses in the launch button's menu, by its words. */
 async function launchMenu(words: string): Promise<void> {
 	act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
-	await act(async () => ([...pop().querySelectorAll('[role="menuitem"]')].find((row) => row.querySelector(".ui-item-label")?.textContent === words) as HTMLElement).click());
+	await act(async () =>
+		(
+			[...pop().querySelectorAll('[role="menuitem"]')].find(
+				row => row.querySelector(".ui-item-label")?.textContent === words,
+			) as HTMLElement
+		).click(),
+	);
 }
 
 it("names a personal agent with its complete opening request", () => {
 	const task = "Run the whole test suite and fix the missing CSV writer";
 	expect(promptTitle(task + ". Report what changed.")).toBe(task + ".");
-	expect(promptTitle("Add the CSV writer so that the export command can save one record for every reading in the archive")).toBe("Add the CSV writer");
+	expect(
+		promptTitle("Add the CSV writer so that the export command can save one record for every reading in the archive"),
+	).toBe("Add the CSV writer");
 });
 
 describe("the start composer", () => {
@@ -167,7 +245,12 @@ describe("the start composer", () => {
 		write("Run the tests and fix what fails");
 		await enter();
 		expect(created).toHaveLength(1);
-		expect(created[0]).toMatchObject({ repository: { id: 7101, branch: "main" }, profile: "docker-hardened", model: "gpt-6-luna", mode: "full" });
+		expect(created[0]).toMatchObject({
+			repository: { id: 7101, branch: "main" },
+			profile: "docker-hardened",
+			model: "gpt-6-luna",
+			mode: "full",
+		});
 		expect(created[0]?.place).toBeUndefined();
 		expect(created[0]?.harness).toBeUndefined();
 		expect(prompted).toEqual([expect.objectContaining({ text: "Run the tests and fix what fails" })]);
@@ -207,7 +290,10 @@ describe("the start composer", () => {
 
 describe("the start composer where it offers no switch", () => {
 	it("starts an agent even when a work item was being filed elsewhere before the visit to GitHub", async () => {
-		sessionStorage.setItem("wlp.new-agent.draft", JSON.stringify({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." }));
+		sessionStorage.setItem(
+			"wlp.new-agent.draft",
+			JSON.stringify({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." }),
+		);
 		await show();
 		expect(field().value).toBe("Add a health check");
 		expect(pill("agent")).not.toBeNull();
@@ -219,7 +305,9 @@ describe("the start composer's one-line tray", () => {
 	it("is +, the agent, where, options, the isolation and Launch, in that order", async () => {
 		await show();
 		const tray = host.querySelector(".start-tools") as HTMLElement;
-		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "effort", "where", "options", "isolation"]);
+		expect([...tray.querySelectorAll("[data-picker]")].map(control => (control as HTMLElement).dataset.picker)).toEqual(
+			["setup", "agent", "effort", "where", "options", "isolation"],
+		);
 		expect(tray.querySelector(".tray-end .start-launch")).not.toBeNull();
 		// No mode pill and no line of facts under the box: they are in the menus and the isolation's tooltip.
 		expect(host.querySelector('[data-picker="mode"], [data-picker="repo"]')).toBeNull();
@@ -236,14 +324,14 @@ describe("the start composer's one-line tray", () => {
 		expect(where.textContent).toContain("main");
 		expect(where.querySelector(".repo-tile")).not.toBeNull();
 		open("where");
-		const labels = [...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent);
+		const labels = [...pop().querySelectorAll(".ui-menu-group-label b")].map(label => label.textContent);
 		expect(labels).toEqual(["Hosted", "My machines", "Repository"]);
 		const repoRow = pop().querySelector('[data-value="repo"]') as HTMLElement;
 		expect(repoRow.textContent).toContain("acme/harbor");
 		expect(repoRow.textContent).toContain("at main");
 		// Its row opens the repository's picker in the menu's place.
 		act(() => repoRow.click());
-		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 5))));
+		await act(async () => void (await new Promise(resolve => setTimeout(resolve, 5))));
 		expect(pop().textContent).toContain("Paste an address");
 		expect(document.querySelectorAll(".ui-pop")).toHaveLength(1);
 	});
@@ -251,7 +339,9 @@ describe("the start composer's one-line tray", () => {
 	it("chooses the effort with its own button beside the agent, and lists models only in the agent's menu", async () => {
 		await show();
 		open("agent");
-		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).not.toContain("Effort");
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map(label => label.textContent)).not.toContain(
+			"Effort",
+		);
 		pick("windlass:gpt-6.1-sol");
 		open("effort");
 		pick("high");
@@ -290,18 +380,39 @@ describe("the start composer's one-line tray", () => {
 		const chip = pill("isolation") as HTMLButtonElement;
 		// acme/harbor's saved default is Open: said in plain ink, never amber, as nothing needs doing.
 		expect(chip.dataset.value).toBe("Open");
-		expect(chip.getAttribute("aria-label")).toMatch(/^Isolation: Open: Commands run freely and can reach the internet\. Runs hosted, Small \(1 CPU · 1 GB · \$0\.067\/h\)\.$/);
+		expect(chip.getAttribute("aria-label")).toMatch(
+			/^Isolation: Open: Commands run freely and can reach the internet\. Runs hosted, Small \(1 CPU · 1 GB · \$0\.067\/h\)\.$/,
+		);
 		expect(host.querySelector(".start [class*=warn], .start svg.warn")).toBeNull();
 		open("options");
-		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Mode"]);
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map(label => label.textContent)).toEqual(["Mode"]);
 		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 		open("where");
 		expect(pop().querySelector('[data-value="platform"]')?.textContent).toContain("Open · Small");
-		act(() => void pop().querySelector('[data-value="platform"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
-		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		act(
+			() =>
+				void pop()
+					.querySelector('[data-value="platform"]')
+					?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+		);
+		act(
+			() =>
+				void document.activeElement?.dispatchEvent(
+					new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+				),
+		);
 		const sub = document.querySelector(".ui-pop-sub") as HTMLElement;
-		expect([...sub.querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Isolation", "Size"]);
-		expect([...sub.querySelectorAll(".ui-item-label")].map((label) => label.textContent)).toEqual(["Strict", "Open", "Small", "Medium", "Large"]);
+		expect([...sub.querySelectorAll(".ui-menu-group-label b")].map(label => label.textContent)).toEqual([
+			"Isolation",
+			"Size",
+		]);
+		expect([...sub.querySelectorAll(".ui-item-label")].map(label => label.textContent)).toEqual([
+			"Strict",
+			"Open",
+			"Small",
+			"Medium",
+			"Large",
+		]);
 		expect(sub.querySelector("[class*=warn]")).toBeNull();
 		expect(sub.textContent).not.toMatch(/E2B|Docker|microVM|Daytona|agentOS|Firecracker/);
 	});
@@ -338,7 +449,7 @@ describe("each picker of the start composer", () => {
 		await settle();
 		const setup = pop().querySelector("textarea.setup-input") as HTMLTextAreaElement;
 		expect(setup.value).toBe("npm ci");
-		expect([...pop().querySelectorAll("button")].some((button) => button.textContent === "Manage…")).toBe(true);
+		expect([...pop().querySelectorAll("button")].some(button => button.textContent === "Manage…")).toBe(true);
 		write("pnpm install", setup);
 		write("Look around");
 		await enter();
@@ -359,7 +470,9 @@ describe("each picker of the start composer", () => {
 	it("offers hosted agents with a compatible Settings key and explains missing keys", async () => {
 		await show();
 		open("agent");
-		const claudeDisabled = () => pop().querySelector('[aria-label="Switch agent"] [aria-label="Claude Code"]')?.getAttribute("aria-disabled") === "true";
+		const claudeDisabled = () =>
+			pop().querySelector('[aria-label="Switch agent"] [aria-label="Claude Code"]')?.getAttribute("aria-disabled") ===
+			"true";
 		expect(claudeDisabled()).toBe(true);
 		const user = client.user(ada);
 		const save = () => user.saveModelProvider({ provider: "anthropic", key: "sk-ant-api03-" + "x".repeat(32) });
@@ -401,7 +514,12 @@ describe("each picker of the start composer", () => {
 		expect(value("mode")).toBe("Auto");
 		write("Add the test command to the README");
 		await enter();
-		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" }, mode: "auto" });
+		expect(created[0]).toMatchObject({
+			harness: "claude",
+			profile: "docker-hardened",
+			place: { kind: "machine", machineId: "m_nas" },
+			mode: "auto",
+		});
 		expect(created[0]?.model).toBeUndefined();
 	});
 
@@ -412,7 +530,9 @@ describe("each picker of the start composer", () => {
 		await settle();
 		open("agent");
 		const row = pop().querySelector('[aria-label="Switch agent"]') as HTMLElement;
-		expect([...row.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toContain("Claude Code");
+		expect([...row.querySelectorAll("button")].map(button => button.getAttribute("aria-label"))).toContain(
+			"Claude Code",
+		);
 		expect(row.querySelector('[aria-pressed="true"]')?.getAttribute("aria-label")).toBe("Windlass");
 		act(() => (row.querySelector('[aria-label="Claude Code"]') as HTMLButtonElement).click());
 		expect(value("agent")?.startsWith("Claude Code · ")).toBe(true);
@@ -437,10 +557,23 @@ describe("each picker of the start composer", () => {
 	});
 
 	/** The machines, each of whose Claude Code reports these options. */
-	const reporting = (options: { models: Array<{ id: string; name: string | null; efforts: string[] }>; defaultModel: string }) => (list: MachineSummary[]) =>
-		list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, optionsDigest: undefined, options: { ...options, modes: [], checkedAt: 1 } })) }));
+	const reporting =
+		(options: { models: Array<{ id: string; name: string | null; efforts: string[] }>; defaultModel: string }) =>
+		(list: MachineSummary[]) =>
+			list.map(machine => ({
+				...machine,
+				harnesses: machine.harnesses?.map(harness => ({
+					...harness,
+					optionsDigest: undefined,
+					options: { ...options, modes: [], checkedAt: 1 },
+				})),
+			}));
 	/** The agent picker's rows of Claude Code's models: each as shown (its "default" tag after it), and whether it is chosen. */
-	const modelRows = () => [...pop().querySelectorAll('[data-value^="claude:"]')].map((row) => [`${row.querySelector(".ui-item-label")?.textContent}${row.querySelector(".ui-tag") ? " default" : ""}`, row.getAttribute("aria-checked") === "true"]);
+	const modelRows = () =>
+		[...pop().querySelectorAll('[data-value^="claude:"]')].map(row => [
+			`${row.querySelector(".ui-item-label")?.textContent}${row.querySelector(".ui-tag") ? " default" : ""}`,
+			row.getAttribute("aria-checked") === "true",
+		]);
 
 	it("offers Claude Code's models and efforts as its machine's runner reported them, and sends the ones chosen", async () => {
 		const models = [
@@ -529,27 +662,46 @@ describe("each picker of the start composer", () => {
 describe("what the start composer starts on", () => {
 	/** An agent of the user's launched on no repository, on "nas", in the hardened container, on the second model and in Ask: the newest of all. */
 	const lastOnNas = async (mock: MockClient) => {
-		await mock.user(ada).createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-sol", mode: "ask" });
+		await mock.user(ada).createSession({
+			place: { kind: "machine", machineId: "m_nas" },
+			profile: "docker-hardened",
+			model: "gpt-6-sol",
+			mode: "ask",
+		});
 	};
 
 	it("launches with the repository's machine and profile over the account place and hosted sandbox", async () => {
-		await show({ repositoryId: 7101, before: async mock => {
-			const user = mock.user(ada);
-			await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
-			await user.saveRepositoryDefaults(7101, { startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-windlass-sandbox" } });
-		} });
+		await show({
+			repositoryId: 7101,
+			before: async mock => {
+				const user = mock.user(ada);
+				await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
+				await user.saveRepositoryDefaults(7101, {
+					startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-windlass-sandbox" },
+				});
+			},
+		});
 		expect(value("on")).toBe("nas");
 		write("Run the tests");
 		await enter();
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-windlass-sandbox" });
+		expect(created[0]).toMatchObject({
+			place: { kind: "machine", machineId: "m_nas" },
+			profile: "docker-windlass-sandbox",
+		});
 	});
 
 	it("explains a removed repository machine and uses the account default", async () => {
-		await show({ repositoryId: 7101, machines: () => [], before: async mock => {
-			const user = mock.user(ada);
-			await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
-			await user.saveRepositoryDefaults(7101, { startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-hardened" } });
-		} });
+		await show({
+			repositoryId: 7101,
+			machines: () => [],
+			before: async mock => {
+				const user = mock.user(ada);
+				await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
+				await user.saveRepositoryDefaults(7101, {
+					startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-hardened" },
+				});
+			},
+		});
 		expect(value("on")).toBe("Hosted");
 		open("on");
 		expect(pop().textContent).toContain("machine from your repository default is no longer paired");
@@ -566,7 +718,12 @@ describe("what the start composer starts on", () => {
 	});
 
 	it("puts the account's saved default before the newest agent's, and the repository's before the account's", async () => {
-		await show({ before: async (mock) => (await lastOnNas(mock), void (await mock.user(ada).saveAccountDefaults({ model: "gpt-6.1-sol", profile: "docker-windlass-sandbox" }))) });
+		await show({
+			before: async mock => (
+				await lastOnNas(mock),
+				void (await mock.user(ada).saveAccountDefaults({ model: "gpt-6.1-sol", profile: "docker-windlass-sandbox" }))
+			),
+		});
 		created = [];
 		write("Look around");
 		await enter();
@@ -577,7 +734,11 @@ describe("what the start composer starts on", () => {
 		client.dispose();
 		created = [];
 		// Opened from acme/harbor's page: its saved defaults come first.
-		await show({ repositoryId: 7101, before: async (mock) => void (await mock.user(ada).saveAccountDefaults({ model: "gpt-6.1-sol", profile: "docker-windlass-sandbox" })) });
+		await show({
+			repositoryId: 7101,
+			before: async mock =>
+				void (await mock.user(ada).saveAccountDefaults({ model: "gpt-6.1-sol", profile: "docker-windlass-sandbox" })),
+		});
 		write("Look around");
 		await enter();
 		expect(created[0]).toMatchObject({ repository: { id: 7101 }, profile: "docker-hardened", model: "gpt-6-luna" });
@@ -607,7 +768,11 @@ describe("the start composer and the visit to GitHub", () => {
 		// The browser leaves for GitHub here; jsdom stays, with what was kept for the way back.
 		press("Connect GitHub");
 		await settle();
-		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({ prompt: "Add a health check", place: "m_nas", mode: "ask" });
+		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({
+			prompt: "Add a health check",
+			place: "m_nas",
+			mode: "ask",
+		});
 		// Back from GitHub: the page loads again.
 		act(() => root?.unmount());
 		root = null;
@@ -639,7 +804,15 @@ describe("connecting GitHub from the start composer in a popup", () => {
 	});
 	const popupOpens = () => {
 		window.open = (() => {
-			opened = { location: { href: "about:blank" }, closed: false, close() { this.closed = true; }, focus() {}, document: document.implementation.createHTMLDocument("") };
+			opened = {
+				location: { href: "about:blank" },
+				closed: false,
+				close() {
+					this.closed = true;
+				},
+				focus() {},
+				document: document.implementation.createHTMLDocument(""),
+			};
 			return opened as unknown as Window;
 		}) as typeof window.open;
 	};
@@ -649,11 +822,20 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		document.body.append(frame);
 		const from = frame.contentWindow as Window;
 		Object.defineProperty(from, "opener", { value: window });
-		await act(async () => void window.dispatchEvent(new MessageEvent("message", { origin: location.origin, source: from, data: { type: "wlp.github.return", hash } })));
+		await act(
+			async () =>
+				void window.dispatchEvent(
+					new MessageEvent("message", {
+						origin: location.origin,
+						source: from,
+						data: { type: "wlp.github.return", hash },
+					}),
+				),
+		);
 		if (opened) opened.closed = true;
 		frame.remove();
 		// The picker lists again after its search's pause.
-		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 400))));
+		await act(async () => void (await new Promise(resolve => setTimeout(resolve, 400))));
 		await settle(20);
 	};
 
@@ -696,9 +878,11 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		await settle(40);
 		act(() => opened?.close());
 		// It looks every half second, and waits a moment for a message that may be on its way.
-		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 1500))));
+		await act(async () => void (await new Promise(resolve => setTimeout(resolve, 1500))));
 		await settle();
-		expect(host.textContent + (pop()?.textContent ?? "")).toContain("GitHub was not connected: its window was closed before it finished.");
+		expect(host.textContent + (pop()?.textContent ?? "")).toContain(
+			"GitHub was not connected: its window was closed before it finished.",
+		);
 		expect(field().value).toBe("Add a health check");
 		expect(await client.user(who).github()).toEqual({ connection: null });
 	});
@@ -712,7 +896,9 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		press("Connect GitHub");
 		await settle();
 		expect(asked).toBe(1);
-		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({ prompt: "Add a health check" });
+		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({
+			prompt: "Add a health check",
+		});
 	});
 });
 
@@ -721,23 +907,37 @@ it("opens an item's repository placement in the composer and honors an explicit 
 	saveAuth("mock", ada);
 	const user = client.user(ada);
 	await user.saveAccountDefaults({ place: "hosted" });
-	await user.saveRepositoryDefaults(7101, { place: { machine: "m_nas" }, harness: "claude", reviewModel: "gpt-6-sol", machineProfile: "docker-hardened" });
+	await user.saveRepositoryDefaults(7101, {
+		place: { machine: "m_nas" },
+		harness: "claude",
+		reviewModel: "gpt-6-sol",
+		machineProfile: "docker-hardened",
+	});
 	root = createRoot(host);
-	act(() => root!.render(createElement(AppProvider, { client, children: createElement(StartComposer, { kind: "item", sessions: [], items: [], repositoryId: 7101 }) })));
+	act(() =>
+		root!.render(
+			createElement(AppProvider, {
+				client,
+				children: createElement(StartComposer, { kind: "item", sessions: [], items: [], repositoryId: 7101 }),
+			}),
+		),
+	);
 	await settle();
 	expect(value("on")).toContain("nas");
 	// Plan first: the parts start from the repository's agent, and the line says where that comes from.
 	expect(value("agent")).toContain("Claude Code");
 	const line = host.querySelector(".run-line")!.textContent!;
 	expect(line).toContain("Parts run on");
-	expect(host.querySelector(".start-run")?.textContent).toContain("Planning and review run on Windlass with GPT-6 Sol.");
+	expect(host.querySelector(".start-run")?.textContent).toContain(
+		"Planning and review run on Windlass with GPT-6 Sol.",
+	);
 	expect(line).toContain("nas · Claude Code");
 	expect(line).toContain("set for this repository");
 	open("where");
 	pick("platform");
 	expect(value("on")).toBe("Hosted");
 	write("Run this one on the platform");
-	const title = host.querySelector<HTMLInputElement>('.start-item input[maxlength]')!;
+	const title = host.querySelector<HTMLInputElement>(".start-item input[maxlength]")!;
 	expect(title.value).toBe("Run this one on the platform");
 	write("Check  hosted placement", title);
 	await launchMenu("File as a draft");

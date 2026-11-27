@@ -73,22 +73,42 @@ export function attachmentStore(): ObjectStore | null {
 
 type Owner = { by: ItemAttachment["by"]; uid: string; sessionId: string; itemId: string; key: string };
 export type Reservation = { sessionId: string; itemId: string; key: string; sha256: string; bytes: number };
-export type ReserveResult = { id: string; width: number; height: number; key: string; at: number } | { refused: "item" | "account" | "item_ended" | "too_large" };
+export type ReserveResult =
+	| { id: string; width: number; height: number; key: string; at: number }
+	| { refused: "item" | "account" | "item_ended" | "too_large" };
 export interface AttachmentLedger {
 	internalReserveAttachment(input: Reservation): Promise<ReserveResult>;
 	internalRecordAttachment(input: { id: string; width: number; height: number }): Promise<void>;
 	internalReleaseAttachment(id: string): Promise<void>;
-	internalSettleAttachments(input: { sessionId: string; key: string; keep: string[] }): Promise<Array<{ id: string; key: string }>>;
+	internalSettleAttachments(input: {
+		sessionId: string;
+		key: string;
+		keep: string[];
+	}): Promise<Array<{ id: string; key: string }>>;
 	internalDeleteItemAttachments(itemId: string): Promise<void>;
 }
 
-async function step(sandbox: SandboxHandle, name: string, script: string, env: Record<string, string>, signal?: AbortSignal, stdin?: string): Promise<string[]> {
-	const result = await sandbox.run(script, { cwd: "/", env: { WLP_ATTACH_STEP: name, ...env }, timeoutMs: STEP_TIMEOUT_MS, signal, stdin });
-	if (result.timedOut || result.aborted || result.exitCode !== 0) throw new Error("The screenshot step did not finish.");
+async function step(
+	sandbox: SandboxHandle,
+	name: string,
+	script: string,
+	env: Record<string, string>,
+	signal?: AbortSignal,
+	stdin?: string,
+): Promise<string[]> {
+	const result = await sandbox.run(script, {
+		cwd: "/",
+		env: { WLP_ATTACH_STEP: name, ...env },
+		timeoutMs: STEP_TIMEOUT_MS,
+		signal,
+		stdin,
+	});
+	if (result.timedOut || result.aborted || result.exitCode !== 0)
+		throw new Error("The screenshot step did not finish.");
 	const lines = result.stdout.trim().split("\n");
 	if (
 		(name !== "pack" && lines.length !== 1) ||
-		!lines.every((line) =>
+		!lines.every(line =>
 			/^(?:clean|changed|http \d{3}|curl \d{1,3}|refused \d+ (?:missing|outside|not_regular|too_large)|file \d+ \d+ [a-f0-9]{64} \/tmp\/\.wlp-attach-[a-f0-9]{24}-\d+\.png)$/.test(
 				line,
 			),
@@ -120,13 +140,19 @@ export async function uploadShots(
 		if (owner.by === "reviewer") {
 			const result = await sandbox.run(WORKSPACE_HEAD_COMMAND, { cwd: top, timeoutMs: STEP_TIMEOUT_MS, signal });
 			head = result.stdout.trim();
-			if (result.exitCode !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) throw new Error("Cannot read the checkout.");
+			if (result.exitCode !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head))
+				throw new Error("Cannot read the checkout.");
 		}
 		const lines = await step(
 			sandbox,
 			"pack",
 			ATTACH_PACK,
-			{ WLP_ATTACH_TOP: top, WLP_ATTACH_MAX: String(max), WLP_ATTACH_FILES: shots.map((shot) => shot.file).join("\n"), WLP_ATTACH_COPY: copy },
+			{
+				WLP_ATTACH_TOP: top,
+				WLP_ATTACH_MAX: String(max),
+				WLP_ATTACH_FILES: shots.map(shot => shot.file).join("\n"),
+				WLP_ATTACH_COPY: copy,
+			},
 			signal,
 		);
 		if (lines.length !== shots.length) throw new Error("Incomplete screenshot list.");
@@ -138,13 +164,26 @@ export async function uploadShots(
 				continue;
 			}
 			const bytes = Number(size);
-			if (kind !== "file" || index !== String(i) || path !== `${copy}-${i}.png` || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > max) {
+			if (
+				kind !== "file" ||
+				index !== String(i) ||
+				path !== `${copy}-${i}.png` ||
+				!Number.isSafeInteger(bytes) ||
+				bytes < 1 ||
+				bytes > max
+			) {
 				problem("Capture a nonempty PNG within the size limit and file it again.");
 				continue;
 			}
 			let pending: string | null = null;
 			try {
-				const reservation = await ledger.internalReserveAttachment({ sessionId: owner.sessionId, itemId: owner.itemId, key: owner.key, bytes, sha256 });
+				const reservation = await ledger.internalReserveAttachment({
+					sessionId: owner.sessionId,
+					itemId: owner.itemId,
+					key: owner.key,
+					bytes,
+					sha256,
+				});
 				if ("refused" in reservation) {
 					problem(refused[reservation.refused]);
 					continue;
@@ -154,13 +193,29 @@ export async function uploadShots(
 				if (!width) {
 					pending = id;
 					const { key, at } = reservation;
-					const link = await store.linkToPut(key, { size: bytes, contentType: "image/png", ttlMs: ATTACHMENT_PUT_TTL_MS });
+					const link = await store.linkToPut(key, {
+						size: bytes,
+						contentType: "image/png",
+						ttlMs: ATTACHMENT_PUT_TTL_MS,
+					});
 					// A delayed reservation reply must never hand out a link beyond the ledger's cleanup window.
-					if (link.expiresAt > at + ATTACHMENT_PUT_TTL_MS + STEP_TIMEOUT_MS) throw new Error("The upload reservation is stale.");
+					if (link.expiresAt > at + ATTACHMENT_PUT_TTL_MS + STEP_TIMEOUT_MS)
+						throw new Error("The upload reservation is stale.");
 					if (/["\\\s]/.test(link.url)) throw new Error("Unusable link.");
-					const [answer] = await step(sandbox, "upload", ATTACH_UPLOAD, { WLP_ATTACH_PATH: path, WLP_ATTACH_SHA: sha256 }, signal, `url = "${link.url}"\n`);
+					const [answer] = await step(
+						sandbox,
+						"upload",
+						ATTACH_UPLOAD,
+						{ WLP_ATTACH_PATH: path, WLP_ATTACH_SHA: sha256 },
+						signal,
+						`url = "${link.url}"\n`,
+					);
 					if (answer !== "http 200") {
-						problem(answer === "changed" ? "The packed copy changed. Capture it again." : "Storage did not accept the upload. File it again.");
+						problem(
+							answer === "changed"
+								? "The packed copy changed. Capture it again."
+								: "Storage did not accept the upload. File it again.",
+						);
 						continue;
 					}
 					if ((await store.size(key)) !== bytes) {
@@ -203,7 +258,10 @@ export async function uploadShots(
 			}
 		}
 	} catch {
-		for (const shot of shots) problems.push(`\`${shot.file}\`: The platform could not read the screenshot from this checkout. Save it and file it again.`);
+		for (const shot of shots)
+			problems.push(
+				`\`${shot.file}\`: The platform could not read the screenshot from this checkout. Save it and file it again.`,
+			);
 	} finally {
 		await clean().catch(() => {});
 	}

@@ -1,5 +1,12 @@
 /** Reduce one session feed, batch notifications per frame and recover missing timeline items from a snapshot. */
-import type { PendingQuestion, SandboxProfile, SecretRequest, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
+import type {
+	PendingQuestion,
+	SandboxProfile,
+	SecretRequest,
+	SessionSnapshot,
+	SessionSummary,
+	TimelineItem,
+} from "@contract";
 import type { ConnectionState, PlatformError, SessionApi } from "../api/client";
 import { applyDelta, applyItem, emptyView, fromSnapshot, type SessionView } from "../lib/timeline";
 
@@ -22,8 +29,20 @@ export interface SessionState {
 }
 
 /** The open secret request once `item` is in: asked by its line, closed by a turn that starts (a message that steers leaves it). */
-export function secretRequestAfter(open: SessionState["secretRequest"], item: TimelineItem, summary: SessionSummary | null): SessionState["secretRequest"] {
-	if (item.kind === "platform" && item.secretRequest) return summary?.item ? null : { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why, ...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }) };
+export function secretRequestAfter(
+	open: SessionState["secretRequest"],
+	item: TimelineItem,
+	summary: SessionSummary | null,
+): SessionState["secretRequest"] {
+	if (item.kind === "platform" && item.secretRequest)
+		return summary?.item
+			? null
+			: {
+					id: item.secretRequest.id,
+					name: item.secretRequest.name,
+					why: item.secretRequest.why,
+					...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }),
+				};
 	if (item.kind === "user" && item.steer !== true) return null;
 	return open;
 }
@@ -40,7 +59,18 @@ const frame = (run: () => void): void => {
 };
 
 export function createSessionStore(api: SessionApi): SessionStore {
-	let state: SessionState = { phase: "loading", connection: "connecting", error: null, summary: null, profile: null, view: emptyView(), question: null, turnsEnded: 0, machine: undefined, secretRequest: null };
+	let state: SessionState = {
+		phase: "loading",
+		connection: "connecting",
+		error: null,
+		summary: null,
+		profile: null,
+		view: emptyView(),
+		question: null,
+		turnsEnded: 0,
+		machine: undefined,
+		secretRequest: null,
+	};
 	const listeners = new Set<() => void>();
 	let scheduled = false;
 	let resyncing = false;
@@ -65,13 +95,26 @@ export function createSessionStore(api: SessionApi): SessionStore {
 			return api.open({
 				onSnapshot(snapshot) {
 					resyncing = false;
-					set({ phase: "ready", error: null, summary: snapshot.summary, profile: snapshot.profile, view: fromSnapshot(snapshot), question: snapshot.question ?? null, machine: snapshot.machine, secretRequest: snapshot.summary.item ? null : (snapshot.secretRequest ?? null) });
+					set({
+						phase: "ready",
+						error: null,
+						summary: snapshot.summary,
+						profile: snapshot.profile,
+						view: fromSnapshot(snapshot),
+						question: snapshot.question ?? null,
+						machine: snapshot.machine,
+						secretRequest: snapshot.summary.item ? null : (snapshot.secretRequest ?? null),
+					});
 				},
 				onItem(item) {
 					if (state.phase !== "ready") return;
 					const view = applyItem(state.view, item);
 					if (view === state.view) return;
-					set({ view, turnsEnded: item.kind === "turn.ended" ? state.turnsEnded + 1 : state.turnsEnded, secretRequest: secretRequestAfter(state.secretRequest, item, state.summary) });
+					set({
+						view,
+						turnsEnded: item.kind === "turn.ended" ? state.turnsEnded + 1 : state.turnsEnded,
+						secretRequest: secretRequestAfter(state.secretRequest, item, state.summary),
+					});
 					// Items were lost between the last one and this one: rebuild from a fresh snapshot.
 					if (view.gap && !resyncing) {
 						resyncing = true;

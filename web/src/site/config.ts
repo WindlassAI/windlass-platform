@@ -10,7 +10,10 @@
 
 export const SITE_NAME = "Windlass";
 
-export const SITE_URL: string = (import.meta.env.VITE_WLP_SITE_URL || "https://windlass.parthg.dev").replace(/\/+$/, "");
+export const SITE_URL: string = (import.meta.env.VITE_WLP_SITE_URL || "https://windlass.parthg.dev").replace(
+	/\/+$/,
+	"",
+);
 
 export const ACCESS_URL: string | null = import.meta.env.VITE_WLP_ACCESS_URL || null;
 

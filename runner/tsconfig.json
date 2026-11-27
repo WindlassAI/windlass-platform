@@ -1,4 +1,7 @@
 {
   "extends": "../server/tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "node_modules/.cache/tsc/runner.tsbuildinfo"
+  },
   "include": ["src", "../scripts/runner-check.ts", "../scripts/runner-stub-server.ts"]
 }

@@ -1,6 +1,15 @@
 import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { monthState } from "../lib/hosted";
-import type { AccountSettings, ChatgptStatus, FactoryLimits, MachineSummary, ModelProviderStatus, ModelList, SessionSummary, UsageNumbers } from "@contract";
+import type {
+	AccountSettings,
+	ChatgptStatus,
+	FactoryLimits,
+	MachineSummary,
+	ModelProviderStatus,
+	ModelList,
+	SessionSummary,
+	UsageNumbers,
+} from "@contract";
 import type { HarnessOptions } from "@contract";
 import type { Catalogs } from "../lib/subtask-agents";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -35,10 +44,17 @@ export function useHostedProviders(enabled = true) {
 	useEffect(() => {
 		if (!enabled) return;
 		return watchModelChanges(isCurrent => {
-			client.user(auth).modelProviders().then(
-				rows => { if (isCurrent()) setProviders(rows); },
-				() => { if (isCurrent()) setProviders([]); },
-			);
+			client
+				.user(auth)
+				.modelProviders()
+				.then(
+					rows => {
+						if (isCurrent()) setProviders(rows);
+					},
+					() => {
+						if (isCurrent()) setProviders([]);
+					},
+				);
 		});
 	}, [client, auth, enabled]);
 	return providers;
@@ -74,19 +90,25 @@ export interface AccountState {
 export function useAccount(): AccountState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<Pick<AccountState, "settings" | "error" | "reading">>({ settings: null, error: null, reading: true });
+	const [state, setState] = useState<Pick<AccountState, "settings" | "error" | "reading">>({
+		settings: null,
+		error: null,
+		reading: true,
+	});
 	// A saved replacement also invalidates reads already in flight.
 	const asked = useRef(0);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
-		setState((now) => ({ ...now, reading: true }));
+		setState(now => ({ ...now, reading: true }));
 		client
 			.user(auth)
 			.account()
 			.then(
-				(settings) => mine === asked.current && setState({ settings, error: null, reading: false }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ settings: now.settings, error: explain(failure), reading: false })),
+				settings => mine === asked.current && setState({ settings, error: null, reading: false }),
+				(failure: unknown) =>
+					mine === asked.current &&
+					setState(now => ({ settings: now.settings, error: explain(failure), reading: false })),
 			);
 	}, [client, auth, explain]);
 
@@ -118,10 +140,13 @@ export function useModels(): ModelsState {
 	useEffect(() => {
 		setState({ list: null, error: null, reading: true });
 		return watchModelChanges(isCurrent => {
-			client.user(auth).models().then(
-				list => isCurrent() && setState({ list, error: null, reading: false }),
-				(failure: unknown) => isCurrent() && setState({ list: null, error: explain(failure), reading: false }),
-			);
+			client
+				.user(auth)
+				.models()
+				.then(
+					list => isCurrent() && setState({ list, error: null, reading: false }),
+					(failure: unknown) => isCurrent() && setState({ list: null, error: explain(failure), reading: false }),
+				);
 		});
 	}, [client, auth, explain]);
 	return state;
@@ -134,10 +159,10 @@ export function useSessions(): SessionsState {
 	useEffect(() => {
 		setState({ sessions: null, connection: "connecting", error: null });
 		return client.user(auth).watch({
-			onSessions: (sessions) => setState((current) => ({ ...current, sessions })),
+			onSessions: sessions => setState(current => ({ ...current, sessions })),
 			onConnection: (connection, error) => {
 				if (error) explain(error);
-				setState((current) => ({ ...current, connection, error: error ?? null }));
+				setState(current => ({ ...current, connection, error: error ?? null }));
 			},
 		});
 	}, [client, auth, explain]);
@@ -155,12 +180,25 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 		let version = 0;
 		const stop = watchModelChanges(() => {
 			const mine = ++version;
-			client.user(auth).chatgpt().then(
-				value => { if (mine === version) { setStatus(value); setError(null); } },
-				failure => { if (mine === version) setError(explain(failure)); },
-			);
+			client
+				.user(auth)
+				.chatgpt()
+				.then(
+					value => {
+						if (mine === version) {
+							setStatus(value);
+							setError(null);
+						}
+					},
+					failure => {
+						if (mine === version) setError(explain(failure));
+					},
+				);
 		});
-		return () => { version++; stop(); };
+		return () => {
+			version++;
+			stop();
+		};
 	}, [client, auth, explain]);
 	return { status, error };
 }
@@ -169,7 +207,10 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 export function useFactoryLimits(enabled = true): { value: FactoryLimits | null; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [limits, setLimits] = useState<{ value: FactoryLimits | null; error: string | null }>({ value: null, error: null });
+	const [limits, setLimits] = useState<{ value: FactoryLimits | null; error: string | null }>({
+		value: null,
+		error: null,
+	});
 	useEffect(() => {
 		if (!enabled) return;
 		let current = true;
@@ -177,7 +218,7 @@ export function useFactoryLimits(enabled = true): { value: FactoryLimits | null;
 			.user(auth)
 			.factoryLimits()
 			.then(
-				(value) => current && setLimits({ value, error: null }),
+				value => current && setLimits({ value, error: null }),
 				(failure: unknown) => current && setLimits({ value: null, error: explain(failure) }),
 			);
 		return () => {
@@ -214,7 +255,7 @@ export function useAllowance(key: unknown = 0, enabled = true): UsageNumbers | n
 				.user(auth)
 				.allowance()
 				.then(
-					(value) => current && setNumbers(value),
+					value => current && setNumbers(value),
 					() => current && setNumbers(null),
 				);
 		};
@@ -250,14 +291,28 @@ export function useCatalogs(machines: readonly MachineSummary[] | null): Catalog
 	const { client } = useApp();
 	const auth = useAuth();
 	const [catalogs, setCatalogs] = useState<Record<string, HarnessOptions>>({});
-	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest).map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode" | "codex", digest: entry.optionsDigest! })));
-	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
+	const wanted = (machines ?? []).flatMap(machine =>
+		(machine.harnesses ?? [])
+			.filter(entry => entry.optionsDigest)
+			.map(entry => ({
+				machineId: machine.machineId,
+				id: entry.id as "claude" | "opencode" | "codex",
+				digest: entry.optionsDigest!,
+			})),
+	);
+	const keys = wanted.map(one => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
 	useEffect(() => {
 		let current = true;
 		for (const one of wanted) {
 			const key = `${one.machineId}/${one.id}/${one.digest}`;
 			if (catalogs[key]) continue;
-			client.user(auth).machineCatalog(one).then((options) => current && options && setCatalogs((now) => ({ ...now, [key]: options })), () => undefined);
+			client
+				.user(auth)
+				.machineCatalog(one)
+				.then(
+					options => current && options && setCatalogs(now => ({ ...now, [key]: options })),
+					() => undefined,
+				);
 		}
 		return () => {
 			current = false;
@@ -266,7 +321,10 @@ export function useCatalogs(machines: readonly MachineSummary[] | null): Catalog
 	}, [client, auth, keys]);
 	const out: Catalogs = {};
 	for (const one of wanted) {
-		const options = availableCatalog(catalogs[`${one.machineId}/${one.id}/${one.digest}`], machines?.find(m => m.machineId === one.machineId)?.harnesses?.find(h => h.id === one.id));
+		const options = availableCatalog(
+			catalogs[`${one.machineId}/${one.id}/${one.digest}`],
+			machines?.find(m => m.machineId === one.machineId)?.harnesses?.find(h => h.id === one.id),
+		);
 		if (options) (out[one.machineId] ??= {})[one.id] = options;
 	}
 	return out;

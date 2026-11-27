@@ -33,5 +33,9 @@ export function isolationName(id: SandboxProfileId | string): string {
 
 /** What an Open profile's commands reach, by its network policy. */
 export function openLine(network: "open" | "restricted" | "none"): string {
-	return network === "open" ? ISOLATION_LINES.open : network === "restricted" ? "Commands run freely and reach only allowed hosts." : "Commands run freely, with no internet.";
+	return network === "open"
+		? ISOLATION_LINES.open
+		: network === "restricted"
+			? "Commands run freely and reach only allowed hosts."
+			: "Commands run freely, with no internet.";
 }

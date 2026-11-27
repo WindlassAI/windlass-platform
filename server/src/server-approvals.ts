@@ -55,11 +55,21 @@ export interface ApprovalProject {
 }
 
 /** The project of a session: its repository, or the session itself when it has none. */
-export function projectOf(session: { sessionId: string; repoUrl: string | null; repo?: { id: GithubId; owner: string; name: string } | null }): ApprovalProject {
+export function projectOf(session: {
+	sessionId: string;
+	repoUrl: string | null;
+	repo?: { id: GithubId; owner: string; name: string } | null;
+}): ApprovalProject {
 	// A repository of the GitHub connection is known by GitHub's id: its owner and name can change.
-	if (session.repo) return { key: `github:${session.repo.id}`, kind: "github", label: `${session.repo.owner}/${session.repo.name}` };
+	if (session.repo)
+		return { key: `github:${session.repo.id}`, kind: "github", label: `${session.repo.owner}/${session.repo.name}` };
 	// A pasted address is taken as it is stored. Two spellings of one repository are two projects: the second asks once more.
-	if (session.repoUrl) return { key: `address:${session.repoUrl}`, kind: "address", label: session.repoUrl.replace(/^https:\/\//, "").replace(/\/$/, "") };
+	if (session.repoUrl)
+		return {
+			key: `address:${session.repoUrl}`,
+			kind: "address",
+			label: session.repoUrl.replace(/^https:\/\//, "").replace(/\/$/, ""),
+		};
 	return { key: sessionProjectKey(session.sessionId), kind: "session", label: "this session" };
 }
 
@@ -88,7 +98,10 @@ export interface BookChange {
 	removed: ServerApproval[];
 }
 
-const same = (a: Pick<ServerApproval, "project" | "name" | "fingerprint">, b: Pick<ServerApproval, "project" | "name" | "fingerprint">) => a.project === b.project && a.name === b.name && a.fingerprint === b.fingerprint;
+const same = (
+	a: Pick<ServerApproval, "project" | "name" | "fingerprint">,
+	b: Pick<ServerApproval, "project" | "name" | "fingerprint">,
+) => a.project === b.project && a.name === b.name && a.fingerprint === b.fingerprint;
 
 /** One user's remembered approvals. Every method takes the time, so nothing here reads a clock. */
 export class ApprovalBook {
@@ -107,47 +120,49 @@ export class ApprovalBook {
 
 	/** The approvals of one project that have not run out, the newest first. */
 	of(project: string, now: number): ServerApproval[] {
-		return this.rows.filter((row) => row.project === project && row.expiresAt > now).sort((a, b) => b.approvedAt - a.approvedAt);
+		return this.rows
+			.filter(row => row.project === project && row.expiresAt > now)
+			.sort((a, b) => b.approvedAt - a.approvedAt);
 	}
 
 	/** The approval of exactly this definition, when one is remembered and has not run out. */
 	find(project: string, name: string, fingerprint: string, now: number): ServerApproval | null {
 		if (fingerprint === "") return null;
-		return this.rows.find((row) => same(row, { project, name, fingerprint }) && row.expiresAt > now) ?? null;
+		return this.rows.find(row => same(row, { project, name, fingerprint }) && row.expiresAt > now) ?? null;
 	}
 
 	/** The user approved: remembered from now, in place of an earlier approval of the same definition. */
 	approve(input: { project: string; label: string; name: string; fingerprint: string }, now: number): BookChange {
 		if (input.project === "" || input.name === "" || input.fingerprint === "") return { added: [], removed: [] };
 		const approval: ServerApproval = { ...input, approvedAt: now, expiresAt: now + this.ttlMs };
-		const kept = this.rows.filter((row) => row.expiresAt > now && !same(row, approval));
+		const kept = this.rows.filter(row => row.expiresAt > now && !same(row, approval));
 		kept.push(approval);
 		// Somebody who approves again and again leaves no more than the book holds.
 		kept.sort((a, b) => a.approvedAt - b.approvedAt);
 		const rows = kept.slice(-MAX_APPROVALS);
-		const removed = this.rows.filter((row) => !rows.includes(row));
+		const removed = this.rows.filter(row => !rows.includes(row));
 		this.rows = rows;
 		return { added: [approval], removed };
 	}
 
 	/** Forgets every approval of that server for that project, whatever its definition was. */
 	forget(project: string, name: string): BookChange {
-		return this.drop((row) => row.project === project && row.name === name);
+		return this.drop(row => row.project === project && row.name === name);
 	}
 
 	/** Forgets everything remembered for a project: a session that was its own project is gone. */
 	forgetProject(project: string): BookChange {
-		return this.drop((row) => row.project === project);
+		return this.drop(row => row.project === project);
 	}
 
 	/** Drops what has run out. */
 	prune(now: number): BookChange {
-		return this.drop((row) => row.expiresAt <= now);
+		return this.drop(row => row.expiresAt <= now);
 	}
 
 	private drop(test: (row: ServerApproval) => boolean): BookChange {
 		const removed = this.rows.filter(test);
-		if (removed.length > 0) this.rows = this.rows.filter((row) => !removed.includes(row));
+		if (removed.length > 0) this.rows = this.rows.filter(row => !removed.includes(row));
 		return { added: [], removed };
 	}
 }
@@ -171,19 +186,34 @@ const STATES: readonly SessionServerState[] = ["running", "starting", "waiting",
 export function knownServers(known: readonly KnownServer[], said: readonly TurnServer[], at: number): KnownServer[] {
 	const next: KnownServer[] = [];
 	for (const server of said.slice(0, MAX_KNOWN_SERVERS)) {
-		if (typeof server?.name !== "string" || server.name === "" || next.some((one) => one.name === server.name)) continue;
+		if (typeof server?.name !== "string" || server.name === "" || next.some(one => one.name === server.name)) continue;
 		const argv = Array.isArray(server.argv) ? server.argv.map(String) : null;
 		const subject = argv === null ? String(server.url ?? "") : commandLine(argv);
 		const state: SessionServerState = STATES.includes(server.state) ? server.state : "stopped";
-		const before = known.find((one) => one.name === server.name);
+		const before = known.find(one => one.name === server.name);
 		const waitsWith = typeof server.fingerprint === "string" && server.fingerprint !== "" ? server.fingerprint : null;
-		const fingerprint = waitsWith ?? (before && before.subject === subject && state !== "waiting" ? before.fingerprint : null);
+		const fingerprint =
+			waitsWith ?? (before && before.subject === subject && state !== "waiting" ? before.fingerprint : null);
 		const tools = state === "running" && typeof server.tools === "number" ? server.tools : null;
-		const reason = state === "failed" && typeof server.error === "string" && server.error.trim() !== "" ? server.error.trim().replace(/\s*\n\s*/g, " ") : null;
+		const reason =
+			state === "failed" && typeof server.error === "string" && server.error.trim() !== ""
+				? server.error.trim().replace(/\s*\n\s*/g, " ")
+				: null;
 		const file = typeof server.file === "string" && server.file !== "" ? server.file : null;
 		// One of the user's own never waits and has no definition to approve: Windlass starts it unasked.
 		const own = server.origin === "user";
-		const one: KnownServer = { name: server.name, ...(own ? { origin: "user" as const } : {}), subject, remote: argv === null, file: own ? null : file, state, tools, reason, fingerprint: own ? null : fingerprint, at };
+		const one: KnownServer = {
+			name: server.name,
+			...(own ? { origin: "user" as const } : {}),
+			subject,
+			remote: argv === null,
+			file: own ? null : file,
+			state,
+			tools,
+			reason,
+			fingerprint: own ? null : fingerprint,
+			at,
+		};
 		// Nothing changed: the time it was first heard stays, so a reader can tell when it last did.
 		next.push(before && sameKnown(before, one) ? before : one);
 	}
@@ -191,7 +221,17 @@ export function knownServers(known: readonly KnownServer[], said: readonly TurnS
 }
 
 function sameKnown(a: KnownServer, b: KnownServer): boolean {
-	return a.name === b.name && (a.origin ?? "project") === (b.origin ?? "project") && a.subject === b.subject && a.remote === b.remote && a.file === b.file && a.state === b.state && a.tools === b.tools && a.reason === b.reason && a.fingerprint === b.fingerprint;
+	return (
+		a.name === b.name &&
+		(a.origin ?? "project") === (b.origin ?? "project") &&
+		a.subject === b.subject &&
+		a.remote === b.remote &&
+		a.file === b.file &&
+		a.state === b.state &&
+		a.tools === b.tools &&
+		a.reason === b.reason &&
+		a.fingerprint === b.fingerprint
+	);
 }
 
 /** Whether two lists say the same of every server. */
@@ -204,10 +244,13 @@ export function sameServers(a: readonly KnownServer[], b: readonly KnownServer[]
  * and where the session never saw it wait (Windlass started it from a record of its own), the newest
  * one of that name. `approvals` are the project's, the newest first.
  */
-export function approvalFor(server: Pick<KnownServer, "name" | "fingerprint">, approvals: readonly ServerApproval[]): ServerApproval | null {
-	const named = approvals.filter((approval) => approval.name === server.name);
+export function approvalFor(
+	server: Pick<KnownServer, "name" | "fingerprint">,
+	approvals: readonly ServerApproval[],
+): ServerApproval | null {
+	const named = approvals.filter(approval => approval.name === server.name);
 	if (server.fingerprint === null) return named[0] ?? null;
-	return named.find((approval) => approval.fingerprint === server.fingerprint) ?? null;
+	return named.find(approval => approval.fingerprint === server.fingerprint) ?? null;
 }
 
 /** The session's servers as its panel shows them. `asks` words the question about one that waits. */
@@ -220,15 +263,21 @@ export function serversView(
 ): SessionServers {
 	return {
 		project: { kind: project.kind, label: project.label },
-		servers: known.map((server) => {
+		servers: known.map(server => {
 			// A server of the user's own is in the account's settings, not in the project: nothing was approved, and nothing is asked.
 			if (server.origin === "user") return { ...server, approval: null };
 			const approval = approvalFor(server, approvals);
 			// An approval of another definition of the server: it does not start this one, and the user can still forget it.
-			const earlier = approval === null ? (approvals.find((other) => other.name === server.name) ?? null) : null;
-			const times = (one: ServerApproval | null) => (one === null ? null : { approvedAt: one.approvedAt, expiresAt: one.expiresAt });
+			const earlier = approval === null ? (approvals.find(other => other.name === server.name) ?? null) : null;
+			const times = (one: ServerApproval | null) =>
+				one === null ? null : { approvedAt: one.approvedAt, expiresAt: one.expiresAt };
 			const waits = server.state === "waiting" && server.fingerprint !== null && approval === null;
-			return { ...server, approval: times(approval), ...(earlier === null ? {} : { earlier: times(earlier) }), ...(waits ? { asks: asks(server) } : {}) };
+			return {
+				...server,
+				approval: times(approval),
+				...(earlier === null ? {} : { earlier: times(earlier) }),
+				...(waits ? { asks: asks(server) } : {}),
+			};
 		}),
 		forgetting,
 	};

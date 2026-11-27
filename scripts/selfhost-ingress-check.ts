@@ -8,7 +8,11 @@ import { StandInRunner, until } from "./runner-standin.js";
 
 const [config, webHost, engineHost] = process.argv.slice(2);
 assert(config && webHost && engineHost, "usage: selfhost-ingress-check.ts CONFIG WEB_HOST ENGINE_HOST");
-const cf = (...args: string[]) => execFileSync("cloudflared", ["tunnel", "--config", config, "ingress", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const cf = (...args: string[]) =>
+	execFileSync("cloudflared", ["tunnel", "--config", config, "ingress", ...args], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
 cf("validate");
 const services = new Map<string, string>();
 function match(host: string, path: string) {
@@ -23,21 +27,44 @@ function match(host: string, path: string) {
 }
 function loopback(service: string) {
 	const url = new URL(service);
-	assert(url.protocol === "http:" && url.hostname === "127.0.0.1" && url.origin === service, "Expected a loopback HTTP service");
+	assert(
+		url.protocol === "http:" && url.hostname === "127.0.0.1" && url.origin === service,
+		"Expected a loopback HTTP service",
+	);
 	return url;
 }
-for (const path of ["/namespaces", "/namespaces/default", "/pools", "/pools/default", "/nodes", "/envoys/connect", "/auth/tokens", "/actors", "/actors/id/fork", "/metadata", "/gateway/other/connect", "/unknown"]) {
+for (const path of [
+	"/namespaces",
+	"/namespaces/default",
+	"/pools",
+	"/pools/default",
+	"/nodes",
+	"/envoys/connect",
+	"/auth/tokens",
+	"/actors",
+	"/actors/id/fork",
+	"/metadata",
+	"/gateway/other/connect",
+	"/unknown",
+]) {
 	assert.equal(match(engineHost, path), "http_status:404", path + " must return an ingress 404");
 }
 assert.equal(match("unconfigured.invalid", "/"), "http_status:404");
 const web = loopback(match(webHost, "/")).origin;
-for (const path of ["/health", "/platform/info", "/platform/connection", "/runner/pair", "/runner/pair/poll", "/runner/connection"]) {
+for (const path of [
+	"/health",
+	"/platform/info",
+	"/platform/connection",
+	"/runner/pair",
+	"/runner/pair/poll",
+	"/runner/connection",
+]) {
 	assert.equal(match(webHost, path), web, path + " must reach the app");
 }
 assert.equal(match(engineHost, "/gateway/login/action/start"), "http_status:404");
 const gateway = loopback(match(engineHost, "/gateway/user/action/me")).origin;
 assert((await (await fetch(web + "/platform/info")).json()).demoEnabled, "Requires a demo stack");
-const discovery = async () => (await (await fetch(web + "/platform/connection")).json());
+const discovery = async () => await (await fetch(web + "/platform/connection")).json();
 const info = await discovery();
 assert.equal(info.endpoint, gateway, "Run against the selected loopback gateway");
 
@@ -49,7 +76,10 @@ function target(path: string) {
 	return new URL(service);
 }
 edge.on("request", (req, res) => {
-	if (match(engineHost, new URL(req.url!, gateway).pathname) === "http_status:404") { res.writeHead(404).end(); return; }
+	if (match(engineHost, new URL(req.url!, gateway).pathname) === "http_status:404") {
+		res.writeHead(404).end();
+		return;
+	}
 	const upstream = request(target(req.url!), { path: req.url, method: req.method, headers: req.headers }, reply => {
 		res.writeHead(reply.statusCode!, reply.headers);
 		reply.pipe(res);
@@ -61,7 +91,8 @@ edge.on("upgrade", (req, client, head) => {
 	const upstream = request(target(req.url!), { path: req.url, headers: req.headers });
 	upstream.on("upgrade", (reply, socket, rest) => {
 		client.write("HTTP/1.1 101 Switching Protocols\r\n");
-		for (let i = 0; i < reply.rawHeaders.length; i += 2) client.write(reply.rawHeaders[i] + ": " + reply.rawHeaders[i + 1] + "\r\n");
+		for (let i = 0; i < reply.rawHeaders.length; i += 2)
+			client.write(reply.rawHeaders[i] + ": " + reply.rawHeaders[i + 1] + "\r\n");
 		client.write("\r\n");
 		if (rest.length) client.write(rest);
 		if (head.length) socket.write(head);
@@ -70,7 +101,10 @@ edge.on("upgrade", (req, client, head) => {
 		client.on("close", () => socket.destroy());
 		socket.pipe(client).pipe(socket);
 	});
-	upstream.on("response", reply => { reply.resume(); client.destroy(); });
+	upstream.on("response", reply => {
+		reply.resume();
+		client.destroy();
+	});
 	upstream.on("error", () => client.destroy());
 	upstream.end();
 });
@@ -93,20 +127,34 @@ try {
 	for (const path of ["/namespaces", "/pools", "/auth/tokens", "/envoys/connect", "/actors"]) {
 		assert.equal((await fetch(endpoint + path, options)).status, 404);
 	}
-	const { profile: { uid }, token } = await loginHttp(web).demo();
+	const {
+		profile: { uid },
+		token,
+	} = await loginHttp(web).demo();
 	const user = client.user.get([uid], { params: { token } });
 	await runner.pair(user);
 	try {
 		await runner.connectControl();
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
-		await until("machine report", async () => (await user.machines()).some(m => m.machineId === place.machineId && m.commandSandbox));
+		await until("machine report", async () =>
+			(await user.machines()).some(m => m.machineId === place.machineId && m.commandSandbox),
+		);
 		const { id } = await user.createSession({ harness: "claude", profile: "docker-hardened", place });
 		const socket = client.agentSession.get([uid, id], { params: { token } }).connect();
 		try {
 			const { turn } = await socket.prompt({ text: "stream" });
-			await until("successful runner turn", async () => (await socket.snapshot()).timeline.some(i => i.kind === "turn.ended" && i.turn === turn && i.outcome === "succeeded"));
-		} finally { await socket.dispose(); await user.freeSandbox(id); }
-	} finally { await user.removeMachine({ machineId: runner.id.machineId, removeSandboxes: true }); }
+			await until("successful runner turn", async () =>
+				(await socket.snapshot()).timeline.some(
+					i => i.kind === "turn.ended" && i.turn === turn && i.outcome === "succeeded",
+				),
+			);
+		} finally {
+			await socket.dispose();
+			await user.freeSandbox(id);
+		}
+	} finally {
+		await user.removeMachine({ machineId: runner.id.machineId, removeSandboxes: true });
+	}
 	console.log("PASS ingress 404s, demo login, actor actions, control socket and streamed runner session");
 } finally {
 	await runner.setOffline(true);

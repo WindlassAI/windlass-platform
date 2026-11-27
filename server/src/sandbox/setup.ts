@@ -31,6 +31,7 @@
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { sandboxConnectionLost, type SandboxHandle, type Sandboxes } from "./api.js";
 import { isTurnSandbox, sweepSessionProcesses } from "./provider.js";
+import { errorText } from "../util.js";
 
 export interface SetupRun {
 	command: string;
@@ -79,7 +80,7 @@ export async function stopLeftoverSetup(sandbox: SandboxHandle): Promise<void> {
  * Throws when the sweep fails: the setup then stays "interrupted", and the next turn sweeps before it starts.
  */
 export async function stopCutOffSetup(sandboxes: Pick<Sandboxes, "state" | "connect">, id: string): Promise<boolean> {
-	if (await sandboxes.state(id) !== "running") return false;
+	if ((await sandboxes.state(id)) !== "running") return false;
 	const sandbox = await sandboxes.connect(id);
 	if (!sandbox) return false;
 	await stopLeftoverSetup(sandbox);
@@ -90,14 +91,20 @@ export async function stopCutOffSetup(sandboxes: Pick<Sandboxes, "state" | "conn
 export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Promise<SetupResult> {
 	const began = Date.now();
 	const redactor = run.redactor ?? NO_REDACTION;
-	const failed = (problem: string, error: unknown): SetupResult => ({ ...(sandboxConnectionLost(error) && { connectionLost: true }), state: "failed", exitCode: null, durationMs: Date.now() - began, problem: redactor.text(problem) });
+	const failed = (problem: string, error: unknown): SetupResult => ({
+		...(sandboxConnectionLost(error) && { connectionLost: true }),
+		state: "failed",
+		exitCode: null,
+		durationMs: Date.now() - began,
+		problem: redactor.text(problem),
+	});
 	if (run.signal?.aborted) return { state: "stopped", exitCode: null, durationMs: 0, problem: null };
 	let release: (() => Promise<void>) | null = null;
 	try {
 		// The layer's own sandboxes are held; another one (the tests' in-memory layer) has nothing that stops by itself.
 		if (isTurnSandbox(sandbox)) release = await sandbox.holdForTurn();
 	} catch (error) {
-		return failed(`The sandbox could not be kept running for it: ${error instanceof Error ? error.message : String(error)}`, error);
+		return failed(`The sandbox could not be kept running for it: ${errorText(error)}`, error);
 	}
 	let outcome: SetupResult;
 	try {
@@ -114,22 +121,42 @@ export async function runSetupCommand(sandbox: SandboxHandle, run: SetupRun): Pr
 		const emit = (text: string) => hand(stream.push(text));
 		// On the command's own first line, so that a line number bash names is the command's.
 		const result = await sandbox
-			.run(`exec 2>&1; ${run.command}`, { cwd: run.cwd, env: { [MARK]: "1" }, secretEnv: run.secretEnv, timeoutMs: run.timeoutMs, signal: run.signal, onStdout: emit, onStderr: emit })
+			.run(`exec 2>&1; ${run.command}`, {
+				cwd: run.cwd,
+				env: { [MARK]: "1" },
+				secretEnv: run.secretEnv,
+				timeoutMs: run.timeoutMs,
+				signal: run.signal,
+				onStdout: emit,
+				onStderr: emit,
+			})
 			.finally(() => hand(stream.flush()));
 		// A stop that came while it was ending on its own counts as the stop.
 		const durationMs = Date.now() - began;
-		if (result.aborted || run.signal?.aborted) outcome = { state: "stopped", exitCode: null, durationMs, problem: null };
+		if (result.aborted || run.signal?.aborted)
+			outcome = { state: "stopped", exitCode: null, durationMs, problem: null };
 		else if (result.timedOut) outcome = { state: "timed_out", exitCode: null, durationMs, problem: null };
-		else outcome = { state: result.exitCode === 0 ? "succeeded" : "failed", exitCode: result.exitCode, durationMs, problem: null };
+		else
+			outcome = {
+				state: result.exitCode === 0 ? "succeeded" : "failed",
+				exitCode: result.exitCode,
+				durationMs,
+				problem: null,
+			};
 	} catch (error) {
-		outcome = failed(`The sandbox could not run it: ${error instanceof Error ? error.message : String(error)}`, error);
+		outcome = failed(`The sandbox could not run it: ${errorText(error)}`, error);
 	}
 	try {
 		await stopLeftoverSetup(sandbox);
 		return outcome;
 	} catch (error) {
-		return { ...outcome, ...(outcome.state === "succeeded" && { state: "failed" as const, exitCode: null }), cleanupPending: true, problem: "The platform could not stop leftover setup processes.",
-			...(sandboxConnectionLost(error) && { connectionLost: true }) };
+		return {
+			...outcome,
+			...(outcome.state === "succeeded" && { state: "failed" as const, exitCode: null }),
+			cleanupPending: true,
+			problem: "The platform could not stop leftover setup processes.",
+			...(sandboxConnectionLost(error) && { connectionLost: true }),
+		};
 	} finally {
 		await release?.().catch(() => undefined);
 	}

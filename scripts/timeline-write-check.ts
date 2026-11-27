@@ -15,40 +15,56 @@ const next = () => new Promise<void>(r => setImmediate(r));
 
 const textOf = (update: AcpUpdate) => update.sessionUpdate === "agent_message_chunk" && update.content?.text;
 
-for (const action of ["sleep", "stop"] as const) test(action + " saves an unfinished ACP message even if the harness never acknowledges cancel", async t => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const f = fixture();
-	try {
-		const words = ["one", " two", " three"];
-		for (const word of words) f.chunk(word);
-		assert.deepEqual(f.deltas.map(d => "acp" in d && textOf(d.acp)), words);
-		const stopped = action === "sleep" ? agentSession.config.onSleep!(f.c as never) : agentSession.config.actions!.stop(f.c as never);
-		await next();
-		t.mock.timers.tick(10_000);
-		await stopped;
-		const stored = f.stored();
-		assert.equal(stored.length, 1, "one durable row for the open message");
-		const item = stored[0]!;
-		assert.ok(item.kind === "acp" && textOf(item.update) === words.join(""));
-		const live = f.deltas.reduce(applyDelta, emptyView());
-		const reload = fromSnapshot({ timeline: stored, pending: [], windlassSessionId: null });
-		const messages = (view: typeof live) => view.turns.flatMap(turn => turn.blocks.flatMap(b => b.kind === "text" ? [[b.messageId, b.text]] : []));
-		assert.deepEqual(messages(reload), messages(live));
-		assert.equal(f.items.length, 0, "storage checkpoint emitted an extra live item");
-		if (action === "stop") {
-			f.chunk(" four");
-			f.recorder.flush();
-			f.failInsert();
-			const snap = await agentSession.config.actions!.snapshot(f.c as never);
-			assert.deepEqual(snap.timeline, f.items, "snapshot must prefer the completed message in memory after a failed write");
-			t.mock.timers.tick(401);
-			await f.vars.serial;
-			assert.equal(f.stored().length, 1);
-			const final = f.stored()[0]!;
-			assert.ok(final.kind === "acp" && final.messageKey === item.messageKey && textOf(final.update) === "one two three four");
+for (const action of ["sleep", "stop"] as const)
+	test(action + " saves an unfinished ACP message even if the harness never acknowledges cancel", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const f = fixture();
+		try {
+			const words = ["one", " two", " three"];
+			for (const word of words) f.chunk(word);
+			assert.deepEqual(
+				f.deltas.map(d => "acp" in d && textOf(d.acp)),
+				words,
+			);
+			const stopped =
+				action === "sleep"
+					? agentSession.config.onSleep!(f.c as never)
+					: agentSession.config.actions!.stop(f.c as never);
+			await next();
+			t.mock.timers.tick(10_000);
+			await stopped;
+			const stored = f.stored();
+			assert.equal(stored.length, 1, "one durable row for the open message");
+			const item = stored[0]!;
+			assert.ok(item.kind === "acp" && textOf(item.update) === words.join(""));
+			const live = f.deltas.reduce(applyDelta, emptyView());
+			const reload = fromSnapshot({ timeline: stored, pending: [], windlassSessionId: null });
+			const messages = (view: typeof live) =>
+				view.turns.flatMap(turn => turn.blocks.flatMap(b => (b.kind === "text" ? [[b.messageId, b.text]] : [])));
+			assert.deepEqual(messages(reload), messages(live));
+			assert.equal(f.items.length, 0, "storage checkpoint emitted an extra live item");
+			if (action === "stop") {
+				f.chunk(" four");
+				f.recorder.flush();
+				f.failInsert();
+				const snap = await agentSession.config.actions!.snapshot(f.c as never);
+				assert.deepEqual(
+					snap.timeline,
+					f.items,
+					"snapshot must prefer the completed message in memory after a failed write",
+				);
+				t.mock.timers.tick(401);
+				await f.vars.serial;
+				assert.equal(f.stored().length, 1);
+				const final = f.stored()[0]!;
+				assert.ok(
+					final.kind === "acp" && final.messageKey === item.messageKey && textOf(final.update) === "one two three four",
+				);
+			}
+		} finally {
+			f.sql.close();
 		}
-	} finally { f.sql.close(); }
-});
+	});
 
 test("a one-second burst broadcasts immediately and uses at most three SQLite inserts", async t => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -64,7 +80,9 @@ test("a one-second burst broadcasts immediately and uses at most three SQLite in
 		await f.vars.serial;
 		assert.equal(f.stored().length, 20);
 		assert.ok(f.writes() <= 3, `burst used ${f.writes()} SQLite inserts`);
-	} finally { f.sql.close(); }
+	} finally {
+		f.sql.close();
+	}
 });
 
 test("a running turn updates a single durable refusal row and flushes once more on exit", async t => {
@@ -85,17 +103,43 @@ test("a running turn updates a single durable refusal row and flushes once more 
 	let reads = 0;
 	const read = async () => {
 		reads++;
-		return { broker: reads <= 2 ? "first" : "replacement", hosts: reasons.map((reason, i) => ({ reason, host: "test" + i + ".example", port: 443, firstAt: 12, lastAt: 12 + reads, count: reads <= 2 ? reads : 1 })), overflow: reads <= 2 ? reads : 1 };
+		return {
+			broker: reads <= 2 ? "first" : "replacement",
+			hosts: reasons.map((reason, i) => ({
+				reason,
+				host: "test" + i + ".example",
+				port: 443,
+				firstAt: 12,
+				lastAt: 12 + reads,
+				count: reads <= 2 ? reads : 1,
+			})),
+			overflow: reads <= 2 ? reads : 1,
+		};
 	};
 	try {
-		const finish = await observeNetwork(c as never, f.vars.meta as never, 1, { blockedNetwork: read } as never, {} as never);
+		const finish = await observeNetwork(
+			c as never,
+			f.vars.meta as never,
+			1,
+			{ blockedNetwork: read } as never,
+			{} as never,
+		);
 		assert.ok(finish);
 		assert.equal(reads, 1);
 		const first = f.items[0];
 		assert.ok(first?.kind === "network.blocked");
-		assert.deepEqual(first.hosts.map(h => [h.reason, h.allow]), [["machine_policy", "machine"], ["private", "never"], ["provider", "never"], ["malformed", "never"]]);
+		assert.deepEqual(
+			first.hosts.map(h => [h.reason, h.allow]),
+			[
+				["machine_policy", "machine"],
+				["private", "never"],
+				["provider", "never"],
+				["malformed", "never"],
+			],
+		);
 		assert.deepEqual(first.hosts[0]?.machineNames, ["Build box"]);
-		for (const h of first.hosts) await assert.rejects(agentSession.config.actions!.allowHost(c as never, { host: h.host! }), /runner.*egress/);
+		for (const h of first.hosts)
+			await assert.rejects(agentSession.config.actions!.allowHost(c as never, { host: h.host! }), /runner.*egress/);
 		t.mock.timers.tick(19_999);
 		assert.equal(reads, 1);
 		t.mock.timers.tick(1);
@@ -105,13 +149,31 @@ test("a running turn updates a single durable refusal row and flushes once more 
 		t.mock.timers.tick(120_000);
 		assert.equal(reads, 3);
 		assert.equal(f.items.length, 1);
-		assert.deepEqual([first, ...replacements].map(i => i.revision), [1, 2, 3]);
-		assert.deepEqual(replacements.map(item => [item.seq, item.hosts[0]?.count, item.overflow]), [[first.seq, 2, 2], [first.seq, 3, 3]]);
+		assert.deepEqual(
+			[first, ...replacements].map(i => i.revision),
+			[1, 2, 3],
+		);
+		assert.deepEqual(
+			replacements.map(item => [item.seq, item.hosts[0]?.count, item.overflow]),
+			[
+				[first.seq, 2, 2],
+				[first.seq, 3, 3],
+			],
+		);
 		assert.deepEqual(f.stored(), [replacements[1]]);
-		const legacy = fromSnapshot({ timeline: [...f.stored(), { seq: first.seq + 1, at: 16, turn: 1, kind: "platform", level: "info", text: "still running" }], pending: [], windlassSessionId: null });
+		const legacy = fromSnapshot({
+			timeline: [
+				...f.stored(),
+				{ seq: first.seq + 1, at: 16, turn: 1, kind: "platform", level: "info", text: "still running" },
+			],
+			pending: [],
+			windlassSessionId: null,
+		});
 		assert.equal(legacy.gap, false);
 		assert.equal(legacy.lastSeq, first.seq + 1);
-	} finally { f.sql.close(); }
+	} finally {
+		f.sql.close();
+	}
 });
 
 test("a restricted hosted DNS observation can be allowed before its turn ends", async t => {
@@ -120,28 +182,52 @@ test("a restricted hosted DNS observation can be allowed before its turn ends", 
 	const { getLayer } = await import("../server/src/layer.js");
 	const layer = await getLayer();
 	const f = fixture();
-	const applied: string[] = [], requested: string[] = [];
+	const applied: string[] = [],
+		requested: string[] = [];
 	const host = "registry.example";
 	const user = {
 		internalTokenGeneration: async () => 0,
-		internalNetworkRequests: async ({ hosts }: { hosts: string[] }) => { requested.push(...hosts); return { full: [] }; },
+		internalNetworkRequests: async ({ hosts }: { hosts: string[] }) => {
+			requested.push(...hosts);
+			return { full: [] };
+		},
 		internalAllowHost: async () => ({ allowed: true, hosts: [host], network: {} }),
 	};
 	const c = {
-		...f.c, client: () => ({ user: { get: () => user } }),
+		...f.c,
+		client: () => ({ user: { get: () => user } }),
 		db: { ...f.c.db, transaction: (run: (db: typeof f.c.db) => Promise<void>) => run(f.c.db) },
 	};
-	Object.assign(f.vars.meta, { repo: { id: 1, owner: "acme", name: "repo" }, sandboxId: "box", sessionId: "s_test", turns: 1 });
+	Object.assign(f.vars.meta, {
+		repo: { id: 1, owner: "acme", name: "repo" },
+		sandboxId: "box",
+		sessionId: "s_test",
+		turns: 1,
+	});
 	Object.assign(f.vars, { hostsAllowed: new Map() });
 	const prior = { egress: layer.sandboxes.egress, setNetwork: layer.sandboxes.setNetwork };
 	Object.assign(layer.sandboxes, {
 		egress: () => "restricted",
-		setNetwork: async (_id: string, hosts: string[]) => { applied.push(...hosts); return true; },
+		setNetwork: async (_id: string, hosts: string[]) => {
+			applied.push(...hosts);
+			return true;
+		},
 	});
 	try {
 		let found: string[] = [];
 		let reads = 0;
-		const finish = await observeNetwork(c as never, f.vars.meta as never, 1, { blockedHosts: async () => { reads++; return found; } } as never, layer);
+		const finish = await observeNetwork(
+			c as never,
+			f.vars.meta as never,
+			1,
+			{
+				blockedHosts: async () => {
+					reads++;
+					return found;
+				},
+			} as never,
+			layer,
+		);
 		assert.ok(finish);
 		t.mock.timers.tick(20_000);
 		await next();
@@ -153,7 +239,10 @@ test("a restricted hosted DNS observation can be allowed before its turn ends", 
 		await next();
 		const row = f.stored().find(item => item.kind === "network.blocked");
 		assert.ok(row?.kind === "network.blocked");
-		assert.deepEqual(row.hosts.map(h => [h.host, h.port, h.count, h.allow]), [[host, null, 1, "repository"]]);
+		assert.deepEqual(
+			row.hosts.map(h => [h.host, h.port, h.count, h.allow]),
+			[[host, null, 1, "repository"]],
+		);
 		t.mock.timers.tick(20_000);
 		await next();
 		assert.equal(reads, 4, "a new host restores the initial interval");
@@ -169,18 +258,30 @@ test("a restricted hosted DNS observation can be allowed before its turn ends", 
 	}
 });
 
-for (const flag of ["stopping", "destroying"]) test(flag + " cancels polling without a final network read", async t => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const { observeNetwork } = await import("../server/src/actors/agent-session.js");
-	const f = fixture();
-	try {
-		let reads = 0;
-		const blockedNetwork = async () => { reads++; return { broker: "first", hosts: [], overflow: 0 }; };
-		const finish = await observeNetwork(f.c as never, f.vars.meta as never, 1, { blockedNetwork } as never, {} as never);
-		assert.ok(finish);
-		Object.assign(f.vars, { [flag]: true });
-		await finish();
-		t.mock.timers.tick(120_000);
-		assert.equal(reads, 1);
-	} finally { f.sql.close(); }
-});
+for (const flag of ["stopping", "destroying"])
+	test(flag + " cancels polling without a final network read", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const { observeNetwork } = await import("../server/src/actors/agent-session.js");
+		const f = fixture();
+		try {
+			let reads = 0;
+			const blockedNetwork = async () => {
+				reads++;
+				return { broker: "first", hosts: [], overflow: 0 };
+			};
+			const finish = await observeNetwork(
+				f.c as never,
+				f.vars.meta as never,
+				1,
+				{ blockedNetwork } as never,
+				{} as never,
+			);
+			assert.ok(finish);
+			Object.assign(f.vars, { [flag]: true });
+			await finish();
+			t.mock.timers.tick(120_000);
+			assert.equal(reads, 1);
+		} finally {
+			f.sql.close();
+		}
+	});

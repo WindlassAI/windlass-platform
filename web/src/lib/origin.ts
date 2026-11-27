@@ -14,7 +14,22 @@ export interface OriginIssue {
 }
 
 export function originIssue(origin: ItemOrigin): OriginIssue {
-	if (origin.linear) return { tracker: "Linear", url: origin.linear.url, label: origin.linear.identifier, author: origin.linear.author, trusted: origin.linear.trusted, sender: origin.sender };
+	if (origin.linear)
+		return {
+			tracker: "Linear",
+			url: origin.linear.url,
+			label: origin.linear.identifier,
+			author: origin.linear.author,
+			trusted: origin.linear.trusted,
+			sender: origin.sender,
+		};
 	const { issue } = origin;
-	return { tracker: "GitHub", url: issue.url, label: `issue #${issue.number}`, author: "@" + issue.author, trusted: issue.trusted, sender: "@" + origin.sender };
+	return {
+		tracker: "GitHub",
+		url: issue.url,
+		label: `issue #${issue.number}`,
+		author: "@" + issue.author,
+		trusted: issue.trusted,
+		sender: "@" + origin.sender,
+	};
 }

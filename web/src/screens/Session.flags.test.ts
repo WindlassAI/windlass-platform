@@ -14,12 +14,14 @@ import { AppProvider } from "../state/app";
 import { useSession } from "../state/hooks";
 import { Session } from "./Session";
 
-vi.mock("../../../server/src/sandbox/harnesses.js", async (importOriginal) => {
+vi.mock("../../../server/src/sandbox/harnesses.js", async importOriginal => {
 	const real = await importOriginal<typeof import("../../../server/src/sandbox/harnesses.js")>();
 	const swapped = (id: HarnessId | undefined): SessionCapabilities => {
 		const windlass = id === undefined || id === "windlass";
 		// Each agent gets the other's record: what the page draws must follow.
-		return windlass ? real.sessionCapabilities("claude") : { ...real.sessionCapabilities("windlass"), planMode: true, models: "harness" };
+		return windlass
+			? real.sessionCapabilities("claude")
+			: { ...real.sessionCapabilities("windlass"), planMode: true, models: "harness" };
 	};
 	return { ...real, sessionCapabilities: swapped };
 });
@@ -32,7 +34,10 @@ let client: MockClient;
 let auth: AuthResult;
 
 async function wait(steps = 6): Promise<void> {
-	for (let step = 0; step < steps; step++) await act(async () => { vi.advanceTimersByTime(400); });
+	for (let step = 0; step < steps; step++)
+		await act(async () => {
+			vi.advanceTimersByTime(400);
+		});
 }
 
 async function until(ready: () => boolean, steps = 60): Promise<void> {
@@ -81,13 +86,15 @@ afterEach(() => {
 
 describe("a session page drawn by its agent's flags", () => {
 	it("gives Claude Code, sent Windlass's flags, the per-call token counts in place of the context, Plan mode and a call's stop", async () => {
-		const summary = await open((sessions) => sessions.find((one) => one.id === "nas-claude"));
+		const summary = await open(sessions => sessions.find(one => one.id === "nas-claude"));
 		expect(summary.capabilities.cancelCall).toBe(true);
 		expect(host.querySelector("[data-usage=tokens] .cache-calls")).not.toBeNull();
 		expect(host.querySelector("[data-usage=context]")).toBeNull();
 		expect(host.textContent).toContain("Plan mode");
 		// A running call has its own stop, as the flag says it can be stopped.
-		await act(async () => void client.session(auth, "nas-claude").prompt({ text: "Read the README again and run the tests." }));
+		await act(
+			async () => void client.session(auth, "nas-claude").prompt({ text: "Read the README again and run the tests." }),
+		);
 		const second = () => host.querySelectorAll(".turn")[1] as HTMLElement | undefined;
 		await until(() => second()?.querySelector(".tool-running") != null);
 		expect(second()?.querySelector(".tool-stop, .tool-stoppable")).not.toBeNull();
@@ -95,7 +102,11 @@ describe("a session page drawn by its agent's flags", () => {
 
 	it("gives Windlass, sent Claude Code's flags, the context in place of per-call tokens, no secrets and no Plan mode", async () => {
 		// One on a repository, whose saved secrets its panel would list for an agent they are handed to.
-		const summary = await open((sessions) => sessions.find((one) => (one.harness ?? "windlass") === "windlass" && one.item === undefined && one.turns > 0 && one.repository));
+		const summary = await open(sessions =>
+			sessions.find(
+				one => (one.harness ?? "windlass") === "windlass" && one.item === undefined && one.turns > 0 && one.repository,
+			),
+		);
 		expect(summary.capabilities.usage).toBe("context");
 		expect(host.querySelector("[data-usage=context]")).not.toBeNull();
 		expect(host.querySelector(".cache-calls")).toBeNull();

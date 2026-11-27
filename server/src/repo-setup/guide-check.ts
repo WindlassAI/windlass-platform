@@ -3,7 +3,8 @@ import { posix } from "node:path";
 const { dirname, join, relative, resolve, matchesGlob } = posix;
 const root = "/";
 
-const commandStart = /^(?:test|ls|cd|node|npx|npm|pnpm|bun|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
+const commandStart =
+	/^(?:test|ls|cd|node|npx|npm|pnpm|bun|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
 const glob = /[*?\[{]/;
 const pathLike = /^(?:\.{1,2}\/|[\w.*-]+\/|[\w*-][\w.*-]*\.[\w-]+$)/;
 
@@ -12,7 +13,11 @@ export function guideReference(guide: string, target: string) {
 	return relative(root, resolve(root, /^\.{1,2}\//.test(target) ? dirname(guide) : "", target));
 }
 
-export function guideTree(files: string[], read: (path: string) => string | undefined, hasBin?: (dir: string, tool: string) => boolean) {
+export function guideTree(
+	files: string[],
+	read: (path: string) => string | undefined,
+	hasBin?: (dir: string, tool: string) => boolean,
+) {
 	const paths = new Set(files);
 	const dirs = new Set([""]);
 	for (const file of paths) {
@@ -22,11 +27,19 @@ export function guideTree(files: string[], read: (path: string) => string | unde
 	return { files, paths, dirs, read, hasBin };
 }
 
-export function checkGuide(guide: string, contents: string, { files, dirs, paths, read, hasBin }: ReturnType<typeof guideTree>, citedCommand?: (line: number, command: string) => boolean) {
+export function checkGuide(
+	guide: string,
+	contents: string,
+	{ files, dirs, paths, read, hasBin }: ReturnType<typeof guideTree>,
+	citedCommand?: (line: number, command: string) => boolean,
+) {
 	const errors: { path: string; line: number; message: string }[] = [];
 	function manifest(dir: string) {
-		try { return JSON.parse(read(relative(root, join(dir, "package.json"))) ?? "{}"); }
-		catch { return {}; }
+		try {
+			return JSON.parse(read(relative(root, join(dir, "package.json"))) ?? "{}");
+		} catch {
+			return {};
+		}
 	}
 	const lines = contents.split(/\r?\n/);
 	let line = 0;
@@ -36,7 +49,12 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 		const path = relative(root, resolve(cwd, target));
 		const found = glob.test(target) ? files.some(f => matchesGlob(f, path)) : paths.has(path);
 		const fromRoot = path.split("/").slice(1).join("/");
-		if (!found) fail(fromRoot && paths.has(fromRoot) ? `missing path ${path}: write paths from the repository root, such as ${fromRoot}` : `missing path ${path}`);
+		if (!found)
+			fail(
+				fromRoot && paths.has(fromRoot)
+					? `missing path ${path}: write paths from the repository root, such as ${fromRoot}`
+					: `missing path ${path}`,
+			);
 	}
 
 	function command(source: string, cwd: string) {
@@ -60,7 +78,9 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 			let dir = cwd;
 			if (tool === "pnpm" && args[0] === "--filter") {
 				const name = args[1];
-				const pkg = files.find(file => file.endsWith("/package.json") && manifest(dirname(join(root, file)))?.name === name);
+				const pkg = files.find(
+					file => file.endsWith("/package.json") && manifest(dirname(join(root, file)))?.name === name,
+				);
 				if (!pkg) {
 					fail(`unknown workspace ${name}`);
 					continue;
@@ -82,13 +102,15 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 			} else if (tool === "npx" || tool === "pnpm") {
 				if (tool === "pnpm") args.shift();
 				tool = args.shift();
-				if (tool && hasBin && !hasBin(relative(root, dir), tool)) fail(`missing executable ${tool} in ${relative(root, dir)}`);
+				if (tool && hasBin && !hasBin(relative(root, dir), tool))
+					fail(`missing executable ${tool} in ${relative(root, dir)}`);
 			}
 			for (const [i, arg] of args.entries()) {
 				const value = arg.replace(/^--[\w-]+=/, "");
 				if (args[i - 1] !== "--base" && !arg.startsWith("--base=") && pathLike.test(value)) checkPath(value, dir);
 			}
-			if (tool && ["node", "tsx", "bash", "sh"].includes(tool) && args[0] && !args[0].startsWith("-")) checkPath(args[0], dir);
+			if (tool && ["node", "tsx", "bash", "sh"].includes(tool) && args[0] && !args[0].startsWith("-"))
+				checkPath(args[0], dir);
 			if (tool === "tsc" && args.includes("-p")) {
 				const project = resolve(dir, args[args.indexOf("-p") + 1] ?? ".");
 				checkPath(dirs.has(relative(root, project)) ? join(project, "tsconfig.json") : project, dir);
@@ -114,19 +136,23 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 		} else if (checkingSkill && commandStart.test(contents.trim())) {
 			command(contents.trim(), root);
 		} else {
-			const prose = contents.replace(/`([^`]+)`/g, (_, code: string) => {
-				if (commandStart.test(code)) command(code, root);
-				else if (/^--?[a-z][\w-]*[=\s]/i.test(code)) {
-					const value = code.replace(/^--?[\w-]+[=\s]+/, "").replace(/^(["'])(.*)\1$/, "$2");
-					if (pathLike.test(value)) checkPath(value, root);
-				} else if (!/\s/.test(code) && (pathLike.test(code) || glob.test(code))) reference(code);
-				return "";
-			}).replace(/\]\(([^)]+)\)/g, (_, link: string) => {
-				const target = link.split("#")[0];
-				if (target && !/^(?:\w+:|\/\/)/.test(target)) reference(target);
-				return "";
-			});
-			for (const match of prose.matchAll(/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:packages|server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github|\.{1,2})\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g)) {
+			const prose = contents
+				.replace(/`([^`]+)`/g, (_, code: string) => {
+					if (commandStart.test(code)) command(code, root);
+					else if (/^--?[a-z][\w-]*[=\s]/i.test(code)) {
+						const value = code.replace(/^--?[\w-]+[=\s]+/, "").replace(/^(["'])(.*)\1$/, "$2");
+						if (pathLike.test(value)) checkPath(value, root);
+					} else if (!/\s/.test(code) && (pathLike.test(code) || glob.test(code))) reference(code);
+					return "";
+				})
+				.replace(/\]\(([^)]+)\)/g, (_, link: string) => {
+					const target = link.split("#")[0];
+					if (target && !/^(?:\w+:|\/\/)/.test(target)) reference(target);
+					return "";
+				});
+			for (const match of prose.matchAll(
+				/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:packages|server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github|\.{1,2})\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g,
+			)) {
 				reference(match[1].replace(/\.$/, ""));
 			}
 		}

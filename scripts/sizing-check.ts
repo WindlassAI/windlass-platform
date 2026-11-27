@@ -12,7 +12,9 @@ import { weightedFifo } from "./machine-fairness-check.js";
 
 const GiB = 2 ** 30;
 const capacity = (max: number, cpus: number, memory: number, pids: number) => ({
-	max, unit: { cpus, memoryBytes: memory * GiB, pids }, reserve: { cpus: 0, memoryBytes: 0 },
+	max,
+	unit: { cpus, memoryBytes: memory * GiB, pids },
+	reserve: { cpus: 0, memoryBytes: 0 },
 });
 for (const [cores, memory, max, cpu, ram, pids, reserveCpus, reserveGiB] of [
 	[2, 12, 1, 2, 4, 1024, 0, 3],
@@ -28,25 +30,34 @@ for (const [cores, memory, max, cpu, ram, pids, reserveCpus, reserveGiB] of [
 	[1, 2.5, 1, 1, 1.5, 512, 0, 1],
 	[1, 2.25, 1, 1, 1.25, 512, 0, 1],
 	[1, 2, 1, 1, 1, 512, 0, 1],
-]) test(`${cores} cores, ${memory} GiB`, async () => {
-	const { sizeMachine } = await import("../runner/src/sizing.js");
-	const actual = sizeMachine({ cores, memoryBytes: memory * GiB }, {});
-	assert.deepEqual(actual.unit, capacity(max, cpu, ram, pids).unit);
-	assert.equal(actual.max, max);
-	assert.deepEqual(actual.reserve, { cpus: reserveCpus, memoryBytes: Math.ceil(reserveGiB * GiB) });
-	assert(actual.unit.memoryBytes * max <= memory * GiB - actual.reserve.memoryBytes);
-});
+])
+	test(`${cores} cores, ${memory} GiB`, async () => {
+		const { sizeMachine } = await import("../runner/src/sizing.js");
+		const actual = sizeMachine({ cores, memoryBytes: memory * GiB }, {});
+		assert.deepEqual(actual.unit, capacity(max, cpu, ram, pids).unit);
+		assert.equal(actual.max, max);
+		assert.deepEqual(actual.reserve, { cpus: reserveCpus, memoryBytes: Math.ceil(reserveGiB * GiB) });
+		assert(actual.unit.memoryBytes * max <= memory * GiB - actual.reserve.memoryBytes);
+	});
 
 test("overrides and refusals", async () => {
 	const { sizeMachine, sizingFlags } = await import("../runner/src/sizing.js");
-	const size = (flags: Parameters<typeof sizingFlags>[0], env?: string) => sizeMachine({ cores: 32, memoryBytes: 128 * GiB }, sizingFlags(flags, env));
-	assert.throws(() => sizeMachine({ cores: 2, memoryBytes: 1.75 * GiB }), /exceeds the available --sandbox-memory budget \(0.75 GiB\)/);
-	const twoCore = (flags: Parameters<typeof sizingFlags>[0], env?: string) => sizeMachine({ cores: 2, memoryBytes: 4 * GiB }, sizingFlags(flags, env));
+	const size = (flags: Parameters<typeof sizingFlags>[0], env?: string) =>
+		sizeMachine({ cores: 32, memoryBytes: 128 * GiB }, sizingFlags(flags, env));
+	assert.throws(
+		() => sizeMachine({ cores: 2, memoryBytes: 1.75 * GiB }),
+		/exceeds the available --sandbox-memory budget \(0.75 GiB\)/,
+	);
+	const twoCore = (flags: Parameters<typeof sizingFlags>[0], env?: string) =>
+		sizeMachine({ cores: 2, memoryBytes: 4 * GiB }, sizingFlags(flags, env));
 	assert.deepEqual(twoCore({ slots: "2" }), capacity(2, 1, 1.5, 512));
 	assert.deepEqual(twoCore({ "slot-cpus": "0.5" }, "2"), capacity(2, 0.5, 1.5, 512));
 	assert.deepEqual(twoCore({ "slot-memory": "1g" }, "1.5"), capacity(2, 1.5, 1, 512));
 	assert.deepEqual(twoCore({ "sandbox-memory": "3g" }), capacity(2, 1, 1.5, 512));
-	assert.throws(() => twoCore({ slots: "1", "max-turns": "2" }), /Give --slots and its alias --max-turns the same count/);
+	assert.throws(
+		() => twoCore({ slots: "1", "max-turns": "2" }),
+		/Give --slots and its alias --max-turns the same count/,
+	);
 	const custom = size({ "slot-cpus": "4", "slot-memory": "12g" });
 	assert.equal(custom.max, 7);
 	assert.equal(custom.unit.memoryBytes * custom.max, 84 * GiB);
@@ -65,58 +76,88 @@ test("weighted FIFO across runner reconnect and legacy table migration", () => w
 
 // The stand-in substitutes a private Docker name at the CLI boundary. No session or
 // harness names reach the daemon, and privateData avoids creating a shared volume.
-if (process.argv.includes("docker")) test("create, inspect and reconnect on this Docker daemon", async t => {
-	const dir = mkdtempSync(join(tmpdir(), "sizing-proof-"));
-	const prefix = dir.split("/").pop()!;
-	const path = process.env.PATH!;
-	const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", env: { ...process.env, PATH: path } }).trim();
-	await writeProofDocker(dir, prefix + "-", execFileSync("which", ["docker"], { encoding: "utf8" }).trim());
-	process.env.PATH = dir + delimiter + path;
-	const uid = "sizing_owner";
-	const input = { uid, profile: "docker-hardened" as const, sessionId: "sizing_session", privateData: true };
-	const options = { machine: prefix, image: IMAGE, dataVolume: async () => { throw new Error("unexpected volume"); }, dropDataVolume: async () => {} };
-	const provider = (slots: ReturnType<typeof capacity>) => new DockerSandboxes({ ...options, slots });
-	const inspect = (id: string) => {
-		const [{ HostConfig: h, Config }] = JSON.parse(docker(["inspect", prefix + "-agent-" + id]));
-		return { limits: [h.NanoCpus, h.Memory, h.MemorySwap, h.PidsLimit, h.CpuShares], size: Config.Labels["dev.windlass-platform.slots"] };
-	};
-	try {
-		await t.test("case 1: two-core regression and slot label", async () => {
-			const { sizeMachine } = await import("../runner/src/sizing.js");
-			const id = await provider(sizeMachine({ cores: 2, memoryBytes: 12 * GiB })).create(input);
-			const { limits, size } = inspect(id);
-			console.log("case 1 docker inspect", JSON.stringify(limits));
-			assert.deepEqual(limits, [2e9, 4 * GiB, 4 * GiB, 1024, 256]);
-			assert.equal(size, "1");
-		});
-		await t.test("case 7: old sandbox adopts new memory, swap and pids", async () => {
-			const id = await new DockerSandboxes(options).create(input);
-			assert.equal(inspect(id).limits[1], 1.5 * GiB);
-			assert.ok(await provider(capacity(3, 1, 2, 1024)).connect(id));
-			assert.deepEqual(inspect(id).limits, [1e9, 2 * GiB, 2 * GiB, 1024, 256]);
-		});
-		await t.test("over-limit memory is deferred without killing the workload and applies after stop", async () => {
-			const id = await provider(capacity(2, 1, 1.5, 512)).create(input);
-			const name = prefix + "-agent-" + id;
-			// Exercise the same cgroup transition at MiB scale on the test host.
-			docker(["exec", "-d", name, "node", "-e", "globalThis.b=Buffer.alloc(96*1024*1024,123); require('fs').writeFileSync('/tmp/allocated','1'); setInterval(()=>{},60000)"]);
-			docker(["exec", name, "sh", "-ec", "for i in 1 2 3 4 5; do test ! -f /tmp/allocated || exit 0; sleep 1; done; exit 1"]);
-			const resized = provider(capacity(2, 0.5, 0.0625, 256));
-			assert.equal((await resized.connect(id))?.resizePending, true);
-			assert.deepEqual(inspect(id).limits, [1e9, 1.5 * GiB, 1.5 * GiB, 512, 256]);
-			assert.equal(docker(["inspect", "--format", "{{.State.Running}} {{.State.Paused}} {{.State.OOMKilled}}", name]), "true false false");
-			docker(["stop", "-t", "1", name]);
-			assert.equal((await resized.connect(id))?.resizePending, false);
-			assert.deepEqual(inspect(id).limits, [0.5e9, 64 * 2 ** 20, 64 * 2 ** 20, 256, 256]);
-		});
-		await t.test("multi-slot limits on a size-two sandbox", async () => {
-			const id = await provider(capacity(3, 0.75, 2, 512)).create({ ...input, size: 2 });
-			assert.deepEqual(inspect(id), { limits: [1.5e9, 4 * GiB, 4 * GiB, 1024, 256], size: "2" });
-		});
-	} finally {
-		process.env.PATH = path;
-		for (const name of docker(["ps", "-a", "--filter", "name=^/" + prefix + "-", "--format", "{{.Names}}"]).split("\n"))
-			if (name.startsWith(prefix + "-")) docker(["rm", "-fv", name]);
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
+if (process.argv.includes("docker"))
+	test("create, inspect and reconnect on this Docker daemon", async t => {
+		const dir = mkdtempSync(join(tmpdir(), "sizing-proof-"));
+		const prefix = dir.split("/").pop()!;
+		const path = process.env.PATH!;
+		const docker = (args: string[]) =>
+			execFileSync("docker", args, { encoding: "utf8", env: { ...process.env, PATH: path } }).trim();
+		await writeProofDocker(dir, prefix + "-", execFileSync("which", ["docker"], { encoding: "utf8" }).trim());
+		process.env.PATH = dir + delimiter + path;
+		const uid = "sizing_owner";
+		const input = { uid, profile: "docker-hardened" as const, sessionId: "sizing_session", privateData: true };
+		const options = {
+			machine: prefix,
+			image: IMAGE,
+			dataVolume: async () => {
+				throw new Error("unexpected volume");
+			},
+			dropDataVolume: async () => {},
+		};
+		const provider = (slots: ReturnType<typeof capacity>) => new DockerSandboxes({ ...options, slots });
+		const inspect = (id: string) => {
+			const [{ HostConfig: h, Config }] = JSON.parse(docker(["inspect", prefix + "-agent-" + id]));
+			return {
+				limits: [h.NanoCpus, h.Memory, h.MemorySwap, h.PidsLimit, h.CpuShares],
+				size: Config.Labels["dev.windlass-platform.slots"],
+			};
+		};
+		try {
+			await t.test("case 1: two-core regression and slot label", async () => {
+				const { sizeMachine } = await import("../runner/src/sizing.js");
+				const id = await provider(sizeMachine({ cores: 2, memoryBytes: 12 * GiB })).create(input);
+				const { limits, size } = inspect(id);
+				console.log("case 1 docker inspect", JSON.stringify(limits));
+				assert.deepEqual(limits, [2e9, 4 * GiB, 4 * GiB, 1024, 256]);
+				assert.equal(size, "1");
+			});
+			await t.test("case 7: old sandbox adopts new memory, swap and pids", async () => {
+				const id = await new DockerSandboxes(options).create(input);
+				assert.equal(inspect(id).limits[1], 1.5 * GiB);
+				assert.ok(await provider(capacity(3, 1, 2, 1024)).connect(id));
+				assert.deepEqual(inspect(id).limits, [1e9, 2 * GiB, 2 * GiB, 1024, 256]);
+			});
+			await t.test("over-limit memory is deferred without killing the workload and applies after stop", async () => {
+				const id = await provider(capacity(2, 1, 1.5, 512)).create(input);
+				const name = prefix + "-agent-" + id;
+				// Exercise the same cgroup transition at MiB scale on the test host.
+				docker([
+					"exec",
+					"-d",
+					name,
+					"node",
+					"-e",
+					"globalThis.b=Buffer.alloc(96*1024*1024,123); require('fs').writeFileSync('/tmp/allocated','1'); setInterval(()=>{},60000)",
+				]);
+				docker([
+					"exec",
+					name,
+					"sh",
+					"-ec",
+					"for i in 1 2 3 4 5; do test ! -f /tmp/allocated || exit 0; sleep 1; done; exit 1",
+				]);
+				const resized = provider(capacity(2, 0.5, 0.0625, 256));
+				assert.equal((await resized.connect(id))?.resizePending, true);
+				assert.deepEqual(inspect(id).limits, [1e9, 1.5 * GiB, 1.5 * GiB, 512, 256]);
+				assert.equal(
+					docker(["inspect", "--format", "{{.State.Running}} {{.State.Paused}} {{.State.OOMKilled}}", name]),
+					"true false false",
+				);
+				docker(["stop", "-t", "1", name]);
+				assert.equal((await resized.connect(id))?.resizePending, false);
+				assert.deepEqual(inspect(id).limits, [0.5e9, 64 * 2 ** 20, 64 * 2 ** 20, 256, 256]);
+			});
+			await t.test("multi-slot limits on a size-two sandbox", async () => {
+				const id = await provider(capacity(3, 0.75, 2, 512)).create({ ...input, size: 2 });
+				assert.deepEqual(inspect(id), { limits: [1.5e9, 4 * GiB, 4 * GiB, 1024, 256], size: "2" });
+			});
+		} finally {
+			process.env.PATH = path;
+			for (const name of docker(["ps", "-a", "--filter", "name=^/" + prefix + "-", "--format", "{{.Names}}"]).split(
+				"\n",
+			))
+				if (name.startsWith(prefix + "-")) docker(["rm", "-fv", name]);
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});

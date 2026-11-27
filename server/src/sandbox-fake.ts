@@ -121,10 +121,8 @@ import type { RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent }
 import { definitionReads, isReservedServerName } from "./personal-servers.js";
 import { WINDLASS_CONFIG_FILE } from "./windlass-config.js";
 import {
-	type AccessToken,
 	type AccessTokens,
 	type ChatgptAccount,
-	type ChatgptLogins,
 	type CreateSandboxInput,
 	type ExecOptions,
 	type ExecResult,
@@ -145,7 +143,14 @@ import {
 	type Windlass,
 } from "./sandbox/api.js";
 import { BACKUP_ENV, SandboxSessionBackups } from "./sandbox/backup.js";
-import { NOT_SIGNED_IN, SIGN_IN_EXPIRED, SIGN_IN_UNREACHABLE, SignInRefreshError, TOKEN_VALID_FOR_MS, tokenSourceFailure } from "./sandbox/handoff.js";
+import {
+	NOT_SIGNED_IN,
+	SIGN_IN_EXPIRED,
+	SIGN_IN_UNREACHABLE,
+	SignInRefreshError,
+	TOKEN_VALID_FOR_MS,
+	tokenSourceFailure,
+} from "./sandbox/handoff.js";
 import type { SignInCommands, TokenAnswer } from "./signin/commands.js";
 import { actorSignIns, memorySignIns } from "./signin/facade.js";
 import type { SignInMaterial } from "./signin/material.js";
@@ -239,7 +244,7 @@ interface FakeSession {
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve) => {
+	return new Promise(resolve => {
 		if (signal?.aborted || ms <= 0) {
 			resolve();
 			return;
@@ -285,7 +290,8 @@ export class FakeHandle implements SandboxHandle {
 		if (env.WLP_ATTACH_STEP) return this.attachStep(env, options.stdin ?? "");
 		if (command.endsWith("\ngit rev-parse --verify 'HEAD^{commit}'")) return ok("a".repeat(40));
 		const step = options.env?.[BACKUP_ENV.step];
-		const result = step === undefined ? this.interpret(command) : this.backupStep(step, options.env ?? {}, options.stdin ?? "");
+		const result =
+			step === undefined ? this.interpret(command) : this.backupStep(step, options.env ?? {}, options.stdin ?? "");
 		if (result.stdout) options.onStdout?.(result.stdout);
 		if (result.stderr) options.onStderr?.(result.stderr);
 		return result;
@@ -299,14 +305,18 @@ export class FakeHandle implements SandboxHandle {
 				copies.clear();
 				return ok("clean");
 			case "pack":
-				return ok(env.WLP_ATTACH_FILES.split("\n").map((file, index) => {
-					const body = shots.get(file);
-					if (!Buffer.isBuffer(body)) return `refused ${index} ${body ?? "missing"}`;
-					if (body.length > Number(env.WLP_ATTACH_MAX)) return `refused ${index} too_large`;
-					const path = `${env.WLP_ATTACH_COPY}-${index}.png`;
-					copies.set(path, Buffer.from(body));
-					return `file ${index} ${body.length} ${digest(body)} ${path}`;
-				}).join("\n"));
+				return ok(
+					env.WLP_ATTACH_FILES.split("\n")
+						.map((file, index) => {
+							const body = shots.get(file);
+							if (!Buffer.isBuffer(body)) return `refused ${index} ${body ?? "missing"}`;
+							if (body.length > Number(env.WLP_ATTACH_MAX)) return `refused ${index} too_large`;
+							const path = `${env.WLP_ATTACH_COPY}-${index}.png`;
+							copies.set(path, Buffer.from(body));
+							return `file ${index} ${body.length} ${digest(body)} ${path}`;
+						})
+						.join("\n"),
+				);
 			case "upload": {
 				const body = copies.get(env.WLP_ATTACH_PATH);
 				copies.delete(env.WLP_ATTACH_PATH);
@@ -314,7 +324,8 @@ export class FakeHandle implements SandboxHandle {
 				const url = /^url = "(.*)"$/m.exec(stdin)?.[1] ?? "";
 				return ok(`http ${this.bucket?.use(url, "PUT", body, { "content-type": "image/png" }).status ?? 403}`);
 			}
-			default: return ok("");
+			default:
+				return ok("");
 		}
 	}
 
@@ -323,39 +334,64 @@ export class FakeHandle implements SandboxHandle {
 		const files = this.sandbox.files;
 		const head = process.env.WLP_FAKE_REVIEW_HEAD;
 		// A review's base clone, with or without the Git mirror's reference flags (git.ts cloneScript).
-		if (this.sandbox.privateData && /\bwlp_git\b[^\n]* clone --quiet [^\n]*--single-branch\b/.test(command) && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
+		if (
+			this.sandbox.privateData &&
+			/\bwlp_git\b[^\n]* clone --quiet [^\n]*--single-branch\b/.test(command) &&
+			process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE &&
+			!this.sandbox.reviewCloneFailed
+		) {
 			this.sandbox.reviewCloneFailed = true;
-			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
+			return {
+				...ok(),
+				exitCode: 128,
+				stderr: "fatal: unable to access repository: The requested URL returned error: 503",
+			};
 		}
 		if (command.includes("ls-tree -r --name-only -z HEAD")) return ok("README.md\0");
 		if (head && command.includes('base64 -w0 "$patch"')) return ok(`0 ${createHash("sha256").digest("hex")}\n`);
 		if (head && command.includes('echo "wlp:committed $committed"')) return ok(`wlp:committed 1\nwlp:head ${head}\n`);
 		if (head && command.includes('echo "wlp:pushed $sha"')) return ok(`wlp:pushed ${head}\n`);
-		if (head && command.includes('echo "wlp:review ')) return !process.env.WLP_FAKE_REVIEW_MISSING && command.includes("git checkout -q -f --detach " + head) ? ok("wlp:review " + head) : { ...ok("wlp:missing"), exitCode: 1 };
+		if (head && command.includes('echo "wlp:review '))
+			return !process.env.WLP_FAKE_REVIEW_MISSING && command.includes("git checkout -q -f --detach " + head)
+				? ok("wlp:review " + head)
+				: { ...ok("wlp:missing"), exitCode: 1 };
 		if (head && command.includes("git diff --no-ext-diff --no-renames --name-only -z")) return ok("web/home.tsx\0");
 		if (/\bgit clone\b/.test(command)) {
 			if (command.includes("fail-clone")) {
-				return { exitCode: 128, timedOut: false, aborted: false, stdout: "", stderr: "fatal: repository 'https://example.com/fail-clone.git/' not found\n" };
+				return {
+					exitCode: 128,
+					timedOut: false,
+					aborted: false,
+					stdout: "",
+					stderr: "fatal: repository 'https://example.com/fail-clone.git/' not found\n",
+				};
 			}
 			return ok();
 		}
 		if (/\bstatus\b.*--porcelain/.test(command)) {
 			const separator = /\s-z\b/.test(command) ? "\0" : "\n";
-			return ok([...files.keys()].sort().map((path) => `?? ${path}${separator}`).join(""));
+			return ok(
+				[...files.keys()]
+					.sort()
+					.map(path => `?? ${path}${separator}`)
+					.join(""),
+			);
 		}
 		if (/\bdiff\b/.test(command)) {
-			const parts = [...files.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, content]) => {
-				const lines = content.replace(/\n$/, "").split("\n");
-				return [
-					`diff --git a/${path} b/${path}`,
-					"new file mode 100644",
-					"--- /dev/null",
-					`+++ b/${path}`,
-					`@@ -0,0 +1,${lines.length} @@`,
-					...lines.map((line) => `+${line}`),
-					"",
-				].join("\n");
-			});
+			const parts = [...files.entries()]
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([path, content]) => {
+					const lines = content.replace(/\n$/, "").split("\n");
+					return [
+						`diff --git a/${path} b/${path}`,
+						"new file mode 100644",
+						"--- /dev/null",
+						`+++ b/${path}`,
+						`@@ -0,0 +1,${lines.length} @@`,
+						...lines.map(line => `+${line}`),
+						"",
+					].join("\n");
+				});
 			return ok(parts.join(""));
 		}
 		return ok();
@@ -377,7 +413,10 @@ export class FakeHandle implements SandboxHandle {
 			const size = Buffer.byteLength(JSON.stringify([...sandbox.windlass])) + 1 + padding;
 			// As the script: an archive over the limit is not kept.
 			if (size > Number(env[BACKUP_ENV.max])) return ok(`too_large ${size}\n`);
-			sandbox.packed = Buffer.concat([Buffer.from(`${JSON.stringify([...sandbox.windlass])}\n`), Buffer.alloc(padding)]);
+			sandbox.packed = Buffer.concat([
+				Buffer.from(`${JSON.stringify([...sandbox.windlass])}\n`),
+				Buffer.alloc(padding),
+			]);
 			return ok(`packed ${sandbox.packed.length} ${sha256(sandbox.packed)}\n`);
 		}
 		if (this.bucket === null) return ok("curl 6\n");
@@ -395,7 +434,9 @@ export class FakeHandle implements SandboxHandle {
 			let sessions: Array<[string, FakeSession]>;
 			try {
 				const end = fetched.body.indexOf(0x0a);
-				sessions = JSON.parse(fetched.body.subarray(0, end < 0 ? undefined : end).toString("utf8")) as Array<[string, FakeSession]>;
+				sessions = JSON.parse(fetched.body.subarray(0, end < 0 ? undefined : end).toString("utf8")) as Array<
+					[string, FakeSession]
+				>;
 			} catch {
 				return ok("unpack\n");
 			}
@@ -437,7 +478,11 @@ class FakeSandboxes implements Sandboxes {
 
 	constructor(
 		private readonly bucket: StandInObjectStore | null = null,
-		private readonly settings: { delayMs: number; idleStopMs: number | null; createFails: number } = { delayMs: 0, idleStopMs: null, createFails: 0 },
+		private readonly settings: { delayMs: number; idleStopMs: number | null; createFails: number } = {
+			delayMs: 0,
+			idleStopMs: null,
+			createFails: 0,
+		},
 	) {
 		this.sessionsLiveInSandbox = bucket !== null;
 		this.idleStopMs = settings.idleStopMs;
@@ -453,17 +498,31 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	profile(id: SandboxProfileId): SandboxProfile {
-		const found = PROFILES.find((profile) => profile.id === id);
+		const found = PROFILES.find(profile => profile.id === id);
 		if (!found) throw new Error(`unknown sandbox profile: ${id}`);
 		return found;
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
-		if (input.harness) throw new SandboxUserError(`The fake sandbox does not run ${machineHarnesses[input.harness].name}.`);
+		if (input.harness)
+			throw new SandboxUserError(`The fake sandbox does not run ${machineHarnesses[input.harness].name}.`);
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;
-		this.all.set(id, { id, privateData: input.privateData === true, screenshots: input.screenshots === true, uid: input.uid, sessionId: input.sessionId, profile: input.profile, state: "running", files: new Map(), windlass: new Map(), packed: null, shots: new Map(), copies: new Map() });
+		this.all.set(id, {
+			id,
+			privateData: input.privateData === true,
+			screenshots: input.screenshots === true,
+			uid: input.uid,
+			sessionId: input.sessionId,
+			profile: input.profile,
+			state: "running",
+			files: new Map(),
+			windlass: new Map(),
+			packed: null,
+			shots: new Map(),
+			copies: new Map(),
+		});
 		if (this.settings.createFails > 0) {
 			this.settings.createFails -= 1;
 			throw new Error("fake layer: the sandbox was made and the answer was lost (WLP_FAKE_CREATE_FAILS)");
@@ -491,11 +550,13 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async list(uid: string): Promise<ListedSandbox[]> {
-		return [...this.all.values()].filter((sandbox) => sandbox.uid === uid).map((sandbox) => ({ id: sandbox.id, sessionId: sandbox.sessionId, state: sandbox.state }));
+		return [...this.all.values()]
+			.filter(sandbox => sandbox.uid === uid)
+			.map(sandbox => ({ id: sandbox.id, sessionId: sandbox.sessionId, state: sandbox.state }));
 	}
 
 	async owners(): Promise<string[]> {
-		return [...new Set([...this.all.values()].map((sandbox) => sandbox.uid))];
+		return [...new Set([...this.all.values()].map(sandbox => sandbox.uid))];
 	}
 
 	async suspend(id: string): Promise<void> {
@@ -533,8 +594,8 @@ function fixture(name: string): WindlassEvent[] {
 	if (!events) {
 		events = readFileSync(join(FIXTURES_DIR, name), "utf8")
 			.split("\n")
-			.filter((line) => line.trim() !== "")
-			.map((line) => JSON.parse(line) as WindlassEvent);
+			.filter(line => line.trim() !== "")
+			.map(line => JSON.parse(line) as WindlassEvent);
 		fixtureCache.set(name, events);
 	}
 	return events;
@@ -580,26 +641,34 @@ let approvalCache: ApprovalScenario | null = null;
 function approvalScenario(): ApprovalScenario {
 	if (approvalCache) return approvalCache;
 	const withoutRecordedSteer = (events: WindlassEvent[]): WindlassEvent[] => {
-		const enqueued = events.filter((event) => event.type === "inbox.enqueued");
+		const enqueued = events.filter(event => event.type === "inbox.enqueued");
 		const steered = enqueued.length > 1 ? dataOf(enqueued[1]).messageId : undefined;
-		return events.filter((event) => !((event.type === "inbox.enqueued" || event.type === "inbox.delivered") && dataOf(event).messageId === steered));
+		return events.filter(
+			event =>
+				!((event.type === "inbox.enqueued" || event.type === "inbox.delivered") && dataOf(event).messageId === steered),
+		);
 	};
 	const approved = withoutRecordedSteer(fixture("acp-approval-approved.jsonl"));
 	const denied = withoutRecordedSteer(fixture("acp-approval-denied.jsonl"));
-	const asked = approved.findIndex((event) => event.type === "approval.requested");
-	const askedDenied = denied.findIndex((event) => event.type === "approval.requested");
-	const answeredDenied = denied.findIndex((event) => event.type === "approval.answered");
-	if (asked < 0 || asked !== askedDenied || answeredDenied !== asked + 1) throw new Error("the approval fixtures do not line up");
+	const asked = approved.findIndex(event => event.type === "approval.requested");
+	const askedDenied = denied.findIndex(event => event.type === "approval.requested");
+	const answeredDenied = denied.findIndex(event => event.type === "approval.answered");
+	if (asked < 0 || asked !== askedDenied || answeredDenied !== asked + 1)
+		throw new Error("the approval fixtures do not line up");
 
 	const ids = new Map<string, string>();
 	for (let index = 0; index <= asked; index += 1) {
-		for (const read of [(event: WindlassEvent) => dataOf(event).messageId, (event: WindlassEvent) => event.messageId, (event: WindlassEvent) => dataOf(event).executionId]) {
+		for (const read of [
+			(event: WindlassEvent) => dataOf(event).messageId,
+			(event: WindlassEvent) => event.messageId,
+			(event: WindlassEvent) => dataOf(event).executionId,
+		]) {
 			const from = read(denied[index]);
 			const to = read(approved[index]);
 			if (typeof from === "string" && typeof to === "string" && from !== to) ids.set(from, to);
 		}
 	}
-	const deniedTail = denied.slice(answeredDenied + 1).map((event) => {
+	const deniedTail = denied.slice(answeredDenied + 1).map(event => {
 		let text = JSON.stringify(event);
 		for (const [from, to] of ids) text = text.split(from).join(to);
 		return JSON.parse(text) as WindlassEvent;
@@ -610,7 +679,12 @@ function approvalScenario(): ApprovalScenario {
 
 function questionOf(event: WindlassEvent): TurnQuestion {
 	const data = dataOf(event);
-	const question = (data.question ?? {}) as { title?: unknown; subject?: unknown; details?: unknown; choices?: unknown };
+	const question = (data.question ?? {}) as {
+		title?: unknown;
+		subject?: unknown;
+		details?: unknown;
+		choices?: unknown;
+	};
 	const choices = Array.isArray(question.choices) ? (question.choices as Array<Record<string, unknown>>) : [];
 	return {
 		messageId: String(data.messageId),
@@ -618,7 +692,7 @@ function questionOf(event: WindlassEvent): TurnQuestion {
 		title: String(question.title ?? ""),
 		subject: String(question.subject ?? ""),
 		details: Array.isArray(question.details) ? question.details.map(String) : [],
-		choices: choices.map((choice) => ({
+		choices: choices.map(choice => ({
 			id: String(choice.id),
 			label: String(choice.label ?? choice.id),
 			approve: choice.approve === true,
@@ -661,9 +735,21 @@ function fakeServers(text: string): FakeServer[] {
 	if (text.includes("(mcp)")) servers.push(harbor("81498df752b8ef7d"));
 	if (text.includes("(mcp-changed)")) servers.push(harbor("5d0c2a7be1f94c36", ["--berths", "12"]));
 	if (text.includes("(mcp-env)")) servers.push(harbor("748df09716dce52c", [], { unset: ["HARBOR_TOKEN"] }));
-	if (text.includes("(mcp-moved)")) servers.push(harbor("2b9e0f6a4d7c8135", ["--port", "old"], { movedTo: harbor("9a3f5c1e7b2d4068", ["--port", "new"]) }));
+	if (text.includes("(mcp-moved)"))
+		servers.push(
+			harbor("2b9e0f6a4d7c8135", ["--port", "old"], { movedTo: harbor("9a3f5c1e7b2d4068", ["--port", "new"]) }),
+		);
 	if (text.includes("(mcp-late)")) servers.push(harbor("3c7d9e1f5a2b4680", ["--tide"], { late: true }));
-	if (text.includes("(mcp-remote)")) servers.push({ name: "docs", fingerprint: "e4d1a80c93f6b275", argv: null, url: "https://docs.example.com/mcp", unset: [], late: false, movedTo: null });
+	if (text.includes("(mcp-remote)"))
+		servers.push({
+			name: "docs",
+			fingerprint: "e4d1a80c93f6b275",
+			argv: null,
+			url: "https://docs.example.com/mcp",
+			unset: [],
+			late: false,
+			movedTo: null,
+		});
 	return servers;
 }
 
@@ -697,13 +783,32 @@ export class FakeWindlass implements Windlass {
 	}
 
 	demoScript(prompt: string, turn: number): ScriptedModel {
-		return { responses: [[{ type: "text", text: `Fake reply ${turn} to: ${prompt.slice(0, 80)}` }, { type: "finish", reason: "stop" }]] };
+		return {
+			responses: [
+				[
+					{ type: "text", text: `Fake reply ${turn} to: ${prompt.slice(0, 80)}` },
+					{ type: "finish", reason: "stop" },
+				],
+			],
+		};
 	}
 
 	async runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
 		// A turn that resumes, whose session this sandbox does not hold (Windlass's store was lost): a new session, given the whole task, as the real layer does.
-		if (input.fresh && input.windlassSessionId !== undefined && this.sandboxes.sessionsLiveInSandbox && this.sandboxes.all.has(sandbox.id) && !this.sandboxes.windlassOf(sandbox.id).has(input.windlassSessionId)) {
-			const result = await this.runTurn(sandbox, { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted, windlassSessionId: undefined, fresh: undefined });
+		if (
+			input.fresh &&
+			input.windlassSessionId !== undefined &&
+			this.sandboxes.sessionsLiveInSandbox &&
+			this.sandboxes.all.has(sandbox.id) &&
+			!this.sandboxes.windlassOf(sandbox.id).has(input.windlassSessionId)
+		) {
+			const result = await this.runTurn(sandbox, {
+				...input,
+				prompt: input.fresh.prompt,
+				untrusted: input.fresh.untrusted,
+				windlassSessionId: undefined,
+				fresh: undefined,
+			});
 			return { ...result, resumed: false };
 		}
 		const text = input.prompt.toLowerCase();
@@ -713,7 +818,15 @@ export class FakeWindlass implements Windlass {
 		// Refusals Windlass makes before a turn exists: nothing is written, nothing is emitted.
 		if (text.includes("(session-gone)")) {
 			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `Windlass has no session ${id}.` } };
+			return {
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				windlassSessionId: null,
+				summary: null,
+				stderrTail: "",
+				failure: { reason: "session_not_found", message: `Windlass has no session ${id}.` },
+			};
 		}
 		if (text.includes("(session-busy)")) {
 			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
@@ -724,24 +837,45 @@ export class FakeWindlass implements Windlass {
 				windlassSessionId: input.windlassSessionId ?? null,
 				summary: null,
 				stderrTail: "",
-				failure: { reason: "session_in_use", message: `Session ${id} is open in another Windlass process (pid 4242). It can be continued once that process has closed it.` },
+				failure: {
+					reason: "session_in_use",
+					message: `Session ${id} is open in another Windlass process (pid 4242). It can be continued once that process has closed it.`,
+				},
 			};
 		}
 
 		if (text.includes("(session-unread)")) {
 			const id = input.windlassSessionId ?? "ses_fake0000000000000000";
 			const message = `that session holds a record this version of Windlass does not read (session ${id} state.laterKey: expected no such key, got 1). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.`;
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "unreadable_session", message } };
+			return {
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				windlassSessionId: null,
+				summary: null,
+				stderrTail: "",
+				failure: { reason: "unreadable_session", message },
+			};
 		}
 
-		const none = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "" };
-		if (text.includes("(missing-host-tools)")) return { ...none, failure: { reason: "host_tools_required", message: "Windlass needs host tools." } };
+		const none = {
+			exitCode: null,
+			aborted: false,
+			timedOut: false,
+			windlassSessionId: null,
+			summary: null,
+			stderrTail: "",
+		};
+		if (text.includes("(missing-host-tools)"))
+			return { ...none, failure: { reason: "host_tools_required", message: "Windlass needs host tools." } };
 		// A turn that is not scripted runs on its user's sign-in: it is handed that user's access token before anything starts.
 		if (input.script === undefined) {
 			const uid = this.sandboxes.all.get(sandbox.id)?.uid ?? "";
 			try {
 				const token = await this.tokens.current(uid);
-				console.log(`[wlp] token.handed sandbox=${sandbox.id} uid=${uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more`);
+				console.log(
+					`[wlp] token.handed sandbox=${sandbox.id} uid=${uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more`,
+				);
 			} catch (error) {
 				return { ...none, failure: tokenSourceFailure(error) };
 			}
@@ -752,12 +886,20 @@ export class FakeWindlass implements Windlass {
 		const sessions = this.sandboxes.windlassOf(sandbox.id);
 		// Where sessions live in the sandbox, one it does not hold cannot be continued: Windlass's own refusal.
 		if (continued && this.sandboxes.sessionsLiveInSandbox && !sessions.has(sessionId)) {
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `there is no session ${sessionId}` } };
+			return {
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				windlassSessionId: null,
+				summary: null,
+				stderrTail: "",
+				failure: { reason: "session_not_found", message: `there is no session ${sessionId}` },
+			};
 		}
 		const session: FakeSession = sessions.get(sessionId) ?? { seq: 0, turns: 0, padding: 0 };
 		const offered = turnHostTools(input);
 		const declarations = hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan);
-		const visibleTools = session.hostToolNames ??= declarations.hostTools.map(tool => tool.name);
+		const visibleTools = (session.hostToolNames ??= declarations.hostTools.map(tool => tool.name));
 		input.onHostTools?.(visibleTools);
 		const agentMeta = turnAgentMeta(input.planner ? "planner" : input.onReview ? "reviewer" : null, input.clearPlanner);
 		if (agentMeta.agent !== undefined) session.agent = agentMeta.agent;
@@ -854,7 +996,11 @@ export class FakeWindlass implements Windlass {
 				default:
 					outcome = TERMINAL.get(event.type) ?? outcome;
 					// Done with checks still failing is an outcome of its own, as the command line's summary has it.
-					if (event.type === "execution.succeeded" && (data.verification as { status?: unknown } | undefined)?.status === "unresolved") outcome = "unresolved";
+					if (
+						event.type === "execution.succeeded" &&
+						(data.verification as { status?: unknown } | undefined)?.status === "unresolved"
+					)
+						outcome = "unresolved";
 			}
 			emitted += 1;
 			input.onEvent?.(event);
@@ -875,14 +1021,17 @@ export class FakeWindlass implements Windlass {
 				requests,
 				durationMs: Date.now() - startedAt,
 				usage: total,
-				cachedShare: total && total.inputTokens > 0 ? Math.round((total.cachedInputTokens / total.inputTokens) * 1000) / 1000 : null,
+				cachedShare:
+					total && total.inputTokens > 0
+						? Math.round((total.cachedInputTokens / total.inputTokens) * 1000) / 1000
+						: null,
 			};
 			input.onEvent?.(summary);
 		};
 
 		/** Waits between two events; a stop of the turn or of a call ends the wait early. */
 		const pause = (ms: number): Promise<void> =>
-			new Promise((resolve) => {
+			new Promise(resolve => {
 				if (signal?.aborted || ms <= 0) {
 					resolve();
 					return;
@@ -899,20 +1048,28 @@ export class FakeWindlass implements Windlass {
 			});
 
 		const deliverSteers = (): void => {
-			for (const messageId of undelivered.splice(0)) emit({ type: "inbox.delivered", v: 1, data: { messageId }, seq: 0, time: 0 });
+			for (const messageId of undelivered.splice(0))
+				emit({ type: "inbox.delivered", v: 1, data: { messageId }, seq: 0, time: 0 });
 		};
 
 		const control: TurnControl = {
 			steer: async (message: string): Promise<void> => {
 				if (ended || signal?.aborted) throw new Error("the turn has ended");
 				const messageId = `msg_${randomBytes(12).toString("hex")}`;
-				emit({ type: "inbox.enqueued", v: 1, data: { messageId, origin: null, delivery: "steer", content: [{ type: "text", text: message }] }, seq: 0, time: 0 });
+				emit({
+					type: "inbox.enqueued",
+					v: 1,
+					data: { messageId, origin: null, delivery: "steer", content: [{ type: "text", text: message }] },
+					seq: 0,
+					time: 0,
+				});
 				undelivered.push(messageId);
 			},
 			cancelCall: async (messageId: string, callId: string): Promise<{ stopped: boolean; message: string | null }> => {
 				if (ended) throw new Error("the turn has ended");
 				const key = callKey(messageId, callId);
-				if (!running.has(key)) return { stopped: false, message: "That call is not running, so there is nothing to stop." };
+				if (!running.has(key))
+					return { stopped: false, message: "That call is not running, so there is nothing to stop." };
 				if (cancelled.has(key)) return { stopped: false, message: "That call was already asked to stop." };
 				cancelled.add(key);
 				emit({ type: "tool.cancel_requested", v: 1, data: { messageId, callId }, seq: 0, time: 0 });
@@ -925,22 +1082,47 @@ export class FakeWindlass implements Windlass {
 		 * Puts the question of an `approval.requested` to the caller and returns the events that follow
 		 * the answer, or null when the question was withdrawn because the turn was stopped.
 		 */
-		const ask = async (requested: WindlassEvent, rest: WindlassEvent[], scenario: ApprovalScenario): Promise<WindlassEvent[] | null> => {
+		const ask = async (
+			requested: WindlassEvent,
+			rest: WindlassEvent[],
+			scenario: ApprovalScenario,
+		): Promise<WindlassEvent[] | null> => {
 			const question = questionOf(requested);
 			const { messageId, callId } = question;
 			const declined = (output: string): WindlassEvent[] =>
-				scenario.deniedTail.map((event) => (event.type === "tool.settled" && dataOf(event).callId === callId ? { ...event, data: { ...dataOf(event), output } } : event));
+				scenario.deniedTail.map(event =>
+					event.type === "tool.settled" && dataOf(event).callId === callId
+						? { ...event, data: { ...dataOf(event), output } }
+						: event,
+				);
 
 			if (!input.onQuestion) {
 				const data = dataOf(requested);
-				emit({ type: "approval.denied", v: 1, data: { messageId, callId, mode: data.mode, paths: data.paths, escalation: data.escalation, reason: "unattended", needs: data.needs, stop: false }, seq: 0, time: 0 });
-				return declined("Not run: this call needs the user's approval for network access, and this run has no one to approve it.");
+				emit({
+					type: "approval.denied",
+					v: 1,
+					data: {
+						messageId,
+						callId,
+						mode: data.mode,
+						paths: data.paths,
+						escalation: data.escalation,
+						reason: "unattended",
+						needs: data.needs,
+						stop: false,
+					},
+					seq: 0,
+					time: 0,
+				});
+				return declined(
+					"Not run: this call needs the user's approval for network access, and this run has no one to approve it.",
+				);
 			}
 
 			emit(requested);
 			const asking = new AbortController();
 			let answer: TurnAnswer | null = null;
-			const how = await new Promise<"answered" | "declined" | "withdrawn">((resolve) => {
+			const how = await new Promise<"answered" | "declined" | "withdrawn">(resolve => {
 				if (signal?.aborted) {
 					resolve("withdrawn");
 					return;
@@ -959,7 +1141,7 @@ export class FakeWindlass implements Windlass {
 					return;
 				}
 				promise.then(
-					(value) => {
+					value => {
 						answer = value;
 						settle("answered");
 					},
@@ -973,11 +1155,18 @@ export class FakeWindlass implements Windlass {
 
 			const given = answer as TurnAnswer | null;
 			// An option the question does not have declines, as does a promise that rejected.
-			const choice = how === "answered" && given ? question.choices.find((candidate) => candidate.id === given.choice) : undefined;
+			const choice =
+				how === "answered" && given ? question.choices.find(candidate => candidate.id === given.choice) : undefined;
 			const note = choice && typeof given?.note === "string" && given.note !== "" ? given.note : null;
 			const approve = choice?.approve === true;
-			emit({ type: "approval.answered", v: 1, data: { messageId, callId, choice: choice?.id ?? "deny", approve, note, grants: [] }, seq: 0, time: 0 });
-			if (approve) return rest.filter((event) => event.type !== "approval.answered");
+			emit({
+				type: "approval.answered",
+				v: 1,
+				data: { messageId, callId, choice: choice?.id ?? "deny", approve, note, grants: [] },
+				seq: 0,
+				time: 0,
+			});
+			if (approve) return rest.filter(event => event.type !== "approval.answered");
 			return declined(`Not run: the user declined this call.${note ? ` Their note: ${note}` : ""}`);
 		};
 
@@ -1020,9 +1209,19 @@ export class FakeWindlass implements Windlass {
 			say();
 			if (approved.has(key)) return;
 			if (!input.onServerQuestion || signal?.aborted || ended) return;
-			const question: TurnServerQuestion = { name: server.name, fingerprint: server.fingerprint, argv: server.argv, url: server.url, file: SERVER_FILE, unset: server.unset, holdsTurn };
+			const question: TurnServerQuestion = {
+				name: server.name,
+				fingerprint: server.fingerprint,
+				argv: server.argv,
+				url: server.url,
+				file: SERVER_FILE,
+				unset: server.unset,
+				holdsTurn,
+			};
 			const asking = new AbortController();
-			const withdrawn = new Promise<null>((resolve) => asking.signal.addEventListener("abort", () => resolve(null), { once: true }));
+			const withdrawn = new Promise<null>(resolve =>
+				asking.signal.addEventListener("abort", () => resolve(null), { once: true }),
+			);
 			const stop = () => asking.abort();
 			signal?.addEventListener("abort", stop, { once: true });
 			serverQuestions.add(asking);
@@ -1042,7 +1241,12 @@ export class FakeWindlass implements Windlass {
 				approved.add(key);
 				describe(server, false);
 				say();
-				input.onServerApproved?.(question, server.unset.length > 0 ? { state: "failed", reason: `the environment variable ${server.unset[0]} named in its env is not set` } : { state: "running", tools: 2 });
+				input.onServerApproved?.(
+					question,
+					server.unset.length > 0
+						? { state: "failed", reason: `the environment variable ${server.unset[0]} named in its env is not set` }
+						: { state: "running", tools: 2 },
+				);
 			} finally {
 				signal?.removeEventListener("abort", stop);
 				serverQuestions.delete(asking);
@@ -1055,9 +1259,17 @@ export class FakeWindlass implements Windlass {
 			// The user's own servers start without a question, as with a real Windlass: one whose definition reads a
 			// variable the turn was not handed does not start, and a name the project has too is the project's.
 			for (const own of input.servers ?? []) {
-				if (isReservedServerName(own.name) || own.definition.enabled === false || servers.some((server) => server.name === own.name)) continue;
-				const argv = typeof own.definition.command === "string" ? [own.definition.command, ...(Array.isArray(own.definition.args) ? own.definition.args.map(String) : [])] : null;
-				const unset = definitionReads(own.definition).find((name) => !(name in (input.secrets?.env ?? {})));
+				if (
+					isReservedServerName(own.name) ||
+					own.definition.enabled === false ||
+					servers.some(server => server.name === own.name)
+				)
+					continue;
+				const argv =
+					typeof own.definition.command === "string"
+						? [own.definition.command, ...(Array.isArray(own.definition.args) ? own.definition.args.map(String) : [])]
+						: null;
+				const unset = definitionReads(own.definition).find(name => !(name in (input.secrets?.env ?? {})));
 				told.set(own.name, {
 					name: own.name,
 					origin: "user",
@@ -1066,16 +1278,29 @@ export class FakeWindlass implements Windlass {
 					url: argv === null ? String(own.definition.url ?? "") : null,
 					file: WINDLASS_CONFIG_FILE,
 					tools: unset === undefined ? 1 : null,
-					error: unset === undefined ? null : `the environment variable ${unset} named in its ${argv === null ? "headers" : "env"} is not set`,
+					error:
+						unset === undefined
+							? null
+							: `the environment variable ${unset} named in its ${argv === null ? "headers" : "env"} is not set`,
 					fingerprint: null,
 				});
 			}
 			// What the project names is said in one answer, as Windlass gives it: also that it names nothing.
-			for (const server of servers) if (!server.late) describe(server, !this.sandboxes.approvalsOf(sandbox.id).has(keyOf(server)));
+			for (const server of servers)
+				if (!server.late) describe(server, !this.sandboxes.approvalsOf(sandbox.id).has(keyOf(server)));
 			say();
 			// What waits is asked about before Windlass gets the prompt: nothing of the turn has happened yet.
 			for (const server of servers) if (!server.late) await askServer(server, true);
-			if (signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: continued ? sessionId : null, summary: null, stderrTail: "", failure: null };
+			if (signal?.aborted)
+				return {
+					exitCode: null,
+					aborted: true,
+					timedOut: false,
+					windlassSessionId: continued ? sessionId : null,
+					summary: null,
+					stderrTail: "",
+					failure: null,
+				};
 
 			input.onControl?.(control);
 			let queue = [...(approval ? approval.approved : fixture(fixtureFor(text, turn)))];
@@ -1086,12 +1311,28 @@ export class FakeWindlass implements Windlass {
 				// The checks the turn was handed, as Windlass would run them before it lets the turn end: one run, and the gate's verdict on it.
 				if (recorded.type === "execution.succeeded" && handed.length > 0) {
 					const since = { seq: session.passed?.seq ?? 1, run: session.passed ?? null };
-					const evidence = { run: 1, afterSeq: seq, changedFiles: [`notes/turn-${turn}.md`], checks: handed.map((check) => fakeCheck(check)), since, requiredChecks: handed.map((check) => ({ name: check.name, definition: "fake" })) };
-					const failing = evidence.checks.filter((check) => check.status !== "passed").map((check) => check.name);
-					emit({ type: "checks.started", v: 1, data: { run: 1, checks: handed.map((check) => check.name) }, seq: 0, time: 0 });
+					const evidence = {
+						run: 1,
+						afterSeq: seq,
+						changedFiles: [`notes/turn-${turn}.md`],
+						checks: handed.map(check => fakeCheck(check)),
+						since,
+						requiredChecks: handed.map(check => ({ name: check.name, definition: "fake" })),
+					};
+					const failing = evidence.checks.filter(check => check.status !== "passed").map(check => check.name);
+					emit({
+						type: "checks.started",
+						v: 1,
+						data: { run: 1, checks: handed.map(check => check.name) },
+						seq: 0,
+						time: 0,
+					});
 					emit({ type: "checks.finished", v: 1, data: { run: 1, evidence }, seq: 0, time: 0 });
 					if (failing.length === 0) session.passed = { seq, run: 1 };
-					const verification = failing.length === 0 ? { status: "passed", evidence } : { status: "unresolved", reason: "max_rounds", failing, acknowledgement: null, evidence };
+					const verification =
+						failing.length === 0
+							? { status: "passed", evidence }
+							: { status: "unresolved", reason: "max_rounds", failing, acknowledgement: null, evidence };
 					recorded = { ...recorded, data: { ...dataOf(recorded), verification } };
 				}
 				if (continued && (recorded.type === "session.created" || recorded.type === "baseline.set")) continue;
@@ -1107,11 +1348,33 @@ export class FakeWindlass implements Windlass {
 						failure: { reason: "engine", message: "Windlass stopped before the turn was finished (exit code 1)." },
 					};
 				}
-				if ((emitted >= execFailAfter || ((invalidEffort || usageLimit) && currentStep !== null)) && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
-					const provider = usageLimit ? { kind: "usage_limit", retryable: false, status: 429, message: "Usage limit reached for canary@example.invalid.", token: "canary-token", accountId: "canary-account" } : invalidEffort
-						? { kind: "invalid_request", retryable: false, status: 400, message: "HTTP 400: Invalid value: 'ultra'. Supported values are: 'none','minimal','low','medium','high','xhigh','max'. [param: reasoning.effort] (fixture-secret-value)" }
-						: { kind: "server", retryable: true, status: 503, message: "The provider answered 503." };
-					const error = { kind: "provider", error: { ...provider, code: null, retryAfterMs: resetKnown ? 2 * 3600_000 : null, requestId: null } };
+				if (
+					(emitted >= execFailAfter || ((invalidEffort || usageLimit) && currentStep !== null)) &&
+					recorded.type !== "step.failed" &&
+					!TERMINAL.has(recorded.type)
+				) {
+					const provider = usageLimit
+						? {
+								kind: "usage_limit",
+								retryable: false,
+								status: 429,
+								message: "Usage limit reached for canary@example.invalid.",
+								token: "canary-token",
+								accountId: "canary-account",
+							}
+						: invalidEffort
+							? {
+									kind: "invalid_request",
+									retryable: false,
+									status: 400,
+									message:
+										"HTTP 400: Invalid value: 'ultra'. Supported values are: 'none','minimal','low','medium','high','xhigh','max'. [param: reasoning.effort] (fixture-secret-value)",
+								}
+							: { kind: "server", retryable: true, status: 503, message: "The provider answered 503." };
+					const error = {
+						kind: "provider",
+						error: { ...provider, code: null, retryAfterMs: resetKnown ? 2 * 3600_000 : null, requestId: null },
+					};
 					queue = [
 						{ type: "step.failed", v: 1, data: { messageId: currentStep, error, usage: null }, seq: 0, time: 0 },
 						{ type: "execution.failed", v: 1, data: { executionId, message: executionFailure }, seq: 0, time: 0 },
@@ -1129,7 +1392,14 @@ export class FakeWindlass implements Windlass {
 						emit({ type: "fake.prompt_untrusted", data: { source: untrustedAt }, seq: 0 });
 						if (!session.tainted) {
 							session.tainted = untrustedAt;
-							emit({ type: "taint.noticed", data: { source: { kind: "client-input", tool: untrustedAt }, text: `Content from ${untrustedAt} is in the conversation.` }, seq: 0 });
+							emit({
+								type: "taint.noticed",
+								data: {
+									source: { kind: "client-input", tool: untrustedAt },
+									text: `Content from ${untrustedAt} is in the conversation.`,
+								},
+								seq: 0,
+							});
 						}
 					}
 				}
@@ -1137,12 +1407,20 @@ export class FakeWindlass implements Windlass {
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
-					if (input.prompt.includes("SERVICE_TOKEN is now set in your environment.") && process.env.WLP_FAKE_REQUEST_VALUE) {
-						emit({ type: "fake.secret_checked", data: { matches: input.secrets?.env.SERVICE_TOKEN === process.env.WLP_FAKE_REQUEST_VALUE }, seq: 0 });
+					if (
+						input.prompt.includes("SERVICE_TOKEN is now set in your environment.") &&
+						process.env.WLP_FAKE_REQUEST_VALUE
+					) {
+						emit({
+							type: "fake.secret_checked",
+							data: { matches: input.secrets?.env.SERVICE_TOKEN === process.env.WLP_FAKE_REQUEST_VALUE },
+							seq: 0,
+						});
 					}
 					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...declarations });
 					if (input.onPlan) {
-						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
+						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length)
+							throw new Error("Planner received builder privileges.");
 						const single = text.includes("(suggest-single)");
 						// A cross-repo feature's planner (factory/cross-repo.ts, plannerText): it reads the sibling's tree and quotes it.
 						const sibling = /is read-only at \.windlass-inputs\/([a-z][a-z0-9-]*)/.exec(text)?.[1];
@@ -1150,48 +1428,163 @@ export class FakeWindlass implements Windlass {
 						if (sibling && repos) {
 							const [primary] = JSON.parse(repos) as string[];
 							const read = await sandbox.run(`cat .windlass-inputs/${sibling}/CROSS.md`, { timeoutMs: 5000 });
-							const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
-								spec: { goal: "Index and search documents across both repositories", requirements: ["Index documents", "From " + sibling + ": " + read.stdout.trim()], outOfScope: [], acceptance: ["Documents can be found."] },
-								questions: [], singleSuggested: null, repos: JSON.parse(repos),
-								subtasks: [[sibling, "index", []], [primary, "search", ["index"]]].map(([repo, key, dependsOn]) => ({
-									key, repo, title: key, brief: "Implement " + key + ". (report)", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn,
-									budget: { tokens: 600000 },
-								})),
-								mergeOrder: [
-									{ repo: sibling, prerequisite: [], intermediate: "The released consumer ignores it", evidence: "The old reader passes", fallback: "Leave it unused" },
-									{ repo: primary, prerequisite: [sibling], intermediate: "It falls back when absent", evidence: "Both cases", fallback: "Revert the reader" },
-								],
-								releaseGate: "request",
-								finalIntegration: { runFrom: primary, command: "bash scripts/cross-repo-integration.sh", inputs: JSON.parse(repos), profile: "actions", timeoutSeconds: 3600, requiredCases: ["models"], artifactOutputs: [] },
-							} }, signal ?? new AbortController().signal);
-							emit({type:"fake.plan_reply",data:{reply},seq:0});
+							const reply = await input.onPlan(
+								{
+									messageId: "plan",
+									callId: "file",
+									arguments: {
+										spec: {
+											goal: "Index and search documents across both repositories",
+											requirements: ["Index documents", "From " + sibling + ": " + read.stdout.trim()],
+											outOfScope: [],
+											acceptance: ["Documents can be found."],
+										},
+										questions: [],
+										singleSuggested: null,
+										repos: JSON.parse(repos),
+										subtasks: [
+											[sibling, "index", []],
+											[primary, "search", ["index"]],
+										].map(([repo, key, dependsOn]) => ({
+											key,
+											repo,
+											title: key,
+											brief: "Implement " + key + ". (report)",
+											acceptance: ["Run pnpm test"],
+											owns: ["src/**"],
+											dependsOn,
+											budget: { tokens: 600000 },
+										})),
+										mergeOrder: [
+											{
+												repo: sibling,
+												prerequisite: [],
+												intermediate: "The released consumer ignores it",
+												evidence: "The old reader passes",
+												fallback: "Leave it unused",
+											},
+											{
+												repo: primary,
+												prerequisite: [sibling],
+												intermediate: "It falls back when absent",
+												evidence: "Both cases",
+												fallback: "Revert the reader",
+											},
+										],
+										releaseGate: "request",
+										finalIntegration: {
+											runFrom: primary,
+											command: "bash scripts/cross-repo-integration.sh",
+											inputs: JSON.parse(repos),
+											profile: "actions",
+											timeoutSeconds: 3600,
+											requiredCases: ["models"],
+											artifactOutputs: [],
+										},
+									},
+								},
+								signal ?? new AbortController().signal,
+							);
+							emit({ type: "fake.plan_reply", data: { reply }, seq: 0 });
 						} else {
-						const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
-							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
-							questions: text.includes("(plan-question)") ? [{ id: "newline", text: "Should each file end with a trailing newline?", options: ["Yes", "No"],
-								...(text.includes("(recommend-newline)") && { recommended: "Yes" }) }] : [],
-							singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
-								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
-								budget:{tokens:600000},
-							})),
-						} }, signal ?? new AbortController().signal);
-						emit({type:"fake.plan_reply",data:{reply},seq:0});
+							const reply = await input.onPlan(
+								{
+									messageId: "plan",
+									callId: "file",
+									arguments: {
+										spec: {
+											goal: "Index and search documents",
+											requirements: ["Index documents"],
+											outOfScope: [],
+											acceptance: ["Documents can be found."],
+										},
+										questions: text.includes("(plan-question)")
+											? [
+													{
+														id: "newline",
+														text: "Should each file end with a trailing newline?",
+														options: ["Yes", "No"],
+														...(text.includes("(recommend-newline)") && { recommended: "Yes" }),
+													},
+												]
+											: [],
+										singleSuggested: single ? "Only one file." : null,
+										subtasks: single
+											? []
+											: ["index", "search"].map((key, i) => ({
+													key,
+													title: key,
+													brief: "Implement " + key + ". (report)",
+													acceptance: ["Run pnpm test"],
+													owns: [key + "/**"],
+													dependsOn: i ? ["index"] : [],
+													budget: { tokens: 600000 },
+												})),
+									},
+								},
+								signal ?? new AbortController().signal,
+							);
+							emit({ type: "fake.plan_reply", data: { reply }, seq: 0 });
 						}
 					}
 					if (input.onPlanReview) {
-						if (!input.planner || offered.size !== 1 || !offered.has("file_plan_review") || input.servers?.length || input.checks?.length ||
-							input.onPush || input.onReport || input.onPublish || input.onFetchBase || !text.includes("tracked repository tree:")) throw new Error("Invalid critic tools or missing repository tree.");
-						const review = text.includes("(reject-newline)") ? { decision: "revise", findings: ["The owner must decide the newline policy."] }
+						if (
+							!input.planner ||
+							offered.size !== 1 ||
+							!offered.has("file_plan_review") ||
+							input.servers?.length ||
+							input.checks?.length ||
+							input.onPush ||
+							input.onReport ||
+							input.onPublish ||
+							input.onFetchBase ||
+							!text.includes("tracked repository tree:")
+						)
+							throw new Error("Invalid critic tools or missing repository tree.");
+						const review = text.includes("(reject-newline)")
+							? { decision: "revise", findings: ["The owner must decide the newline policy."] }
 							: { decision: "approve", findings: ["The plan covers the task within budget."] };
-						await input.onPlanReview({ messageId: "critic", callId: "file", arguments: review }, signal ?? new AbortController().signal);
+						await input.onPlanReview(
+							{ messageId: "critic", callId: "file", arguments: review },
+							signal ?? new AbortController().signal,
+						);
 					}
-					if (input.onPlanReview || input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
+					if (input.onPlanReview || input.onPlan || input.onReview || input.onReport)
+						emit({
+							type: "fake.session_open",
+							data: { method: continued ? "session/resume" : "session/new", params },
+							seq: 0,
+						});
 					if (input.onReview) {
-						if (!this.sandboxes.all.get(sandbox.id)?.privateData || input.onPublish || input.onPush || input.onReport || input.onFetchBase || input.servers?.length || input.checks?.length || Object.keys(input.secrets?.env ?? {}).length || input.onQuestion || input.maxSteps !== 40) throw new Error("Reviewer received builder privileges.");
+						if (
+							!this.sandboxes.all.get(sandbox.id)?.privateData ||
+							input.onPublish ||
+							input.onPush ||
+							input.onReport ||
+							input.onFetchBase ||
+							input.servers?.length ||
+							input.checks?.length ||
+							Object.keys(input.secrets?.env ?? {}).length ||
+							input.onQuestion ||
+							input.maxSteps !== 40
+						)
+							throw new Error("Reviewer received builder privileges.");
 						const ids = { messageId: "review_step", callId: "shell_1" };
-						emit({ type: "tool.called", data: { ...ids, name: "shell", input: JSON.stringify({ command: "pwd" }) }, seq: 0 });
-						emit({ type: "tool.settled", data: { ...ids, outcome: "success", output: "/workspace", display: { exitCode: 0 } }, seq: 0 });
-						const ask = (args: Record<string, unknown>) => offered.get(REVIEW_TOOL)!({ ...ids, callId: "filing", arguments: args }, signal ?? new AbortController().signal);
+						emit({
+							type: "tool.called",
+							data: { ...ids, name: "shell", input: JSON.stringify({ command: "pwd" }) },
+							seq: 0,
+						});
+						emit({
+							type: "tool.settled",
+							data: { ...ids, outcome: "success", output: "/workspace", display: { exitCode: 0 } },
+							seq: 0,
+						});
+						const ask = (args: Record<string, unknown>) =>
+							offered.get(REVIEW_TOOL)!(
+								{ ...ids, callId: "filing", arguments: args },
+								signal ?? new AbortController().signal,
+							);
 						if (text.includes("(lookup-limit)")) {
 							for (let i = 0; i < 3; i++) await ask({});
 							const lookup = await ask({ commands: true, blocks: [] });
@@ -1201,29 +1594,78 @@ export class FakeWindlass implements Windlass {
 						const ref = available.split(", ").at(-1)?.split(" ").at(-1);
 						const picture = text.includes("## screenshots");
 						const file = ".wlp-shots/home.png";
-						if (picture && process.env.WLP_FAKE_ATTACHMENT_PNG) this.sandboxes.all.get(sandbox.id)!.shots.set(file, Buffer.from(process.env.WLP_FAKE_ATTACHMENT_PNG, "base64"));
-						const blocks = [{ kind: "summary", text: "Checked the change in my own checkout." }, { kind: "text", text: "Ran pwd.", refs: [{ ref }] }];
+						if (picture && process.env.WLP_FAKE_ATTACHMENT_PNG)
+							this.sandboxes.all
+								.get(sandbox.id)!
+								.shots.set(file, Buffer.from(process.env.WLP_FAKE_ATTACHMENT_PNG, "base64"));
+						const blocks = [
+							{ kind: "summary", text: "Checked the change in my own checkout." },
+							{ kind: "text", text: "Ran pwd.", refs: [{ ref }] },
+						];
 						if (!picture && text.includes("(try-disabled-shot)")) {
-							const refusal = await ask({ recommendation: "approve", blocks: [...blocks, { kind: "screenshot", file, caption: "Home" }] });
+							const refusal = await ask({
+								recommendation: "approve",
+								blocks: [...blocks, { kind: "screenshot", file, caption: "Home" }],
+							});
 							emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
 						}
-						const excerpts = text.includes("(review-files)") ? ["README.md", "notes.txt"].map(path => ({ kind: "excerpt", at: { path, side: "base", lines: { start: 1, end: 1 } } })) : [];
+						const excerpts = text.includes("(review-files)")
+							? ["README.md", "notes.txt"].map(path => ({
+									kind: "excerpt",
+									at: { path, side: "base", lines: { start: 1, end: 1 } },
+								}))
+							: [];
 						if (input.reviewDirectory) {
-							await ask({ recommendation: "changes_requested", blocks: [{ kind: "summary", text: "The README needs a correction." },
-								{ kind: "finding", severity: "blocking", title: "Incorrect heading", text: "Correct the heading.", at: [{ path: "README.md", lines: { start: 1, end: 1 } }] }] });
+							await ask({
+								recommendation: "changes_requested",
+								blocks: [
+									{ kind: "summary", text: "The README needs a correction." },
+									{
+										kind: "finding",
+										severity: "blocking",
+										title: "Incorrect heading",
+										text: "Correct the heading.",
+										at: [{ path: "README.md", lines: { start: 1, end: 1 } }],
+									},
+								],
+							});
 						} else if (text.includes("(review-loop)")) {
 							// R4: the first round asks for changes; the next tries to approve without answering it, then answers it.
 							if (text.includes("this is round 1:")) {
-								const answer = await ask({ recommendation: "changes_requested", blocks: [...blocks, { kind: "finding", severity: "blocking", title: "No check for the empty page", text: "Add a check that the empty page renders." }] });
+								const answer = await ask({
+									recommendation: "changes_requested",
+									blocks: [
+										...blocks,
+										{
+											kind: "finding",
+											severity: "blocking",
+											title: "No check for the empty page",
+											text: "Add a check that the empty page renders.",
+										},
+									],
+								});
 								emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 							} else {
 								const refusal = await ask({ recommendation: "approve", blocks });
 								emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
-								const answer = await ask({ recommendation: "approve", blocks: [...blocks, { kind: "earlier", finding: "r1.f1", status: "fixed", text: "The check is there now." }] });
+								const answer = await ask({
+									recommendation: "approve",
+									blocks: [
+										...blocks,
+										{ kind: "earlier", finding: "r1.f1", status: "fixed", text: "The check is there now." },
+									],
+								});
 								emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 							}
 						} else {
-							const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...excerpts, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
+							const answer = await ask({
+								recommendation: "approve",
+								blocks: [
+									...blocks,
+									...excerpts,
+									...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : []),
+								],
+							});
 							emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 						}
 					}
@@ -1236,15 +1678,62 @@ export class FakeWindlass implements Windlass {
 					] as const) {
 						const run = offered.get(name);
 						const retrySkipped = name === "request_secret" && text.includes("continue without service_token.");
-						if (!(text.includes(word) || retrySkipped || name === "report" && input.planner) || !visibleTools.includes(name) || run === undefined || signal?.aborted) continue;
+						if (
+							!(text.includes(word) || retrySkipped || (name === "report" && input.planner)) ||
+							!visibleTools.includes(name) ||
+							run === undefined ||
+							signal?.aborted
+						)
+							continue;
 						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
 						const pictured = name === "report" && text.includes("(screenshot)");
-						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
-						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "request_secret" ? { name: (text.match(/\(secret-name ([a-z0-9_]+)\)/)?.[1] ?? "SERVICE_TOKEN").toUpperCase(), why: "Run the service test." } : name === "ask_person" ? { question: "Which store should the readings go in?\u202e Reply in one word.", options: ["SQLite", "Postgres"] } : name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						if (pictured && fixture)
+							this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
+						const call = {
+							messageId: currentStep ?? "msg_fake",
+							callId: `call_${name}`,
+							arguments:
+								name === "request_secret"
+									? {
+											name: (text.match(/\(secret-name ([a-z0-9_]+)\)/)?.[1] ?? "SERVICE_TOKEN").toUpperCase(),
+											why: "Run the service test.",
+										}
+									: name === "ask_person"
+										? {
+												question: "Which store should the readings go in?\u202e Reply in one word.",
+												options: ["SQLite", "Postgres"],
+											}
+										: name === "report"
+											? {
+													...(pictured
+														? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] }
+														: {}),
+													title: `Report of turn ${turn}`,
+													description: "What the fake agent did.",
+													look_at: `notes/turn-${turn}.md`,
+												}
+											: name === "push"
+												? { message: `Push of turn ${turn}` }
+												: {},
+						};
 						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
-						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
-						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");
-						emit({ type: "tool.settled", v: 1, data: { messageId: call.messageId, callId: call.callId, outcome: "success", output }, seq: 0, time: 0 });
+						emit({
+							type: "tool.called",
+							v: 1,
+							data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) },
+							seq: 0,
+							time: 0,
+						});
+						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(
+							() => "The platform could not handle this call.",
+						);
+						emit({
+							type: "tool.settled",
+							v: 1,
+							data: { messageId: call.messageId, callId: call.callId, outcome: "success", output },
+							seq: 0,
+							time: 0,
+						});
 						await pause(gap);
 					}
 				}
@@ -1256,11 +1745,25 @@ export class FakeWindlass implements Windlass {
 				}
 
 				if (recorded.type === "tool.progress" && cancelled.has(callKey(recorded.messageId, recorded.callId))) continue;
-				if (recorded.type === "tool.settled" && cancelled.has(callKey(dataOf(recorded).messageId, dataOf(recorded).callId))) {
+				if (
+					recorded.type === "tool.settled" &&
+					cancelled.has(callKey(dataOf(recorded).messageId, dataOf(recorded).callId))
+				) {
 					const data = dataOf(recorded);
 					const printed = running.get(callKey(data.messageId, data.callId)) ?? "";
-					const display = typeof data.display === "object" && data.display !== null ? { ...data.display, exitCode: null, signal: "SIGTERM", interrupted: "call" } : data.display;
-					emit({ ...recorded, data: { ...data, outcome: "error", output: `${printed}${printed ? "\n" : ""}[Stopped by the user. The command had not finished.]`, display } });
+					const display =
+						typeof data.display === "object" && data.display !== null
+							? { ...data.display, exitCode: null, signal: "SIGTERM", interrupted: "call" }
+							: data.display;
+					emit({
+						...recorded,
+						data: {
+							...data,
+							outcome: "error",
+							output: `${printed}${printed ? "\n" : ""}[Stopped by the user. The command had not finished.]`,
+							display,
+						},
+					});
 					await pause(gap);
 					continue;
 				}
@@ -1284,7 +1787,15 @@ export class FakeWindlass implements Windlass {
 				emit({ type: "execution.interrupt_requested", v: 1, data: { reason }, seq: 0, time: 0 });
 				emit({ type: "execution.interrupted", v: 1, data: { reason }, seq: 0, time: 0 });
 				summarize();
-				return { exitCode: 130, aborted: true, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure: null };
+				return {
+					exitCode: 130,
+					aborted: true,
+					timedOut: false,
+					windlassSessionId: sessionId,
+					summary,
+					stderrTail: "",
+					failure: null,
+				};
 			}
 			summarize();
 
@@ -1294,12 +1805,25 @@ export class FakeWindlass implements Windlass {
 			if (text.includes("(change-setup-fixture)")) files?.set("index/setup.sh", "echo child-setup\n");
 			if (text.includes("(consume-setup-fixture)")) files?.set("search/result.txt", "second subtask\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
-if (text.includes("(outlive-delete)")) { const kept = this.sandboxes.all.get(sandbox.id); if (kept) kept.outlives = true; }
+			if (text.includes("(outlive-delete)")) {
+				const kept = this.sandboxes.all.get(sandbox.id);
+				if (kept) kept.outlives = true;
+			}
 
 			let failure: RunTurnResult["failure"] = null;
-			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
+			if (text.includes("(auth-fail)"))
+				failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };
 			else if (finished() === "failed") failure = { reason: "execution_failed", message: executionFailure };
-			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure, checks: { project: null } };
+			return {
+				exitCode: 0,
+				aborted: false,
+				timedOut: false,
+				windlassSessionId: sessionId,
+				summary,
+				stderrTail: "",
+				failure,
+				checks: { project: null },
+			};
 		} finally {
 			ended = true;
 			session.seq = seq;
@@ -1314,7 +1838,23 @@ function fakeCheck(check: RepositoryCheck): Record<string, unknown> {
 	const printed = fails ? `${check.name}: 1 failed\n` : `${check.name}: ok\n`;
 	// As a Windlass with required checks records one the client named: whose it is, and the end of the output of one that failed or whose entry asks.
 	const outputTail = fails || check.showOutput === true ? { text: printed, truncated: false } : null;
-	return { name: check.name, command: check.command, status: fails ? "failed" : "passed", exitCode: fails ? 1 : 0, signal: null, durationMs: 40, files: [], fingerprint: "fake", reusedFromSeq: null, outputPath: null, outputBytes: printed.length, outputLines: 1, origin: "session", required: true, outputTail };
+	return {
+		name: check.name,
+		command: check.command,
+		status: fails ? "failed" : "passed",
+		exitCode: fails ? 1 : 0,
+		signal: null,
+		durationMs: 40,
+		files: [],
+		fingerprint: "fake",
+		reusedFromSeq: null,
+		outputPath: null,
+		outputBytes: printed.length,
+		outputLines: 1,
+		origin: "session",
+		required: true,
+		outputTail,
+	};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1348,11 +1888,19 @@ class FakeSignInCommands implements SignInCommands {
 
 	async start(): Promise<{ url: string; redirectPrefix: string; material: SignInMaterial }> {
 		const state = randomBytes(8).toString("hex");
-		return { url: `https://auth.openai.com/oauth/authorize?fake=1&state=${state}`, redirectPrefix: REDIRECT_PREFIX, material: { files: { "auth-pending.json": JSON.stringify({ fake: true, state }) } } };
+		return {
+			url: `https://auth.openai.com/oauth/authorize?fake=1&state=${state}`,
+			redirectPrefix: REDIRECT_PREFIX,
+			material: { files: { "auth-pending.json": JSON.stringify({ fake: true, state }) } },
+		};
 	}
 
-	async finish(material: SignInMaterial, pastedUrl: string): Promise<{ account: ChatgptAccount; material: SignInMaterial }> {
-		if (material.files["auth-pending.json"] === undefined) throw new SandboxUserError("This sign-in attempt is not known. Start again.");
+	async finish(
+		material: SignInMaterial,
+		pastedUrl: string,
+	): Promise<{ account: ChatgptAccount; material: SignInMaterial }> {
+		if (material.files["auth-pending.json"] === undefined)
+			throw new SandboxUserError("This sign-in attempt is not known. Start again.");
 		if (!pastedUrl.startsWith(REDIRECT_PREFIX)) {
 			throw new SandboxUserError(`That is not the address the sign-in ends on. It starts with ${REDIRECT_PREFIX}`);
 		}
@@ -1364,10 +1912,17 @@ class FakeSignInCommands implements SignInCommands {
 		}
 		if (!code) throw new SandboxUserError("The address has no sign-in code in it. Copy the whole address.");
 		if (code === "refused") throw new SandboxUserError("OpenAI refused the sign-in. Start again.");
-		if (code === "explode") throw new Error("fake layer: docker run failed with /var/run/docker.sock: permission denied");
+		if (code === "explode")
+			throw new Error("fake layer: docker run failed with /var/run/docker.sock: permission denied");
 		const grant = this.grants.get(code) ?? { email: `${code}@example.com` };
-		const saved = this.issue({ sub: grant.sub ?? `fake|${code}`, email: grant.email }, code === "brief" ? 60_000 : 60 * 60 * 1000);
-		return { account: { ...saved.account, accessExpiresAt: saved.expiresAt }, material: { files: { "auth.json": JSON.stringify(saved) } } };
+		const saved = this.issue(
+			{ sub: grant.sub ?? `fake|${code}`, email: grant.email },
+			code === "brief" ? 60_000 : 60 * 60 * 1000,
+		);
+		return {
+			account: { ...saved.account, accessExpiresAt: saved.expiresAt },
+			material: { files: { "auth.json": JSON.stringify(saved) } },
+		};
 	}
 
 	async token(material: SignInMaterial): Promise<TokenAnswer> {
@@ -1376,13 +1931,33 @@ class FakeSignInCommands implements SignInCommands {
 		this.asked += 1;
 		await delay(10);
 		const saved = JSON.parse(text) as FakeCredentials;
-		if (saved.account.sub === "fake|expired") return { ok: false, material, error: new SandboxUserError(SIGN_IN_EXPIRED) };
+		if (saved.account.sub === "fake|expired")
+			return { ok: false, material, error: new SandboxUserError(SIGN_IN_EXPIRED) };
 		// As the real commands word Windlass's `network_error`: its sentence, which names the host and the reason.
-		if (saved.account.sub === "fake|offline") return { ok: false, material, error: new SignInRefreshError("could not reach the sign-in service at auth.openai.com: the fake layer has no network", SIGN_IN_UNREACHABLE) };
-		if (saved.expiresAt - Date.now() > TOKEN_VALID_FOR_MS) return { ok: true, material, token: { accessToken: saved.accessToken, expiresAt: saved.expiresAt }, shorter: false };
+		if (saved.account.sub === "fake|offline")
+			return {
+				ok: false,
+				material,
+				error: new SignInRefreshError(
+					"could not reach the sign-in service at auth.openai.com: the fake layer has no network",
+					SIGN_IN_UNREACHABLE,
+				),
+			};
+		if (saved.expiresAt - Date.now() > TOKEN_VALID_FOR_MS)
+			return {
+				ok: true,
+				material,
+				token: { accessToken: saved.accessToken, expiresAt: saved.expiresAt },
+				shorter: false,
+			};
 		// A refresh: the sign-in comes back with another refresh token, and has to be saved.
 		const next = this.issue(saved.account, 60 * 60 * 1000);
-		return { ok: true, material: { files: { ...material.files, "auth.json": JSON.stringify(next) } }, token: { accessToken: next.accessToken, expiresAt: next.expiresAt }, shorter: false };
+		return {
+			ok: true,
+			material: { files: { ...material.files, "auth.json": JSON.stringify(next) } },
+			token: { accessToken: next.accessToken, expiresAt: next.expiresAt },
+			shorter: false,
+		};
 	}
 
 	async models(): Promise<ListedModels> {
@@ -1392,7 +1967,12 @@ class FakeSignInCommands implements SignInCommands {
 
 	private issue(account: FakeCredentials["account"], lastsMs: number): FakeCredentials {
 		const number = (this.issued += 1);
-		return { account, accessToken: `FAKE-ACCESS-TOKEN-${number}-not-a-real-token`, refreshToken: `FAKE-REFRESH-TOKEN-${number}-not-a-real-token`, expiresAt: Date.now() + lastsMs };
+		return {
+			account,
+			accessToken: `FAKE-ACCESS-TOKEN-${number}-not-a-real-token`,
+			refreshToken: `FAKE-REFRESH-TOKEN-${number}-not-a-real-token`,
+			expiresAt: Date.now() + lastsMs,
+		};
 	}
 }
 
@@ -1409,13 +1989,26 @@ export function createFakeSandboxLayer(options: { signIns?: "actors" | "memory" 
 	// A directory that stands in for the bucket: Windlass's sessions then live in the sandboxes, and are copied there.
 	const bucket = fakeBucket();
 	// The sign-in steps and the token source are the real ones, over the stand-in for Windlass above.
-	const { logins, tokens } = options.signIns === "memory" ? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() }) : actorSignIns();
+	const { logins, tokens } =
+		options.signIns === "memory"
+			? memorySignIns({ commands: createFakeSignInCommands(), rows: new Map() })
+			: actorSignIns();
 	const raw = Number.parseInt(process.env.WLP_FAKE_DELAY_MS ?? "", 10);
 	const eventDelayMs = Number.isFinite(raw) && raw >= 0 ? raw : 15;
 	const setting = (name: string) => {
 		const value = Number.parseInt(process.env[name] ?? "", 10);
 		return Number.isFinite(value) && value >= 0 ? value : null;
 	};
-	const sandboxes = new FakeSandboxes(bucket, { delayMs: setting("WLP_FAKE_PROVIDER_DELAY_MS") ?? 0, idleStopMs: setting("WLP_FAKE_IDLE_STOP_MS"), createFails: setting("WLP_FAKE_CREATE_FAILS") ?? 0 });
-	return { sandboxes, windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens), logins, tokens, backups: bucket === null ? null : new SandboxSessionBackups(bucket, { maxBytes: backupConfig().maxBytes }) };
+	const sandboxes = new FakeSandboxes(bucket, {
+		delayMs: setting("WLP_FAKE_PROVIDER_DELAY_MS") ?? 0,
+		idleStopMs: setting("WLP_FAKE_IDLE_STOP_MS"),
+		createFails: setting("WLP_FAKE_CREATE_FAILS") ?? 0,
+	});
+	return {
+		sandboxes,
+		windlass: new FakeWindlass(sandboxes, eventDelayMs, tokens),
+		logins,
+		tokens,
+		backups: bucket === null ? null : new SandboxSessionBackups(bucket, { maxBytes: backupConfig().maxBytes }),
+	};
 }

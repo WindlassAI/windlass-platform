@@ -46,8 +46,10 @@ export class AttachTickets {
 		if (until === undefined || until <= now) return false;
 		if (hello.machineId !== expected.machineId || expected.publicKey === null) return false;
 		// The one-use challenge was delivered in the authenticated control attach.
-		const proof = hello.protocol === 2 ? machineStatement({ ...expected, challenge: hello.ticket, ticket: hello.ticket }, hello)
-			: sessionProof(expected.uid, expected.sessionId, expected.machineId, hello.ticket);
+		const proof =
+			hello.protocol === 2
+				? machineStatement({ ...expected, challenge: hello.ticket, ticket: hello.ticket }, hello)
+				: sessionProof(expected.uid, expected.sessionId, expected.machineId, hello.ticket);
 		return signedBy(expected.publicKey, proof, hello.signature);
 	}
 }
@@ -55,7 +57,10 @@ export class AttachTickets {
 function signedBy(spki: string, message: string, signature: string): boolean {
 	try {
 		const key = createPublicKey({ key: Buffer.from(spki, "base64"), format: "der", type: "spki" });
-		return key.asymmetricKeyType === "ed25519" && verify(null, Buffer.from(message), key, Buffer.from(signature, "base64url"));
+		return (
+			key.asymmetricKeyType === "ed25519" &&
+			verify(null, Buffer.from(message), key, Buffer.from(signature, "base64url"))
+		);
 	} catch {
 		return false;
 	}

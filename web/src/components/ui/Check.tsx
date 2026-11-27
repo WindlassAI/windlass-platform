@@ -19,10 +19,21 @@ export interface CheckProps {
 
 export function Check({ checked, onChange, disabled = false, className, label, inputRef, children }: CheckProps) {
 	return (
-		<label className={`check${label !== undefined ? " check-plain" : ""}${checked ? " check-on" : ""}${className ? ` ${className}` : ""}`}>
-			<input className="check-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} ref={inputRef} />
+		<label
+			className={`check${label !== undefined ? " check-plain" : ""}${checked ? " check-on" : ""}${className ? ` ${className}` : ""}`}
+		>
+			<input
+				className="check-input"
+				type="checkbox"
+				checked={checked}
+				disabled={disabled}
+				onChange={event => onChange(event.target.checked)}
+				ref={inputRef}
+			/>
 			<span className="check-box" aria-hidden="true" />
-			<span className="check-text">{label !== undefined ? <span className="check-label">{label}</span> : children}</span>
+			<span className="check-text">
+				{label !== undefined ? <span className="check-label">{label}</span> : children}
+			</span>
 		</label>
 	);
 }

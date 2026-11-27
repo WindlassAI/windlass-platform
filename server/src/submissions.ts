@@ -59,9 +59,17 @@ export interface Submission {
 export function submissionOf(key: unknown, content: unknown): Submission | null {
 	if (key === undefined || key === null) return null;
 	if (typeof key !== "string" || key === "" || [...key].length > MAX_IDEMPOTENCY_KEY_CHARS) {
-		throw new SubmissionProblem("bad_idempotency_key", `The key of a submission must be a text of 1 to ${MAX_IDEMPOTENCY_KEY_CHARS} characters. Leave it out to send without one.`);
+		throw new SubmissionProblem(
+			"bad_idempotency_key",
+			`The key of a submission must be a text of 1 to ${MAX_IDEMPOTENCY_KEY_CHARS} characters. Leave it out to send without one.`,
+		);
 	}
-	return { key, sent: createHash("sha256").update(JSON.stringify(ordered(content))).digest("base64url") };
+	return {
+		key,
+		sent: createHash("sha256")
+			.update(JSON.stringify(ordered(content)))
+			.digest("base64url"),
+	};
 }
 
 /** `value` with every object's names in order, so that what is the same is written the same. */
@@ -72,7 +80,7 @@ function ordered(value: unknown): unknown {
 	return Object.fromEntries(
 		Object.keys(from)
 			.sort()
-			.map((name) => [name, ordered(from[name])]),
+			.map(name => [name, ordered(from[name])]),
 	);
 }
 
@@ -84,7 +92,10 @@ function ordered(value: unknown): unknown {
 export function isRepeat(first: Submission | undefined, submission: Submission, what: string): boolean {
 	if (first === undefined) return false;
 	if (first.sent !== submission.sent) {
-		throw new SubmissionProblem("idempotency_key_reused", `The key this was sent with was already used for another ${what}, so this one was not taken. A new submission needs a key of its own.`);
+		throw new SubmissionProblem(
+			"idempotency_key_reused",
+			`The key this was sent with was already used for another ${what}, so this one was not taken. A new submission needs a key of its own.`,
+		);
 	}
 	return true;
 }

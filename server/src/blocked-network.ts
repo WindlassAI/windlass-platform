@@ -14,7 +14,10 @@ export function unionNetwork(...parts: BlockedNetwork[]): BlockedNetwork {
 		for (const entry of part.hosts) {
 			const key = keyOf(entry);
 			const kept = entries.get(key);
-			if (!kept) { entries.set(key, { ...entry }); continue; }
+			if (!kept) {
+				entries.set(key, { ...entry });
+				continue;
+			}
 			kept.count += entry.count;
 			if (entry.machineNames) kept.machineNames = [...new Set([...(kept.machineNames ?? []), ...entry.machineNames])];
 			kept.firstAt = Math.min(kept.firstAt, entry.firstAt);
@@ -33,7 +36,10 @@ export function limitNetwork(previous: BlockedNetwork, turn: BlockedNetwork): Bl
 	const hosts = turn.hosts.filter(entry => {
 		const key = keyOf(entry);
 		if (keys.has(key)) return true;
-		if (keys.size < 50) { keys.add(key); return true; }
+		if (keys.size < 50) {
+			keys.add(key);
+			return true;
+		}
 		overflow += entry.count;
 		return false;
 	});
@@ -60,13 +66,19 @@ export function networkBody(body: string, network: BlockedNetwork | undefined, s
 		else rest += entry.count;
 	}
 	if (rest) names.push(rest + " other request" + (rest === 1 ? "" : "s"));
-	const settings = network.hosts.some(entry => entry.allow === "repository") ? " Eligible hosts can be allowed in repository network settings." : "";
+	const settings = network.hosts.some(entry => entry.allow === "repository")
+		? " Eligible hosts can be allowed in repository network settings."
+		: "";
 	return prefix + names.join(", ") + "." + settings;
 }
 
 /** Sample before setup and at turn end. Runner samples are 20 seconds apart. A hosted read
  * returns false when it found no new names, backing off to at most two minutes between reads. */
-export async function watchNetwork(read: () => Promise<boolean | void>, onFailure: (error: unknown) => void, tearingDown: () => boolean) {
+export async function watchNetwork(
+	read: () => Promise<boolean | void>,
+	onFailure: (error: unknown) => void,
+	tearingDown: () => boolean,
+) {
 	const interval = 20_000;
 	let delay = interval;
 	let stopped = false;
@@ -74,7 +86,11 @@ export async function watchNetwork(read: () => Promise<boolean | void>, onFailur
 	let pending: Promise<void>;
 	const sample = async () => {
 		if (tearingDown()) return;
-		try { return await read(); } catch (error) { onFailure(error); }
+		try {
+			return await read();
+		} catch (error) {
+			onFailure(error);
+		}
 	};
 	const tick = () => {
 		pending = sample().then(changed => {

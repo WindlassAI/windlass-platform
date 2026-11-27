@@ -38,7 +38,9 @@ for (const name of Object.keys(process.env)) if (name.startsWith("WLP_LINEAR_"))
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
 const { linearConfig, linearClientSecret } = await import("../server/src/config.js");
-const { LinearApp, LinearError, challengeOf, newVerifier, linearApp, redactLinear } = await import("../server/src/linear/app.js");
+const { LinearApp, LinearError, challengeOf, newVerifier, linearApp, redactLinear } = await import(
+	"../server/src/linear/app.js"
+);
 const { linearCallbackResponse, openLinearTicket } = await import("../server/src/linear/connect.js");
 const webhook = await import("../server/src/linear/webhook.js");
 type LinearClaim = import("../server/src/linear/connect.js").LinearClaim;
@@ -107,20 +109,26 @@ class MemoryOwner {
 
 const hooks = new MemoryOwner();
 const settings = { current: undefined as ReturnType<typeof linearConfig> | undefined };
-const route = webhook.linearWebhookRoute({ dispatch: hooks.dispatch, settings: () => settings.current ?? linearConfig() });
+const route = webhook.linearWebhookRoute({
+	dispatch: hooks.dispatch,
+	settings: () => settings.current ?? linearConfig(),
+});
 const platform = createServer((request: IncomingMessage, response) => {
 	void (async () => {
 		const chunks: Buffer[] = [];
 		for await (const chunk of request) chunks.push(chunk as Buffer);
 		const headers = new Headers();
-		for (const [name, value] of Object.entries(request.headers)) if (typeof value === "string") headers.set(name, value);
+		for (const [name, value] of Object.entries(request.headers))
+			if (typeof value === "string") headers.set(name, value);
 		const body = request.method === "GET" || request.method === "HEAD" ? undefined : Buffer.concat(chunks);
-		const answer = await route(new Request(`http://localhost${request.url}`, { method: request.method, headers, body }));
+		const answer = await route(
+			new Request(`http://localhost${request.url}`, { method: request.method, headers, body }),
+		);
 		response.writeHead(answer?.status ?? 404, Object.fromEntries(answer?.headers ?? []));
 		response.end(answer ? await answer.text() : "");
 	})();
 });
-await new Promise<void>((resolve) => platform.listen(0, "127.0.0.1", resolve));
+await new Promise<void>(resolve => platform.listen(0, "127.0.0.1", resolve));
 const hookUrl = `http://127.0.0.1:${(platform.address() as AddressInfo).port}${webhook.LINEAR_WEBHOOK_PATH}`;
 
 const fullEnv = {
@@ -140,7 +148,10 @@ await section("configuration: off without it, off with part of it, and no secret
 	const partial = linearConfig({ WLP_LINEAR_CLIENT_ID: "abc", WLP_LINEAR_CLIENT_SECRET: "x" });
 	assert.equal(partial.app, null);
 	assert.deepEqual(partial.missing, ["WLP_LINEAR_WEBHOOK_SECRET"]);
-	assert.throws(() => linearConfig({ ...fullEnv, WLP_LINEAR_WEBHOOK_SECRET: "short" }), /WLP_LINEAR_WEBHOOK_SECRET must be at least 32/);
+	assert.throws(
+		() => linearConfig({ ...fullEnv, WLP_LINEAR_WEBHOOK_SECRET: "short" }),
+		/WLP_LINEAR_WEBHOOK_SECRET must be at least 32/,
+	);
 	assert.throws(() => linearConfig({ ...fullEnv, WLP_LINEAR_CLIENT_ID: "has space" }), /WLP_LINEAR_CLIENT_ID/);
 	assert.throws(() => linearConfig({ ...fullEnv, WLP_LINEAR_API_URL: "ftp://x" }), /WLP_LINEAR_API_URL/);
 	assert.throws(() => linearConfig({ ...fullEnv, WLP_LINEAR_URL: "https://user:pw@linear.app" }), /WLP_LINEAR_URL/);
@@ -148,13 +159,24 @@ await section("configuration: off without it, off with part of it, and no secret
 	const full = linearConfig(fullEnv);
 	assert.equal(full.app?.clientId, standin.clientId);
 	const dump = JSON.stringify(full) + JSON.stringify(Object.entries(full.webhook!)) + inspect(full, { depth: null });
-	assert.ok(!dump.includes(secrets.client) && !dump.includes(secrets.signing), "a secret is in the configuration object");
+	assert.ok(
+		!dump.includes(secrets.client) && !dump.includes(secrets.signing),
+		"a secret is in the configuration object",
+	);
 	assert.deepEqual(full.webhook!.secrets, [standin.signingSecret]);
-	const defaults = linearConfig({ WLP_LINEAR_CLIENT_ID: "abc", WLP_LINEAR_CLIENT_SECRET: "s", WLP_LINEAR_WEBHOOK_SECRET: "w".repeat(32) });
+	const defaults = linearConfig({
+		WLP_LINEAR_CLIENT_ID: "abc",
+		WLP_LINEAR_CLIENT_SECRET: "s",
+		WLP_LINEAR_WEBHOOK_SECRET: "w".repeat(32),
+	});
 	assert.equal(defaults.app?.apiUrl, "https://api.linear.app");
 	assert.equal(defaults.app?.webUrl, "https://linear.app");
 	assert.match(defaults.app!.redirectUrl, /^http:\/\/localhost:\d+\/linear\/callback$/);
-	assert.equal(linearConfig({ ...fullEnv, WLP_PUBLIC_URL: "https://wl.example.com", WLP_LINEAR_REDIRECT_URL: "" }).app?.redirectUrl, "https://wl.example.com/linear/callback");
+	assert.equal(
+		linearConfig({ ...fullEnv, WLP_PUBLIC_URL: "https://wl.example.com", WLP_LINEAR_REDIRECT_URL: "" }).app
+			?.redirectUrl,
+		"https://wl.example.com/linear/callback",
+	);
 
 	// The environment itself: nothing set, nothing there.
 	assert.equal(linearApp(), null);
@@ -162,7 +184,9 @@ await section("configuration: off without it, off with part of it, and no secret
 });
 
 await section("without configuration the routes do not exist and nothing is dispatched", async () => {
-	const response = await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x&state=y`), { store: new MemoryConnectStore() });
+	const response = await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x&state=y`), {
+		store: new MemoryConnectStore(),
+	});
 	assert.equal(response.status, 404);
 	settings.current = linearConfig({});
 	const signed = standin.createIssue({ team: standin.addTeam("OFF"), labels: ["windlass"] });
@@ -180,9 +204,9 @@ const logLines: string[] = [];
 const deps = { store, app, origins: [ORIGIN], log: (line: string) => void logLines.push(line) };
 let connection: ReturnType<typeof openLinearTicket>;
 for (let i = 1; i <= 120; i += 1) standin.addTeam(`T${i}`, `Team ${i}`);
-const alpha = standin.teams.find((team) => team.key === "T1")!;
-const beta = standin.teams.find((team) => team.key === "T2")!;
-const unmapped = standin.teams.find((team) => team.key === "T3")!;
+const alpha = standin.teams.find(team => team.key === "T1")!;
+const beta = standin.teams.find(team => team.key === "T2")!;
+const unmapped = standin.teams.find(team => team.key === "T3")!;
 
 await section("OAuth as the app's own user: the address, the exchange, the identity and the teams", async () => {
 	const begun = store.begin("u_owner", app);
@@ -219,93 +243,168 @@ await section("OAuth as the app's own user: the address, the exchange, the ident
 	const teams = await app.teams(connection.token.accessToken);
 	assert.equal(teams.length, standin.teams.length);
 	assert.ok(standin.teams.length > 100);
-	assert.deepEqual(teams.find((team) => team.key === "T1"), { id: alpha.id, key: "T1", name: "Team 1" });
-	const pages = standin.calls.filter((call) => call.includes("teams")).length;
+	assert.deepEqual(
+		teams.find(team => team.key === "T1"),
+		{ id: alpha.id, key: "T1", name: "Team 1" },
+	);
+	const pages = standin.calls.filter(call => call.includes("teams")).length;
 	assert.ok(pages >= 3, `expected the teams to be paged, saw ${pages} calls`);
 	// Credentials stay sealed in the fragment.
-	for (const secret of [connection.token.accessToken, connection.token.refreshToken!, standin.clientSecret, standin.signingSecret]) assert.ok(!location.includes(secret));
-	assert.ok(logLines.some((line) => line.includes("linear.connect.confirmed")));
+	for (const secret of [
+		connection.token.accessToken,
+		connection.token.refreshToken!,
+		standin.clientSecret,
+		standin.signingSecret,
+	])
+		assert.ok(!location.includes(secret));
+	assert.ok(logLines.some(line => line.includes("linear.connect.confirmed")));
 });
 
-await section("OAuth refusals: reused, forged and declined states; a wrong code; a person's token; a missing scope", async () => {
-	const fragment = async (response: Response) => new URL(response.headers.get("location")!).hash;
+await section(
+	"OAuth refusals: reused, forged and declined states; a wrong code; a person's token; a missing scope",
+	async () => {
+		const fragment = async (response: Response) => new URL(response.headers.get("location")!).hash;
 
-	// Used twice: the second return of the same state is refused and nothing is recorded.
-	const first = store.begin("u_owner", app);
-	const returned = await standin.authorize(first.url);
-	assert.match(await fragment(await linearCallbackResponse(new Request(returned), deps)), /^#linear=.+$/);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(returned), deps)), "#linear-error=used");
+		// Used twice: the second return of the same state is refused and nothing is recorded.
+		const first = store.begin("u_owner", app);
+		const returned = await standin.authorize(first.url);
+		assert.match(await fragment(await linearCallbackResponse(new Request(returned), deps)), /^#linear=.+$/);
+		assert.equal(await fragment(await linearCallbackResponse(new Request(returned), deps)), "#linear-error=used");
 
-	// Forged: no such state, and none that is not a string.
-	assert.equal(await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x&state=forged`), deps)), "#linear-error=state");
-	assert.equal(await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x`), deps)), "#linear-error=state");
+		// Forged: no such state, and none that is not a string.
+		assert.equal(
+			await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x&state=forged`), deps)),
+			"#linear-error=state",
+		);
+		assert.equal(
+			await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x`), deps)),
+			"#linear-error=state",
+		);
 
-	// Declined at Linear.
-	standin.consent = { approve: false };
-	const declined = store.begin("u_owner", app);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(await standin.authorize(declined.url)), deps)), "#linear-error=denied");
-	standin.consent = { approve: true };
+		// Declined at Linear.
+		standin.consent = { approve: false };
+		const declined = store.begin("u_owner", app);
+		assert.equal(
+			await fragment(await linearCallbackResponse(new Request(await standin.authorize(declined.url)), deps)),
+			"#linear-error=denied",
+		);
+		standin.consent = { approve: true };
 
-	// A code that is not Linear's, and one used already: not accepted.
-	const known = store.begin("u_owner", app);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=made-up&state=${known.state}`), deps)), "#linear-error=code");
-	const replay = store.begin("u_owner", app);
-	const replayUrl = await standin.authorize(replay.url);
-	await linearCallbackResponse(new Request(replayUrl), deps);
-	const second = store.begin("u_owner", app);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=${new URL(replayUrl).searchParams.get("code")}&state=${second.state}`), deps)), "#linear-error=code");
+		// A code that is not Linear's, and one used already: not accepted.
+		const known = store.begin("u_owner", app);
+		assert.equal(
+			await fragment(
+				await linearCallbackResponse(new Request(`${standin.redirectUri}?code=made-up&state=${known.state}`), deps),
+			),
+			"#linear-error=code",
+		);
+		const replay = store.begin("u_owner", app);
+		const replayUrl = await standin.authorize(replay.url);
+		await linearCallbackResponse(new Request(replayUrl), deps);
+		const second = store.begin("u_owner", app);
+		assert.equal(
+			await fragment(
+				await linearCallbackResponse(
+					new Request(
+						`${standin.redirectUri}?code=${new URL(replayUrl).searchParams.get("code")}&state=${second.state}`,
+					),
+					deps,
+				),
+			),
+			"#linear-error=code",
+		);
 
-	// A different verifier than the challenge was made from.
-	const pkce = store.begin("u_owner", app);
-	const pkceBack = new URL(await standin.authorize(pkce.url));
-	await assert.rejects(app.exchangeCode(pkceBack.searchParams.get("code")!, "not-the-verifier"), (error: unknown) => error instanceof LinearError && error.status === 400);
+		// A different verifier than the challenge was made from.
+		const pkce = store.begin("u_owner", app);
+		const pkceBack = new URL(await standin.authorize(pkce.url));
+		await assert.rejects(
+			app.exchangeCode(pkceBack.searchParams.get("code")!, "not-the-verifier"),
+			(error: unknown) => error instanceof LinearError && error.status === 400,
+		);
 
-	// A token for a person, as when the authorization was made without actor=app.
-	standin.consent = { approve: true, actor: "user" };
-	const person = store.begin("u_owner", app);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(await standin.authorize(person.url)), deps)), "#linear-error=not_app");
-	standin.consent = { approve: true };
+		// A token for a person, as when the authorization was made without actor=app.
+		standin.consent = { approve: true, actor: "user" };
+		const person = store.begin("u_owner", app);
+		assert.equal(
+			await fragment(await linearCallbackResponse(new Request(await standin.authorize(person.url)), deps)),
+			"#linear-error=not_app",
+		);
+		standin.consent = { approve: true };
 
-	// The write scope is required for a new connection.
-	const narrow = await LinearStandin.start({ grantScopes: (asked) => asked.filter((scope) => scope !== "write") });
-	try {
-		const narrowApp2 = new LinearApp({ clientId: narrow.clientId, apiUrl: narrow.url, webUrl: narrow.url, redirectUrl: narrow.redirectUri }, { clientSecret: () => narrow.clientSecret });
-		const scoped = store.begin("u_owner", narrowApp2);
-		const result = await linearCallbackResponse(new Request(await narrow.authorize(scoped.url)), { ...deps, app: narrowApp2 });
-		assert.equal(await fragment(result), "#linear-error=scope");
-	} finally {
-		await narrow.close();
-	}
+		// The write scope is required for a new connection.
+		const narrow = await LinearStandin.start({ grantScopes: asked => asked.filter(scope => scope !== "write") });
+		try {
+			const narrowApp2 = new LinearApp(
+				{ clientId: narrow.clientId, apiUrl: narrow.url, webUrl: narrow.url, redirectUrl: narrow.redirectUri },
+				{ clientSecret: () => narrow.clientSecret },
+			);
+			const scoped = store.begin("u_owner", narrowApp2);
+			const result = await linearCallbackResponse(new Request(await narrow.authorize(scoped.url)), {
+				...deps,
+				app: narrowApp2,
+			});
+			assert.equal(await fragment(result), "#linear-error=scope");
+		} finally {
+			await narrow.close();
+		}
 
-	// A wrong client secret is Linear's refusal too, and says nothing of the secret.
-	const wrong = new LinearApp(app.settings, { clientSecret: () => "wrong-secret-value" });
-	const code = new URL(await standin.authorize(store.begin("u_owner", app).url)).searchParams.get("code")!;
-	await assert.rejects(wrong.exchangeCode(code, null), (error: unknown) => error instanceof LinearError && error.status === 401 && !error.message.includes("wrong-secret-value"));
+		// A wrong client secret is Linear's refusal too, and says nothing of the secret.
+		const wrong = new LinearApp(app.settings, { clientSecret: () => "wrong-secret-value" });
+		const code = new URL(await standin.authorize(store.begin("u_owner", app).url)).searchParams.get("code")!;
+		await assert.rejects(
+			wrong.exchangeCode(code, null),
+			(error: unknown) =>
+				error instanceof LinearError && error.status === 401 && !error.message.includes("wrong-secret-value"),
+		);
 
-	// Linear unreachable.
-	const dead = new LinearApp({ ...app.settings, apiUrl: "http://127.0.0.1:9" }, { clientSecret: () => standin.clientSecret });
-	const lost = store.begin("u_owner", app);
-	const lostBack = await standin.authorize(lost.url);
-	assert.equal(await fragment(await linearCallbackResponse(new Request(lostBack), { ...deps, app: dead })), "#linear-error=unreachable");
-	// A method other than GET is not a callback.
-	assert.equal((await linearCallbackResponse(new Request(standin.redirectUri, { method: "POST" }), deps)).status, 405);
-});
+		// Linear unreachable.
+		const dead = new LinearApp(
+			{ ...app.settings, apiUrl: "http://127.0.0.1:9" },
+			{ clientSecret: () => standin.clientSecret },
+		);
+		const lost = store.begin("u_owner", app);
+		const lostBack = await standin.authorize(lost.url);
+		assert.equal(
+			await fragment(await linearCallbackResponse(new Request(lostBack), { ...deps, app: dead })),
+			"#linear-error=unreachable",
+		);
+		// A method other than GET is not a callback.
+		assert.equal(
+			(await linearCallbackResponse(new Request(standin.redirectUri, { method: "POST" }), deps)).status,
+			405,
+		);
+	},
+);
 
 await section("refresh, expiry and reads: identity, teams and one issue, with nothing written", async () => {
 	const token = connection.token;
 	standin.expire(token.accessToken);
-	await assert.rejects(app.identity(token.accessToken), (error: unknown) => error instanceof LinearError && error.unauthorized);
+	await assert.rejects(
+		app.identity(token.accessToken),
+		(error: unknown) => error instanceof LinearError && error.unauthorized,
+	);
 	const refreshed = await app.refresh(token.refreshToken!);
 	assert.notEqual(refreshed.accessToken, token.accessToken);
 	assert.ok(refreshed.refreshToken && refreshed.refreshToken !== token.refreshToken);
-	await assert.rejects(app.refresh(token.refreshToken!), (error: unknown) => error instanceof LinearError && error.status === 400, "a refresh token works once");
+	await assert.rejects(
+		app.refresh(token.refreshToken!),
+		(error: unknown) => error instanceof LinearError && error.status === 400,
+		"a refresh token works once",
+	);
 	connection.token = refreshed;
 
 	const identity = await app.identity(refreshed.accessToken);
 	assert.equal(identity.appUser.id, standin.appUser.id);
 	assert.equal((await app.teams(refreshed.accessToken)).length, standin.teams.length);
 
-	const { issue } = standin.createIssue({ team: alpha, title: "Fix the thing", description: "Details\n- [ ] one", labels: ["windlass", "windlass:quick"], assignee: standin.appUser, creator: standin.stranger });
+	const { issue } = standin.createIssue({
+		team: alpha,
+		title: "Fix the thing",
+		description: "Details\n- [ ] one",
+		labels: ["windlass", "windlass:quick"],
+		assignee: standin.appUser,
+		creator: standin.stranger,
+	});
 	const read = await app.issue(refreshed.accessToken, issue.id);
 	assert.ok(read);
 	assert.equal(read.identifier, issue.identifier);
@@ -313,7 +412,7 @@ await section("refresh, expiry and reads: identity, teams and one issue, with no
 	assert.equal(read.teamId, alpha.id);
 	assert.equal(read.assigneeId, standin.appUser.id);
 	assert.deepEqual(read.creator, { id: standin.stranger.id, name: "Sam Other" });
-	assert.deepEqual(read.labels.map((label) => label.name).sort(), ["windlass", "windlass:quick"]);
+	assert.deepEqual(read.labels.map(label => label.name).sort(), ["windlass", "windlass:quick"]);
 	assert.equal(read.archived, false);
 	issue.archived = true;
 	assert.equal((await app.issue(refreshed.accessToken, issue.id))!.archived, true);
@@ -322,73 +421,92 @@ await section("refresh, expiry and reads: identity, teams and one issue, with no
 	assert.deepEqual(standin.writes, [], "something was written to Linear");
 });
 
-await section("writeback uses stable comment IDs, attaches the PR and advances within the issue team's workflow", async () => {
-	const { accessToken } = connection.token;
-	const { issue } = standin.createIssue({ team: beta });
-	const pr = "https://github.com/acme/repo/pull/42";
-	for (const [key, outcome] of [["opened", "opened its pull request"], ["handed over", "was handed over"], ["failed", "failed"], ["cancelled", "was cancelled"], ["merged", "merged"]] as const) {
-		const write = { key, commentId: randomUUID(), pr };
-		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
-		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
-		assert.deepEqual(standin.comments.get(write.commentId), { issueId: issue.id, body: `Windlass item item-1 ${outcome}. ${pr}` });
-	}
-	assert.equal(standin.comments.size, 5);
-	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
-	assert.equal(standin.attachments.get(issue.id), pr);
-	assert.equal(issue.stateType, "unstarted");
-	const workflow = standin.workflowStates.get(beta.id)!;
-	const first = workflow.find(s => s.name === "Building")!;
-	const review = workflow.find(s => s.name === "In Review")!;
-	const write = (key: "start" | "review_opened" | "review_handover" | "complete") => app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key });
-	await write("start");
-	assert.equal(issue.stateId, first.id, "lowest started position, independent of name or response order");
-	review.type = "unstarted";
-	await write("review_opened");
-	assert.equal(issue.stateId, first.id, "In Review must itself be a started state");
-	review.type = "started";
-	review.name = "in review";
-	await write("review_opened");
-	assert.equal(issue.stateId, first.id);
-	review.name = "In Review";
-	await write("review_handover");
-	assert.equal(issue.stateId, review.id);
-	await write("start");
-	assert.equal(issue.stateId, review.id, "a delayed start cannot move review backwards");
-	const later = { id: randomUUID(), name: "Ready to deploy", type: "started", position: 5 };
-	workflow.push(later);
-	issue.stateId = later.id;
-	await write("review_opened");
-	assert.equal(issue.stateId, later.id, "review cannot move a later started state backwards");
-	const before = standin.writes.length;
-	standin.graphqlFailure = "RATELIMITED";
-	const now = Date.now();
-	await assert.rejects(write("start"), (err: unknown) => err instanceof LinearError && err.rateLimited && err.retryAt >= now + 30_000);
-	standin.graphqlFailure = null;
-	for (const type of ["completed", "canceled"]) {
-		issue.stateType = type;
+await section(
+	"writeback uses stable comment IDs, attaches the PR and advances within the issue team's workflow",
+	async () => {
+		const { accessToken } = connection.token;
+		const { issue } = standin.createIssue({ team: beta });
+		const pr = "https://github.com/acme/repo/pull/42";
+		for (const [key, outcome] of [
+			["opened", "opened its pull request"],
+			["handed over", "was handed over"],
+			["failed", "failed"],
+			["cancelled", "was cancelled"],
+			["merged", "merged"],
+		] as const) {
+			const write = { key, commentId: randomUUID(), pr };
+			await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
+			await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
+			assert.deepEqual(standin.comments.get(write.commentId), {
+				issueId: issue.id,
+				body: `Windlass item item-1 ${outcome}. ${pr}`,
+			});
+		}
+		assert.equal(standin.comments.size, 5);
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
+		assert.equal(standin.attachments.get(issue.id), pr);
+		assert.equal(issue.stateType, "unstarted");
+		const workflow = standin.workflowStates.get(beta.id)!;
+		const first = workflow.find(s => s.name === "Building")!;
+		const review = workflow.find(s => s.name === "In Review")!;
+		const write = (key: "start" | "review_opened" | "review_handover" | "complete") =>
+			app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key });
 		await write("start");
+		assert.equal(issue.stateId, first.id, "lowest started position, independent of name or response order");
+		review.type = "unstarted";
 		await write("review_opened");
-		await write("complete");
-	}
-	issue.teamId = alpha.id;
-	issue.stateType = "unstarted";
-	await write("start");
-	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "opened", commentId: randomUUID(), pr });
-	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
-	assert.equal(standin.writes.length, before, "terminal states and foreign teams are left alone");
-	issue.teamId = beta.id;
-	standin.denyStateChange = true;
-	await assert.rejects(app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" }), LinearError);
-	assert.equal(issue.stateType, "unstarted");
-	standin.denyStateChange = false;
-	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
-	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
-	assert.equal(issue.stateType, "completed");
-	assert.equal(standin.writes.filter(w => w === "issueUpdate").length, 4);
-	// A revoked token (the app was uninstalled) is told apart from an outage.
-	standin.revoke(accessToken);
-	await assert.rejects(app.teams(accessToken), (error: unknown) => error instanceof LinearError && error.unauthorized && !error.unreachable);
-});
+		assert.equal(issue.stateId, first.id, "In Review must itself be a started state");
+		review.type = "started";
+		review.name = "in review";
+		await write("review_opened");
+		assert.equal(issue.stateId, first.id);
+		review.name = "In Review";
+		await write("review_handover");
+		assert.equal(issue.stateId, review.id);
+		await write("start");
+		assert.equal(issue.stateId, review.id, "a delayed start cannot move review backwards");
+		const later = { id: randomUUID(), name: "Ready to deploy", type: "started", position: 5 };
+		workflow.push(later);
+		issue.stateId = later.id;
+		await write("review_opened");
+		assert.equal(issue.stateId, later.id, "review cannot move a later started state backwards");
+		const before = standin.writes.length;
+		standin.graphqlFailure = "RATELIMITED";
+		const now = Date.now();
+		await assert.rejects(
+			write("start"),
+			(err: unknown) => err instanceof LinearError && err.rateLimited && err.retryAt >= now + 30_000,
+		);
+		standin.graphqlFailure = null;
+		for (const type of ["completed", "canceled"]) {
+			issue.stateType = type;
+			await write("start");
+			await write("review_opened");
+			await write("complete");
+		}
+		issue.teamId = alpha.id;
+		issue.stateType = "unstarted";
+		await write("start");
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "opened", commentId: randomUUID(), pr });
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
+		assert.equal(standin.writes.length, before, "terminal states and foreign teams are left alone");
+		issue.teamId = beta.id;
+		standin.denyStateChange = true;
+		await assert.rejects(app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" }), LinearError);
+		assert.equal(issue.stateType, "unstarted");
+		standin.denyStateChange = false;
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
+		assert.equal(issue.stateType, "completed");
+		assert.equal(standin.writes.filter(w => w === "issueUpdate").length, 4);
+		// A revoked token (the app was uninstalled) is told apart from an outage.
+		standin.revoke(accessToken);
+		await assert.rejects(
+			app.teams(accessToken),
+			(error: unknown) => error instanceof LinearError && error.unauthorized && !error.unreachable,
+		);
+	},
+);
 
 // ---- webhooks ------------------------------------------------------------------------------------
 
@@ -398,11 +516,21 @@ hooks.workspaces.set(standin.workspace.id, { appUserId: standin.appUser.id, mapp
 async function fire(payload: Record<string, unknown> | string, options: Parameters<typeof standin.deliver>[2] = {}) {
 	const before = hooks.received.length;
 	const answer = await standin.deliver(hookUrl, payload, options);
-	return { ...answer, dispatched: hooks.received.length - before, json: answer.body.startsWith("{") ? JSON.parse(answer.body) as Record<string, unknown> : {} };
+	return {
+		...answer,
+		dispatched: hooks.received.length - before,
+		json: answer.body.startsWith("{") ? (JSON.parse(answer.body) as Record<string, unknown>) : {},
+	};
 }
 
 await section("a signed trigger: a label on a new issue, the label gained later, the app assigned", async () => {
-	const created = standin.createIssue({ team: alpha, title: "Labelled at birth", labels: ["windlass"], creator: standin.stranger, actor: standin.human });
+	const created = standin.createIssue({
+		team: alpha,
+		title: "Labelled at birth",
+		labels: ["windlass"],
+		creator: standin.stranger,
+		actor: standin.human,
+	});
 	const one = await fire(created.payload);
 	assert.equal(one.status, 202);
 	assert.equal(one.dispatched, 1);
@@ -415,7 +543,16 @@ await section("a signed trigger: a label on a new issue, the label gained later,
 	assert.equal(delivery.assignedTo, null);
 	assert.equal(delivery.actorId, standin.human.id);
 	// Ids and the transition only: nothing of what the issue says goes on from a delivery.
-	assert.deepEqual(Object.keys(delivery).sort(), ["actorId", "assignedTo", "deliveryId", "issueId", "label", "sentAt", "teamId", "workspaceId"]);
+	assert.deepEqual(Object.keys(delivery).sort(), [
+		"actorId",
+		"assignedTo",
+		"deliveryId",
+		"issueId",
+		"label",
+		"sentAt",
+		"teamId",
+		"workspaceId",
+	]);
 
 	// Gained by an update, with `windlass:quick`: Quick.
 	const plain = standin.createIssue({ team: alpha });
@@ -454,71 +591,99 @@ await section("the app is told from another assignee, a person included", async 
 		assert.equal(answer.dispatched, 0, `${other.name} is not the app`);
 		assert.equal(answer.json.taken, false);
 	}
-	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.appUser }))?.assignedTo, standin.appUser.id);
-	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.human }))?.assignedTo, standin.human.id);
+	assert.equal(
+		webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.appUser }))?.assignedTo,
+		standin.appUser.id,
+	);
+	assert.equal(
+		webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.human }))?.assignedTo,
+		standin.human.id,
+	);
 	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: null })), null);
 	// Born assigned to a person.
 	assert.equal((await fire(standin.createIssue({ team: alpha, assignee: standin.stranger }).payload)).dispatched, 0);
 });
 
-await section("unrelated edits, removals and unassignment are not triggers; an unmapped team and workspace are ignored", async () => {
-	const both = standin.createIssue({ team: alpha, labels: ["windlass"], assignee: standin.appUser });
-	await fire(both.payload);
-	const base = hooks.received.length;
-	// Already labelled and assigned: an edit of the title, the description or the state is no trigger.
-	for (const patch of [{ title: "Renamed" }, { description: "More words" }, { stateType: "started" }, { team: beta }]) {
-		const answer = await fire(standin.updateIssue(both.issue, patch));
-		assert.equal(answer.dispatched, 0, JSON.stringify(patch));
-		assert.equal(answer.json.taken, false);
-	}
-	// Removing the label, unassigning, removing another label, adding an unrelated one.
-	assert.equal((await fire(standin.updateIssue(both.issue, { removeLabels: ["windlass"] }))).dispatched, 0);
-	assert.equal((await fire(standin.updateIssue(both.issue, { assignee: null }))).dispatched, 0);
-	assert.equal((await fire(standin.updateIssue(both.issue, { addLabels: ["bug"] }))).dispatched, 0);
-	// Quick removed from an issue that keeps `windlass`.
-	const quick = standin.createIssue({ team: alpha, labels: ["windlass", "windlass:quick"] });
-	await fire(quick.payload);
-	const quickBase = hooks.received.length;
-	assert.equal((await fire(standin.updateIssue(quick.issue, { removeLabels: ["windlass:quick"] }))).dispatched, 0);
-	// The issue is removed: no trigger either.
-	assert.equal((await fire(standin.removeIssue(both.issue))).dispatched, 0);
-	assert.equal(hooks.received.length, quickBase, "something was dispatched by an edit, a removal or an unassignment");
-	assert.ok(quickBase > base);
+await section(
+	"unrelated edits, removals and unassignment are not triggers; an unmapped team and workspace are ignored",
+	async () => {
+		const both = standin.createIssue({ team: alpha, labels: ["windlass"], assignee: standin.appUser });
+		await fire(both.payload);
+		const base = hooks.received.length;
+		// Already labelled and assigned: an edit of the title, the description or the state is no trigger.
+		for (const patch of [
+			{ title: "Renamed" },
+			{ description: "More words" },
+			{ stateType: "started" },
+			{ team: beta },
+		]) {
+			const answer = await fire(standin.updateIssue(both.issue, patch));
+			assert.equal(answer.dispatched, 0, JSON.stringify(patch));
+			assert.equal(answer.json.taken, false);
+		}
+		// Removing the label, unassigning, removing another label, adding an unrelated one.
+		assert.equal((await fire(standin.updateIssue(both.issue, { removeLabels: ["windlass"] }))).dispatched, 0);
+		assert.equal((await fire(standin.updateIssue(both.issue, { assignee: null }))).dispatched, 0);
+		assert.equal((await fire(standin.updateIssue(both.issue, { addLabels: ["bug"] }))).dispatched, 0);
+		// Quick removed from an issue that keeps `windlass`.
+		const quick = standin.createIssue({ team: alpha, labels: ["windlass", "windlass:quick"] });
+		await fire(quick.payload);
+		const quickBase = hooks.received.length;
+		assert.equal((await fire(standin.updateIssue(quick.issue, { removeLabels: ["windlass:quick"] }))).dispatched, 0);
+		// The issue is removed: no trigger either.
+		assert.equal((await fire(standin.removeIssue(both.issue))).dispatched, 0);
+		assert.equal(hooks.received.length, quickBase, "something was dispatched by an edit, a removal or an unassignment");
+		assert.ok(quickBase > base);
 
-	// An update that does not say what changed is not a transition, whatever the issue looks like.
-	const blind = standin.updateIssue(standin.createIssue({ team: alpha, labels: ["windlass"], assignee: standin.appUser }).issue, { title: "x" });
-	delete blind.updatedFrom;
-	assert.equal((await fire(blind)).dispatched, 0);
+		// An update that does not say what changed is not a transition, whatever the issue looks like.
+		const blind = standin.updateIssue(
+			standin.createIssue({ team: alpha, labels: ["windlass"], assignee: standin.appUser }).issue,
+			{ title: "x" },
+		);
+		delete blind.updatedFrom;
+		assert.equal((await fire(blind)).dispatched, 0);
 
-	// Unmapped team, unknown workspace, an event of another type: acknowledged, not dispatched.
-	assert.equal((await fire(standin.createIssue({ team: unmapped, labels: ["windlass"] }).payload)).dispatched, 0);
-	const stranger = standin.createIssue({ team: alpha, labels: ["windlass"] }).payload;
-	assert.equal((await fire({ ...stranger, organizationId: randomUUID() })).dispatched, 0);
-	const comment = { ...standin.createIssue({ team: alpha, labels: ["windlass"] }).payload, type: "Comment" };
-	assert.equal((await fire(comment, { event: "Comment" })).dispatched, 0);
-	assert.equal((await fire({ ...stranger, data: { ...(stranger.data as object), teamId: "nope", team: undefined } })).dispatched, 0);
-});
+		// Unmapped team, unknown workspace, an event of another type: acknowledged, not dispatched.
+		assert.equal((await fire(standin.createIssue({ team: unmapped, labels: ["windlass"] }).payload)).dispatched, 0);
+		const stranger = standin.createIssue({ team: alpha, labels: ["windlass"] }).payload;
+		assert.equal((await fire({ ...stranger, organizationId: randomUUID() })).dispatched, 0);
+		const comment = { ...standin.createIssue({ team: alpha, labels: ["windlass"] }).payload, type: "Comment" };
+		assert.equal((await fire(comment, { event: "Comment" })).dispatched, 0);
+		assert.equal(
+			(await fire({ ...stranger, data: { ...(stranger.data as object), teamId: "nope", team: undefined } })).dispatched,
+			0,
+		);
+	},
+);
 
-await section("redelivery: the same delivery is taken once, and a delivery that cannot be taken in has Linear try again", async () => {
-	const issue = standin.createIssue({ team: alpha, labels: ["windlass"] });
-	const first = await fire(issue.payload, { deliveryId: randomUUID() });
-	assert.equal(first.json.taken, true);
-	// Linear redelivers the same bytes under the same delivery id, with a fresh signature timestamp it does not change.
-	const again = await fire(issue.payload, { deliveryId: first.deliveryId });
-	assert.equal(again.status, 202);
-	assert.equal(again.json.taken, "duplicate");
-	assert.equal(again.dispatched, 0);
-	hooks.unavailable = true;
-	const unavailable = await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload);
-	assert.equal(unavailable.status, 503);
-	hooks.unavailable = false;
-});
+await section(
+	"redelivery: the same delivery is taken once, and a delivery that cannot be taken in has Linear try again",
+	async () => {
+		const issue = standin.createIssue({ team: alpha, labels: ["windlass"] });
+		const first = await fire(issue.payload, { deliveryId: randomUUID() });
+		assert.equal(first.json.taken, true);
+		// Linear redelivers the same bytes under the same delivery id, with a fresh signature timestamp it does not change.
+		const again = await fire(issue.payload, { deliveryId: first.deliveryId });
+		assert.equal(again.status, 202);
+		assert.equal(again.json.taken, "duplicate");
+		assert.equal(again.dispatched, 0);
+		hooks.unavailable = true;
+		const unavailable = await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload);
+		assert.equal(unavailable.status, 503);
+		hooks.unavailable = false;
+	},
+);
 
 await section("refused before dispatch: bad, wrong, altered, stale and oversized deliveries", async () => {
 	const payload = standin.createIssue({ team: alpha, labels: ["windlass"] }).payload;
 	const lookups = hooks.dispatches;
 	const received = hooks.received.length;
-	const refused = async (what: string, status: number, code: string, answer: Promise<Awaited<ReturnType<typeof fire>>>) => {
+	const refused = async (
+		what: string,
+		status: number,
+		code: string,
+		answer: Promise<Awaited<ReturnType<typeof fire>>>,
+	) => {
 		const result = await answer;
 		assert.equal(result.status, status, `${what}: ${result.body}`);
 		assert.equal(result.json.code, code, what);
@@ -529,28 +694,58 @@ await section("refused before dispatch: bad, wrong, altered, stale and oversized
 	await refused("signature too short", 400, "bad_headers", fire(payload, { signature: "ab" }));
 	await refused("no delivery id", 400, "bad_headers", fire(payload, { omit: ["linear-delivery"] }));
 	await refused("delivery id not a uuid", 400, "bad_headers", fire(payload, { deliveryId: "../../etc" }));
-	await refused("signed with another secret", 401, "bad_signature", fire(payload, { secret: "lin_wh_" + "0".repeat(48) }));
+	await refused(
+		"signed with another secret",
+		401,
+		"bad_signature",
+		fire(payload, { secret: "lin_wh_" + "0".repeat(48) }),
+	);
 	await refused("signature of nothing", 401, "bad_signature", fire(payload, { signature: "0".repeat(64) }));
 	// The bytes were changed after they were signed: a team swapped for another.
 	const original = Buffer.from(JSON.stringify(payload));
 	const altered = Buffer.from(original.toString().replace(alpha.id, beta.id));
 	assert.notDeepEqual(altered, original);
 	await refused("altered bytes", 401, "bad_signature", fire(payload, { bytes: altered }));
-	await refused("one byte appended", 401, "bad_signature", fire(payload, { bytes: Buffer.concat([original, Buffer.from(" ")]) }));
+	await refused(
+		"one byte appended",
+		401,
+		"bad_signature",
+		fire(payload, { bytes: Buffer.concat([original, Buffer.from(" ")]) }),
+	);
 	// Whitespace re-encoding is different bytes: the signature is over what was sent, not over the JSON.
-	await refused("re-encoded", 401, "bad_signature", fire(payload, { bytes: Buffer.from(JSON.stringify(payload, null, 1)) }));
+	await refused(
+		"re-encoded",
+		401,
+		"bad_signature",
+		fire(payload, { bytes: Buffer.from(JSON.stringify(payload, null, 1)) }),
+	);
 
 	// Stale and future timestamps, signed correctly: a replay of a captured delivery.
 	await refused("a minute and a half old", 401, "stale_timestamp", fire(payload, { timestamp: Date.now() - 90_000 }));
 	await refused("an hour old", 401, "stale_timestamp", fire(payload, { timestamp: Date.now() - 3600_000 }));
 	await refused("from the future", 401, "stale_timestamp", fire(payload, { timestamp: Date.now() + 90_000 }));
-	await refused("no timestamp", 401, "bad_timestamp", fire(JSON.stringify({ ...payload, webhookTimestamp: undefined })));
-	await refused("timestamp as text", 401, "bad_timestamp", fire(JSON.stringify({ ...payload, webhookTimestamp: String(Date.now()) })));
+	await refused(
+		"no timestamp",
+		401,
+		"bad_timestamp",
+		fire(JSON.stringify({ ...payload, webhookTimestamp: undefined })),
+	);
+	await refused(
+		"timestamp as text",
+		401,
+		"bad_timestamp",
+		fire(JSON.stringify({ ...payload, webhookTimestamp: String(Date.now()) })),
+	);
 	await refused("not JSON", 400, "bad_json", fire("not json at all"));
-	await refused("not UTF-8", 400, "bad_json", (async () => {
-		const bad = Buffer.from([0x7b, 0xff, 0xfe, 0x7d]);
-		return fire(payload, { signature: webhook.signBody(bad, standin.signingSecret), bytes: bad });
-	})());
+	await refused(
+		"not UTF-8",
+		400,
+		"bad_json",
+		(async () => {
+			const bad = Buffer.from([0x7b, 0xff, 0xfe, 0x7d]);
+			return fire(payload, { signature: webhook.signBody(bad, standin.signingSecret), bytes: bad });
+		})(),
+	);
 
 	// Too big: refused for its size, signed or not.
 	const huge = JSON.stringify({ ...payload, padding: "x".repeat(webhook.MAX_WEBHOOK_BYTES) });
@@ -561,19 +756,49 @@ await section("refused before dispatch: bad, wrong, altered, stale and oversized
 
 	// Inside the window, either way, the same delivery is taken.
 	assert.equal((await fire(payload, { timestamp: Date.now() - 30_000 })).dispatched, 1);
-	assert.equal((await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload, { timestamp: Date.now() + 30_000 })).dispatched, 1);
+	assert.equal(
+		(await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload, { timestamp: Date.now() + 30_000 }))
+			.dispatched,
+		1,
+	);
 	assert.equal(hooks.received.length, received + 2, "a refused delivery was dispatched");
 	// Nothing was looked up, either, for the refused: ids are taken out only after the signature and the timestamp.
 	assert.equal(hooks.dispatches, lookups + 2);
 });
 
 await section("rotated signing secret and the parse of ids: only UUIDs are taken out", async () => {
-	assert.equal(webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)), ["b".repeat(40), "a".repeat(40)]), true);
-	assert.equal(webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)), ["b".repeat(40)]), false);
-	assert.equal(webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)).toUpperCase(), ["a".repeat(40)]), true);
-	assert.equal(webhook.readIds({ type: "Issue", organizationId: "x", data: { id: randomUUID(), teamId: randomUUID() } }), null);
-	assert.equal(webhook.readIds({ type: "Issue", organizationId: randomUUID(), data: { id: randomUUID(), team: { id: randomUUID() } } }) !== null, true);
-	assert.equal(webhook.readIds({ type: "Comment", organizationId: randomUUID(), data: { id: randomUUID(), teamId: randomUUID() } }), null);
+	assert.equal(
+		webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)), ["b".repeat(40), "a".repeat(40)]),
+		true,
+	);
+	assert.equal(
+		webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)), ["b".repeat(40)]),
+		false,
+	);
+	assert.equal(
+		webhook.signatureMatches(Buffer.from("x"), webhook.signBody("x", "a".repeat(40)).toUpperCase(), ["a".repeat(40)]),
+		true,
+	);
+	assert.equal(
+		webhook.readIds({ type: "Issue", organizationId: "x", data: { id: randomUUID(), teamId: randomUUID() } }),
+		null,
+	);
+	assert.equal(
+		webhook.readIds({
+			type: "Issue",
+			organizationId: randomUUID(),
+			data: { id: randomUUID(), team: { id: randomUUID() } },
+		}) !== null,
+		true,
+	);
+	assert.equal(
+		webhook.readIds({
+			type: "Comment",
+			organizationId: randomUUID(),
+			data: { id: randomUUID(), teamId: randomUUID() },
+		}),
+		null,
+	);
 	assert.equal(webhook.timestampProblem({ webhookTimestamp: 1000 }, 1000 + 60_000), null);
 	assert.equal(webhook.timestampProblem({ webhookTimestamp: 1000 }, 1000 + 60_001), "stale_timestamp");
 });
@@ -582,14 +807,22 @@ await section("rotated signing secret and the parse of ids: only UUIDs are taken
 
 await section("no credential in anything logged", async () => {
 	const everything = [...logged, ...logLines].join("\n");
-	for (const secret of [standin.clientSecret, standin.signingSecret, connection.token.accessToken, connection.token.refreshToken!]) {
+	for (const secret of [
+		standin.clientSecret,
+		standin.signingSecret,
+		connection.token.accessToken,
+		connection.token.refreshToken!,
+	]) {
 		assert.ok(!everything.includes(secret), "a credential was logged");
 	}
 	assert.ok(everything.includes("linear.connect.confirmed"), "the connection was not logged at all");
-	assert.equal(redactLinear("bad lin_oauth_0123456789abcdef and secret-xyz-123", ["secret-xyz-123"]), "bad [redacted] and [redacted]");
+	assert.equal(
+		redactLinear("bad lin_oauth_0123456789abcdef and secret-xyz-123", ["secret-xyz-123"]),
+		"bad [redacted] and [redacted]",
+	);
 });
 
 await standin.close();
-await new Promise<void>((resolve) => platform.close(() => resolve()));
+await new Promise<void>(resolve => platform.close(() => resolve()));
 say("linear-protocol-check: all sections passed");
 process.exit(0);

@@ -20,15 +20,31 @@ export type SandboxSize = "small" | "standard" | "large";
 
 export const PLANS: Record<PlanId, PlanInfo> = {
 	free: {
-		id: "free", name: "Free", monthlyCents: 0, yearlyCents: null,
-		machines: 3, hostedMinutes: 120, hostedRunning: 1, keptSandboxes: 2,
-		sizes: ["small", "standard"], crossRepo: false, githubItemsPerDay: 20,
+		id: "free",
+		name: "Free",
+		monthlyCents: 0,
+		yearlyCents: null,
+		machines: 3,
+		hostedMinutes: 120,
+		hostedRunning: 1,
+		keptSandboxes: 2,
+		sizes: ["small", "standard"],
+		crossRepo: false,
+		githubItemsPerDay: 20,
 		overageCentsPer1000: null,
 	},
 	pro: {
-		id: "pro", name: "Pro", monthlyCents: 1500, yearlyCents: 14_400,
-		machines: 10, hostedMinutes: 1800, hostedRunning: 5, keptSandboxes: 10,
-		sizes: ["small", "standard", "large"], crossRepo: true, githubItemsPerDay: 100,
+		id: "pro",
+		name: "Pro",
+		monthlyCents: 1500,
+		yearlyCents: 14_400,
+		machines: 10,
+		hostedMinutes: 1800,
+		hostedRunning: 5,
+		keptSandboxes: 10,
+		sizes: ["small", "standard", "large"],
+		crossRepo: true,
+		githubItemsPerDay: 100,
 		// $0.006 a hosted minute.
 		overageCentsPer1000: 600,
 	},
@@ -72,15 +88,26 @@ export interface BillingState {
 }
 
 export const NO_SUBSCRIPTION: BillingState = {
-	plan: "free", status: "none", period: null, customerId: null, subscriptionId: null,
-	periodStart: null, periodEnd: null, previousPeriod: null, cancelAtPeriodEnd: false, graceUntil: null, capCents: DEFAULT_CAP_CENTS, eventAt: 0,
+	plan: "free",
+	status: "none",
+	period: null,
+	customerId: null,
+	subscriptionId: null,
+	periodStart: null,
+	periodEnd: null,
+	previousPeriod: null,
+	cancelAtPeriodEnd: false,
+	graceUntil: null,
+	capCents: DEFAULT_CAP_CENTS,
+	eventAt: 0,
 };
 
 /** The plan whose limits apply at `now`. */
 export function effectivePlan(state: BillingState, now: number): PlanId {
 	if (state.plan === "free") return "free";
 	if (state.status === "active") return state.plan;
-	if ((state.status === "past_due" || state.status === "paused") && state.graceUntil !== null && now < state.graceUntil) return state.plan;
+	if ((state.status === "past_due" || state.status === "paused") && state.graceUntil !== null && now < state.graceUntil)
+		return state.plan;
 	return "free";
 }
 

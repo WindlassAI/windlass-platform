@@ -9,20 +9,29 @@ import { ModelProviders } from "./ModelProviders";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
-HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+HTMLDialogElement.prototype.showModal ??= function () {
+	this.open = true;
+};
+HTMLDialogElement.prototype.close ??= function () {
+	this.open = false;
+};
 
 it("adds, checks, replaces and removes a provider key", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:user:u_keys:ada@example.com", profile: { uid: "u_keys", email: "ada@example.com", demo: false } };
+	const auth = {
+		token: "mock:user:u_keys:ada@example.com",
+		profile: { uid: "u_keys", email: "ada@example.com", demo: false },
+	};
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);
-	const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 2)))); };
+	const settle = async () => {
+		for (let i = 0; i < 6; i++) await act(async () => void (await new Promise(r => setTimeout(r, 2))));
+	};
 	const row = (provider: string) => host.querySelector<HTMLElement>(`[data-provider="${provider}"]`)!;
 	const state = (provider: string) => row(provider).querySelector(".machine-used")?.textContent;
 	const press = async (scope: ParentNode, label: string) => {
-		const button = [...scope.querySelectorAll("button")].find((one) => one.textContent?.startsWith(label));
+		const button = [...scope.querySelectorAll("button")].find(one => one.textContent?.startsWith(label));
 		expect(button, label).toBeDefined();
 		await act(async () => button!.click());
 		await settle();
@@ -40,7 +49,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
 		await settle();
 		expect(host.querySelectorAll(".provider-row:not(.chatgpt-plan)")).toHaveLength(4);
-	expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
+		expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
 		expect(state("openai")).toBe("no key");
 
 		await press(row("openai"), "Add key");
@@ -60,7 +69,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		expect(document.querySelector<HTMLInputElement>("dialog input")!.value).toBe("");
 		await enter("sk-proj-zyxwvutsrqponmlk9876");
 		expect(row("openai").textContent).toContain("…9876");
-		expect((await client.user(auth).modelProviders()).map((one) => one.last4)).toEqual(["9876"]);
+		expect((await client.user(auth).modelProviders()).map(one => one.last4)).toEqual(["9876"]);
 
 		await press(row("openai"), "Remove");
 		expect(document.querySelector("dialog")?.textContent).toMatch(/blocks new requests.*already running may finish/i);

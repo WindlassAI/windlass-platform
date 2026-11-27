@@ -32,8 +32,10 @@ jobs:
       - run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
       - run: node scripts/agents-docs-check.ts
+      - run: pnpm lint:ci
       - run: pnpm typecheck
-      - run: pnpm --filter @windlass-platform/web build
+      # typecheck already covered web; build:bundle skips its second tsc run.
+      - run: pnpm --filter @windlass-platform/web build:bundle
 
   test-shard:
     # Agent PRs use the path-selected heavy suites. On a PR, github.ref is the merge ref.

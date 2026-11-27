@@ -11,8 +11,16 @@ export function loadAuth(kind: ClientKind): AuthResult | null {
 		const value: unknown = JSON.parse(text);
 		if (typeof value !== "object" || value === null) return null;
 		const { token, profile } = value as Partial<AuthResult>;
-		if (typeof token !== "string" || typeof profile !== "object" || profile === null || typeof profile.uid !== "string") return null;
-		return { token, profile: { uid: profile.uid, email: typeof profile.email === "string" ? profile.email : null, demo: profile.demo === true } };
+		if (typeof token !== "string" || typeof profile !== "object" || profile === null || typeof profile.uid !== "string")
+			return null;
+		return {
+			token,
+			profile: {
+				uid: profile.uid,
+				email: typeof profile.email === "string" ? profile.email : null,
+				demo: profile.demo === true,
+			},
+		};
 	} catch {
 		return null;
 	}

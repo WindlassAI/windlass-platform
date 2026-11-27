@@ -58,7 +58,14 @@ export { MAX_SECRETS_PER_REPOSITORY };
 /** The database belongs to one user; the value is already sealed for uid, project and name. */
 export async function saveRepoSecret(
 	db: DefaultsDb,
-	{ project, label, name, sealed, scope, now }: { uid: string; project: string; label: string; name: string; sealed: string; scope: SecretScope; now: number },
+	{
+		project,
+		label,
+		name,
+		sealed,
+		scope,
+		now,
+	}: { uid: string; project: string; label: string; name: string; sealed: string; scope: SecretScope; now: number },
 ): Promise<"saved" | "replaced" | "repository_full" | "account_full"> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		// Keep the pre-write existence check so RETURNING can distinguish two concurrent saves of the same name.
@@ -70,11 +77,22 @@ export async function saveRepoSecret(
 			ON CONFLICT (project, name) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END,
 				scope = excluded.scope, sealed = excluded.sealed, updated_at = excluded.updated_at
 			RETURNING (SELECT present FROM prior) AS replaced`,
-			project, name, project, name, label, scope, sealed, now, project, MAX_SECRETS_PER_REPOSITORY, MAX_SECRETS_PER_USER,
+			project,
+			name,
+			project,
+			name,
+			label,
+			scope,
+			sealed,
+			now,
+			project,
+			MAX_SECRETS_PER_REPOSITORY,
+			MAX_SECRETS_PER_USER,
 		);
 		if (saved) return saved.replaced ? "replaced" : "saved";
 		const [counts] = await db.execute<{ here: number; total: number }>(
-			"SELECT (SELECT COUNT(*) FROM repo_secret WHERE project = ?) AS here, COUNT(*) AS total FROM repo_secret", project,
+			"SELECT (SELECT COUNT(*) FROM repo_secret WHERE project = ?) AS here, COUNT(*) AS total FROM repo_secret",
+			project,
 		);
 		if (counts && counts.here >= MAX_SECRETS_PER_REPOSITORY) return "repository_full";
 		if (counts && counts.total >= MAX_SECRETS_PER_USER) return "account_full";
@@ -131,42 +149,109 @@ const RESERVED_NAMES = [
 /** Whether the platform, Windlass or the sandbox relies on a variable of this name, in any case of letters. */
 export function isReservedName(name: string): boolean {
 	const upper = name.toUpperCase();
-	return RESERVED_NAMES.includes(upper) || RESERVED_PREFIXES.some((prefix) => upper.startsWith(prefix));
+	return RESERVED_NAMES.includes(upper) || RESERVED_PREFIXES.some(prefix => upper.startsWith(prefix));
 }
 
 /** These variables configure the agent adapters, model relays and Git credentials. */
 const REQUEST_RESERVED_NAMES = [
-	"GITHUB_TOKEN", "GH_TOKEN", "INITIAL_AGENT_MODE", "DISABLE_MCP_CONFIG_FILTERING", "MCP_TOOL_TIMEOUT",
-	"GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "GIT_CONFIG",
-	"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE", "PIP_CERT",
-	"PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONINSPECT", "PYTHONUSERBASE", "PYTHONWARNINGS",
-	"PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH",
-	"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "DOTNET_STARTUP_HOOKS", "GCONV_PATH", "SSLKEYLOGFILE", "CURL_HOME",
-	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "OPENROUTER_API_KEY",
+	"GITHUB_TOKEN",
+	"GH_TOKEN",
+	"INITIAL_AGENT_MODE",
+	"DISABLE_MCP_CONFIG_FILTERING",
+	"MCP_TOOL_TIMEOUT",
+	"GIT_SSH",
+	"GIT_SSH_COMMAND",
+	"GIT_ASKPASS",
+	"SSH_ASKPASS",
+	"GIT_EXEC_PATH",
+	"GIT_PROXY_COMMAND",
+	"GIT_CONFIG",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"REQUESTS_CA_BUNDLE",
+	"CURL_CA_BUNDLE",
+	"AWS_CA_BUNDLE",
+	"PIP_CERT",
+	"PYTHONPATH",
+	"PYTHONSTARTUP",
+	"PYTHONHOME",
+	"PYTHONINSPECT",
+	"PYTHONUSERBASE",
+	"PYTHONWARNINGS",
+	"PERL5OPT",
+	"PERL5LIB",
+	"PERLLIB",
+	"RUBYOPT",
+	"RUBYLIB",
+	"RUBYGEMS_GEMDEPS",
+	"GEM_HOME",
+	"GEM_PATH",
+	"JAVA_TOOL_OPTIONS",
+	"JDK_JAVA_OPTIONS",
+	"DOTNET_STARTUP_HOOKS",
+	"GCONV_PATH",
+	"SSLKEYLOGFILE",
+	"CURL_HOME",
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_BASE_URL",
+	"OPENAI_API_KEY",
+	"OPENAI_BASE_URL",
+	"GEMINI_API_KEY",
+	"OPENROUTER_API_KEY",
 ];
-const REQUEST_RESERVED_PREFIXES = ["CODEX_", "CLAUDE_", "OPENCODE_", "GIT_CONFIG_", "GIT_SSL_", "DYLD_", "OPENSSL_", "NPM_CONFIG_"];
+const REQUEST_RESERVED_PREFIXES = [
+	"CODEX_",
+	"CLAUDE_",
+	"OPENCODE_",
+	"GIT_CONFIG_",
+	"GIT_SSL_",
+	"DYLD_",
+	"OPENSSL_",
+	"NPM_CONFIG_",
+];
 
 /** A request may name an ordinary environment variable, never one owned by the platform or its harness. */
 export function validRequestedSecretName(name: unknown): name is string {
-	return typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && !isReservedName(name)
-		&& !name.endsWith("_PROXY") && !REQUEST_RESERVED_NAMES.includes(name) && !REQUEST_RESERVED_PREFIXES.some(prefix => name.startsWith(prefix));
+	return (
+		typeof name === "string" &&
+		/^[A-Z][A-Z0-9_]{1,63}$/.test(name) &&
+		!isReservedName(name) &&
+		!name.endsWith("_PROXY") &&
+		!REQUEST_RESERVED_NAMES.includes(name) &&
+		!REQUEST_RESERVED_PREFIXES.some(prefix => name.startsWith(prefix))
+	);
 }
 
-export const unavailableSecretName = (name: string) => `${name} cannot be requested; ask your person to set it under Secrets if you need it.`;
+export const unavailableSecretName = (name: string) =>
+	`${name} cannot be requested; ask your person to set it under Secrets if you need it.`;
 export const MAX_SECRET_REQUESTS = 3;
 
 /** Ordinary questions count toward the point at which a builder must stop requesting secrets. */
-export function secretRequestLimit(name: string, asks: number, declined: readonly string[], period: "run" | "session"): string | null {
-	if (asks >= MAX_SECRET_REQUESTS) return `No more secret requests are allowed in this ${period}; three questions have already been recorded.`;
+export function secretRequestLimit(
+	name: string,
+	asks: number,
+	declined: readonly string[],
+	period: "run" | "session",
+): string | null {
+	if (asks >= MAX_SECRET_REQUESTS)
+		return `No more secret requests are allowed in this ${period}; three questions have already been recorded.`;
 	return declined.includes(name) ? unavailableSecretName(name) : null;
 }
 
 /** The name as it is saved: an environment variable's. Throws SecretProblem. */
 export function cleanSecretName(raw: unknown): string {
 	if (typeof raw !== "string" || raw === "") throw new SecretProblem("A secret needs a name.");
-	if (raw.length > MAX_SECRET_NAME_CHARS) throw new SecretProblem(`A secret's name can be at most ${MAX_SECRET_NAME_CHARS} characters long.`);
-	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) throw new SecretProblem("A secret's name is an environment variable's: letters, digits and underscores, not starting with a digit.");
-	if (isReservedName(raw)) throw new SecretProblem(`${raw} cannot be a secret's name: the sandbox or Windlass relies on a variable of that name.`);
+	if (raw.length > MAX_SECRET_NAME_CHARS)
+		throw new SecretProblem(`A secret's name can be at most ${MAX_SECRET_NAME_CHARS} characters long.`);
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw))
+		throw new SecretProblem(
+			"A secret's name is an environment variable's: letters, digits and underscores, not starting with a digit.",
+		);
+	if (isReservedName(raw))
+		throw new SecretProblem(
+			`${raw} cannot be a secret's name: the sandbox or Windlass relies on a variable of that name.`,
+		);
 	return raw;
 }
 
@@ -179,10 +264,17 @@ export function cleanSecretName(raw: unknown): string {
 export function cleanSecretValue(raw: unknown): string {
 	if (typeof raw !== "string") throw new SecretProblem("A secret's value must be text.");
 	const value = raw.replace(/\r\n?/g, "\n");
-	if (value.includes("\0")) throw new SecretProblem("A secret's value holds a character an environment variable cannot take.");
-	if (value.trim().length < MIN_SECRET_VALUE_CHARS) throw new SecretProblem(`A secret's value must be at least ${MIN_SECRET_VALUE_CHARS} characters long: a shorter one could not be taken out of what the platform shows.`);
+	if (value.includes("\0"))
+		throw new SecretProblem("A secret's value holds a character an environment variable cannot take.");
+	if (value.trim().length < MIN_SECRET_VALUE_CHARS)
+		throw new SecretProblem(
+			`A secret's value must be at least ${MIN_SECRET_VALUE_CHARS} characters long: a shorter one could not be taken out of what the platform shows.`,
+		);
 	const bytes = Buffer.byteLength(value, "utf8");
-	if (bytes > MAX_SECRET_VALUE_BYTES) throw new SecretProblem(`A secret's value can be at most ${MAX_SECRET_VALUE_BYTES.toLocaleString("en-US")} bytes long; this one is ${bytes.toLocaleString("en-US")}.`);
+	if (bytes > MAX_SECRET_VALUE_BYTES)
+		throw new SecretProblem(
+			`A secret's value can be at most ${MAX_SECRET_VALUE_BYTES.toLocaleString("en-US")} bytes long; this one is ${bytes.toLocaleString("en-US")}.`,
+		);
 	return value;
 }
 
@@ -200,7 +292,17 @@ export function cleanSecretScope(raw: unknown): SecretScope {
  * from the commands it sandboxes unless it is told otherwise. The platform has to know the answer
  * before starting Windlass so it can explicitly pass credential-like names to sandboxed commands.
  */
-const CREDENTIAL_WORDS = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL", "PRIVATE", "COOKIE"];
+const CREDENTIAL_WORDS = [
+	"TOKEN",
+	"KEY",
+	"SECRET",
+	"PASSWORD",
+	"PASSWD",
+	"PASSPHRASE",
+	"CREDENTIAL",
+	"PRIVATE",
+	"COOKIE",
+];
 const CREDENTIAL_SEGMENTS = ["AUTH", "PAT"];
 const CREDENTIAL_PREFIXES = [
 	"AWS_",
@@ -236,18 +338,31 @@ const CREDENTIAL_PREFIXES = [
 	"LANGCHAIN_",
 	"LANGSMITH_",
 ];
-const CREDENTIAL_NAMES = ["DATABASE_URL", "KUBECONFIG", "DOCKER_HOST", "DOCKER_CONFIG", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "NETRC"];
+const CREDENTIAL_NAMES = [
+	"DATABASE_URL",
+	"KUBECONFIG",
+	"DOCKER_HOST",
+	"DOCKER_CONFIG",
+	"GPG_AGENT_INFO",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"NETRC",
+];
 
 /** The four lists, for a check that holds them against Windlass's source (scripts/secrets-check.ts). */
-export const CREDENTIAL_RULE = { words: CREDENTIAL_WORDS, segments: CREDENTIAL_SEGMENTS, prefixes: CREDENTIAL_PREFIXES, names: CREDENTIAL_NAMES };
+export const CREDENTIAL_RULE = {
+	words: CREDENTIAL_WORDS,
+	segments: CREDENTIAL_SEGMENTS,
+	prefixes: CREDENTIAL_PREFIXES,
+	names: CREDENTIAL_NAMES,
+};
 
 /** Whether Windlass keeps a variable of this name from the commands it sandboxes. */
 export function looksLikeCredential(name: string): boolean {
 	const upper = name.toUpperCase();
 	if (CREDENTIAL_NAMES.includes(upper)) return true;
-	if (CREDENTIAL_PREFIXES.some((prefix) => upper.startsWith(prefix))) return true;
-	if (CREDENTIAL_WORDS.some((word) => upper.includes(word))) return true;
-	return upper.split("_").some((segment) => CREDENTIAL_SEGMENTS.includes(segment));
+	if (CREDENTIAL_PREFIXES.some(prefix => upper.startsWith(prefix))) return true;
+	if (CREDENTIAL_WORDS.some(word => upper.includes(word))) return true;
+	return upper.split("_").some(segment => CREDENTIAL_SEGMENTS.includes(segment));
 }
 
 /**
@@ -271,7 +386,10 @@ export function commandSandbox(profile: Promises): CommandSandbox {
 /** Whose a secret is: a repository's goes to its setup command whatever its scope, an account's has no setup command to go to (account-secrets.ts). */
 export type SecretOwner = "repository" | "account";
 /** What is left of a secret that MCP servers are not given. */
-const LEFT: Record<SecretOwner, string> = { repository: "Only the setup command gets it.", account: "So nothing is given it there." };
+const LEFT: Record<SecretOwner, string> = {
+	repository: "Only the setup command gets it.",
+	account: "So nothing is given it there.",
+};
 
 /**
  * Which processes can receive a secret of this scope in the selected profile.
@@ -297,10 +415,13 @@ export function secretReach(scope: SecretScope, profile: Promises, owner: Secret
  * entry is made here from those fields and no other, so whatever else a row holds, the value
  * included, is not in the answer.
  */
-export function listedSecrets(rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>, profile: SandboxProfile): RepositorySecrets {
+export function listedSecrets(
+	rows: ReadonlyArray<{ name: string; scope: string; updated_at: number }>,
+	profile: SandboxProfile,
+): RepositorySecrets {
 	return {
 		profile: profile.id,
-		secrets: rows.map((row) => {
+		secrets: rows.map(row => {
 			const scope: SecretScope = row.scope === "agent" ? "agent" : "setup";
 			return { name: String(row.name), scope, updatedAt: Number(row.updated_at), reach: secretReach(scope, profile) };
 		}),
@@ -316,7 +437,7 @@ export interface OpenedSecret {
 
 /** What the repository's setup command is handed: every secret. */
 export function setupEnvironment(secrets: readonly OpenedSecret[]): Record<string, string> {
-	return Object.fromEntries(secrets.map((secret) => [secret.name, secret.value]));
+	return Object.fromEntries(secrets.map(secret => [secret.name, secret.value]));
 }
 
 /** What Windlass is handed of a repository's secrets for one turn, and told about them when its session is opened. */
@@ -336,11 +457,13 @@ export interface WindlassSecrets {
  * commands that Windlass would keep from sandboxed ones by its name is named in `passEnv`.
  */
 export function windlassEnvironment(secrets: readonly OpenedSecret[], profile: Promises): WindlassSecrets {
-	const handed = secrets.filter((secret) => secretReach(secret.scope, profile).servers);
+	const handed = secrets.filter(secret => secretReach(secret.scope, profile).servers);
 	return {
-		env: Object.fromEntries(handed.map((secret) => [secret.name, secret.value])),
-		withholdEnv: handed.filter((secret) => secret.scope === "setup").map((secret) => secret.name),
-		passEnv: handed.filter((secret) => secret.scope === "agent" && looksLikeCredential(secret.name)).map((secret) => secret.name),
+		env: Object.fromEntries(handed.map(secret => [secret.name, secret.value])),
+		withholdEnv: handed.filter(secret => secret.scope === "setup").map(secret => secret.name),
+		passEnv: handed
+			.filter(secret => secret.scope === "agent" && looksLikeCredential(secret.name))
+			.map(secret => secret.name),
 	};
 }
 
@@ -349,8 +472,12 @@ export function windlassEnvironment(secrets: readonly OpenedSecret[], profile: P
  * about that server: the sentence of `secretReach`. Null for a name that is not a saved secret, and
  * for one Windlass was handed.
  */
-export function withheldFromServers(name: string, secrets: readonly Pick<OpenedSecret, "name" | "scope">[], profile: Promises): string | null {
-	const secret = secrets.find((item) => item.name === name);
+export function withheldFromServers(
+	name: string,
+	secrets: readonly Pick<OpenedSecret, "name" | "scope">[],
+	profile: Promises,
+): string | null {
+	const secret = secrets.find(item => item.name === name);
 	if (!secret) return null;
 	const reach = secretReach(secret.scope, profile);
 	return reach.servers ? null : reach.note;
@@ -451,7 +578,7 @@ export class SecretRedactor implements Redactor {
 				if (next !== item || name !== key) changed = true;
 				return [name, next];
 			});
-			return changed ? Object.fromEntries(entries) as T : value;
+			return changed ? (Object.fromEntries(entries) as T) : value;
 		}
 		return value;
 	}
@@ -483,7 +610,7 @@ export class SecretRedactor implements Redactor {
 }
 
 /** A redactor with nothing to take out. */
-export const NO_REDACTION: Redactor = { active: false, text: (text) => text, deep: (value) => value, held: () => 0 };
+export const NO_REDACTION: Redactor = { active: false, text: text => text, deep: value => value, held: () => 0 };
 
 /**
  * A stream of text with the values taken out, also one that arrives in two pieces: what may be the
@@ -503,7 +630,9 @@ export class RedactingStream {
 		return held === 0 ? whole : whole.slice(0, whole.length - held);
 	}
 
-	get hasTail(): boolean { return this.waiting !== ""; }
+	get hasTail(): boolean {
+		return this.waiting !== "";
+	}
 
 	/** The stream ended: what was held back was not a value. */
 	flush(): string {

@@ -38,11 +38,33 @@ import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerCh
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, MachineUnreachable, ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "./api.js";
+import {
+	type ConnectOptions,
+	type CreateSandboxInput,
+	type ExecOptions,
+	type ExecResult,
+	type ListedSandbox,
+	type RunnerStartTimes,
+	type SandboxLayer,
+	type Sandboxes,
+	MachineUnreachable,
+	ENVIRONMENT_SLOT_WAIT,
+	SandboxUserError,
+} from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { forwardKeyLease } from "./relay-leases.js";
-import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
+import {
+	type Answer,
+	type ProcessEnd,
+	type SandboxProcess,
+	type StartOptions,
+	type TurnModelRelay,
+	type TurnSandbox,
+	markTurnSandbox,
+	randomId,
+} from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
+import { errorText } from "../util.js";
 
 /** The raw socket's path: `agentSession.get([uid, sessionId]).webSocket(RUNNER_SOCKET)` on the runner's side. */
 export const RUNNER_SOCKET = "runner";
@@ -72,7 +94,8 @@ export interface MachineSeam {
 export function machineActor(client: () => any, uid: string, machineId: string) {
 	const machine = () => client().machine.get([uid, machineId], { params: serviceParams() });
 	return {
-		turnSlot: (sessionId: string, turn: number, size: number): Promise<TurnSlot> => machine().internalTurnSlot(sessionId, turn, size),
+		turnSlot: (sessionId: string, turn: number, size: number): Promise<TurnSlot> =>
+			machine().internalTurnSlot(sessionId, turn, size),
 		releaseSlot: (sessionId: string, turn: number): Promise<void> => machine().internalReleaseTurnSlot(sessionId, turn),
 		/** The session's turn is paused while the machine is away (`on`): the machine wakes it when its runner is back. */
 		pausedSession: (sessionId: string, on: boolean): Promise<boolean> => machine().internalPausedSession(sessionId, on),
@@ -168,10 +191,10 @@ export class RunnerLink {
 	/** A socket from `onWebSocket`. The channel decides by its hello whether it counts. */
 	socket(ws: RawSocket): void {
 		const socket: ChannelSocket = {
-			send: (text) => ws.send(text),
+			send: text => ws.send(text),
 			close: () => ws.close(1000),
-			onMessage: (listener) => ws.addEventListener("message", (event) => listener(event.data)),
-			onClose: (listener) => ws.addEventListener("close", () => listener()),
+			onMessage: listener => ws.addEventListener("message", event => listener(event.data)),
+			onClose: listener => ws.addEventListener("close", () => listener()),
 		};
 		this.channel.attach(socket);
 	}
@@ -197,11 +220,16 @@ export class RunnerLink {
 	}
 
 	facts(): Promise<MachineFacts> {
-		return this.reading ??= this.machine.facts().then(facts => {
-			this.heard = facts;
-			this.checkedAt = Date.now();
-			return facts;
-		}).finally(() => { this.reading = undefined; });
+		return (this.reading ??= this.machine
+			.facts()
+			.then(facts => {
+				this.heard = facts;
+				this.checkedAt = Date.now();
+				return facts;
+			})
+			.finally(() => {
+				this.reading = undefined;
+			}));
 	}
 
 	/** Refresh an idle session's banner from the control socket's owner without an attach.
@@ -228,7 +256,11 @@ export class RunnerLink {
 	}
 
 	/** One operation: waits for a socket first, so that one the machine cannot give fails now and not after the grace. */
-	request<N extends Exclude<Name, "start">>(name: N, args: Args<N>, options: { onOutput?: (fd: 1 | 2, data: string) => void; signal?: AbortSignal } = {}): Promise<Value<N>> {
+	request<N extends Exclude<Name, "start">>(
+		name: N,
+		args: Args<N>,
+		options: { onOutput?: (fd: 1 | 2, data: string) => void; signal?: AbortSignal } = {},
+	): Promise<Value<N>> {
 		return this.busy(async () => {
 			await this.wait(options.signal);
 			// Stopped in the moment since the socket came: the runner must never be handed it, as the channel would hand it over before its cancel.
@@ -272,8 +304,14 @@ export class RunnerLink {
 	 * received is committed, so a server that stops again before the turn took it up loses none of it.
 	 */
 	hold(id: string): boolean {
-		const entry: { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null } = { chunks: [], ended: Promise.resolve({ code: null, signal: null, error: null }), to: null };
-		const taken = this.channel.adoptProcess(id, (fd, data) => (entry.to ? entry.to(fd, data) : entry.chunks.push([fd, data])));
+		const entry: {
+			chunks: Array<[1 | 2, string]>;
+			ended: Promise<ProcessEnd>;
+			to: ((fd: 1 | 2, data: string) => void) | null;
+		} = { chunks: [], ended: Promise.resolve({ code: null, signal: null, error: null }), to: null };
+		const taken = this.channel.adoptProcess(id, (fd, data) =>
+			entry.to ? entry.to(fd, data) : entry.chunks.push([fd, data]),
+		);
 		if (!taken) return false;
 		entry.ended = taken.ended;
 		this.held.set(id, entry);
@@ -294,7 +332,10 @@ export class RunnerLink {
 		return this.held.size > 0;
 	}
 
-	private readonly held = new Map<string, { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null }>();
+	private readonly held = new Map<
+		string,
+		{ chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null }
+	>();
 
 	/** The server is going away and its storage keeps the conversation for the next (`ServerChannel.abandon`): nothing is ended. */
 	abandon(): void {
@@ -309,14 +350,16 @@ export class RunnerLink {
 	/** Waits for the runner's socket for as long as the conversation lasts, not only ATTACH_WAIT_MS: it is back within the grace or not at all. */
 	async reconnect(until: Promise<unknown>): Promise<void> {
 		let over = false;
-		void until.finally(() => { over = true; });
+		void until.finally(() => {
+			over = true;
+		});
 		while (!over && !this.closed) {
 			try {
 				await this.wait();
 				return;
 			} catch (error) {
 				if (!(error instanceof MachineUnreachable) || error.reason === "removed") throw error;
-				await Promise.race([new Promise((done) => setTimeout(done, REATTACH_MS)), until]);
+				await Promise.race([new Promise(done => setTimeout(done, REATTACH_MS)), until]);
 			}
 		}
 	}
@@ -361,7 +404,7 @@ export class RunnerLink {
 	private begin(): NonNullable<RunnerLink["waiting"]> {
 		let settle!: (error?: Error) => void;
 		const promise = new Promise<void>((resolve, reject) => {
-			settle = (error) => (error ? reject(error) : resolve());
+			settle = error => (error ? reject(error) : resolve());
 		});
 		// Each caller handles it; this only keeps it from counting as unhandled when the only one stopped waiting.
 		promise.catch(() => undefined);
@@ -402,7 +445,10 @@ export class RunnerLink {
 			if (!answer.ok && !this.closed) this.unreachable(answer.reason === "offline" ? "offline" : "removed");
 		} catch (error) {
 			// Asked again on the cadence; the deadline answers whoever waits.
-			if (!this.closed) console.warn(`[wlp] runner.attach_unanswered session=${this.who.sessionId} machine=${this.who.machineId}: ${error instanceof Error ? error.message : String(error)}`);
+			if (!this.closed)
+				console.warn(
+					`[wlp] runner.attach_unanswered session=${this.who.sessionId} machine=${this.who.machineId}: ${errorText(error)}`,
+				);
 		} finally {
 			this.inviting = false;
 		}
@@ -421,7 +467,10 @@ export class RunnerLink {
 			return new MachineUnreachable(reason, REMOVED);
 		}
 		const name = this.heard?.name ?? this.who.machineName;
-		return new MachineUnreachable(reason, `${name ? `Your machine "${name}"` : "Your machine"} is offline. The agent's files are there; send the prompt again when it is back.`);
+		return new MachineUnreachable(
+			reason,
+			`${name ? `Your machine "${name}"` : "Your machine"} is offline. The agent's files are there; send the prompt again when it is back.`,
+		);
 	}
 
 	/** A hello made a socket current. */
@@ -485,13 +534,19 @@ class RunnerProcess implements SandboxProcess {
 			if (this.closing) link.channel.closeIn(id);
 			return await ended;
 		});
-		this.ended = ran.then(
-			(end) => end,
-			(error: unknown): ProcessEnd => ({ code: null, signal: null, error: error instanceof Error ? error : new Error(String(error)) }),
-		).then((end) => {
-			this.hasEnded = true;
-			return end;
-		});
+		this.ended = ran
+			.then(
+				end => end,
+				(error: unknown): ProcessEnd => ({
+					code: null,
+					signal: null,
+					error: error instanceof Error ? error : new Error(String(error)),
+				}),
+			)
+			.then(end => {
+				this.hasEnded = true;
+				return end;
+			});
 	}
 
 	get tag(): string {
@@ -500,7 +555,9 @@ class RunnerProcess implements SandboxProcess {
 
 	/** Once the runner has it, on a durable link: what a turn checkpoint names (`SandboxProcess.runnerProcess`). */
 	get runnerProcess(): string | null {
-		return this.link.durable && this.id !== null && !this.hasEnded && this.link.channel.running(this.id) ? this.id : null;
+		return this.link.durable && this.id !== null && !this.hasEnded && this.link.channel.running(this.id)
+			? this.id
+			: null;
 	}
 
 	write(text: string): boolean {
@@ -524,7 +581,8 @@ class RunnerProcess implements SandboxProcess {
 	}
 
 	killClient(): void {
-		if (this.id !== null && !this.hasEnded) void this.link.request("killClient", { process: this.id }).catch(() => undefined);
+		if (this.id !== null && !this.hasEnded)
+			void this.link.request("killClient", { process: this.id }).catch(() => undefined);
 	}
 }
 
@@ -545,7 +603,11 @@ class RunnerHandle implements TurnSandbox {
 	readonly image?: string;
 	readonly memoryEvents?: TurnSandbox["memoryEvents"];
 
-	constructor(private readonly link: RunnerLink, readonly id: string, found: NonNullable<Value<"connect">>) {
+	constructor(
+		private readonly link: RunnerLink,
+		readonly id: string,
+		found: NonNullable<Value<"connect">>,
+	) {
 		this.profile = found.profile;
 		this.cwd = found.cwd;
 		this.runnerScreenshots = found.screenshots === true;
@@ -557,19 +619,31 @@ class RunnerHandle implements TurnSandbox {
 		this.image = found.image;
 		this.approval = findProfile(found.profile).approval;
 		markTurnSandbox(this);
-		if (found.memoryEvents) this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
-		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
-		if (!found.windlassKeyRelay) this.windlassKeyProblem = "Update the runner to use Settings keys with Windlass on this machine.";
+		if (found.memoryEvents)
+			this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
+		if (found.blockedNetwork)
+			this.blockedNetwork = (turn, retained) =>
+				link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
+		if (!found.windlassKeyRelay)
+			this.windlassKeyProblem = "Update the runner to use Settings keys with Windlass on this machine.";
 		if (found.modelRelay && config.modelRelay.on) {
 			this.modelRelay = async () => this.relayOf(await link.request("modelRelay", { id }));
 			this.modelKeyRelay = (sessionId, key, signal) => {
 				if (sessionId !== link.who.sessionId) throw new Error("This model relay belongs to another session.");
-				return forwardKeyLease(this.uid, sessionId, key, link.who.machineId, async forward =>
-					this.closeableRelay(await link.request("modelRelay", { id, forward }, { signal })), signal);
+				return forwardKeyLease(
+					this.uid,
+					sessionId,
+					key,
+					link.who.machineId,
+					async forward => this.closeableRelay(await link.request("modelRelay", { id, forward }, { signal })),
+					signal,
+				);
 			};
-			if (link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
+			if (link.durable) this.resumeRelay = lease => this.relayOf(lease);
 		}
-		if (link.durable) this.adopt = (process, tag, { onStdout, onStderr }) => link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
+		if (link.durable)
+			this.adopt = (process, tag, { onStdout, onStderr }) =>
+				link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
 	}
 
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
@@ -585,15 +659,26 @@ class RunnerHandle implements TurnSandbox {
 	readonly adopt?: TurnSandbox["adopt"];
 
 	private closeableRelay(opened: Value<"modelRelay">) {
-		return { ...opened, close: async () => {
-			await this.link.again("modelRelayClose", { id: this.id, lease: opened.lease }).catch(() => undefined);
-		} };
+		return {
+			...opened,
+			close: async () => {
+				await this.link.again("modelRelayClose", { id: this.id, lease: opened.lease }).catch(() => undefined);
+			},
+		};
 	}
 
 	private relayOf(opened: Value<"modelRelay">): TurnModelRelay {
-		return { ...this.closeableRelay(opened), hand: async (token) => {
-			await this.link.again("modelRelayToken", { id: this.id, lease: opened.lease, accessToken: token.accessToken, expiresAt: token.expiresAt });
-		} };
+		return {
+			...this.closeableRelay(opened),
+			hand: async token => {
+				await this.link.again("modelRelayToken", {
+					id: this.id,
+					lease: opened.lease,
+					accessToken: token.accessToken,
+					expiresAt: token.expiresAt,
+				});
+			},
+		};
 	}
 
 	get uid(): string {
@@ -604,7 +689,11 @@ class RunnerHandle implements TurnSandbox {
 		const { onStdout, onStderr, signal, ...rest } = options;
 		try {
 			// Not repeated: a clone, a push or a setup run that was lost is the caller's to try again or not.
-			return await this.link.request("run", { id: this.id, command, options: rest }, { signal, onOutput: (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data) });
+			return await this.link.request(
+				"run",
+				{ id: this.id, command, options: rest },
+				{ signal, onOutput: (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data) },
+			);
 		} catch (error) {
 			if (error instanceof Stopped) return { exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "" };
 			throw error;
@@ -622,7 +711,9 @@ class RunnerHandle implements TurnSandbox {
 	start(argv: string[], options: StartOptions = {}): SandboxProcess {
 		const { onStdout, onStderr, ...rest } = options;
 		// The server names the tag, so the process has it before the runner answers.
-		return this.link.start({ id: this.id, tag: `r${randomId(6)}`, argv, options: rest }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
+		return this.link.start({ id: this.id, tag: `r${randomId(6)}`, argv, options: rest }, (fd, data) =>
+			(fd === 1 ? onStdout : onStderr)?.(data),
+		);
 	}
 
 	/**
@@ -680,7 +771,7 @@ class RunnerSandboxes implements Sandboxes {
 	 */
 	async privateSessionData(profile: SandboxProfileId): Promise<boolean> {
 		if (!SESSION_VOLUME_PROFILES.includes(profile)) return false;
-		const facts = this.link.known ?? await this.link.facts().catch(() => null);
+		const facts = this.link.known ?? (await this.link.facts().catch(() => null));
 		return facts?.report?.sessionVolumes === true;
 	}
 
@@ -696,7 +787,7 @@ class RunnerSandboxes implements Sandboxes {
 
 	/** Never throws for a profile the platform knows: a session must stay readable whatever its machine reports. */
 	profile(id: SandboxProfileId): SandboxProfile {
-		return this.profiles().find((profile) => profile.id === id) ?? findProfile(id);
+		return this.profiles().find(profile => profile.id === id) ?? findProfile(id);
 	}
 
 	async list(uid: string): Promise<ListedSandbox[]> {
@@ -707,27 +798,66 @@ class RunnerSandboxes implements Sandboxes {
 
 	async create(input: CreateSandboxInput): Promise<string> {
 		const { link } = this;
-		if (input.uid !== link.who.uid || input.sessionId !== link.who.sessionId) throw new Error("A machine's sandbox is made only for the session whose socket asks for it.");
-		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError("That sandbox does not run on a machine of yours: choose Strict or Open.");
+		if (input.uid !== link.who.uid || input.sessionId !== link.who.sessionId)
+			throw new Error("A machine's sandbox is made only for the session whose socket asks for it.");
+		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened")
+			throw new SandboxUserError("That sandbox does not run on a machine of yours: choose Strict or Open.");
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;
-		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.map(isolationName).join(" or ")} profile.`);
-		const report = input.profile === "docker-windlass-sandbox" || input.environmentBuild || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
-		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
-		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
+		if (agent && !agent.profiles.includes(input.profile))
+			throw new SandboxUserError(
+				`${agent.name} requires the ${agent.profiles.map(isolationName).join(" or ")} profile.`,
+			);
+		const report =
+			input.profile === "docker-windlass-sandbox" ||
+			input.environmentBuild ||
+			input.spareRecipe ||
+			input.mirrorRepo ||
+			input.harness ||
+			input.screenshots ||
+			(input.size ?? 1) > 1
+				? (await link.facts()).report
+				: null;
+		if ((input.size ?? 1) > 1 && !report?.slots)
+			throw new SandboxUserError("This runner does not support sizing beyond one slot.");
+		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile))
+			throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
-			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
+			throw new SandboxUserError(
+				`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`,
+			);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
-		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined) : undefined;
-		if (input.environmentBuild && !report?.environmentBuild && report?.warmSpares?.ready) throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
-		const args = { profile: input.profile, ...(input.privateData && !input.fromSnapshot && { privateData: true as const }), ...(input.environmentBuild && report?.environmentBuild && { environmentBuild: true as const }), ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		const spare =
+			report?.warmSpares && input.spareRecipe
+				? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined)
+				: undefined;
+		if (input.environmentBuild && !report?.environmentBuild && report?.warmSpares?.ready)
+			throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
+		const args = {
+			profile: input.profile,
+			...(input.privateData && !input.fromSnapshot && { privateData: true as const }),
+			...(input.environmentBuild && report?.environmentBuild && { environmentBuild: true as const }),
+			...(spare && { spare }),
+			...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }),
+			...(input.size && input.size > 1 && { size: input.size }),
+			...(input.harness && { harness: input.harness }),
+			...(screenshots && { screenshots }),
+		};
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
 			if (link.channel.authenticated) {
-				try { return await link.request("create", { ...args, prepared: { ...input.fromSnapshot, privateData: !!input.privateData } }); }
-				catch (error) {
-					if (!(error instanceof ConversationLost) && !(error instanceof Error && error.message === "This runner does not serve that operation.")) throw error;
+				try {
+					return await link.request("create", {
+						...args,
+						prepared: { ...input.fromSnapshot, privateData: !!input.privateData },
+					});
+				} catch (error) {
+					if (
+						!(error instanceof ConversationLost) &&
+						!(error instanceof Error && error.message === "This runner does not serve that operation.")
+					)
+						throw error;
 				}
 			}
 		}
@@ -743,7 +873,10 @@ class RunnerSandboxes implements Sandboxes {
 	async saveSnapshot(id: string, source: SnapshotSource) {
 		if (!config.machines?.identity) return false;
 		await this.link.ready();
-		return this.link.channel.authenticated && this.link.request("saveSnapshot", { id, source, options: { timeoutMs: 15 * 60_000 } });
+		return (
+			this.link.channel.authenticated &&
+			this.link.request("saveSnapshot", { id, source, options: { timeoutMs: 15 * 60_000 } })
+		);
 	}
 
 	async connect(id: string, options?: ConnectOptions): Promise<TurnSandbox | undefined> {
@@ -751,9 +884,13 @@ class RunnerSandboxes implements Sandboxes {
 		const found = await link.again("connect", { id });
 		if (found?.needsSpareSeed && link.channel.authenticated && options?.spareSeed) {
 			// Fetch the authorized base off the turn's path. A later create wins over a late reply.
-			void options.spareSeed().then(spare => {
-				if (spare && link.channel.authenticated) return link.request("seedSpare", { id, spare, screenshots: options.screenshots });
-			}).catch(() => {});
+			void options
+				.spareSeed()
+				.then(spare => {
+					if (spare && link.channel.authenticated)
+						return link.request("seedSpare", { id, spare, screenshots: options.screenshots });
+				})
+				.catch(() => {});
 		}
 		return found ? new RunnerHandle(link, id, found) : undefined;
 	}
@@ -765,7 +902,7 @@ class RunnerSandboxes implements Sandboxes {
 			await link.ready();
 		} catch (error) {
 			if (!(error instanceof MachineUnreachable)) throw error;
-			return (await link.facts()).report?.sandboxes.find((sandbox) => sandbox.id === id)?.state ?? "none";
+			return (await link.facts()).report?.sandboxes.find(sandbox => sandbox.id === id)?.state ?? "none";
 		}
 		return link.again("state", { id });
 	}
@@ -789,7 +926,10 @@ class RunnerSandboxes implements Sandboxes {
 			await link.ready();
 			await link.again("destroy", { id });
 		} catch (error) {
-			if (!(error instanceof MachineUnreachable)) console.warn(`[wlp] sandbox.destroy_later id=${id}: recorded with the machine, which removes it when its runner is next connected (${describeError(error)})`);
+			if (!(error instanceof MachineUnreachable))
+				console.warn(
+					`[wlp] sandbox.destroy_later id=${id}: recorded with the machine, which removes it when its runner is next connected (${describeError(error)})`,
+				);
 		}
 	}
 }
@@ -802,5 +942,12 @@ class RunnerSandboxes implements Sandboxes {
 export function machineLayer(link: RunnerLink, hosted: SandboxLayer): SandboxLayer {
 	const host = { version: async () => null, problem: () => hosted.windlass.problem() };
 	const windlass = new SandboxWindlass(hosted.tokens, host);
-	return { machine: { name: link.known?.name || link.who.machineName || link.who.machineId }, sandboxes: new RunnerSandboxes(link), windlass, logins: hosted.logins, tokens: hosted.tokens, backups: null };
+	return {
+		machine: { name: link.known?.name || link.who.machineName || link.who.machineId },
+		sandboxes: new RunnerSandboxes(link),
+		windlass,
+		logins: hosted.logins,
+		tokens: hosted.tokens,
+		backups: null,
+	};
 }

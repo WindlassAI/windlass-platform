@@ -91,9 +91,34 @@ describe("the copy control", () => {
 	});
 });
 
-const user = (text: string): UserBlock => ({ kind: "user", id: "u", at: 0, text, model: "gpt", effort: null, steer: false });
-const answer = (text: string, streaming = false): TextBlock => ({ kind: "text", id: "a", at: 0, messageId: "m", text, streaming });
-const turnOf = (...blocks: TurnView["blocks"]): TurnView => ({ turn: 1, blocks, steps: 1, stepOpen: false, interruptRequested: false, changedFiles: null, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, end: null, platformAnswer: null });
+const user = (text: string): UserBlock => ({
+	kind: "user",
+	id: "u",
+	at: 0,
+	text,
+	model: "gpt",
+	effort: null,
+	steer: false,
+});
+const answer = (text: string, streaming = false): TextBlock => ({
+	kind: "text",
+	id: "a",
+	at: 0,
+	messageId: "m",
+	text,
+	streaming,
+});
+const turnOf = (...blocks: TurnView["blocks"]): TurnView => ({
+	turn: 1,
+	blocks,
+	steps: 1,
+	stepOpen: false,
+	interruptRequested: false,
+	changedFiles: null,
+	usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+	end: null,
+	platformAnswer: null,
+});
 
 describe("copying in the conversation", () => {
 	const MARKDOWN = "Changed **`add`**:\n\n```ts\nreturn a + b\n```\n\nThen:\n\n```sh\nbun test\n```\n";
@@ -122,7 +147,9 @@ describe("copying in the conversation", () => {
 		expect(host.querySelectorAll(".code-copy")).toHaveLength(0);
 		const control = button("Copy this answer as Markdown");
 
-		render(createElement(Turn, { turn: turnOf(answer("Changed **`add`**:\n\n```ts\nreturn a + b\n```\n\nThen", true)) }));
+		render(
+			createElement(Turn, { turn: turnOf(answer("Changed **`add`**:\n\n```ts\nreturn a + b\n```\n\nThen", true)) }),
+		);
 		// The same control, not a new one: it is not rebuilt with every chunk.
 		expect(button("Copy this answer as Markdown")).toBe(control);
 		await press("Copy this answer as Markdown");
@@ -136,7 +163,8 @@ describe("copying in the conversation", () => {
 
 describe("copying in the diff view", () => {
 	const ONE = "diff --git a/src/add.ts b/src/add.ts\n--- a/src/add.ts\n+++ b/src/add.ts\n@@ -1 +1 @@\n-a - b\n+a + b\n";
-	const TWO = "diff --git a/made.txt b/made.txt\nnew file mode 100644\n--- /dev/null\n+++ b/made.txt\n@@ -0,0 +1 @@\n+hello\n";
+	const TWO =
+		"diff --git a/made.txt b/made.txt\nnew file mode 100644\n--- /dev/null\n+++ b/made.txt\n@@ -0,0 +1 @@\n+hello\n";
 
 	it("copies each file's part of the diff, and the whole of it", async () => {
 		render(createElement(DiffView, { diff: ONE + TWO }));

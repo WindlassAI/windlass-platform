@@ -14,9 +14,17 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 	const storage = await mkdtemp(join(tmpdir(), "wlp-kept-"));
 	const { engine } = await localListeners(0);
 	for (const key of Object.keys(process.env)) if (/^(WLP_|RIVET)/.test(key)) delete process.env[key];
-	Object.assign(process.env, { RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(engine), RIVET_LOG_LEVEL: "warn",
-		WLP_SECRET: randomBytes(32).toString("hex"), WLP_SANDBOX: "fake", WLP_MAX_KEPT_SANDBOXES: "1", WLP_DEMO: "1", WLP_IDLE_SUSPEND_MS: "1000",
-		WLP_ANTHROPIC_BASE_URL: "https://models.invalid" });
+	Object.assign(process.env, {
+		RIVETKIT_STORAGE_PATH: storage,
+		RIVET_RUN_ENGINE_PORT: String(engine),
+		RIVET_LOG_LEVEL: "warn",
+		WLP_SECRET: randomBytes(32).toString("hex"),
+		WLP_SANDBOX: "fake",
+		WLP_MAX_KEPT_SANDBOXES: "1",
+		WLP_DEMO: "1",
+		WLP_IDLE_SUSPEND_MS: "1000",
+		WLP_ANTHROPIC_BASE_URL: "https://models.invalid",
+	});
 	const { getLayer } = await import("../server/src/layer.js");
 	const { FakeE2b, ScriptedMachine } = await import("../server/src/sandbox/e2b/fake.js");
 	const { e2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
@@ -32,11 +40,18 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 		}
 	}
 	const fake = new FakeE2b({ machine: () => new ClaudeMachine() });
-	const sandboxes = e2bSandboxes(fake, { ...readE2bSettings({}), openProfile: true, modelRelayOrigin: "https://relay.invalid" });
+	const sandboxes = e2bSandboxes(fake, {
+		...readE2bSettings({}),
+		openProfile: true,
+		modelRelayOrigin: "https://relay.invalid",
+	});
 	(await getLayer()).sandboxes = sandboxes;
 	const originalFetch = globalThis.fetch;
 	t.mock.method(globalThis, "fetch", (input: RequestInfo | URL, init?: RequestInit) =>
-		String(input) === "https://models.invalid/v1/models" ? Response.json({ data: [{ id: "sonnet" }] }) : originalFetch(input, init));
+		String(input) === "https://models.invalid/v1/models"
+			? Response.json({ data: [{ id: "sonnet" }] })
+			: originalFetch(input, init),
+	);
 
 	const { registry } = await import("../server/src/registry.js");
 	const { createClient } = await import("../server/src/client.js");
@@ -54,7 +69,10 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 	const params = { token: issueUserToken({ uid, email: null, demo: true }, 0) };
 	const user = client.user.getOrCreate([uid], { params });
 	const service = client.user.get([uid], { params: serviceParams() });
-	const key = await user.saveModelProvider({ provider: "anthropic", key: "sk-ant-api03-" + randomBytes(32).toString("hex") });
+	const key = await user.saveModelProvider({
+		provider: "anthropic",
+		key: "sk-ant-api03-" + randomBytes(32).toString("hex"),
+	});
 	assert.ok(key.ok);
 	const make = () => user.createSession({ profile: "e2b-open", harness: "claude" });
 	const run = async (id: string) => {
@@ -75,19 +93,26 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 	await run(first.id);
 	assert.equal((await user.usage()).sandboxes.kept, 1);
 	const next = await make();
-	await assert.rejects(client.agentSession.get([uid, next.id], { params }).prompt({ text: "plain" }), { code: "too_many_sandboxes" });
+	await assert.rejects(client.agentSession.get([uid, next.id], { params }).prompt({ text: "plain" }), {
+		code: "too_many_sandboxes",
+	});
 
 	// Return the inventory as it was before the action, after the action has finished.
 	async function duringSweep(action: () => Promise<void>) {
 		const captured = Promise.withResolvers<void>();
 		const deliver = Promise.withResolvers<void>();
 		const list = sandboxes.list.bind(sandboxes);
-		t.mock.method(sandboxes, "list", async (owner: string) => {
-			const rows = await list(owner);
-			captured.resolve();
-			await deliver.promise;
-			return rows;
-		}, { times: 1 });
+		t.mock.method(
+			sandboxes,
+			"list",
+			async (owner: string) => {
+				const rows = await list(owner);
+				captured.resolve();
+				await deliver.promise;
+				return rows;
+			},
+			{ times: 1 },
+		);
 		const sweep = service.internalSweepSandboxes();
 		try {
 			await captured.promise;
@@ -103,7 +128,10 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 	});
 	assert.equal((await user.usage()).sandboxes.kept, 0, "a late listing restored the freed sandbox");
 	await duringSweep(() => run(next.id));
-	assert.deepEqual((await user.usage()).kept.map(k => k.sessionId), [next.id]);
+	assert.deepEqual(
+		(await user.usage()).kept.map(k => k.sessionId),
+		[next.id],
+	);
 	// A provider removal whose release never reached the account left a fresh, settled claim.
 	const [box] = await sandboxes.list(uid);
 	assert.equal(box.sessionId, next.id);
@@ -124,7 +152,9 @@ async function buildProvider(t: TestContext, now = Date.now) {
 	const layer = await getLayer();
 	const original = layer.sandboxes;
 	layer.sandboxes = e2bSandboxes(fake, settings, { now });
-	t.after(() => { layer.sandboxes = original; });
+	t.after(() => {
+		layer.sandboxes = original;
+	});
 	return { fake, settings, META };
 }
 
@@ -139,11 +169,22 @@ test("a sweep frees expired snapshot builders and counts only retained sessions"
 	const { effectiveUserLimits } = await import("../server/src/user-limits.js");
 	const uid = "u_builds";
 	now -= BUILD_LOST_MS;
-	const plant = (session: string, candidate: string) => fake.plant({
-		[META.deployment]: settings.deployment, [META.uid]: uid, [META.session]: session, [META.profile]: "e2b", [META.size]: "standard",
-		...(candidate && { [META.environmentBuild]: "true" }),
-		[SNAP_META.attempt]: "a".repeat(32), [SNAP_META.build]: "standard-build", [SNAP_META.variant]: "base", [SNAP_META.candidate]: candidate,
-	}, "paused");
+	const plant = (session: string, candidate: string) =>
+		fake.plant(
+			{
+				[META.deployment]: settings.deployment,
+				[META.uid]: uid,
+				[META.session]: session,
+				[META.profile]: "e2b",
+				[META.size]: "standard",
+				...(candidate && { [META.environmentBuild]: "true" }),
+				[SNAP_META.attempt]: "a".repeat(32),
+				[SNAP_META.build]: "standard-build",
+				[SNAP_META.variant]: "base",
+				[SNAP_META.candidate]: candidate,
+			},
+			"paused",
+		);
 	const ids = ["s_personal", "s_item", "s_reader"];
 	const sessions = new Map(ids.map(id => [id, { id, createdAt: now, environmentBuild: false }]));
 	for (const id of ids) await plant(id, "");
@@ -158,11 +199,23 @@ test("a sweep frees expired snapshot builders and counts only retained sessions"
 	sessions.set("s_active", { id: "s_active", createdAt: now, environmentBuild: true });
 	const young = await plant("s_missing", "e".repeat(64));
 	const vars = { sessions, usage, items: { limits: { overrides: { maxKept: 5 } } }, keptGeneration: 0, listed: null };
-	const ctx = { vars, key: [uid], conn: { params: serviceParams() }, broadcast() {}, log: console,
-		db: { transaction: (run: (tx: object) => Promise<void>) => run({ execute: async () => [] }) } } as never;
+	const ctx = {
+		vars,
+		key: [uid],
+		conn: { params: serviceParams() },
+		broadcast() {},
+		log: console,
+		db: { transaction: (run: (tx: object) => Promise<void>) => run({ execute: async () => [] }) },
+	} as never;
 	const actions = user.config.actions!;
 	await actions.internalSweepSandboxes(ctx);
-	assert.deepEqual(usage.kept().map(k => k.session).sort(), [...ids].sort());
+	assert.deepEqual(
+		usage
+			.kept()
+			.map(k => k.session)
+			.sort(),
+		[...ids].sort(),
+	);
 	assert.ok(!fake.sandboxes.has(deleted) && !fake.sandboxes.has(stale));
 	assert.ok(fake.sandboxes.has(active) && fake.sandboxes.has(young));
 
@@ -184,23 +237,49 @@ test("a failed environment turn destroys its source before reporting the result"
 	const { createGrant } = await import("../server/src/actors/internal.js");
 	const sql = new DatabaseSync(":memory:");
 	t.after(() => sql.close());
-	const db = { execute: async (query: string, ...args: (string | number | null)[]) => sql.prepare(query).all(...args),
-		transaction: (run: (tx: object) => Promise<void>) => run(db) };
+	const db = {
+		execute: async (query: string, ...args: (string | number | null)[]) => sql.prepare(query).all(...args),
+		transaction: (run: (tx: object) => Promise<void>) => run(db),
+	};
 	let remainingAtReport: number | undefined;
 	const owner = {
-		internalSessionSecrets: async () => ({ secrets: [] }), internalSessionChanged: async () => {},
-		internalAcquireRun: async () => ({ known: true, ok: true }), internalReserve: async () => ({ ok: true, hold: { id: "time", seconds: 600 } }),
-		internalClaimPlace: async () => ({ ok: true }), internalSettle: async () => ({ known: true }), internalRelease: async () => {},
-		internalEnvironmentResult: async () => { remainingAtReport = fake.sandboxes.size; throw new Error("result delivery interrupted"); },
+		internalSessionSecrets: async () => ({ secrets: [] }),
+		internalSessionChanged: async () => {},
+		internalAcquireRun: async () => ({ known: true, ok: true }),
+		internalReserve: async () => ({ ok: true, hold: { id: "time", seconds: 600 } }),
+		internalClaimPlace: async () => ({ ok: true }),
+		internalSettle: async () => ({ known: true }),
+		internalRelease: async () => {},
+		internalEnvironmentResult: async () => {
+			remainingAtReport = fake.sandboxes.size;
+			throw new Error("result delivery interrupted");
+		},
 	};
 	const key = ["u_build", "s_build"];
-	const base = { key, db, client: () => ({ user: { get: () => owner } }), conn: { params: serviceParams() }, broadcast() {}, log: console,
-		keepAwake: <T>(p: Promise<T>) => p };
+	const base = {
+		key,
+		db,
+		client: () => ({ user: { get: () => owner } }),
+		conn: { params: serviceParams() },
+		broadcast() {},
+		log: console,
+		keepAwake: <T>(p: Promise<T>) => p,
+	};
 	const actor = agentSession.config;
 	if (!("db" in actor && "createVars" in actor)) throw new Error("Missing session database");
 	await actor.db.onMigrate(db as never);
-	await actor.onCreate!(base as never, { grant: createGrant("agentSession", key), title: "Build", profile: "e2b", model: "demo", titleIsTyped: true, repoUrl: null,
-		place: { kind: "hosted" }, demo: true, createdAt: Date.now(), environmentBuild: { project: "github:1", place: "hosted", screenshots: false } });
+	await actor.onCreate!(base as never, {
+		grant: createGrant("agentSession", key),
+		title: "Build",
+		profile: "e2b",
+		model: "demo",
+		titleIsTyped: true,
+		repoUrl: null,
+		place: { kind: "hosted" },
+		demo: true,
+		createdAt: Date.now(),
+		environmentBuild: { project: "github:1", place: "hosted", screenshots: false },
+	});
 	const vars = await actor.createVars(base as never, undefined);
 	await actor.actions!.internalBuildEnvironment({ ...base, vars } as never);
 	await vars.turn?.done;

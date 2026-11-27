@@ -15,7 +15,16 @@
  * This file has no actor in it: the `user` actor's `listItems` and `itemFeed` call it, and the web app's mock does too.
  */
 
-import { type GithubId, type ItemCount, type ItemCursor, type ItemFeed, type ItemSummary, ITEM_FEED_ENDED, ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX } from "./contract.js";
+import {
+	type GithubId,
+	type ItemCount,
+	type ItemCursor,
+	type ItemFeed,
+	type ItemSummary,
+	ITEM_FEED_ENDED,
+	ITEM_PAGE_DEFAULT,
+	ITEM_PAGE_MAX,
+} from "./contract.js";
 import { isGithubId } from "./github/ids.js";
 
 /** Thrown for a page that cannot be read; `message` is fit to show. */
@@ -47,17 +56,34 @@ export function cleanItemPage(raw: unknown): CleanPage | null {
 	let before: ItemCursor | null = null;
 	if (input.before !== undefined && input.before !== null) {
 		const cursor = input.before as Record<string, unknown>;
-		if (typeof cursor !== "object" || typeof cursor.createdAt !== "number" || !Number.isFinite(cursor.createdAt) || typeof cursor.id !== "string" || cursor.id === "" || cursor.id.length > 64) {
+		if (
+			typeof cursor !== "object" ||
+			typeof cursor.createdAt !== "number" ||
+			!Number.isFinite(cursor.createdAt) ||
+			typeof cursor.id !== "string" ||
+			cursor.id === "" ||
+			cursor.id.length > 64
+		) {
 			throw new ItemPageProblem("Start a page after an item of the page before: its createdAt and id.");
 		}
 		before = { createdAt: cursor.createdAt, id: cursor.id };
 	}
 	const limit = input.limit === undefined ? ITEM_PAGE_DEFAULT : input.limit;
-	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > ITEM_PAGE_MAX) throw new ItemPageProblem(`A page holds 1 to ${ITEM_PAGE_MAX} work items.`);
-	if (input.ended !== undefined && typeof input.ended !== "boolean") throw new ItemPageProblem("Say true or false for ended items only.");
-	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository)) throw new ItemPageProblem("Name the repository by GitHub's id for it.");
-	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"])) throw new ItemPageProblem("Filed from is web, api, github or linear.");
-	return { before, limit, ended: typeof input.ended === "boolean" ? input.ended : null, repository: (input.repository ?? null) as GithubId | null, source: (input.source ?? null) as ItemSummary["source"] | null };
+	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > ITEM_PAGE_MAX)
+		throw new ItemPageProblem(`A page holds 1 to ${ITEM_PAGE_MAX} work items.`);
+	if (input.ended !== undefined && typeof input.ended !== "boolean")
+		throw new ItemPageProblem("Say true or false for ended items only.");
+	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository))
+		throw new ItemPageProblem("Name the repository by GitHub's id for it.");
+	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"]))
+		throw new ItemPageProblem("Filed from is web, api, github or linear.");
+	return {
+		before,
+		limit,
+		ended: typeof input.ended === "boolean" ? input.ended : null,
+		repository: (input.repository ?? null) as GithubId | null,
+		source: (input.source ?? null) as ItemSummary["source"] | null,
+	};
 }
 
 /** Newest filed first, by id between equals: the order of the list and of its pages. */
@@ -66,12 +92,13 @@ export function byFiling(a: Pick<ItemSummary, "createdAt" | "id">, b: Pick<ItemS
 }
 
 /** Whether an item comes after the cursor in that order. */
-const after = (item: Pick<ItemSummary, "createdAt" | "id">, cursor: ItemCursor) => item.createdAt < cursor.createdAt || (item.createdAt === cursor.createdAt && item.id < cursor.id);
+const after = (item: Pick<ItemSummary, "createdAt" | "id">, cursor: ItemCursor) =>
+	item.createdAt < cursor.createdAt || (item.createdAt === cursor.createdAt && item.id < cursor.id);
 
 /** The page of a list (any order): the items it keeps, after the cursor, at most `limit` of them. */
 export function itemPage(list: readonly ItemSummary[], page: CleanPage): ItemSummary[] {
 	const kept = list.filter(
-		(item) =>
+		item =>
 			(page.ended === null || ENDED.has(item.state) === page.ended) &&
 			(page.repository === null || String(item.repository.id) === String(page.repository)) &&
 			(page.source === null || item.source === page.source) &&
@@ -86,21 +113,20 @@ export function nextCursor(page: readonly ItemSummary[], limit: number): ItemCur
 	return page.length < limit || !last ? null : { createdAt: last.createdAt, id: last.id };
 }
 
-
 /**
  * The user's list from every item held: top-level items, and a feature's child while it asks a
  * question (titled "<feature> — <child>"), newest filed first.
  */
 export function listedItems(items: Iterable<ItemSummary>): ItemSummary[] {
 	return [...items]
-		.filter((item) => !item.parent || item.question)
-		.map((item) => (item.parent ? { ...item, title: item.parent.title + " — " + item.title } : item))
+		.filter(item => !item.parent || item.question)
+		.map(item => (item.parent ? { ...item, title: item.parent.title + " — " + item.title } : item))
 		.sort(byFiling);
 }
 
 /** Every open subtask among the items held, under its own title, newest filed first: `ItemFeed.children`. */
 export function openChildren(items: Iterable<ItemSummary>): ItemSummary[] {
-	return [...items].filter((item) => item.parent && !ENDED.has(item.state)).sort(byFiling);
+	return [...items].filter(item => item.parent && !ENDED.has(item.state)).sort(byFiling);
 }
 
 /**
@@ -117,7 +143,20 @@ export function itemFeed(list: readonly ItemSummary[], all?: Iterable<ItemSummar
 		const key = `${item.repository.id}|${item.source}`;
 		let row = rows.get(key);
 		// The newest filed comes first: the row takes its repository's owner and name.
-		if (!row) rows.set(key, (row = { repository: item.repository.id, owner: item.repository.owner, name: item.repository.name, source: item.source, open: 0, done: 0, failed: 0, cancelled: 0 }));
+		if (!row)
+			rows.set(
+				key,
+				(row = {
+					repository: item.repository.id,
+					owner: item.repository.owner,
+					name: item.repository.name,
+					source: item.source,
+					open: 0,
+					done: 0,
+					failed: 0,
+					cancelled: 0,
+				}),
+			);
 		if (item.state === "done" || item.state === "failed" || item.state === "cancelled") {
 			row[item.state] += 1;
 			endedCount += 1;
@@ -127,5 +166,10 @@ export function itemFeed(list: readonly ItemSummary[], all?: Iterable<ItemSummar
 			open.push(item);
 		}
 	}
-	return { open, ended, counts: { ended: endedCount, byRepository: [...rows.values()] }, ...(all && { children: openChildren(all) }) };
+	return {
+		open,
+		ended,
+		counts: { ended: endedCount, byRepository: [...rows.values()] },
+		...(all && { children: openChildren(all) }),
+	};
 }

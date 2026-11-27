@@ -23,7 +23,7 @@ writeFileSync(join(root, "outside.txt"), "not the web app's\n");
 writeFileSync(join(site, "app.html"), "<!doctype html><title>shell</title>\n");
 mkdirSync(join(site, "docs", "start"), { recursive: true });
 writeFileSync(join(site, "docs", "start", "index.html"), "<!doctype html><title>docs start</title>\n");
-writeFileSync(join(site, "sitemap.xml"), "<?xml version=\"1.0\"?><urlset/>\n");
+writeFileSync(join(site, "sitemap.xml"), '<?xml version="1.0"?><urlset/>\n');
 writeFileSync(join(site, "robots.txt"), "User-agent: *\n");
 // A build from before there were public pages: index.html is the shell, and there is no app.html.
 const legacy = join(root, "legacy");
@@ -83,19 +83,35 @@ try {
 		const csp = response?.headers.get("content-security-policy") ?? "";
 		const hsts = response?.headers.get("strict-transport-security");
 		for (const [name, ok] of [
-			["scoped HTTP and WebSocket connections", csp.split("; ").includes("connect-src 'self' " + origin + " " + socket)],
-			["frame, object, base and script restrictions", ["frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'", "script-src 'self'"].every(rule => csp.split("; ").includes(rule))],
-			["app styles and images", ["style-src 'self' 'unsafe-inline'", "img-src 'self' data: https:"].every(rule => csp.split("; ").includes(rule))],
+			[
+				"scoped HTTP and WebSocket connections",
+				csp.split("; ").includes("connect-src 'self' " + origin + " " + socket),
+			],
+			[
+				"frame, object, base and script restrictions",
+				["frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'", "script-src 'self'"].every(rule =>
+					csp.split("; ").includes(rule),
+				),
+			],
+			[
+				"app styles and images",
+				["style-src 'self' 'unsafe-inline'", "img-src 'self' data: https:"].every(rule =>
+					csp.split("; ").includes(rule),
+				),
+			],
 			["HSTS follows the external web origin", secure ? hsts === "max-age=31536000" : hsts === null],
 		] as const) {
 			console.log((ok ? "PASS" : "FAIL") + "  " + scheme + " " + name);
-			if (ok) passed++; else failed++;
+			if (ok) passed++;
+			else failed++;
 		}
 	}
 	for (const [method, address, want] of cases) {
 		const response = await serve(new Request(`http://web.test${address}`, { method }));
 		const body = response ? (await response.arrayBuffer()).byteLength : 0;
-		let got = response ? `${response.status} ${response.headers.get("content-type")} ${response.headers.get("cache-control")}` : "none";
+		let got = response
+			? `${response.status} ${response.headers.get("content-type")} ${response.headers.get("cache-control")}`
+			: "none";
 		if (response && method === "HEAD" && body !== 0) got += " (with a body)";
 		if (response && method === "GET" && body === 0) got += " (without a body)";
 		const ok = got === want;
@@ -107,7 +123,9 @@ try {
 		const response = await webFiles(directory)(new Request(`http://web.test${address}`));
 		const got = response ? (/<title>([^<]*)<\/title>/.exec(await response.text())?.[1] ?? "no title") : "none";
 		const ok = got === want;
-		console.log(`${ok ? "PASS" : "FAIL"}  GET ${address}${directory === legacy ? " (a build without app.html)" : ""}  ->  ${got}${ok ? "" : `   (wanted ${want})`}`);
+		console.log(
+			`${ok ? "PASS" : "FAIL"}  GET ${address}${directory === legacy ? " (a build without app.html)" : ""}  ->  ${got}${ok ? "" : `   (wanted ${want})`}`,
+		);
 		if (ok) passed += 1;
 		else failed += 1;
 	}

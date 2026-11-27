@@ -22,9 +22,18 @@ export function LoginMethods() {
 
 	useEffect(() => {
 		let active = true;
-		client.user(auth).linkedLogins().then(methods => { if (active) setLinked(methods); })
-			.catch(failure => { if (active) setError(explain(failure)); });
-		return () => { active = false; };
+		client
+			.user(auth)
+			.linkedLogins()
+			.then(methods => {
+				if (active) setLinked(methods);
+			})
+			.catch(failure => {
+				if (active) setError(explain(failure));
+			});
+		return () => {
+			active = false;
+		};
 	}, [auth, client, explain]);
 
 	async function link(provider: LoginProvider) {
@@ -54,7 +63,9 @@ export function LoginMethods() {
 
 	return (
 		<section className="usage-section" aria-labelledby="account-login">
-			<h3 className="usage-title" id="account-login">Sign-in</h3>
+			<h3 className="usage-title" id="account-login">
+				Sign-in
+			</h3>
 			{linked && info ? (
 				<ul className="settings-list" aria-label="Sign-in methods">
 					{providers.map(provider => {
@@ -67,40 +78,102 @@ export function LoginMethods() {
 						return (
 							<li key={id} className="usage-kept-row login-method">
 								<div className="usage-kept-main">
-									<span className="provider-name">{logo}{name}</span>
-									{(method?.display || instance) && <p className="agent-meta">
-										{method?.display && <span>{id === "github" && "@"}{method.display}</span>}
-										{instance && <span>{instance}</span>}
-									</p>}
+									<span className="provider-name">
+										{logo}
+										{name}
+									</span>
+									{(method?.display || instance) && (
+										<p className="agent-meta">
+											{method?.display && (
+												<span>
+													{id === "github" && "@"}
+													{method.display}
+												</span>
+											)}
+											{instance && <span>{instance}</span>}
+										</p>
+									)}
 								</div>
-								<span className={method ? "machine-used tone-good" : "machine-used"}>{method ? "linked" : "not linked"}</span>
-								<button type="button" className="button button-outline button-small"
+								<span className={method ? "machine-used tone-good" : "machine-used"}>
+									{method ? "linked" : "not linked"}
+								</span>
+								<button
+									type="button"
+									className="button button-outline button-small"
 									aria-label={method ? `Unlink ${name}…` : `Link ${name}`}
 									aria-describedby={last ? "last-login-reason" : undefined}
 									title={last ? lastMethodReason : undefined}
 									disabled={busy || last}
 									onClick={() => {
-										if (method) { setError(""); setRemoving(provider); }
-										else void link(id);
-									}}>{action}</button>
+										if (method) {
+											setError("");
+											setRemoving(provider);
+										} else void link(id);
+									}}
+								>
+									{action}
+								</button>
 							</li>
 						);
 					})}
 				</ul>
-			) : !error && <p className="usage-note" role="status">{platform.error ?? "Loading sign-in methods…"}</p>}
-			{linked?.length === 1 && <p className="usage-note" id="last-login-reason">{lastMethodReason}</p>}
-			{error && !removing && <p className="callout callout-warn" role="alert">{error}</p>}
+			) : (
+				!error && (
+					<p className="usage-note" role="status">
+						{platform.error ?? "Loading sign-in methods…"}
+					</p>
+				)
+			)}
+			{linked?.length === 1 && (
+				<p className="usage-note" id="last-login-reason">
+					{lastMethodReason}
+				</p>
+			)}
+			{error && !removing && (
+				<p className="callout callout-warn" role="alert">
+					{error}
+				</p>
+			)}
 			{removing && (
-				<Dialog title={`Unlink ${removing.name}?`} size="small" dismissable={!busy}
-					onClose={() => { setRemoving(null); setError(""); }}
-					footer={<>
-						<button type="button" className="button button-quiet" disabled={busy} data-autofocus
-							onClick={() => { setRemoving(null); setError(""); }}>Cancel</button>
-						<button type="button" className="button button-danger" disabled={busy}
-							onClick={() => void unlink(removing.id)}>{busy ? "Unlinking…" : "Unlink"}</button>
-					</>}>
+				<Dialog
+					title={`Unlink ${removing.name}?`}
+					size="small"
+					dismissable={!busy}
+					onClose={() => {
+						setRemoving(null);
+						setError("");
+					}}
+					footer={
+						<>
+							<button
+								type="button"
+								className="button button-quiet"
+								disabled={busy}
+								data-autofocus
+								onClick={() => {
+									setRemoving(null);
+									setError("");
+								}}
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								className="button button-danger"
+								disabled={busy}
+								onClick={() => void unlink(removing.id)}
+							>
+								{busy ? "Unlinking…" : "Unlink"}
+							</button>
+						</>
+					}
+				>
 					<p>You’ll need to use your other sign-in method to access this account.</p>
-					{error && <p className="callout callout-warn" role="alert">{error}</p>}
+					{error && (
+						<p className="callout callout-warn" role="alert">
+							{error}
+						</p>
+					)}
 				</Dialog>
 			)}
 		</section>

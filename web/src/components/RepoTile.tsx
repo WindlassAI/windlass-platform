@@ -14,7 +14,7 @@ export function nameHue(name: string): number {
 
 /** "wlp-test-c-main" → "WT", "harbor" → "Ha". */
 export function monogram(name: string): string {
-	const parts = name.split(/[-_.\s]+/).filter((part) => part !== "");
+	const parts = name.split(/[-_.\s]+/).filter(part => part !== "");
 	if (parts.length >= 2) return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
 	const one = parts[0] ?? name;
 	return one.slice(0, 1).toUpperCase() + one.slice(1, 2);
@@ -22,7 +22,11 @@ export function monogram(name: string): string {
 
 export function RepoTile({ name, size = "md" }: { name: string; size?: "md" | "sm" | "xs" }) {
 	return (
-		<span className={`repo-tile repo-tile-${size}`} style={{ "--tile-hue": nameHue(name) } as CSSProperties} aria-hidden="true">
+		<span
+			className={`repo-tile repo-tile-${size}`}
+			style={{ "--tile-hue": nameHue(name) } as CSSProperties}
+			aria-hidden="true"
+		>
 			{monogram(name)}
 		</span>
 	);
@@ -32,5 +36,16 @@ export function RepoTile({ name, size = "md" }: { name: string; size?: "md" | "s
 export function OwnerAvatar({ owner }: { owner: string }) {
 	const [failed, setFailed] = useState(false);
 	if (failed || owner === "") return <RepoTile name={owner || "?"} size="sm" />;
-	return <img className="owner-avatar" src={`https://github.com/${encodeURIComponent(owner)}.png?size=40`} alt="" width={16} height={16} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+	return (
+		<img
+			className="owner-avatar"
+			src={`https://github.com/${encodeURIComponent(owner)}.png?size=40`}
+			alt=""
+			width={16}
+			height={16}
+			loading="lazy"
+			referrerPolicy="no-referrer"
+			onError={() => setFailed(true)}
+		/>
+	);
 }

@@ -68,7 +68,12 @@ const MODELS_TIMEOUT_MS = 5_000;
 
 /** What asking for a token gave, with the material as Windlass left it: changed when it refreshed, whether or not a token came of it. */
 export type TokenAnswer =
-	| { ok: true; material: SignInMaterial; token: AccessToken; /** Windlass said the token is good for less than was asked: a refresh gives none that lasts longer. */ shorter: boolean }
+	| {
+			ok: true;
+			material: SignInMaterial;
+			token: AccessToken /** Windlass said the token is good for less than was asked: a refresh gives none that lasts longer. */;
+			shorter: boolean;
+	  }
 	| { ok: false; material: SignInMaterial; error: Error };
 
 export interface SignInCommands {
@@ -98,7 +103,8 @@ export interface SignInCommands {
 /** What Windlass's `sign-in failed: <message> (<code>)` becomes for the user at `finish`. */
 const FRIENDLY: Record<string, string> = {
 	no_pending_login: "This sign-in attempt is no longer waiting for an address. Start the sign-in again.",
-	state_mismatch: "That address belongs to a different sign-in attempt. Start the sign-in again and paste the address of the page the browser ended on.",
+	state_mismatch:
+		"That address belongs to a different sign-in attempt. Start the sign-in again and paste the address of the page the browser ended on.",
 	missing_code: "That address has no authorization code. Paste the full address of the page the browser ended on.",
 	access_denied: "The sign-in was not approved in the browser.",
 	plan_usage_not_granted: "The sign-in worked, but ChatGPT plan usage was not granted. Sign in again and allow it.",
@@ -128,28 +134,44 @@ export class WindlassSignIns implements SignInCommands {
 		// `login start` makes no network request: it saves the PKCE state and prints the address. It tries
 		// to listen on 127.0.0.1:1455 for the browser's return; where that port is taken (two attempts
 		// starting at once) it says so and goes on, and without a browser it stops listening at once.
-		const result = await this.runner.run(NO_MATERIAL, { args: ["start", "--no-browser"], network: false, timeoutMs: START_TIMEOUT_MS });
+		const result = await this.runner.run(NO_MATERIAL, {
+			args: ["start", "--no-browser"],
+			network: false,
+			timeoutMs: START_TIMEOUT_MS,
+		});
 		const url = result.stdout
 			.split("\n")
-			.map((line) => line.trim())
-			.find((line) => line.startsWith("https://"));
+			.map(line => line.trim())
+			.find(line => line.startsWith("https://"));
 		if (result.code !== 0 || url === undefined || result.material.files["auth-pending.json"] === undefined) {
-			throw new Error(`windlass login start failed (${result.timedOut ? "timed out" : `exit code ${result.code}`}): ${oneLine(result.stderr) || "it printed no address"}`);
+			throw new Error(
+				`windlass login start failed (${result.timedOut ? "timed out" : `exit code ${result.code}`}): ${oneLine(result.stderr) || "it printed no address"}`,
+			);
 		}
 		const redirectPrefix = new URL(url).searchParams.get("redirect_uri") ?? "http://127.0.0.1:1455/auth/callback";
 		return { url, redirectPrefix, material: result.material };
 	}
 
-	async finish(material: SignInMaterial, pastedUrl: string): Promise<{ account: ChatgptAccount; material: SignInMaterial }> {
+	async finish(
+		material: SignInMaterial,
+		pastedUrl: string,
+	): Promise<{ account: ChatgptAccount; material: SignInMaterial }> {
 		const pasted = checkPasted(pastedUrl);
 		if (material.files["auth-pending.json"] === undefined) throw new SandboxUserError(FRIENDLY.no_pending_login!);
 		// The token exchange needs the network. The address goes in on stdin, one line.
-		const result = await this.runner.run(material, { args: ["finish"], stdin: `${pasted}\n`, network: true, timeoutMs: FINISH_TIMEOUT_MS });
+		const result = await this.runner.run(material, {
+			args: ["finish"],
+			stdin: `${pasted}\n`,
+			network: true,
+			timeoutMs: FINISH_TIMEOUT_MS,
+		});
 		if (result.timedOut) throw new SandboxUserError("OpenAI did not answer in time. Try again.");
 		if (result.code !== 0) {
 			const failed = signInFailure(result.stderr);
 			if (failed !== null) throw new SandboxUserError(FRIENDLY[failed.code] ?? failed.message);
-			throw new SandboxUserError(`The sign-in could not be finished: ${oneLine(result.stderr).replace(/^windlass: /, "") || `exit code ${result.code}`}`);
+			throw new SandboxUserError(
+				`The sign-in could not be finished: ${oneLine(result.stderr).replace(/^windlass: /, "") || `exit code ${result.code}`}`,
+			);
 		}
 		const account = accountOf(result.material);
 		if (account === null) throw new Error("windlass login finish succeeded but left no sign-in");
@@ -161,7 +183,12 @@ export class WindlassSignIns implements SignInCommands {
 		if (!hasSignIn(material)) return { ok: false, material, error: new SandboxUserError(NOT_SIGNED_IN) };
 		this.asked += 1;
 		const [, , ...args] = loginTokenCommand();
-		const result = await this.runner.run(material, { args, network: true, timeoutMs: this.options.tokenTimeoutMs ?? TOKEN_TIMEOUT_MS, signal: options.signal });
+		const result = await this.runner.run(material, {
+			args,
+			network: true,
+			timeoutMs: this.options.tokenTimeoutMs ?? TOKEN_TIMEOUT_MS,
+			signal: options.signal,
+		});
 		// What Windlass saved is kept whatever it answered: a refresh that the sign-in service has already
 		// carried out is in there, also when the command was killed before it could print the token.
 		const left = result.materialRead && hasSignIn(result.material) ? result.material : material;
@@ -175,9 +202,13 @@ export class WindlassSignIns implements SignInCommands {
 	async models(token: AccessToken): Promise<ListedModels> {
 		const timeoutMs = this.options.modelsTimeoutMs ?? MODELS_TIMEOUT_MS;
 		const result = await this.runner.runWithToken(token, { args: ["--models", "--json"], timeoutMs });
-		if (result.timedOut) throw new Error(`\`windlass --models\` did not answer in ${timeoutMs / 1000} s and was stopped`);
+		if (result.timedOut)
+			throw new Error(`\`windlass --models\` did not answer in ${timeoutMs / 1000} s and was stopped`);
 		// Windlass says why on one line of standard error, where it never prints a token.
-		if (result.code !== 0) throw new Error(`\`windlass --models\` failed (exit code ${result.code}): ${thrownLine(result.stderr) ?? "it gave no reason"}`);
+		if (result.code !== 0)
+			throw new Error(
+				`\`windlass --models\` failed (exit code ${result.code}): ${thrownLine(result.stderr) ?? "it gave no reason"}`,
+			);
 		const listed = parseModels(result.stdout);
 		if (listed === null) throw new Error("`windlass --models --json` did not print a list of models");
 		return listed;
@@ -186,13 +217,16 @@ export class WindlassSignIns implements SignInCommands {
 	private async read(result: LoginRun): Promise<{ token: AccessToken; shorter: boolean }> {
 		if (result.aborted) throw new Error("`windlass login token` was stopped: the sign-in changed while it ran");
 		if (result.timedOut) {
-			this.options.log?.(`[wlp] sign-in.command_timeout: \`windlass login token\` did not answer in ${(this.options.tokenTimeoutMs ?? TOKEN_TIMEOUT_MS) / 1000} s and was stopped${result.materialRead ? "; what it had saved by then was kept" : ""}`);
+			this.options.log?.(
+				`[wlp] sign-in.command_timeout: \`windlass login token\` did not answer in ${(this.options.tokenTimeoutMs ?? TOKEN_TIMEOUT_MS) / 1000} s and was stopped${result.materialRead ? "; what it had saved by then was kept" : ""}`,
+			);
 			throw new Error("`windlass login token` did not answer in time");
 		}
 		if (result.code === 0) {
 			const token = parseToken(result.stdout);
 			if (token === null) throw new Error("`windlass login token --json` did not print a token and its expiry");
-			if (token.expiresAt <= Date.now()) throw new Error("`windlass login token` printed a token that has already expired");
+			if (token.expiresAt <= Date.now())
+				throw new Error("`windlass login token` printed a token that has already expired");
 			return { token, shorter: saysShorterThanAsked(result.stderr) };
 		}
 		const stderr = result.stderr.trim();
@@ -202,14 +236,24 @@ export class WindlassSignIns implements SignInCommands {
 			if (failed.code === SIGNED_OUT) throw new SandboxUserError(NOT_SIGNED_IN);
 			if (SIGN_IN_REFUSED.has(failed.code)) throw new SandboxUserError(SIGN_IN_EXPIRED);
 			// Not the user's doing. That the service could not be reached is said in Windlass's own sentence, which names the host and the reason.
-			if (failed.code === SIGN_IN_UNREACHABLE) throw new SignInRefreshError(`${failed.message.charAt(0).toLowerCase()}${failed.message.slice(1)}`, failed.code);
-			throw new SignInRefreshError(`the sign-in could not be refreshed: ${failed.message} (${failed.code})`, failed.code);
+			if (failed.code === SIGN_IN_UNREACHABLE)
+				throw new SignInRefreshError(
+					`${failed.message.charAt(0).toLowerCase()}${failed.message.slice(1)}`,
+					failed.code,
+				);
+			throw new SignInRefreshError(
+				`the sign-in could not be refreshed: ${failed.message} (${failed.code})`,
+				failed.code,
+			);
 		}
 		// No code from here on. Windlass reports nobody being signed in without one, as a line of its own
 		// ("windlass: not signed in, so there is no token to hand on; run `windlass login`", exit code 1), so that
 		// one answer is still told by its words.
-		if (result.code === 1 && stderr.split("\n").some((line) => /^\S+: not signed in\b/.test(line.trim()))) throw new SandboxUserError(NOT_SIGNED_IN);
-		throw new Error(`\`windlass login token\` failed (exit code ${result.code}): ${thrownLine(stderr) ?? "it gave no reason"}`);
+		if (result.code === 1 && stderr.split("\n").some(line => /^\S+: not signed in\b/.test(line.trim())))
+			throw new SandboxUserError(NOT_SIGNED_IN);
+		throw new Error(
+			`\`windlass login token\` failed (exit code ${result.code}): ${thrownLine(stderr) ?? "it gave no reason"}`,
+		);
 	}
 }
 
@@ -231,7 +275,14 @@ function parseToken(stdout: string): AccessToken | null {
 	const line = stdout.trim().split("\n").pop() ?? "";
 	try {
 		const value = JSON.parse(line) as { accessToken?: unknown; expiresAt?: unknown };
-		if (typeof value?.accessToken !== "string" || value.accessToken === "" || /\s/.test(value.accessToken) || typeof value.expiresAt !== "number" || !Number.isFinite(value.expiresAt)) return null;
+		if (
+			typeof value?.accessToken !== "string" ||
+			value.accessToken === "" ||
+			/\s/.test(value.accessToken) ||
+			typeof value.expiresAt !== "number" ||
+			!Number.isFinite(value.expiresAt)
+		)
+			return null;
 		return { accessToken: value.accessToken, expiresAt: value.expiresAt };
 	} catch {
 		return null;
@@ -249,7 +300,8 @@ const MAX_MODEL_ID_CHARS = 200;
  * is something else, or there is no model at all: half a list is not served as the plan's.
  */
 export function parseModels(stdout: string): ListedModels | null {
-	const word = (value: unknown): value is string => typeof value === "string" && value !== "" && value.length <= MAX_MODEL_ID_CHARS && !/[\x00-\x1f\x7f]/.test(value);
+	const word = (value: unknown): value is string =>
+		typeof value === "string" && value !== "" && value.length <= MAX_MODEL_ID_CHARS && !/[\x00-\x1f\x7f]/.test(value);
 	const models: ModelChoice[] = [];
 	let defaultModel: string | null = null;
 	for (const line of stdout.split("\n")) {
@@ -260,7 +312,16 @@ export function parseModels(stdout: string): ListedModels | null {
 		} catch {
 			return null;
 		}
-		if (typeof row !== "object" || row === null || !word(row.id) || !Array.isArray(row.efforts) || !row.efforts.every(word) || models.length >= MAX_MODELS || models.some((model) => model.id === row.id)) return null;
+		if (
+			typeof row !== "object" ||
+			row === null ||
+			!word(row.id) ||
+			!Array.isArray(row.efforts) ||
+			!row.efforts.every(word) ||
+			models.length >= MAX_MODELS ||
+			models.some(model => model.id === row.id)
+		)
+			return null;
 		models.push({ id: row.id, name: word(row.description) ? row.description : null, efforts: row.efforts });
 		if (row.isDefault === true) defaultModel ??= row.id;
 	}
@@ -275,18 +336,20 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 300)
 function thrownLine(stderr: string): string | null {
 	const lines = stderr
 		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line !== "");
-	const thrown = lines.find((line) => /^(error|[A-Z]\w*Error|[A-Z]\w*Exception)(\[\w+\])?: \S/.test(line));
+		.map(line => line.trim())
+		.filter(line => line !== "");
+	const thrown = lines.find(line => /^(error|[A-Z]\w*Error|[A-Z]\w*Exception)(\[\w+\])?: \S/.test(line));
 	if (thrown !== undefined) return oneLine(thrown.replace(/^error: /, ""));
-	const own = lines.find((line) => /^windlass: /.test(line));
+	const own = lines.find(line => /^windlass: /.test(line));
 	return own === undefined ? null : oneLine(own.replace(/^windlass: /, ""));
 }
 
 /** The address must be the loopback page the browser ended on, on one line, with a `state`. */
 export function checkPasted(text: string): string {
 	const trimmed = typeof text === "string" ? text.trim() : "";
-	const wrong = new SandboxUserError("That is not the address the browser ended on. It starts with http://127.0.0.1:1455/auth/callback?code=");
+	const wrong = new SandboxUserError(
+		"That is not the address the browser ended on. It starts with http://127.0.0.1:1455/auth/callback?code=",
+	);
 	if (trimmed === "" || /[\r\n]/.test(trimmed) || trimmed.length > 8192) throw wrong;
 	let url: URL;
 	try {
@@ -294,6 +357,12 @@ export function checkPasted(text: string): string {
 	} catch {
 		throw wrong;
 	}
-	if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.pathname !== "/auth/callback" || !url.searchParams.has("state")) throw wrong;
+	if (
+		url.protocol !== "http:" ||
+		!["127.0.0.1", "localhost"].includes(url.hostname) ||
+		url.pathname !== "/auth/callback" ||
+		!url.searchParams.has("state")
+	)
+		throw wrong;
 	return trimmed;
 }

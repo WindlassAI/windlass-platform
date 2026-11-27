@@ -31,7 +31,8 @@ export function readBillingConfig(env: NodeJS.ProcessEnv = process.env): Billing
 	const name = (env.WLP_BILLING_PROVIDER ?? "").trim().toLowerCase();
 	if (name === "" || name === "off") return null;
 	const graceDays = Number(env.WLP_BILLING_GRACE_DAYS ?? 7);
-	if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 60) throw new Error("WLP_BILLING_GRACE_DAYS must be a whole number of days from 0 to 60.");
+	if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 60)
+		throw new Error("WLP_BILLING_GRACE_DAYS must be a whole number of days from 0 to 60.");
 	const graceMs = graceDays * 86_400_000;
 	if (name !== "dodo") throw new Error(`WLP_BILLING_PROVIDER must be "dodo" or unset; got "${name.slice(0, 32)}".`);
 	const need = (key: string) => {
@@ -40,15 +41,24 @@ export function readBillingConfig(env: NodeJS.ProcessEnv = process.env): Billing
 		return value;
 	};
 	const environment = (env.WLP_DODO_ENVIRONMENT ?? "test_mode").trim();
-	if (environment !== "test_mode" && environment !== "live_mode") throw new Error('WLP_DODO_ENVIRONMENT must be "test_mode" or "live_mode".');
+	if (environment !== "test_mode" && environment !== "live_mode")
+		throw new Error('WLP_DODO_ENVIRONMENT must be "test_mode" or "live_mode".');
 	const meterEvent = (env.WLP_DODO_METER_EVENT ?? "hosted_minutes").trim();
-	if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(meterEvent)) throw new Error("WLP_DODO_METER_EVENT must be a meter's event name: letters, digits and _ . : -.");
-	const exemptUsers = new Set((env.WLP_BILLING_EXEMPT_USERS ?? "").split(",").map(uid => uid.trim()).filter(Boolean));
+	if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(meterEvent))
+		throw new Error("WLP_DODO_METER_EVENT must be a meter's event name: letters, digits and _ . : -.");
+	const exemptUsers = new Set(
+		(env.WLP_BILLING_EXEMPT_USERS ?? "")
+			.split(",")
+			.map(uid => uid.trim())
+			.filter(Boolean),
+	);
 	for (const uid of exemptUsers) {
-		if (!BILLING_UID.test(uid)) throw new Error("WLP_BILLING_EXEMPT_USERS must contain comma-separated account uids (u_...).");
+		if (!BILLING_UID.test(uid))
+			throw new Error("WLP_BILLING_EXEMPT_USERS must contain comma-separated account uids (u_...).");
 	}
 	return {
-		graceMs, exemptUsers,
+		graceMs,
+		exemptUsers,
 		provider: new DodoProvider({
 			apiKey: need("WLP_DODO_API_KEY"),
 			webhookSecret: need("WLP_DODO_WEBHOOK_SECRET"),

@@ -20,7 +20,15 @@
  */
 import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
 import { monthSentence, monthState } from "../lib/hosted";
-import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
+import {
+	USAGE_LOW_SHARE,
+	type ItemView,
+	type MachineSummary,
+	type SandboxPlace,
+	type SessionSnapshot,
+	type SessionSummary,
+	type UsageNumbers,
+} from "@contract";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { MissingPageLinks } from "../components/MissingPageLinks";
 import { HarnessStatus } from "../components/HarnessStatus";
@@ -43,8 +51,15 @@ import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useHostedProviders, useModels, useNow, type useSession } from "../state/hooks";
-import { requestPublish, setPanelHidden, setPublishFeedback, usePanelHidden, usePublishFeedback } from "../state/sessionChrome";
-import { clockTime, useMachines } from "./Machines";
+import {
+	requestPublish,
+	setPanelHidden,
+	setPublishFeedback,
+	usePanelHidden,
+	usePublishFeedback,
+} from "../state/sessionChrome";
+import { clockTime } from "../lib/format";
+import { useMachines } from "../state/machines";
 import { machineLabel } from "../lib/machines";
 
 /** How long a turn waits for a machine that stopped answering before it ends: the grace of the runner's channel on the server. */
@@ -58,12 +73,23 @@ export function useSessionMachine(place: SandboxPlace | undefined): MachineSumma
 	const machineId = place?.kind === "machine" ? place.machineId : null;
 	const { list } = useMachines(machineId !== null);
 	if (machineId === null || list === null) return undefined;
-	return list.find((machine) => machine.machineId === machineId) ?? null;
+	return list.find(machine => machine.machineId === machineId) ?? null;
 }
 
 function PanelIcon({ size = 16 }: { size?: number }) {
 	return (
-		<svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth={1.6}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+			focusable="false"
+		>
 			<rect x="2" y="2.75" width="12" height="10.5" rx="2" />
 			<path d="M10 3v10" />
 		</svg>
@@ -77,7 +103,11 @@ function CrumbState({ status, since }: { status: SessionSummary["status"]; since
 	if (!live) return <StatusBadge status={status} />;
 	const waiting = status === "waiting";
 	return (
-		<span className={`crumb-pill crumb-pill-${status}`} role="status" title={waiting ? "A question waits for your answer" : undefined}>
+		<span
+			className={`crumb-pill crumb-pill-${status}`}
+			role="status"
+			title={waiting ? "A question waits for your answer" : undefined}
+		>
 			<StatusGlyph status={status} size={13} />
 			<span>{STATUS_WORD[status]}</span>
 			{since !== null ? <span className="crumb-pill-time">{clockDuration(now - since)}</span> : null}
@@ -91,7 +121,13 @@ function BarPublish({ summary }: { summary: SessionSummary }) {
 	if (!summary.repository || summary.item) return null;
 	if (pull && pull.state !== "closed") {
 		return (
-			<a className="bar-button bar-pull" href={pull.url} target="_blank" rel="noreferrer" title={`${pull.title} · ${pull.state}`}>
+			<a
+				className="bar-button bar-pull"
+				href={pull.url}
+				target="_blank"
+				rel="noreferrer"
+				title={`${pull.title} · ${pull.state}`}
+			>
 				<PullRequestIcon size={14} />
 				<span>#{pull.number}</span>
 				<span className="bar-pull-state">{pull.state}</span>
@@ -114,7 +150,14 @@ function BarPublishButton({ summary }: { summary: SessionSummary }) {
 	const close = () => setPublishFeedback(summary.id, null);
 	const refused = feedback?.kind === "refused";
 	const control = (
-		<button ref={button} type="button" className="bar-button" onClick={() => (busy || reading ? undefined : requestPublish(summary.id))} aria-disabled={busy || reading || undefined} aria-busy={reading || undefined}>
+		<button
+			ref={button}
+			type="button"
+			className="bar-button"
+			onClick={() => (busy || reading ? undefined : requestPublish(summary.id))}
+			aria-disabled={busy || reading || undefined}
+			aria-busy={reading || undefined}
+		>
 			{reading ? <RefreshIcon size={14} className="spin" /> : <PullRequestIcon size={14} />}
 			<span className="bar-button-label">{reading ? "Reading changes…" : "Publish pull request"}</span>
 		</button>
@@ -122,8 +165,32 @@ function BarPublishButton({ summary }: { summary: SessionSummary }) {
 	return (
 		<>
 			{/* No tooltip over the popover that says why. */}
-			{refused ? control : <Tooltip content={busy ? "Available when this turn ends" : reading ? "Reading what the workspace has to publish" : "Commit, push and open a pull request"}>{control}</Tooltip>}
-			<Popover open={refused} onClose={close} anchor={button} align="end" maxWidth={320} role="dialog" label="Why the pull request cannot be published now" initialFocus="none" className="bar-publish-why">
+			{refused ? (
+				control
+			) : (
+				<Tooltip
+					content={
+						busy
+							? "Available when this turn ends"
+							: reading
+								? "Reading what the workspace has to publish"
+								: "Commit, push and open a pull request"
+					}
+				>
+					{control}
+				</Tooltip>
+			)}
+			<Popover
+				open={refused}
+				onClose={close}
+				anchor={button}
+				align="end"
+				maxWidth={320}
+				role="dialog"
+				label="Why the pull request cannot be published now"
+				initialFocus="none"
+				className="bar-publish-why"
+			>
 				<p className="bar-publish-why-text">{feedback?.kind === "refused" ? feedback.reason : null}</p>
 				<button
 					type="button"
@@ -143,7 +210,7 @@ function BarPublishButton({ summary }: { summary: SessionSummary }) {
 /** The model and the mode, after what runs the session. */
 function CrumbModel({ summary }: { summary: SessionSummary }) {
 	const { platform } = useApp();
-	const profile = platform.info?.profiles.find((one) => one.id === summary.profile);
+	const profile = platform.info?.profiles.find(one => one.id === summary.profile);
 	return (
 		<>
 			<span>{sessionModelWords(summary)}</span>
@@ -157,7 +224,13 @@ function PanelToggle() {
 	const hidden = usePanelHidden();
 	return (
 		<Tooltip content={hidden ? "Show the session's details" : "Hide the session's details"}>
-			<button type="button" className={`bar-icon panel-toggle${hidden ? "" : " bar-icon-on"}`} onClick={() => setPanelHidden(!hidden)} aria-pressed={!hidden} aria-label="Agent details">
+			<button
+				type="button"
+				className={`bar-icon panel-toggle${hidden ? "" : " bar-icon-on"}`}
+				onClick={() => setPanelHidden(!hidden)}
+				aria-pressed={!hidden}
+				aria-label="Agent details"
+			>
 				<PanelIcon />
 			</button>
 		</Tooltip>
@@ -170,11 +243,30 @@ function PanelToggle() {
  * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
  */
 /** `itemView`: a work item's agent's item, once read: the crumb names it, and its feature first for a subtask. */
-export function SessionCrumb({ title, status, place, machine, item, harness, summary = null, itemView = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: SessionSummary["item"]; harness?: SessionSummary["harness"]; summary?: SessionSummary | null; itemView?: ItemView | null }) {
+export function SessionCrumb({
+	title,
+	status,
+	place,
+	machine,
+	item,
+	harness,
+	summary = null,
+	itemView = null,
+}: {
+	title: string | null;
+	status: Parameters<typeof StatusBadge>[0]["status"] | null;
+	place?: SandboxPlace;
+	machine?: MachineSummary | null;
+	item?: SessionSummary["item"];
+	harness?: SessionSummary["harness"];
+	summary?: SessionSummary | null;
+	itemView?: ItemView | null;
+}) {
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
 	const repository = summary?.repository ?? null;
-	const live = summary !== null && (summary.status === "running" || summary.status === "starting" || summary.status === "waiting");
+	const live =
+		summary !== null && (summary.status === "running" || summary.status === "starting" || summary.status === "waiting");
 	return (
 		<>
 			<PageTrail trail={sessionTrail({ title, repository, item }, itemView)} heading>
@@ -185,7 +277,9 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 					{place?.kind === "machine" ? (
 						<span className="chip crumb-place">
 							{harnessName ? <AgentGlyph harness={harness ?? "windlass"} size={11} inline /> : null}
-							{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}
+							{harnessName
+								? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}`
+								: `On ${machineName ?? "your machine"}`}
 						</span>
 					) : summary ? (
 						<span>
@@ -207,18 +301,40 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
  * says what the session last found, the live list whether the machine is offline now or gone; a machine
  * the list says came back after what the snapshot found is not reported.
  */
-function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false, paused = false): { text: string; removed: boolean } | null {
-	if (reach?.state === "removed" || machine === null) return { removed: true, text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}` };
+function machineNote(
+	reach: SessionSnapshot["machine"],
+	machine: MachineSummary | null | undefined,
+	sandbox: SessionSummary["sandbox"],
+	now: number,
+	item = false,
+	paused = false,
+): { text: string; removed: boolean } | null {
+	if (reach?.state === "removed" || machine === null)
+		return {
+			removed: true,
+			text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}`,
+		};
 	const named = machine ? `Your machine "${machineLabel(machine)}"` : "Your machine";
 	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
 	if (reach?.state === "not_answering" && !back) {
-		return { removed: false, text: `${named} is not answering since ${clockTime(reach.since, now)}. The turn goes on when it is back, or stops at ${clockTime(reach.since + MACHINE_GRACE_MS, now)}.` };
+		return {
+			removed: false,
+			text: `${named} is not answering since ${clockTime(reach.since, now)}. The turn goes on when it is back, or stops at ${clockTime(reach.since + MACHINE_GRACE_MS, now)}.`,
+		};
 	}
-	const offline = machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
+	const offline =
+		machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
 	if (offline === null) return null;
 	// A turn paused for the machine resumes by itself: nothing is to be sent again.
-	if (paused) return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}. This turn resumes by itself when it is back${item ? "" : "; what you send meanwhile is held for it"}.` };
-	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."}${item ? "" : " Send a prompt once it is back."}` };
+	if (paused)
+		return {
+			removed: false,
+			text: `${named} is offline since ${clockTime(offline, now)}. This turn resumes by itself when it is back${item ? "" : "; what you send meanwhile is held for it"}.`,
+		};
+	return {
+		removed: false,
+		text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."}${item ? "" : " Send a prompt once it is back."}`,
+	};
 }
 
 /** What the composer says about the user's limits before a prompt runs into one; null while there is nothing to say. */
@@ -229,7 +345,10 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	// The month's hosted minutes count only where the agent runs hosted.
 	if (summary.place.kind === "hosted" && monthState(numbers) !== "plenty") {
 		const month = monthSentence(numbers, null);
-		if (month !== null) return monthState(numbers) === "used" && summary.status !== "idle" ? `${month} This turn is stopped when the time it holds is over, with its files kept.` : month;
+		if (month !== null)
+			return monthState(numbers) === "used" && summary.status !== "idle"
+				? `${month} This turn is stopped when the time it holds is over, with its files kept.`
+				: month;
 	}
 	if (summary.place.kind !== "hosted" && numbers.hosted) return null;
 	if (left === "used") {
@@ -237,17 +356,30 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 			? `Today's sandbox time is used up, so a turn cannot start before ${resets}.`
 			: "Today's sandbox time is nearly used up: this turn is stopped when the time it holds is over, with its files kept.";
 	}
-	if (left === "low" && numbers.leftSeconds !== null) return `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped; the allowance is whole again at ${resets}.`;
+	if (left === "low" && numbers.leftSeconds !== null)
+		return `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped; the allowance is whole again at ${resets}.`;
 	const { kept, limit } = numbers.sandboxes;
-	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} hosted sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
+	if (summary.sandbox === "none" && limit !== null && kept >= limit)
+		return `You keep ${limit} hosted sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
 	return null;
 }
 
 /** `machine`: the machine the session runs on, as `useSessionMachine` says. */
-export function Session({ sessionId, state, machine, item = null }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null; item?: ItemView | null }) {
+export function Session({
+	sessionId,
+	state,
+	machine,
+	item = null,
+}: {
+	sessionId: string;
+	state: ReturnType<typeof useSession>;
+	machine?: MachineSummary | null;
+	item?: ItemView | null;
+}) {
 	const { client, explain, platform } = useApp();
 	const models = useModels();
-	const hostedAgent = state.summary?.place.kind === "hosted" && state.summary.harness !== "windlass" ? state.summary.harness : undefined;
+	const hostedAgent =
+		state.summary?.place.kind === "hosted" && state.summary.harness !== "windlass" ? state.summary.harness : undefined;
 	const keys = useHostedProviders(!!hostedAgent);
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
@@ -256,7 +388,10 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
 	const [planMode, setPlanMode] = useState(false);
 	const [refusals, setRefusals] = useState(0);
-	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`, state.phase !== "missing");
+	const allowance = useAllowance(
+		`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`,
+		state.phase !== "missing",
+	);
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(
@@ -307,7 +442,17 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	const secretRequest = state.secretRequest && state.secretRequest.id !== answeredSecret ? state.secretRequest : null;
 	const secretRequestId = secretRequest?.id ?? null;
 	const itemId = state.summary?.item?.id ?? null;
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId, secretRequestId, itemId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId]);
+	const interactive = useMemo<Interactive>(
+		() => ({
+			flow,
+			stopCall: online && cancelCall ? stopCall : null,
+			allowHost: online ? allowHost : null,
+			repositoryId,
+			secretRequestId,
+			itemId,
+		}),
+		[flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId],
+	);
 	// The last save's error, for the card of the same name should the session's snapshot bring the request back under a new id.
 	const [secretFailure, setSecretFailure] = useState<{ name: string; message: string } | null>(null);
 	const addSecret = useCallback(
@@ -390,7 +535,17 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	}
 
 	const { summary, profile, view } = state;
-	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined, summary.status === "paused" && summary.paused?.reason === "machine") : null;
+	const reach =
+		summary.place.kind === "machine"
+			? machineNote(
+					state.machine,
+					machine,
+					summary.sandbox,
+					Date.now(),
+					summary.item !== undefined,
+					summary.status === "paused" && summary.paused?.reason === "machine",
+				)
+			: null;
 
 	return (
 		<main className={`session${panelHidden ? " session-panel-hidden" : ""}`}>
@@ -412,32 +567,45 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 				{item?.question && summary.item?.role !== "reviewer" ? (
 					<p className="banner banner-needs" role="status">
 						<span className="banner-needs-dot" aria-hidden="true" />
-						{item.parent ? "This subtask waits for your answer." : "This work item waits for your answer."} The agent is idle until you reply.
+						{item.parent ? "This subtask waits for your answer." : "This work item waits for your answer."} The agent is
+						idle until you reply.
 						<a className="link" {...linkProps({ name: "item", id: item.id })}>
 							Answer on its page
 						</a>
 					</p>
 				) : null}
 				<InteractiveProvider value={interactive}>
-					<Conversation view={view} summary={summary} profile={profile} onSuggest={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))} />
+					<Conversation
+						view={view}
+						summary={summary}
+						profile={profile}
+						onSuggest={text => setSuggestion(current => ({ key: (current?.key ?? 0) + 1, text }))}
+					/>
 				</InteractiveProvider>
 				{reach ? (
 					// In the composer's column, at its width and inner padding: it is about what the composer can do now.
 					<div className="session-banner">
-					<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
-						<WarnIcon size={14} />
-						{reach.text}
-						{/* A turn paused while the machine is away: it is not over, and resumes by itself when the machine is back. */}
-						{summary.status === "paused" && summary.paused?.reason === "machine" && !reach.removed ? (
-							<span className="chip banner-chip" title="The turn resumes by itself when the machine is back. Stop ends it.">
-								<PauseIcon size={11} />
-								turn paused
-							</span>
-						) : null}
-					</p>
+						<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
+							<WarnIcon size={14} />
+							{reach.text}
+							{/* A turn paused while the machine is away: it is not over, and resumes by itself when the machine is back. */}
+							{summary.status === "paused" && summary.paused?.reason === "machine" && !reach.removed ? (
+								<span
+									className="chip banner-chip"
+									title="The turn resumes by itself when the machine is back. Stop ends it."
+								>
+									<PauseIcon size={11} />
+									turn paused
+								</span>
+							) : null}
+						</p>
 					</div>
 				) : null}
-				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
+				{machine?.harnesses
+					?.filter(h => h.id === summary.harness)
+					.map(h => (
+						<HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />
+					))}
 				<QuestionDock flow={flow} />
 				{secretRequest ? (
 					<div className="q-dock-wrap">
@@ -450,7 +618,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 								shared={summary.harness !== undefined && summary.harness !== null && summary.harness !== "windlass"}
 								offline={!online}
 								failure={secretFailure?.name === secretRequest.name ? secretFailure.message : null}
-								onAdd={(value) => addSecret(secretRequest, value)}
+								onAdd={value => addSecret(secretRequest, value)}
 								onWithout={() => continueWithout(secretRequest)}
 							/>
 						</div>
@@ -473,7 +641,17 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 						online={online}
 						models={summary.capabilities.models === "harness" ? harnessModelsOf(summary) : models.list}
 						model={summary.model}
-						modelProblem={hostedAgent ? model => hostedAgentProblem(hostedAgent, keys, true, model === "default" ? summary.harnessModels?.defaultModel : model) : undefined}
+						modelProblem={
+							hostedAgent
+								? model =>
+										hostedAgentProblem(
+											hostedAgent,
+											keys,
+											true,
+											model === "default" ? summary.harnessModels?.defaultModel : model,
+										)
+								: undefined
+						}
 						harness={summary.capabilities.models === "harness" ? HARNESS_NAMES[summary.harness ?? "windlass"] : null}
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}
@@ -483,11 +661,15 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}
 						closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
-						onSend={async (input) => {
+						onSend={async input => {
 							try {
-								await api.prompt(summary.capabilities.planMode && planMode && summary.status === "idle" ? { ...input, planMode: true } : input);
+								await api.prompt(
+									summary.capabilities.planMode && planMode && summary.status === "idle"
+										? { ...input, planMode: true }
+										: input,
+								);
 							} catch (failure) {
-								setRefusals((value) => value + 1);
+								setRefusals(value => value + 1);
 								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`, `steer_unavailable`).
 								explain(failure);
 								throw failure;
@@ -500,7 +682,18 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 					Agent details, usage and changes
 				</a>
 			</div>
-			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} domains={machine?.egressDomains} machineName={machine ? machineLabel(machine) : null} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel
+				egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)}
+				hosted={summary.place.kind === "hosted"}
+				domains={machine?.egressDomains}
+				machineName={machine ? machineLabel(machine) : null}
+				sessionId={sessionId}
+				summary={summary}
+				profile={profile}
+				view={view}
+				turnsEnded={state.turnsEnded}
+				question={flow.question}
+			/>
 		</main>
 	);
 }

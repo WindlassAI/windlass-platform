@@ -10,7 +10,7 @@ import { ITEM_MODE_WORDS } from "../lib/feature";
 import { absoluteTime, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { itemStatus } from "../lib/workspace";
-import { STATE_WORD } from "../screens/Items";
+import { STATE_WORD } from "../lib/items";
 import { CheckIcon, MergedIcon, PullRequestIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";
 
@@ -26,21 +26,46 @@ export function AgentMark({ harness }: { harness: HarnessId }) {
 /** Where an item stands, as a tag: amber where it asks its person, the good hue once done, the bad one when it failed. */
 export function ItemStateTag({ item }: { item: Pick<ItemSummary, "state" | "question" | "pullRequest"> }) {
 	const status = itemStatus(item);
-	const tone = status === "needs" ? "needs" : status === "running" ? "live" : status === "done" ? "good" : status === "failed" ? "bad" : item.state === "draft" || item.state === "cancelled" ? "quiet" : "plain";
+	const tone =
+		status === "needs"
+			? "needs"
+			: status === "running"
+				? "live"
+				: status === "done"
+					? "good"
+					: status === "failed"
+						? "bad"
+						: item.state === "draft" || item.state === "cancelled"
+							? "quiet"
+							: "plain";
 	const word = item.question !== null ? "Needs you" : STATE_WORD[item.state];
 	return (
 		<span className={`ws-tag ws-tag-${tone}`}>
 			{item.state === "review" && item.question === null ? <PullRequestIcon size={11} /> : null}
-			{item.state === "done" && item.pullRequest ? <MergedIcon size={11} /> : item.state === "done" ? <CheckIcon size={11} /> : null}
+			{item.state === "done" && item.pullRequest ? (
+				<MergedIcon size={11} />
+			) : item.state === "done" ? (
+				<CheckIcon size={11} />
+			) : null}
 			{word}
 		</span>
 	);
 }
 
-export function ItemTable({ items, now, label, repository = false }: { items: readonly ItemSummary[]; now: number; label: string; repository?: boolean }) {
+export function ItemTable({
+	items,
+	now,
+	label,
+	repository = false,
+}: {
+	items: readonly ItemSummary[];
+	now: number;
+	label: string;
+	repository?: boolean;
+}) {
 	return (
 		<ul className="ws-items" aria-label={label}>
-			{items.map((item) => (
+			{items.map(item => (
 				<li key={item.id} className="ws-item" data-state={item.state}>
 					<span className="ws-item-state">
 						<ItemStateTag item={item} />
@@ -53,16 +78,26 @@ export function ItemTable({ items, now, label, repository = false }: { items: re
 					</span>
 					<span className="ws-item-agent">
 						<AgentMark harness={item.agent?.harness ?? "windlass"} />
-						<span className="ws-item-how">{item.pullRequest ? `PR #${item.pullRequest.number}` : ITEM_MODE_WORDS[item.mode ?? "single"].name}</span>
+						<span className="ws-item-how">
+							{item.pullRequest ? `PR #${item.pullRequest.number}` : ITEM_MODE_WORDS[item.mode ?? "single"].name}
+						</span>
 					</span>
 					<span className="ws-item-act">
 						{item.question !== null ? (
-							<a className="button button-small ws-needs-button" {...linkProps({ name: "item", id: item.id })} aria-label={`Answer: ${item.title}`}>
+							<a
+								className="button button-small ws-needs-button"
+								{...linkProps({ name: "item", id: item.id })}
+								aria-label={`Answer: ${item.title}`}
+							>
 								Answer
 							</a>
 						) : null}
 					</span>
-					<time className="ws-item-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
+					<time
+						className="ws-item-time"
+						dateTime={new Date(item.updatedAt).toISOString()}
+						title={absoluteTime(item.updatedAt)}
+					>
 						{relativeTime(item.updatedAt, now)}
 					</time>
 				</li>
@@ -75,7 +110,17 @@ export function ItemTable({ items, now, label, repository = false }: { items: re
 export function itemsByUrgency(items: readonly ItemSummary[]): ItemSummary[] {
 	const rank = (item: ItemSummary) => {
 		const status = itemStatus(item);
-		return status === "needs" ? 0 : status === "running" ? 1 : item.state === "queued" || item.state === "waiting" ? 2 : item.state === "review" ? 3 : item.state === "draft" ? 4 : 5;
+		return status === "needs"
+			? 0
+			: status === "running"
+				? 1
+				: item.state === "queued" || item.state === "waiting"
+					? 2
+					: item.state === "review"
+						? 3
+						: item.state === "draft"
+							? 4
+							: 5;
 	};
 	return [...items].sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
 }

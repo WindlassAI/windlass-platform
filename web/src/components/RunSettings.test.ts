@@ -13,9 +13,16 @@ import { RepositoryOverrides } from "./RunSettings";
 
 it("shows a repository's inherited place and agent with their source, overrides one, and goes back to the default", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:user:u_over:ada@example.com", profile: { uid: "u_over", email: "ada@example.com", demo: false } };
+	const auth = {
+		token: "mock:user:u_over:ada@example.com",
+		profile: { uid: "u_over", email: "ada@example.com", demo: false },
+	};
 	const user = client.user(auth);
-	await user.saveAccountDefaults({ place: { machine: "m_nas" }, machineProfile: "docker-windlass-sandbox", placeFallback: "wait" });
+	await user.saveAccountDefaults({
+		place: { machine: "m_nas" },
+		machineProfile: "docker-windlass-sandbox",
+		placeFallback: "wait",
+	});
 	const start = (await user.repository(7103)).defaults;
 	saveAuth("mock", auth);
 	function Page() {
@@ -23,13 +30,26 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		const signedIn = useAuth();
 		const account = useAccount();
 		const [defaults, setDefaults] = useState<RepositoryDefaults>(start);
-		return createElement(RepositoryOverrides, { account, defaults, save: (change) => client.user(signedIn).saveRepositoryDefaults(7103, change), onSaved: setDefaults });
+		return createElement(RepositoryOverrides, {
+			account,
+			defaults,
+			save: change => client.user(signedIn).saveRepositoryDefaults(7103, change),
+			onSaved: setDefaults,
+		});
 	}
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);
-	const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
-	const row = (title: string) => [...host.querySelectorAll<HTMLElement>(".run-row")].find(r => r.querySelector(".run-row-title")?.textContent === title)!;
-	const press = async (scope: HTMLElement, label: string) => { await act(async () => [...scope.querySelectorAll("button")].find(b => b.textContent === label)!.click()); await settle(); };
+	const settle = async () => {
+		for (let i = 0; i < 10; i++) await act(async () => void (await new Promise(r => setTimeout(r, 2))));
+	};
+	const row = (title: string) =>
+		[...host.querySelectorAll<HTMLElement>(".run-row")].find(
+			r => r.querySelector(".run-row-title")?.textContent === title,
+		)!;
+	const press = async (scope: HTMLElement, label: string) => {
+		await act(async () => [...scope.querySelectorAll("button")].find(b => b.textContent === label)!.click());
+		await settle();
+	};
 	try {
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Page) })));
 		await settle();
@@ -38,7 +58,11 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		// Folded: nothing to edit until it is overridden.
 		expect(row("Place").querySelector("select")).toBeNull();
 		await press(row("Place"), "Override for this repository");
-		await act(async () => { const el = row("Place").querySelector("select")!; el.value = "hosted"; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await act(async () => {
+			const el = row("Place").querySelector("select")!;
+			el.value = "hosted";
+			el.dispatchEvent(new Event("change", { bubbles: true }));
+		});
 		await settle();
 		expect((await user.repository(7103)).defaults.place).toBe("hosted");
 		expect(row("Place").textContent).toContain("Hosted");
@@ -48,7 +72,11 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		expect(row("Place").textContent).toContain("your default");
 		const chooseAgent = async () => {
 			await press(row("Agent"), "Override for this repository");
-			await act(async () => { const el = row("Agent").querySelector("select")!; el.value = "claude"; el.dispatchEvent(new Event("change", { bubbles: true })); });
+			await act(async () => {
+				const el = row("Agent").querySelector("select")!;
+				el.value = "claude";
+				el.dispatchEvent(new Event("change", { bubbles: true }));
+			});
 			await settle();
 		};
 		await chooseAgent();
@@ -56,7 +84,11 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		await press(row("Agent"), "Use your default");
 		expect(row("Place").textContent).toContain("Strict");
 		await press(row("Place"), "Override for this repository");
-		await act(async () => { const el = row("Place").querySelectorAll("select")[1]!; el.value = "docker-hardened"; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await act(async () => {
+			const el = row("Place").querySelectorAll("select")[1]!;
+			el.value = "docker-hardened";
+			el.dispatchEvent(new Event("change", { bubbles: true }));
+		});
 		await settle();
 		await chooseAgent();
 		await press(row("Agent"), "Use your default");
@@ -66,13 +98,18 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		expect(row("Plans & reviews").textContent).toContain("your default");
 		await press(row("Plans & reviews"), "Override for this repository");
 		await press(row("Plans & reviews"), "Same as building");
-		await act(async () => document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-sol"]')!.click());
+		await act(async () =>
+			document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-sol"]')!.click(),
+		);
 		await settle();
 		expect((await user.repository(7103)).defaults).toMatchObject({ model: null, reviewModel: "gpt-6-sol" });
 		expect(row("Plans & reviews").textContent).toContain("set for this repository");
 		await press(row("Plans & reviews"), "Use your default");
 		expect(row("Plans & reviews").textContent).toContain("your default");
 	} finally {
-		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		localStorage.clear();
 	}
 });

@@ -38,13 +38,14 @@ export function cleanMaterial(files: unknown): SignInMaterial {
 	if (typeof files !== "object" || files === null) return clean;
 	for (const name of MATERIAL_FILES) {
 		const text = (files as Record<string, unknown>)[name];
-		if (typeof text === "string" && Buffer.byteLength(text, "utf8") <= MAX_MATERIAL_FILE_BYTES) clean.files[name] = text;
+		if (typeof text === "string" && Buffer.byteLength(text, "utf8") <= MAX_MATERIAL_FILE_BYTES)
+			clean.files[name] = text;
 	}
 	return clean;
 }
 
 export function sameMaterial(a: SignInMaterial, b: SignInMaterial): boolean {
-	return MATERIAL_FILES.every((name) => a.files[name] === b.files[name]);
+	return MATERIAL_FILES.every(name => a.files[name] === b.files[name]);
 }
 
 /** Whether the material holds a finished sign-in. */
@@ -55,7 +56,9 @@ export function hasSignIn(material: SignInMaterial): boolean {
 /** What a user keeps of a finished attempt: the sign-in and its host id. A pending sign-in is never kept. */
 export function signInOnly(material: SignInMaterial): SignInMaterial {
 	const { "auth.json": auth, "host-id": host } = material.files;
-	return { files: { ...(auth === undefined ? {} : { "auth.json": auth }), ...(host === undefined ? {} : { "host-id": host }) } };
+	return {
+		files: { ...(auth === undefined ? {} : { "auth.json": auth }), ...(host === undefined ? {} : { "host-id": host }) },
+	};
 }
 
 /**
@@ -76,12 +79,17 @@ export function accountOf(material: SignInMaterial): ChatgptAccount | null {
 	if (typeof sub !== "string" || sub === "") return null;
 	const email = parsed.account?.email;
 	const expiresAt = parsed.expiresAt;
-	return { sub, email: typeof email === "string" ? email : null, accessExpiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
+	return {
+		sub,
+		email: typeof email === "string" ? email : null,
+		accessExpiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null,
+	};
 }
 
 /** User ids and attempt ids name things at the providers and in a sealed blob's binding: letters, digits, `_` and `-`, starting with a letter or digit, at most 64. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 export function assertName(value: string, what: string): void {
-	if (typeof value !== "string" || !NAME.test(value)) throw new Error(`invalid ${what}: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit`);
+	if (typeof value !== "string" || !NAME.test(value))
+		throw new Error(`invalid ${what}: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit`);
 }

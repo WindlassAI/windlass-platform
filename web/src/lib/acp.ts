@@ -16,8 +16,25 @@
  *
  * Pure: nothing here touches the DOM, the clock or the network.
  */
-import type { AcpContext, AcpUpdate, HarnessId, MachineSummary, ModelList, SessionSummary } from "@contract";
-import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBlock, ToolState, TurnView } from "./timeline";
+import {
+	HARNESS_IDS,
+	type AcpContext,
+	type AcpUpdate,
+	type HarnessId,
+	type MachineSummary,
+	type ModelList,
+	type SessionSummary,
+} from "@contract";
+import type {
+	Block,
+	PlanEntry,
+	ReasoningBlock,
+	SessionView,
+	TextBlock,
+	ToolBlock,
+	ToolState,
+	TurnView,
+} from "./timeline";
 import { cleanModelName } from "./models";
 import { harnessName } from "../../../server/src/sandbox/harnesses.js";
 
@@ -25,7 +42,12 @@ import { harnessName } from "../../../server/src/sandbox/harnesses.js";
 export const ACP_MESSAGE = "acp";
 
 /** Each harness by the name the screens give it: the server's, from its record (`harnessName`). */
-export const HARNESS_NAMES: Record<HarnessId, string> = Object.fromEntries((["windlass", "claude", "opencode", "codex"] as const satisfies readonly HarnessId[]).map((id) => [id, harnessName(id)])) as Record<HarnessId, string>;
+export const HARNESS_NAMES: Record<HarnessId, string> = Object.fromEntries(
+	HARNESS_IDS.map(id => [id, harnessName(id)]),
+) as Record<HarnessId, string>;
+
+/** The order the screens list the harnesses in. */
+export const HARNESS_DISPLAY_ORDER: readonly HarnessId[] = ["windlass", "claude", "codex", "opencode"];
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {
@@ -34,7 +56,14 @@ export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string
 
 /** The models an ACP harness offered the session, or before its first turn its own default only (server/src/sandbox/harnesses.ts). */
 export function harnessModelsOf(summary: Pick<SessionSummary, "harnessModels">): ModelList {
-	return summary.harnessModels ?? { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };
+	return (
+		summary.harnessModels ?? {
+			source: "harness",
+			defaultModel: "default",
+			models: [{ id: "default", name: null, efforts: [] }],
+			fetchedAt: null,
+		}
+	);
 }
 
 /** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its unnamed default as "Claude Code's default"; Windlass's by its readable model name. */
@@ -53,11 +82,16 @@ export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 export function signInWords(harness: ReportedHarness): string {
 	// Signed in there, it uses its own sign-in first; a key only where that is all it has.
 	if (harness.platformKeys?.length && !harness.machineSignIns?.length) return "your API key";
-	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "couldn't check the sign-in";
+	return harness.signIn === "token"
+		? "signed in"
+		: harness.signIn === "none"
+			? "sign in needed"
+			: "couldn't check the sign-in";
 }
 
 /** The command that signs a harness in on its machine, run inside the runner's container. */
-export const loginCommand = (harness: ReportedHarness) => `docker exec -it windlass-runner windlass-runner login ${harness.id}`;
+export const loginCommand = (harness: ReportedHarness) =>
+	`docker exec -it windlass-runner windlass-runner login ${harness.id}`;
 
 type NewBlock<B extends Block = Block> = B extends Block ? Omit<B, "id"> : never;
 
@@ -79,7 +113,15 @@ export type ToolMaker = (messageId: string, callId: string, name: string, at: nu
  * Folds one update. `messageKey` is the run of text it belongs to (a delta's, or a stored text item's);
  * `live` is true for a delta, whose text is added to what is there rather than replacing it.
  */
-export function foldAcp(draft: AcpDraft, turn: number, given: AcpUpdate, at: number | null, messageKey: string | null, live: boolean, newTool: ToolMaker): void {
+export function foldAcp(
+	draft: AcpDraft,
+	turn: number,
+	given: AcpUpdate,
+	at: number | null,
+	messageKey: string | null,
+	live: boolean,
+	newTool: ToolMaker,
+): void {
 	const update = fieldsOf(given);
 	switch (update.sessionUpdate) {
 		case "agent_message_chunk":
@@ -88,7 +130,11 @@ export function foldAcp(draft: AcpDraft, turn: number, given: AcpUpdate, at: num
 			if (text === null) return;
 			const kind = update.sessionUpdate === "agent_message_chunk" ? "text" : "reasoning";
 			const messageId = messageKey ?? `acp-${draft.view.lastSeq}`;
-			const block = draft.find(turn, (candidate): candidate is TextBlock | ReasoningBlock => candidate.kind === kind && candidate.messageId === messageId);
+			const block = draft.find(
+				turn,
+				(candidate): candidate is TextBlock | ReasoningBlock =>
+					candidate.kind === kind && candidate.messageId === messageId,
+			);
 			if (live) {
 				// A chunk after the run's stored item has nothing left to add.
 				if (block && !block.streaming) return;
@@ -104,7 +150,11 @@ export function foldAcp(draft: AcpDraft, turn: number, given: AcpUpdate, at: num
 		case "tool_call_update": {
 			const callId = typeof update.toolCallId === "string" ? update.toolCallId : "";
 			if (callId === "") return;
-			const call = draft.find(turn, (candidate): candidate is ToolBlock => candidate.kind === "tool" && candidate.messageId === ACP_MESSAGE && candidate.callId === callId);
+			const call = draft.find(
+				turn,
+				(candidate): candidate is ToolBlock =>
+					candidate.kind === "tool" && candidate.messageId === ACP_MESSAGE && candidate.callId === callId,
+			);
 			const base = call ?? { ...newTool(ACP_MESSAGE, callId, toolName(update.kind), at), id: "" };
 			const patch = toolPatch(base, update, at);
 			if (call) draft.replace(turn, call, patch);
@@ -115,7 +165,10 @@ export function foldAcp(draft: AcpDraft, turn: number, given: AcpUpdate, at: num
 			// One without its entries says nothing of the plan.
 			if (!Array.isArray(update.entries)) return;
 			const entries = planEntries(update.entries);
-			const plan = draft.find(turn, (candidate): candidate is Extract<Block, { kind: "plan" }> => candidate.kind === "plan");
+			const plan = draft.find(
+				turn,
+				(candidate): candidate is Extract<Block, { kind: "plan" }> => candidate.kind === "plan",
+			);
 			// An empty plan clears it (ACP): no checklist of nothing. Claude Code sends one after /clear, and
 			// in a turn after the one that made its task list, whose tasks a new process does not know.
 			if (entries.length === 0) {
@@ -151,9 +204,17 @@ function fieldsOf(update: AcpUpdate): AcpFields {
 /** The context's fill from a `usage_update` (or a turn's ending), or null when it does not say. */
 export function contextOf(value: unknown): AcpContext | null {
 	if (!isRecord(value) || !finite(value.used) || !finite(value.size) || value.size <= 0) return null;
-	const cost = isRecord(value.cost) && finite(value.cost.amount) && typeof value.cost.currency === "string" ? { amount: value.cost.amount, currency: value.cost.currency } : null;
+	const cost =
+		isRecord(value.cost) && finite(value.cost.amount) && typeof value.cost.currency === "string"
+			? { amount: value.cost.amount, currency: value.cost.currency }
+			: null;
 	const pct = value.fiveHourUsedPct;
-	return { used: value.used, size: value.size, cost, ...(finite(pct) && pct >= 0 && pct <= 100 && { fiveHourUsedPct: pct }) };
+	return {
+		used: value.used,
+		size: value.size,
+		cost,
+		...(finite(pct) && pct >= 0 && pct <= 100 && { fiveHourUsedPct: pct }),
+	};
 }
 
 /** "41% used", of a context's fill. */
@@ -188,13 +249,21 @@ function toolName(kind: unknown): string {
 	return (typeof kind === "string" && TOOL_NAMES[kind]) || "tool";
 }
 
-const STATES: Record<string, ToolState> = { pending: "input", in_progress: "running", completed: "done", failed: "failed" };
+const STATES: Record<string, ToolState> = {
+	pending: "input",
+	in_progress: "running",
+	completed: "done",
+	failed: "failed",
+};
 
 /** What the harness's title says the call acts on: the title without the verb the tool's name already says, and without code quotes. */
 function targetOf(title: string, name: string): string {
 	const words = title.trim().replace(/^`([^`]*)`$/, "$1");
 	const verb = new RegExp(`^(?:${name}|run|find|write|grep)\\s+`, "i");
-	return words.replace(verb, "").replace(/^`([^`]*)`$/, "$1").replace(/\s*\n\s*/g, " ↵ ");
+	return words
+		.replace(verb, "")
+		.replace(/^`([^`]*)`$/, "$1")
+		.replace(/\s*\n\s*/g, " ↵ ");
 }
 
 /** What an update changes of its call. Fields it leaves out stay as they were; `content`, when given, replaces the call's. */
@@ -209,9 +278,19 @@ function toolPatch(call: ToolBlock, update: AcpFields, at: number | null): Parti
 	let display = call.display;
 	if (Array.isArray(update.content)) {
 		const parts = update.content.filter(isRecord);
-		const texts = parts.map((part) => (part.type === "content" ? chunkText(part.content) : null)).filter((part): part is string => part !== null);
+		const texts = parts
+			.map(part => (part.type === "content" ? chunkText(part.content) : null))
+			.filter((part): part is string => part !== null);
 		text = texts.length > 0 ? texts.join("\n") : null;
-		const diffs = parts.filter((part) => part.type === "diff" && typeof part.path === "string").map((part) => unifiedDiff(String(part.path), typeof part.oldText === "string" ? part.oldText : null, typeof part.newText === "string" ? part.newText : ""));
+		const diffs = parts
+			.filter(part => part.type === "diff" && typeof part.path === "string")
+			.map(part =>
+				unifiedDiff(
+					String(part.path),
+					typeof part.oldText === "string" ? part.oldText : null,
+					typeof part.newText === "string" ? part.newText : "",
+				),
+			);
 		display = diffs.length > 0 ? { diff: diffs.join("") } : null;
 	}
 	patch.display = display;
@@ -269,11 +348,13 @@ export function unifiedDiff(path: string, oldText: string | null, newText: strin
 		const stop = Math.min(ops.length, end + CONTEXT + 1);
 		const slice = ops.slice(start, stop);
 		// Within a change the removals were put first, so where the hunk starts is the least of its positions.
-		const oldStart = Math.min(...slice.map((op) => op.old));
-		const newStart = Math.min(...slice.map((op) => op.new));
-		const oldCount = slice.filter((op) => op.kind !== "+").length;
-		const newCount = slice.filter((op) => op.kind !== "-").length;
-		hunks.push(`@@ -${oldCount === 0 ? oldStart : oldStart + 1},${oldCount} +${newCount === 0 ? newStart : newStart + 1},${newCount} @@\n${slice.map((op) => `${op.kind}${op.text}`).join("\n")}\n`);
+		const oldStart = Math.min(...slice.map(op => op.old));
+		const newStart = Math.min(...slice.map(op => op.new));
+		const oldCount = slice.filter(op => op.kind !== "+").length;
+		const newCount = slice.filter(op => op.kind !== "-").length;
+		hunks.push(
+			`@@ -${oldCount === 0 ? oldStart : oldStart + 1},${oldCount} +${newCount === 0 ? newStart : newStart + 1},${newCount} @@\n${slice.map(op => `${op.kind}${op.text}`).join("\n")}\n`,
+		);
 		index = stop;
 	}
 	return head + hunks.join("");
@@ -299,7 +380,10 @@ function lineOps(before: string[], after: string[]): LineOp[] {
 	const common = new Uint16Array((before.length + 1) * width);
 	for (let i = before.length - 1; i >= 0; i--) {
 		for (let j = after.length - 1; j >= 0; j--) {
-			common[i * width + j] = before[i] === after[j] ? (common[(i + 1) * width + j + 1] ?? 0) + 1 : Math.max(common[(i + 1) * width + j] ?? 0, common[i * width + j + 1] ?? 0);
+			common[i * width + j] =
+				before[i] === after[j]
+					? (common[(i + 1) * width + j + 1] ?? 0) + 1
+					: Math.max(common[(i + 1) * width + j] ?? 0, common[i * width + j + 1] ?? 0);
 		}
 	}
 	let i = 0;
@@ -307,7 +391,10 @@ function lineOps(before: string[], after: string[]): LineOp[] {
 	while (i < before.length || j < after.length) {
 		if (i < before.length && j < after.length && before[i] === after[j]) {
 			ops.push({ kind: " ", text: before[i] ?? "", old: i++, new: j++ });
-		} else if (j < after.length && (i >= before.length || (common[i * width + j + 1] ?? 0) >= (common[(i + 1) * width + j] ?? 0))) {
+		} else if (
+			j < after.length &&
+			(i >= before.length || (common[i * width + j + 1] ?? 0) >= (common[(i + 1) * width + j] ?? 0))
+		) {
 			ops.push({ kind: "+", text: after[j] ?? "", old: i, new: j++ });
 		} else {
 			ops.push({ kind: "-", text: before[i] ?? "", old: i++, new: j });
@@ -317,7 +404,7 @@ function lineOps(before: string[], after: string[]): LineOp[] {
 	const sorted: LineOp[] = [];
 	let run: LineOp[] = [];
 	const flush = () => {
-		sorted.push(...run.filter((op) => op.kind === "-"), ...run.filter((op) => op.kind === "+"));
+		sorted.push(...run.filter(op => op.kind === "-"), ...run.filter(op => op.kind === "+"));
 		run = [];
 	};
 	for (const op of ops) {
@@ -336,7 +423,7 @@ function lineOps(before: string[], after: string[]): LineOp[] {
 
 function planEntries(value: unknown): PlanEntry[] {
 	if (!Array.isArray(value)) return [];
-	return value.filter(isRecord).map((entry) => ({
+	return value.filter(isRecord).map(entry => ({
 		content: typeof entry.content === "string" ? entry.content : "",
 		status: entry.status === "completed" || entry.status === "in_progress" ? entry.status : "pending",
 	}));

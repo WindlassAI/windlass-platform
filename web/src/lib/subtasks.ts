@@ -53,21 +53,26 @@ export function repairKind(key: string): RepairKind | null {
 export const REPAIR_WHY: Record<RepairKind, string> = {
 	review: "This part addresses changes requested in review before the feature is checked again.",
 	ci: "Added by the factory: the feature's CI failed after its parts were integrated. This part fixes the failing checks.",
-	conflict: "Added by the factory: the feature branch no longer merges cleanly with its base. This part merges the base in and resolves the conflicts.",
+	conflict:
+		"Added by the factory: the feature branch no longer merges cleanly with its base. This part merges the base in and resolves the conflicts.",
 };
 
 /** A part as its feature's page names it: "Part 2: Render the table as a PDF", "Repair: Fix failing feature checks". */
 export function partName(plan: Pick<FeaturePlan, "subtasks"> | null | undefined, key: string, title: string): string {
-	const index = plan ? plan.subtasks.findIndex((task) => task.key === key) : -1;
+	const index = plan ? plan.subtasks.findIndex(task => task.key === key) : -1;
 	if (index >= 0) return `Part ${index + 1}: ${title}`;
 	return repairKind(key) ? `Repair: ${title}` : title;
 }
 
 /** The plan's subtasks in order, each with its item where there is one. A child the plan no longer names (an earlier version's) is left out. */
-export function plannedSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[]): PlannedSubtask[] {
+export function plannedSubtasks(
+	plan: Pick<FeaturePlan, "subtasks">,
+	children: readonly ItemSummary[],
+): PlannedSubtask[] {
 	const byKey = new Map<string, ItemSummary>();
 	// The newest item of a key is the one that counts: a subtask re-planned gets a new one.
-	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt)) if (child.parent) byKey.set(child.parent.key, child);
+	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt))
+		if (child.parent) byKey.set(child.parent.key, child);
 	return plan.subtasks.map((task, index) => {
 		const child = byKey.get(task.key) ?? null;
 		return { n: index + 1, task, child, state: subtaskState(child) };
@@ -96,7 +101,10 @@ export function tallyParts(tally: SubtaskTally): Array<{ n: number; word: string
 	return parts;
 }
 
-export const tallyLine = (tally: SubtaskTally): string => tallyParts(tally).map((part) => `${part.n} ${part.word}`).join(" · ");
+export const tallyLine = (tally: SubtaskTally): string =>
+	tallyParts(tally)
+		.map(part => `${part.n} ${part.word}`)
+		.join(" · ");
 
 /** What a subtask is doing now: one step word, and a short fact or none. */
 export interface Doing {
@@ -113,18 +121,26 @@ export function afterWords(dependsOn: readonly string[], titles: ReadonlyMap<str
 }
 
 /** A command quoted in a subtask's first check, for the fact of a fixing step: "pnpm test test/golden". */
-const firstCommand = (task: PlanSubtask): string | undefined => task.acceptance.map((line) => /`([^`]+)`/.exec(line)?.[1]).find(Boolean);
+const firstCommand = (task: PlanSubtask): string | undefined =>
+	task.acceptance.map(line => /`([^`]+)`/.exec(line)?.[1]).find(Boolean);
 
 /**
  * What a subtask is doing now, from its summary's step (`ItemSummary.step`) where the server sends one:
  * "implementing · turn 2", "fixing · your checks failed, fix 1", "asks you · 3m ago".
  * A subtask not made yet says what it waits for: "After “Add the CSV writer”", or "not started".
  */
-export function doingNow(entry: PlannedSubtask, titles: ReadonlyMap<string, string>, done: ReadonlySet<string>, now: number): Doing {
+export function doingNow(
+	entry: PlannedSubtask,
+	titles: ReadonlyMap<string, string>,
+	done: ReadonlySet<string>,
+	now: number,
+): Doing {
 	const { child, task } = entry;
 	if (!child) {
-		const waiting = task.dependsOn.filter((key) => !done.has(key));
-		return waiting.length > 0 ? { word: "waits", fact: afterWords(waiting, titles) } : { word: "not started", fact: null };
+		const waiting = task.dependsOn.filter(key => !done.has(key));
+		return waiting.length > 0
+			? { word: "waits", fact: afterWords(waiting, titles) }
+			: { word: "not started", fact: null };
 	}
 	return itemDoing(child, now, task);
 }
@@ -144,7 +160,8 @@ export function itemDoing(child: ItemSummary, now: number, task?: PlanSubtask): 
 		case "review":
 			return { word: "handed over", fact: null };
 		case "waiting":
-			if (child.wait?.reason === "machine") return { word: "waits", fact: child.placement ? `for a slot on ${child.placement.name}` : "for its machine" };
+			if (child.wait?.reason === "machine")
+				return { word: "waits", fact: child.placement ? `for a slot on ${child.placement.name}` : "for its machine" };
 			if (child.wait?.reason === "ci") return { word: "CI", fact: null };
 			return { word: "waits", fact: (child.wait && WAIT_FACT[child.wait.reason]) ?? null };
 	}
@@ -155,7 +172,8 @@ export function itemDoing(child: ItemSummary, now: number, task?: PlanSubtask): 
 	switch (step.kind) {
 		case "implement":
 		case "refine":
-			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: task && firstCommand(task) };
+			if (rounds.gate > 0)
+				return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: task && firstCommand(task) };
 			return { word: "implementing", fact: turns };
 		case "run_checks":
 			return { word: "checking", fact: "running local checks" };
@@ -187,10 +205,12 @@ const WAIT_FACT: Partial<Record<NonNullable<ItemSummary["wait"]>["reason"], stri
 };
 
 /** The keys of the plan's subtasks whose items are done: what a waiting subtask's "after" is read against. */
-export const doneKeys = (subtasks: readonly PlannedSubtask[]): Set<string> => new Set(subtasks.filter((entry) => entry.state === "done").map((entry) => entry.task.key));
+export const doneKeys = (subtasks: readonly PlannedSubtask[]): Set<string> =>
+	new Set(subtasks.filter(entry => entry.state === "done").map(entry => entry.task.key));
 
 /** The active ones (running or asking), in plan order: what the Factory's row lists under a feature. */
-export const activeSubtasks = (subtasks: readonly PlannedSubtask[]): PlannedSubtask[] => subtasks.filter((entry) => entry.state === "running" || entry.state === "asks");
+export const activeSubtasks = (subtasks: readonly PlannedSubtask[]): PlannedSubtask[] =>
+	subtasks.filter(entry => entry.state === "running" || entry.state === "asks");
 
 /**
  * Whether a page that shows a feature's subtasks (or one subtask) is behind the live feed's open
@@ -198,16 +218,20 @@ export const activeSubtasks = (subtasks: readonly PlannedSubtask[]): PlannedSubt
  * longer open (it ended), or one was made that the page does not hold. `feedChildren` undefined (a
  * server before `ItemFeed.children`) says nothing.
  */
-export function childrenBehind(parentId: string, shown: readonly Pick<ItemSummary, "id" | "revision" | "state">[], feedChildren: readonly ItemSummary[] | undefined): boolean {
+export function childrenBehind(
+	parentId: string,
+	shown: readonly Pick<ItemSummary, "id" | "revision" | "state">[],
+	feedChildren: readonly ItemSummary[] | undefined,
+): boolean {
 	if (!feedChildren) return false;
-	const mine = feedChildren.filter((child) => child.parent?.itemId === parentId);
-	const held = new Map(shown.map((child) => [child.id, child]));
+	const mine = feedChildren.filter(child => child.parent?.itemId === parentId);
+	const held = new Map(shown.map(child => [child.id, child]));
 	for (const child of mine) {
 		const at = held.get(child.id);
 		if (!at || child.revision > at.revision) return true;
 	}
-	const open = new Set(mine.map((child) => child.id));
-	return shown.some((child) => !ENDED.has(child.state) && !open.has(child.id));
+	const open = new Set(mine.map(child => child.id));
+	return shown.some(child => !ENDED.has(child.state) && !open.has(child.id));
 }
 
 // ---- what runs now, what is next, what is done --------------------------------------------------
@@ -228,7 +252,22 @@ export type DispatchedSubtask = NonNullable<ItemView["subtasks"]>[number];
  * run), "asks", "running", "fixing", "checks", "ci", "integrating", "conflict". Done: "integrated",
  * "failed", "cancelled".
  */
-export type SubtaskPhase = "after" | "files" | "slot" | "starting" | "place" | "asks" | "running" | "fixing" | "checks" | "ci" | "integrating" | "conflict" | "integrated" | "failed" | "cancelled";
+export type SubtaskPhase =
+	| "after"
+	| "files"
+	| "slot"
+	| "starting"
+	| "place"
+	| "asks"
+	| "running"
+	| "fixing"
+	| "checks"
+	| "ci"
+	| "integrating"
+	| "conflict"
+	| "integrated"
+	| "failed"
+	| "cancelled";
 
 export interface SubtaskLine {
 	entry: PlannedSubtask;
@@ -259,16 +298,27 @@ export interface SubtaskGroups {
 	slots: number;
 }
 
-const WAITS_FOR_PLACE = new Set<NonNullable<ItemSummary["wait"]>["reason"]>(["machine", "capacity", "provider", "sandboxes"]);
+const WAITS_FOR_PLACE = new Set<NonNullable<ItemSummary["wait"]>["reason"]>([
+	"machine",
+	"capacity",
+	"provider",
+	"sandboxes",
+]);
 
 /** A running subtask's word and fact, from its item's state and step, or its job before its item is read. */
-function runningPhase(child: ItemSummary | null, job: DispatchedSubtask | null, task: PlanSubtask): Pick<SubtaskLine, "phase" | "word" | "fact"> {
+function runningPhase(
+	child: ItemSummary | null,
+	job: DispatchedSubtask | null,
+	task: PlanSubtask,
+): Pick<SubtaskLine, "phase" | "word" | "fact"> {
 	const place = (fact: string | null) => ({ phase: "place" as const, word: "waiting for a place", fact });
 	if (!child) return job?.wait ? place(job.wait) : { phase: "running", word: "starting", fact: null };
 	if (child.question) return { phase: "asks", word: "asks you", fact: null };
 	if (child.state === "waiting" && child.wait?.reason === "ci") return { phase: "ci", word: "CI", fact: null };
-	if (child.state === "waiting" && child.wait && WAITS_FOR_PLACE.has(child.wait.reason)) return place(job?.wait ?? child.wait.sentence);
-	if (job?.wait && (child.state === "draft" || child.state === "queued" || child.state === "waiting")) return place(job.wait);
+	if (child.state === "waiting" && child.wait && WAITS_FOR_PLACE.has(child.wait.reason))
+		return place(job?.wait ?? child.wait.sentence);
+	if (job?.wait && (child.state === "draft" || child.state === "queued" || child.state === "waiting"))
+		return place(job.wait);
 	if (child.state === "draft" || child.state === "queued") return { phase: "running", word: "starting", fact: null };
 	const step = child.step;
 	const turn = `turn ${Math.max(1, child.spent.turns)}`;
@@ -277,7 +327,9 @@ function runningPhase(child: ItemSummary | null, job: DispatchedSubtask | null, 
 	switch (step.kind) {
 		case "implement":
 		case "refine":
-			return rounds.gate > 0 ? { phase: "fixing", word: "fixing", fact: `checks failed, fix ${rounds.gate}` } : { phase: "running", word: "running", fact: turn };
+			return rounds.gate > 0
+				? { phase: "fixing", word: "fixing", fact: `checks failed, fix ${rounds.gate}` }
+				: { phase: "running", word: "running", fact: turn };
 		case "ci_fix":
 			return { phase: "fixing", word: "fixing", fact: `CI failed, fix ${rounds.ci}` };
 		case "review_fix":
@@ -298,7 +350,8 @@ function runningPhase(child: ItemSummary | null, job: DispatchedSubtask | null, 
 	}
 }
 
-const placeOf = (child: ItemSummary | null): string | null => child?.placement?.name ?? (child?.place.kind === "hosted" && child.state !== "draft" ? "hosted" : null);
+const placeOf = (child: ItemSummary | null): string | null =>
+	child?.placement?.name ?? (child?.place.kind === "hosted" && child.state !== "draft" ? "hosted" : null);
 
 /**
  * A feature's subtasks grouped as its page shows them: what runs now (holding the feature's
@@ -308,19 +361,37 @@ const placeOf = (child: ItemSummary | null): string | null => child?.placement?.
  * of slots.
  */
 /** The parts the factory adds on its own (a conflict or failing-CI repair): not in the plan, newest of each key. */
-export function repairSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], from: number): PlannedSubtask[] {
-	const planned = new Set(plan.subtasks.map((task) => task.key));
+export function repairSubtasks(
+	plan: Pick<FeaturePlan, "subtasks">,
+	children: readonly ItemSummary[],
+	from: number,
+): PlannedSubtask[] {
+	const planned = new Set(plan.subtasks.map(task => task.key));
 	const byKey = new Map<string, ItemSummary>();
-	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt)) if (child.parent && !planned.has(child.parent.key)) byKey.set(child.parent.key, child);
+	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt))
+		if (child.parent && !planned.has(child.parent.key)) byKey.set(child.parent.key, child);
 	return [...byKey.values()].map((child, index) => {
 		const key = child.parent!.key;
 		const repair = repairKind(key);
-		const task = { key, title: child.title, brief: "", acceptance: [], owns: [], dependsOn: [], budget: child.budget } as PlanSubtask;
+		const task = {
+			key,
+			title: child.title,
+			brief: "",
+			acceptance: [],
+			owns: [],
+			dependsOn: [],
+			budget: child.budget,
+		} as PlanSubtask;
 		return { n: from + index, task, child, state: subtaskState(child), ...(repair && { repair }) };
 	});
 }
 
-export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], jobs: readonly DispatchedSubtask[] | undefined, featureWait?: ItemSummary["wait"]): SubtaskGroups {
+export function groupSubtasks(
+	plan: Pick<FeaturePlan, "subtasks">,
+	children: readonly ItemSummary[],
+	jobs: readonly DispatchedSubtask[] | undefined,
+	featureWait?: ItemSummary["wait"],
+): SubtaskGroups {
 	// The feature waiting for a place is about the next subtask to start: that one says so, in the server's words.
 	let placeWait = featureWait && WAITS_FOR_PLACE.has(featureWait.reason) ? featureWait.sentence : null;
 	const planned = plannedSubtasks(plan, children);
@@ -328,9 +399,10 @@ export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: rea
 	const entries = [...planned, ...repairSubtasks(plan, children, planned.length + 1)];
 	// The newest job of a key is the one that counts, as for its item.
 	const jobOf = new Map<string, DispatchedSubtask>();
-	for (const job of [...(jobs ?? [])].sort((a, b) => (a.dispatchedAt ?? 0) - (b.dispatchedAt ?? 0))) jobOf.set(job.key, job);
+	for (const job of [...(jobs ?? [])].sort((a, b) => (a.dispatchedAt ?? 0) - (b.dispatchedAt ?? 0)))
+		jobOf.set(job.key, job);
 	const groups: SubtaskGroups = { running: [], next: [], done: [], slots: PARALLEL_SUBTASKS };
-	const byKey = new Map(entries.map((entry) => [entry.task.key, entry]));
+	const byKey = new Map(entries.map(entry => [entry.task.key, entry]));
 	const pending: PlannedSubtask[] = [];
 	for (const entry of entries) {
 		const job = jobOf.get(entry.task.key) ?? null;
@@ -347,22 +419,41 @@ export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: rea
 			groups.done.push({ ...base, phase, word: phase, fact: null, since: null });
 			continue;
 		}
-		groups.running.push({ ...base, ...runningPhase(child, job, entry.task), since: job?.startedAt ?? job?.dispatchedAt ?? child?.createdAt ?? null });
+		groups.running.push({
+			...base,
+			...runningPhase(child, job, entry.task),
+			since: job?.startedAt ?? job?.dispatchedAt ?? child?.createdAt ?? null,
+		});
 	}
-	const integrated = new Set(groups.done.filter((line) => line.phase === "integrated").map((line) => line.entry.task.key));
+	const integrated = new Set(groups.done.filter(line => line.phase === "integrated").map(line => line.entry.task.key));
 	for (const entry of pending) {
 		const base = { entry, job: null, place: null, since: null };
-		const after = entry.task.dependsOn.filter((key) => !integrated.has(key)).map((key) => byKey.get(key)).filter((one): one is PlannedSubtask => one !== undefined);
+		const after = entry.task.dependsOn
+			.filter(key => !integrated.has(key))
+			.map(key => byKey.get(key))
+			.filter((one): one is PlannedSubtask => one !== undefined);
 		if (after.length > 0) {
 			groups.next.push({ ...base, phase: "after", word: "waits for", fact: null, after });
 			continue;
 		}
-		const holder = groups.running.find((line) => sharesPaths(line.entry.task, entry.task));
+		const holder = groups.running.find(line => sharesPaths(line.entry.task, entry.task));
 		if (holder) {
-			groups.next.push({ ...base, phase: "files", word: "waits for", fact: null, files: { path: overlappingPath(entry.task, holder.entry.task), owner: holder.entry } });
+			groups.next.push({
+				...base,
+				phase: "files",
+				word: "waits for",
+				fact: null,
+				files: { path: overlappingPath(entry.task, holder.entry.task), owner: holder.entry },
+			});
 			continue;
 		}
-		if (groups.running.length >= PARALLEL_SUBTASKS) groups.next.push({ ...base, phase: "slot", word: "waits for", fact: `a free slot: ${PARALLEL_SUBTASKS} run at once` });
+		if (groups.running.length >= PARALLEL_SUBTASKS)
+			groups.next.push({
+				...base,
+				phase: "slot",
+				word: "waits for",
+				fact: `a free slot: ${PARALLEL_SUBTASKS} run at once`,
+			});
 		else if (placeWait) {
 			groups.next.push({ ...base, phase: "starting", word: "waiting for a place", fact: placeWait });
 			placeWait = null;
@@ -397,12 +488,14 @@ function intersect(a: string[], b: string[], wildcard: string, match: (a: string
 		const rightWildcard = y === wildcard;
 		if (x === wildcard) pending.push([i + 1, j]);
 		if (rightWildcard) pending.push([i, j + 1]);
-		if (x !== undefined && y !== undefined && (x === wildcard || rightWildcard || match(x, y))) pending.push([x === wildcard ? i : i + 1, rightWildcard ? j : j + 1]);
+		if (x !== undefined && y !== undefined && (x === wildcard || rightWildcard || match(x, y)))
+			pending.push([x === wildcard ? i : i + 1, rightWildcard ? j : j + 1]);
 	}
 	return false;
 }
 
-const overlaps = (a: string, b: string): boolean => intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m, n) => m === n));
+const overlaps = (a: string, b: string): boolean =>
+	intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m, n) => m === n));
 
 /** Plain paths include their descendants. A glob describes its own depth. */
 const ownedGlob = (entry: string): string => (entry.includes("*") ? entry : `${entry}/**`);
@@ -410,11 +503,11 @@ const ownedGlob = (entry: string): string => (entry.includes("*") ? entry : `${e
 /** Whether two subtasks may not run at once for their files: as the server reads it, one that lists no owned paths overlaps every other. */
 export function sharesPaths(a: Pick<PlanSubtask, "owns" | "repo">, b: Pick<PlanSubtask, "owns" | "repo">): boolean {
 	if (!a.owns?.length || !b.owns?.length) return true;
-	return a.repo === b.repo && a.owns.some((p) => b.owns.some((q) => overlaps(ownedGlob(p), ownedGlob(q))));
+	return a.repo === b.repo && a.owns.some(p => b.owns.some(q => overlaps(ownedGlob(p), ownedGlob(q))));
 }
 
 /** The first of `holder`'s owned paths that overlaps one of `task`'s; null when either lists none. */
 export function overlappingPath(task: Pick<PlanSubtask, "owns">, holder: Pick<PlanSubtask, "owns">): string | null {
 	if (!task.owns?.length || !holder.owns?.length) return null;
-	return holder.owns.find((q) => task.owns.some((p) => overlaps(ownedGlob(p), ownedGlob(q)))) ?? null;
+	return holder.owns.find(q => task.owns.some(p => overlaps(ownedGlob(p), ownedGlob(q)))) ?? null;
 }

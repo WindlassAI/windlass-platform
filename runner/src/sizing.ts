@@ -13,7 +13,8 @@ function bytes(value: string | undefined, flag: string, units: RegExp) {
 	if (value === undefined) return undefined;
 	const match = units.exec(value);
 	const parsed = match && Number(match[1]) * (match[2] === "m" ? 2 ** 20 : GiB);
-	if (!parsed || !Number.isSafeInteger(parsed)) throw new RunnerError(`Give --${flag} a positive memory size in ${flag === "sandbox-memory" ? "g" : "m or g"}.`);
+	if (!parsed || !Number.isSafeInteger(parsed))
+		throw new RunnerError(`Give --${flag} a positive memory size in ${flag === "sandbox-memory" ? "g" : "m or g"}.`);
 	return parsed;
 }
 
@@ -21,12 +22,17 @@ export function sizingFlags(flags: Flags, envCpus?: string): Overrides {
 	if (flags.slots !== undefined && flags["max-turns"] !== undefined && flags.slots !== flags["max-turns"])
 		throw new RunnerError("Give --slots and its alias --max-turns the same count.");
 	const slots = flags.slots ?? flags["max-turns"];
-	if (slots !== undefined && !/^\d+$/.test(slots)) throw new RunnerError("Give --slots (or --max-turns) a whole number from 1 to 64.");
+	if (slots !== undefined && !/^\d+$/.test(slots))
+		throw new RunnerError("Give --slots (or --max-turns) a whole number from 1 to 64.");
 	const cpus = flags["slot-cpus"] ?? envCpus;
-	if (cpus !== undefined && !/^\d+(?:\.\d{1,9})?$/.test(cpus)) throw new RunnerError("Give --slot-cpus or WLP_RUNNER_CPUS a CPU count of at least 0.01.");
-	return { slots: slots === undefined ? undefined : Number(slots), cpus: cpus === undefined ? undefined : Number(cpus),
+	if (cpus !== undefined && !/^\d+(?:\.\d{1,9})?$/.test(cpus))
+		throw new RunnerError("Give --slot-cpus or WLP_RUNNER_CPUS a CPU count of at least 0.01.");
+	return {
+		slots: slots === undefined ? undefined : Number(slots),
+		cpus: cpus === undefined ? undefined : Number(cpus),
 		slotMemory: bytes(flags["slot-memory"], "slot-memory", /^(\d+(?:\.\d+)?)([mg])$/),
-		sandboxMemory: bytes(flags["sandbox-memory"], "sandbox-memory", /^(\d+(?:\.\d+)?)(g)$/) };
+		sandboxMemory: bytes(flags["sandbox-memory"], "sandbox-memory", /^(\d+(?:\.\d+)?)(g)$/),
+	};
 }
 
 function memoryShare(usableMem: number, slots: number, cpus: number) {
@@ -35,43 +41,72 @@ function memoryShare(usableMem: number, slots: number, cpus: number) {
 }
 
 function checkMemoryBudget(slots: number, perSlot: number, usableMem: number) {
-	if (slots * perSlot > usableMem) throw new RunnerError(`The requested --slots × --slot-memory (${slots * perSlot / GiB} GiB) exceeds the available --sandbox-memory budget (${Number((usableMem / GiB).toFixed(2))} GiB).`);
+	if (slots * perSlot > usableMem)
+		throw new RunnerError(
+			`The requested --slots × --slot-memory (${(slots * perSlot) / GiB} GiB) exceeds the available --sandbox-memory budget (${Number((usableMem / GiB).toFixed(2))} GiB).`,
+		);
 }
 
-export function sizeMachine({ cores, memoryBytes }: { cores: number; memoryBytes: number }, overrides: Overrides = {}): MachineSlotCapacity {
-	const reserve = { cpus: Math.max(1, Math.ceil(cores / 8)), memoryBytes: Math.ceil(Math.max(GiB, memoryBytes / 10) + GiB / 2) };
+export function sizeMachine(
+	{ cores, memoryBytes }: { cores: number; memoryBytes: number },
+	overrides: Overrides = {},
+): MachineSlotCapacity {
+	const reserve = {
+		cpus: Math.max(1, Math.ceil(cores / 8)),
+		memoryBytes: Math.ceil(Math.max(GiB, memoryBytes / 10) + GiB / 2),
+	};
 	if (Object.values(overrides).every(value => value === undefined)) {
 		const usableMem = memoryBytes - reserve.memoryBytes;
 		const max = Math.min(16, Math.floor((cores - reserve.cpus) / defaultCpus), Math.floor(usableMem / floorMemory));
 		if (max >= 1) {
-			return { max, unit: { cpus: defaultCpus, memoryBytes: memoryShare(usableMem, max, defaultCpus), pids: 512 * defaultCpus }, reserve };
+			return {
+				max,
+				unit: { cpus: defaultCpus, memoryBytes: memoryShare(usableMem, max, defaultCpus), pids: 512 * defaultCpus },
+				reserve,
+			};
 		}
 		const memoryReserve = Math.max(GiB, Math.ceil(memoryBytes / 4));
 		const remaining = memoryBytes - memoryReserve;
 		checkMemoryBudget(1, GiB, remaining);
 		const perSlot = Math.min(floorMemory, remaining);
-		return { max: 1, unit: { cpus: cores, memoryBytes: perSlot, pids: Math.min(4096, 512 * cores) },
-			reserve: { cpus: 0, memoryBytes: memoryReserve } };
+		return {
+			max: 1,
+			unit: { cpus: cores, memoryBytes: perSlot, pids: Math.min(4096, 512 * cores) },
+			reserve: { cpus: 0, memoryBytes: memoryReserve },
+		};
 	}
 
 	// Keep existing allocations and validation for machines with explicit sizing.
 	const small = cores <= 2;
-	if (small) { reserve.cpus = 0; reserve.memoryBytes = 0; }
+	if (small) {
+		reserve.cpus = 0;
+		reserve.memoryBytes = 0;
+	}
 	const usableMem = overrides.sandboxMemory ?? memoryBytes - reserve.memoryBytes;
 	const cpus = overrides.cpus ?? (small ? Math.max(0.5, cores / 2) : defaultCpus);
-	if (!Number.isFinite(cpus) || cpus < 0.01 || cpus > cores) throw new RunnerError(`Give --slot-cpus or WLP_RUNNER_CPUS a CPU count from 0.01 to ${cores}.`);
+	if (!Number.isFinite(cpus) || cpus < 0.01 || cpus > cores)
+		throw new RunnerError(`Give --slot-cpus or WLP_RUNNER_CPUS a CPU count from 0.01 to ${cores}.`);
 	const max = overrides.slots ?? (small ? 2 : Math.min(16, Math.max(2, Math.floor((cores - reserve.cpus) / cpus))));
-	if (!Number.isInteger(max) || max < 1 || max > 64) throw new RunnerError("Give --slots (or --max-turns) a whole number from 1 to 64.");
-	if (overrides.sandboxMemory !== undefined && (!Number.isSafeInteger(usableMem) || usableMem <= 0)) throw new RunnerError("Give --sandbox-memory a positive memory budget.");
+	if (!Number.isInteger(max) || max < 1 || max > 64)
+		throw new RunnerError("Give --slots (or --max-turns) a whole number from 1 to 64.");
+	if (overrides.sandboxMemory !== undefined && (!Number.isSafeInteger(usableMem) || usableMem <= 0))
+		throw new RunnerError("Give --sandbox-memory a positive memory budget.");
 	const defaultMemory = small ? 1.5 * GiB : Math.max(1.5 * GiB, memoryShare(usableMem, max, cpus));
 	const perSlot = overrides.slotMemory ?? defaultMemory;
 	if (!Number.isSafeInteger(perSlot) || perSlot < GiB) throw new RunnerError("Give --slot-memory at least 1 GiB.");
 	checkMemoryBudget(max, perSlot, usableMem);
-	return { max, unit: { cpus, memoryBytes: perSlot, pids: small ? 512 : Math.min(4096, 512 * Math.ceil(cpus)) }, reserve };
+	return {
+		max,
+		unit: { cpus, memoryBytes: perSlot, pids: small ? 512 : Math.min(4096, 512 * Math.ceil(cpus)) },
+		reserve,
+	};
 }
 
 export function localSizing(flags: Flags = {}) {
-	return sizeMachine({ cores: availableParallelism(), memoryBytes: totalmem() }, sizingFlags(flags, process.env.WLP_RUNNER_CPUS));
+	return sizeMachine(
+		{ cores: availableParallelism(), memoryBytes: totalmem() },
+		sizingFlags(flags, process.env.WLP_RUNNER_CPUS),
+	);
 }
 
 type StoreFlags = Partial<Record<"snapshot-disk" | "snapshot-user" | "keep-free", string>>;
@@ -84,11 +119,18 @@ export function storeFlags(flags: StoreFlags): StoreLimits | undefined {
 	const given = { machine: flags["snapshot-disk"], user: flags["snapshot-user"], free: flags["keep-free"] };
 	if (Object.values(given).every(v => v === undefined)) return undefined;
 	const limits = { ...DEFAULT_STORE_LIMITS };
-	for (const [key, flag] of [["machine", "snapshot-disk"], ["user", "snapshot-user"], ["free", "keep-free"]] as const) {
+	for (const [key, flag] of [
+		["machine", "snapshot-disk"],
+		["user", "snapshot-user"],
+		["free", "keep-free"],
+	] as const) {
 		const text = given[key];
 		if (text === undefined) continue;
 		const bytes = parseStoreSize(text);
-		if (bytes === null || (key !== "free" && bytes === 0)) throw new RunnerError(`Give --${flag} a size such as 20GB or 512MB${key === "free" ? " (0GB keeps nothing free)" : ""}.`);
+		if (bytes === null || (key !== "free" && bytes === 0))
+			throw new RunnerError(
+				`Give --${flag} a size such as 20GB or 512MB${key === "free" ? " (0GB keeps nothing free)" : ""}.`,
+			);
 		limits[key] = bytes;
 	}
 	return limits;

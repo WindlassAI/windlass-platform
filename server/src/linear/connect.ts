@@ -1,6 +1,14 @@
 import { config } from "../config.js";
 import { serverSealer } from "../signin/seal.js";
-import { LINEAR_SCOPES, LinearApp, LinearError, type LinearIdentity, type LinearToken, linearApp, redactLinear } from "./app.js";
+import {
+	LINEAR_SCOPES,
+	LinearApp,
+	LinearError,
+	type LinearIdentity,
+	type LinearToken,
+	linearApp,
+	redactLinear,
+} from "./app.js";
 
 export const LINEAR_CALLBACK_PATH = "/linear/callback";
 
@@ -36,7 +44,11 @@ export function openLinearTicket(uid: string, ticket: string): LinearTicket {
 
 export type LinearClaim =
 	| { ok: true; uid: string; nonce: string; origin: string; verifier: string | null }
-	| { ok: false; reason: "state" | "used"; /** The web app's address, when the state was readable enough to name one. */ origin: string | null };
+	| {
+			ok: false;
+			reason: "state" | "used" /** The web app's address, when the state was readable enough to name one. */;
+			origin: string | null;
+	  };
 
 /** What the route needs of the user's actor. */
 export interface LinearConnectStore {
@@ -45,7 +57,10 @@ export interface LinearConnectStore {
 }
 
 function redirect(location: string): Response {
-	return new Response(null, { status: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+	return new Response(null, {
+		status: 302,
+		headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" },
+	});
 }
 
 /** Back to the web app, with what happened in the fragment: it is not sent to any server, and not kept in a log. */
@@ -64,14 +79,23 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 	const app = deps.app === undefined ? linearApp() : deps.app;
 	const origins = deps.origins ?? config.origins;
 	const log = deps.log ?? ((line: string) => console.log(line));
-	if (!app) return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
-	if (request.method !== "GET" && request.method !== "HEAD") return new Response("Use GET.\n", { status: 405, headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" } });
+	if (!app)
+		return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+	if (request.method !== "GET" && request.method !== "HEAD")
+		return new Response("Use GET.\n", {
+			status: 405,
+			headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
+		});
 
 	const params = new URL(request.url).searchParams;
 	const home = origins[0] ?? "";
-	const unreadable = () => home === ""
-		? new Response("This link to connect Linear is not valid any more. Go back to Windlass and connect again.\n", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } })
-		: failed(home, "state");
+	const unreadable = () =>
+		home === ""
+			? new Response("This link to connect Linear is not valid any more. Go back to Windlass and connect again.\n", {
+					status: 400,
+					headers: { "content-type": "text/plain; charset=utf-8" },
+				})
+			: failed(home, "state");
 	const state = params.get("state");
 	if (state === null || state === "" || state.length > 8192) return unreadable();
 
@@ -79,7 +103,9 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 	try {
 		claimed = await deps.store.claim(state);
 	} catch (error) {
-		console.error(`[wlp] linear.connect.failed: ${redactLinear(error instanceof Error ? error.message : "unknown error")}`);
+		console.error(
+			`[wlp] linear.connect.failed: ${redactLinear(error instanceof Error ? error.message : "unknown error")}`,
+		);
 		return unreadable();
 	}
 	if (!claimed.ok) {
@@ -91,7 +117,8 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 
 	let token: LinearToken | null = null;
 	try {
-		if (params.get("error") !== null) return failed(origin, params.get("error") === "access_denied" ? "denied" : "failed");
+		if (params.get("error") !== null)
+			return failed(origin, params.get("error") === "access_denied" ? "denied" : "failed");
 		const code = params.get("code");
 		if (code === null || code === "" || code.length > 2048) return failed(origin, "code");
 
@@ -104,7 +131,7 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 			}
 			throw error;
 		}
-		const missing = LINEAR_SCOPES.filter((scope) => !token!.scopes.includes(scope));
+		const missing = LINEAR_SCOPES.filter(scope => !token!.scopes.includes(scope));
 		if (missing.length > 0) {
 			log(`[wlp] linear.connect.scope uid=${uid}: not granted: ${missing.join(",")}`);
 			return failed(origin, "scope");
@@ -125,7 +152,9 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 		return back(origin, `linear=${serverSealer().seal("transit", ticketSubject(uid), JSON.stringify(ticket))}`);
 	} catch (error) {
 		const unreachable = error instanceof LinearError && error.unreachable;
-		console.error(`[wlp] linear.connect.failed uid=${uid}: ${redactLinear(error instanceof Error ? error.message : "unknown error", [token?.accessToken, token?.refreshToken])}`);
+		console.error(
+			`[wlp] linear.connect.failed uid=${uid}: ${redactLinear(error instanceof Error ? error.message : "unknown error", [token?.accessToken, token?.refreshToken])}`,
+		);
 		return failed(origin, unreachable ? "unreachable" : "failed");
 	}
 }

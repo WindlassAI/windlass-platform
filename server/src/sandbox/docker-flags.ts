@@ -4,10 +4,20 @@ import { BWRAP_PROBE } from "./provider.js";
 
 // The Docker CLI reads the file in its own filesystem and sends the JSON to the daemon.
 declare const BUNDLED_SECCOMP_FILE: string;
-const seccomp = join(import.meta.dirname, typeof BUNDLED_SECCOMP_FILE === "string" ? BUNDLED_SECCOMP_FILE : "../../../sandbox/seccomp-bwrap.json");
+const seccomp = join(
+	import.meta.dirname,
+	typeof BUNDLED_SECCOMP_FILE === "string" ? BUNDLED_SECCOMP_FILE : "../../../sandbox/seccomp-bwrap.json",
+);
 
 export const PROFILE_RUN_FLAGS: Partial<Record<SandboxProfileId, string[]>> = {
-	"docker-windlass-sandbox": ["--security-opt", "seccomp=" + seccomp, "--security-opt", "apparmor=unconfined", "--security-opt", "systempaths=unconfined"],
+	"docker-windlass-sandbox": [
+		"--security-opt",
+		"seccomp=" + seccomp,
+		"--security-opt",
+		"apparmor=unconfined",
+		"--security-opt",
+		"systempaths=unconfined",
+	],
 	"docker-hardened": [],
 };
 

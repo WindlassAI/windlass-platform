@@ -15,12 +15,14 @@ import { AppProvider } from "../state/app";
 import type { UserFeed, UserApi } from "./client";
 import { createMockClient, MOCK_MACHINE_STATES, type MockClient, type MockMachineSession } from "./mock";
 
-const auth = { token: "mock:user:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
+const auth = {
+	token: "mock:user:u_machines:ada@example.com",
+	profile: { uid: "u_machines", email: "ada@example.com", demo: false },
+};
 const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClient({ pace: 0, machine });
-const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 
 describe("the mock's machines", () => {
-
 	it("offers machines unless told not to, with an install command only once a runner is published", async () => {
 		const on = make();
 		const info = await on.info();
@@ -38,7 +40,7 @@ describe("the mock's machines", () => {
 		const mock = make();
 		const [nas] = await mock.user(auth).machines();
 		expect(nas?.status).toBe("online");
-		expect(nas?.sandboxes.map((sandbox) => sandbox.title)).toEqual(["Run the tests on my machine", null]);
+		expect(nas?.sandboxes.map(sandbox => sandbox.title)).toEqual(["Run the tests on my machine", null]);
 		mock.dispose();
 	});
 
@@ -47,7 +49,7 @@ describe("the mock's machines", () => {
 			const mock = make(state);
 			const list = await mock.user(auth).machines();
 			mock.dispose();
-			return list.map((machine) => machine.profiles.map((profile) => profile.available));
+			return list.map(machine => machine.profiles.map(profile => profile.available));
 		};
 		expect(await profiles("online")).toEqual([[true, true]]);
 		expect(await profiles("pairing")).toEqual([[]]);
@@ -62,16 +64,29 @@ describe("the mock's machines", () => {
 	it("launches an agent on a machine with one of its sandboxes, outside the day's sandbox time", async () => {
 		const mock = createMockClient({ pace: 0, usage: "used" });
 		const user = mock.user(auth);
-		const made = await user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", title: "On nas" });
+		const made = await user.createSession({
+			place: { kind: "machine", machineId: "m_nas" },
+			profile: "docker-hardened",
+			title: "On nas",
+		});
 		expect(made.place).toEqual({ kind: "machine", machineId: "m_nas" });
 		const session = mock.session(auth, made.id);
 		const snapshots: Array<{ machine?: unknown; profile: string }> = [];
-		const close = session.open({ onSnapshot: (snapshot) => snapshots.push({ machine: snapshot.machine, profile: snapshot.profile.name }), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
+		const close = session.open({
+			onSnapshot: snapshot => snapshots.push({ machine: snapshot.machine, profile: snapshot.profile.name }),
+			onItem: () => undefined,
+			onDelta: () => undefined,
+			onSummary: () => undefined,
+			onQuestion: () => undefined,
+			onConnection: () => undefined,
+		});
 		await tick();
 		expect(snapshots[0]).toEqual({ machine: null, profile: "Open" });
 		// The day's time is used up, and a turn on the user's own machine starts all the same.
 		expect(await session.prompt({ text: "What is 1 + 1, to be sure?" })).toEqual({ turn: 1, steered: false });
-		await expect(user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" })).rejects.toThrow("There is no such sandbox.");
+		await expect(
+			user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" }),
+		).rejects.toThrow("There is no such sandbox.");
 		close();
 		mock.dispose();
 	});
@@ -82,8 +97,8 @@ describe("the mock's machines", () => {
 			const session = mock.session(auth, "nas-tests");
 			const seen: { machine?: unknown; message?: string | null } = {};
 			const close = session.open({
-				onSnapshot: (snapshot) => (seen.machine = snapshot.machine?.state),
-				onItem: (item) => {
+				onSnapshot: snapshot => (seen.machine = snapshot.machine?.state),
+				onItem: item => {
 					if (item.kind === "turn.ended" && item.outcome === "error") seen.message = item.message;
 				},
 				onDelta: () => undefined,
@@ -96,19 +111,35 @@ describe("the mock's machines", () => {
 			await session.prompt({ text: "Run the tests again." });
 			await tick();
 			session.resync();
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			await new Promise(resolve => setTimeout(resolve, 80));
 			close();
 			mock.dispose();
 			return { before, after: seen.machine, message: seen.message };
 		};
-		expect(await failed("offline")).toEqual({ before: "answering", after: "offline", message: `Your machine "nas" is offline. The agent's files are there; send the prompt again when it is back.` });
-		expect(await failed("removed")).toEqual({ before: "removed", after: "removed", message: "This agent's machine was removed. Its files were there. Start a new agent to go on." });
+		expect(await failed("offline")).toEqual({
+			before: "answering",
+			after: "offline",
+			message: `Your machine "nas" is offline. The agent's files are there; send the prompt again when it is back.`,
+		});
+		expect(await failed("removed")).toEqual({
+			before: "removed",
+			after: "removed",
+			message: "This agent's machine was removed. Its files were there. Start a new agent to go on.",
+		});
 	});
 
 	it("tells the open page when the machine stops answering and when it is back", async () => {
 		const mock = createMockClient({ pace: 0, machineSession: "not_answering" });
 		const seen: string[] = [];
-		const close = mock.session(auth, "nas-tests").open({ onSnapshot: (snapshot) => seen.push(`snapshot ${snapshot.machine?.state}`), onMachine: (machine) => seen.push(machine.state), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
+		const close = mock.session(auth, "nas-tests").open({
+			onSnapshot: snapshot => seen.push(`snapshot ${snapshot.machine?.state}`),
+			onMachine: machine => seen.push(machine.state),
+			onItem: () => undefined,
+			onDelta: () => undefined,
+			onSummary: () => undefined,
+			onQuestion: () => undefined,
+			onConnection: () => undefined,
+		});
 		try {
 			await vi.waitFor(() => expect(seen).toEqual(["snapshot answering", "not_answering", "answering"]));
 		} finally {
@@ -122,7 +153,7 @@ describe("the mock's machines", () => {
 		try {
 			const mock = createMockClient({});
 			const user = mock.user(auth);
-			const settle = async <T,>(promise: Promise<T>) => {
+			const settle = async <T>(promise: Promise<T>) => {
 				await vi.advanceTimersByTimeAsync(400);
 				return promise;
 			};
@@ -131,12 +162,20 @@ describe("the mock's machines", () => {
 			// Only what runs on the platform's sandboxes counts (server/src/actors/user.ts, `internalAcquireRun`).
 			const working = workingCounts(await settle(user.listSessions())).ceilinged;
 			const { hostedRunning } = await settle(user.factoryLimits());
-			for (let filled = working; filled < hostedRunning; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
-			const refused = expect(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." })).rejects.toMatchObject({ reason: "too_many_running" });
+			for (let filled = working; filled < hostedRunning; filled++)
+				await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
+			const refused = expect(
+				mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }),
+			).rejects.toMatchObject({ reason: "too_many_running" });
 			await vi.advanceTimersByTimeAsync(400);
 			await refused;
-			const onNas = await settle(user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened" }));
-			expect(await settle(mock.session(auth, onNas.id).prompt({ text: "Run the full build and the tests." }))).toEqual({ turn: 1, steered: false });
+			const onNas = await settle(
+				user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened" }),
+			);
+			expect(await settle(mock.session(auth, onNas.id).prompt({ text: "Run the full build and the tests." }))).toEqual({
+				turn: 1,
+				steered: false,
+			});
 			mock.dispose();
 		} finally {
 			vi.useRealTimers();
@@ -164,15 +203,19 @@ describe("the mock's machines", () => {
 		const mock = make("none");
 		const user = mock.user(auth);
 		const heard: MachineSummary[][] = [];
-		const close = user.watch({ onSessions: () => undefined, onMachines: (list) => heard.push(list) });
+		const close = user.watch({ onSessions: () => undefined, onMachines: list => heard.push(list) });
 		await tick();
-		expect(await user.claimMachine({ code: "wxyz-12lo" })).toMatchObject({ name: "workstation", os: "Linux", arch: "x64" });
+		expect(await user.claimMachine({ code: "wxyz-12lo" })).toMatchObject({
+			name: "workstation",
+			os: "Linux",
+			arch: "x64",
+		});
 		const made = await user.confirmMachine({ code: "WXYZ 1210", keyConfirmed: true });
 		expect(made.status).toBe("waiting");
 		// Asked again for the same code, it is the same machine.
 		expect((await user.confirmMachine({ code: "WXYZ-1210", keyConfirmed: true })).machineId).toBe(made.machineId);
 		await tick();
-		expect(heard.at(-1)?.map((machine) => machine.status)).toEqual(["online"]);
+		expect(heard.at(-1)?.map(machine => machine.status)).toEqual(["online"]);
 		close();
 		mock.dispose();
 	});
@@ -185,7 +228,9 @@ describe("the mock's machines", () => {
 		await expect(user.claimMachine({ code: "AAAA-0005" })).rejects.toMatchObject({ reason: "too_many_claims" });
 		mock.dispose();
 		const full = make("full");
-		await expect(full.user(auth).claimMachine({ code: "AAAA-0006" })).rejects.toMatchObject({ reason: "too_many_machines" });
+		await expect(full.user(auth).claimMachine({ code: "AAAA-0006" })).rejects.toMatchObject({
+			reason: "too_many_machines",
+		});
 		full.dispose();
 	});
 
@@ -194,10 +239,12 @@ describe("the mock's machines", () => {
 		const user = mock.user(auth);
 		const [nas] = await user.machines();
 		const off = await user.setMachineSecrets({ machineId: nas!.machineId, send: false });
-		expect(off.find((machine) => machine.machineId === nas!.machineId)?.sendSecrets).toBe(false);
+		expect(off.find(machine => machine.machineId === nas!.machineId)?.sendSecrets).toBe(false);
 		const left = await user.removeMachine({ machineId: nas!.machineId, removeSandboxes: true });
-		expect(left.map((machine) => machine.name)).toEqual(["workshop", "build-box"]);
-		await expect(user.removeMachine({ machineId: nas!.machineId, removeSandboxes: false })).rejects.toMatchObject({ reason: "machine_not_found" });
+		expect(left.map(machine => machine.name)).toEqual(["workshop", "build-box"]);
+		await expect(user.removeMachine({ machineId: nas!.machineId, removeSandboxes: false })).rejects.toMatchObject({
+			reason: "machine_not_found",
+		});
 		mock.dispose();
 	});
 
@@ -205,7 +252,7 @@ describe("the mock's machines", () => {
 		const mock = make("stale");
 		const user = mock.user(auth);
 		const states: string[] = [];
-		const close = user.watch({ onSessions: () => undefined, onConnection: (state) => states.push(state) });
+		const close = user.watch({ onSessions: () => undefined, onConnection: state => states.push(state) });
 		await tick();
 		expect(await user.machines()).toHaveLength(1);
 		await tick();
@@ -233,7 +280,8 @@ describe("the start composer's agent picker", () => {
 
 	/** Lets the mock answer, in steps: what one answer renders can ask the next. */
 	async function settle(steps = 12): Promise<void> {
-		for (let step = 0; step < steps; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
+		for (let step = 0; step < steps; step++)
+			await act(async () => void (await new Promise(resolve => setTimeout(resolve, 2))));
 	}
 
 	/**
@@ -252,14 +300,22 @@ describe("the start composer's agent picker", () => {
 		client = createMockClient({ pace: 0, origin: "http://localhost:5173", machine });
 		saveAuth("mock", auth);
 		const user = client.user.bind(client);
-		(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
+		(client as { user: (auth: AuthResult) => UserApi }).user = who => {
 			const api = user(who);
-			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)),
-				machineCatalog: input => { catalogsRead.push(input.id); return api.machineCatalog(input); },
+			return {
+				...api,
+				createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)),
+				machineCatalog: input => {
+					catalogsRead.push(input.id);
+					return api.machineCatalog(input);
+				},
 				watch: feed => {
 					feeds.add(feed);
 					const close = api.watch(feed);
-					return () => { feeds.delete(feed); close(); };
+					return () => {
+						feeds.delete(feed);
+						close();
+					};
 				},
 			};
 		};
@@ -283,15 +339,28 @@ describe("the start composer's agent picker", () => {
 	/** The page's text, with what is open in a picker (drawn at the end of the page). */
 	const text = () => document.body.textContent ?? "";
 	/** The control of a picker, by the name its old chip had: where it runs, its sandbox and the repository are one pill, and the mode is in the options. */
-	const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", mode: "options" };
-	const button = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement;
+	const PICKERS: Record<string, string> = {
+		repo: "where",
+		on: "where",
+		sandbox: "where",
+		agent: "agent",
+		mode: "options",
+	};
+	const button = (label: string) =>
+		host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement;
 	/** Opens a pill's picker, by its label, unless it is open; `toggle` closes an open one. */
 	const chip = (label: string, toggle = false) => {
 		if (toggle || button(label).getAttribute("aria-expanded") !== "true") act(() => button(label).click());
 	};
-	const value = (label: string) => (label === "sandbox" ? button(label)?.dataset.sandbox : button(label)?.dataset.value) ?? null;
+	const value = (label: string) =>
+		(label === "sandbox" ? button(label)?.dataset.sandbox : button(label)?.dataset.value) ?? null;
 	const pop = () => ([...document.querySelectorAll(".ui-pop")].at(-1) ?? null) as HTMLElement | null;
-	const press = (words: string) => act(() => ([...(pop()?.querySelectorAll("button") ?? [])].find((button) => button.textContent === words) as HTMLButtonElement).click());
+	const press = (words: string) =>
+		act(() =>
+			(
+				[...(pop()?.querySelectorAll("button") ?? [])].find(button => button.textContent === words) as HTMLButtonElement
+			).click(),
+		);
 	/** Chooses where it runs. */
 	const place = (machineId: string) => {
 		chip("on");
@@ -299,7 +368,9 @@ describe("the start composer's agent picker", () => {
 	};
 	const agents = () => {
 		chip("agent");
-		return [...pop()!.querySelectorAll('.agent-switch button:not([aria-disabled="true"])')].map(button => button.getAttribute("aria-label"));
+		return [...pop()!.querySelectorAll('.agent-switch button:not([aria-disabled="true"])')].map(button =>
+			button.getAttribute("aria-label"),
+		);
 	};
 	const switchAgent = (id: keyof typeof HARNESS_NAMES) => {
 		act(() => pop()!.querySelector<HTMLButtonElement>(`.agent-switch [aria-label="${HARNESS_NAMES[id]}"]`)!.click());
@@ -307,33 +378,49 @@ describe("the start composer's agent picker", () => {
 	const agent = (id: keyof typeof HARNESS_NAMES) => {
 		switchAgent(id);
 		const rows = [...pop()!.querySelectorAll<HTMLElement>(`[data-value^="${id}:"]`)];
-		const row = rows.find(candidate => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0]!;
+		const row =
+			rows.find(candidate => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ??
+			rows[0]!;
 		act(() => row.click());
 	};
 	/** The approval choices in the open options menu's Mode group. */
 	const modeRows = () => {
 		const groups = pop()?.querySelectorAll('[role="group"][aria-labelledby]') ?? [];
-		const group = [...groups].find((candidate) => document.getElementById(candidate.getAttribute("aria-labelledby") ?? "")?.textContent === "Mode");
+		const group = [...groups].find(
+			candidate => document.getElementById(candidate.getAttribute("aria-labelledby") ?? "")?.textContent === "Mode",
+		);
 		return [...(group?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
 	};
 	/** The modes offered, by name, each with what it does, and the one chosen. Its menu is the only one open. */
 	const modes = () => {
 		chip("mode");
 		expect(document.querySelectorAll(".ui-pop")).toHaveLength(1);
-		const list = modeRows().map((option) => ({ name: option.querySelector(".ui-item-label")?.textContent, text: option.querySelector(".ui-item-description")?.textContent, chosen: option.getAttribute("aria-checked") === "true" }));
+		const list = modeRows().map(option => ({
+			name: option.querySelector(".ui-item-label")?.textContent,
+			text: option.querySelector(".ui-item-description")?.textContent,
+			chosen: option.getAttribute("aria-checked") === "true",
+		}));
 		chip("mode", true);
 		return list;
 	};
 	const mode = (name: string) => {
 		chip("mode");
-		act(() => (modeRows().find((option) => option.querySelector(".ui-item-label")?.textContent === name) as HTMLElement).click());
+		act(() =>
+			(modeRows().find(option => option.querySelector(".ui-item-label")?.textContent === name) as HTMLElement).click(),
+		);
 	};
 	/** The lock in the tray: the chosen sandbox's facts, each with the sentence it stands for. */
 	const sandboxLine = () => host.querySelector('[data-picker="isolation"]')?.getAttribute("aria-label") ?? "";
 	/** Creates the agent from the launch button's menu. */
 	const createWithout = async () => {
 		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
-		await act(async () => ([...(pop()?.querySelectorAll('[role="menuitem"]') ?? [])].find((row) => row.querySelector(".ui-item-label")?.textContent === "Create without a prompt") as HTMLElement).click());
+		await act(async () =>
+			(
+				[...(pop()?.querySelectorAll('[role="menuitem"]') ?? [])].find(
+					row => row.querySelector(".ui-item-label")?.textContent === "Create without a prompt",
+				) as HTMLElement
+			).click(),
+		);
 		await settle();
 	};
 	const launchIt = async () => {
@@ -352,7 +439,9 @@ describe("the start composer's agent picker", () => {
 		switchAgent("claude");
 		showCommands();
 		expect(text()).toContain("Claude Code: sign in needed");
-		expect(pop()?.querySelector(".machine-harness pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
+		expect(pop()?.querySelector(".machine-harness pre")?.textContent).toBe(
+			"docker exec -it windlass-runner windlass-runner login claude",
+		);
 		chip("agent", true);
 		// The second machine reports its own sign-in state.
 		place("m_nas");
@@ -371,13 +460,18 @@ describe("the start composer's agent picker", () => {
 		place("m_workshop");
 		agents();
 		await settle();
-		const catalog = (id: string) => Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
+		const catalog = (id: string) =>
+			Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
 		switchAgent("claude");
 		expect(catalog("claude")).toEqual(["Default (recommended)", "Opus", "Haiku"]);
 		switchAgent("opencode");
 		expect(catalog("opencode")).toEqual(["GPT-5.4", "GPT-5.4 mini"]);
 		act(() => {
-			for (const feed of feeds) feed.onMachineHost?.({ machineId: machine!.machineId, host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 } });
+			for (const feed of feeds)
+				feed.onMachineHost?.({
+					machineId: machine!.machineId,
+					host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 },
+				});
 		});
 		await settle();
 		expect([...catalogsRead].sort()).toEqual(["claude", "codex", "opencode"]);
@@ -386,7 +480,10 @@ describe("the start composer's agent picker", () => {
 
 		agent("opencode");
 		expect(value("agent")).toContain("GPT-5.4");
-		expect(modes().map(({ name, chosen }) => [name, chosen])).toEqual([["build", true], ["plan", false]]);
+		expect(modes().map(({ name, chosen }) => [name, chosen])).toEqual([
+			["build", true],
+			["plan", false],
+		]);
 		mode("plan");
 		await createWithout();
 		expect(created[0]).toMatchObject({ harness: "opencode", mode: "plan", profile: "docker-hardened" });
@@ -396,7 +493,9 @@ describe("the start composer's agent picker", () => {
 		await open();
 		expect(agents()).toEqual(["Windlass"]);
 		// Hosted Claude Code needs a Settings key.
-		expect(pop()?.querySelector('.agent-switch [aria-label="Claude Code"]')?.getAttribute("aria-disabled")).toBe("true");
+		expect(pop()?.querySelector('.agent-switch [aria-label="Claude Code"]')?.getAttribute("aria-disabled")).toBe(
+			"true",
+		);
 		chip("agent", true);
 		// The choice is on nas, and it goes with the machine.
 		place("m_nas");
@@ -422,7 +521,10 @@ describe("the start composer's agent picker", () => {
 		expect(value("sandbox")).toBe("Open");
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.
 		expect(value("agent")).toBe("Claude Code · Default (recommended)");
-		const rows = [...(pop()?.querySelectorAll('[data-value^="claude:"]') ?? [])].map((row) => [row.querySelector(".ui-item-label")?.textContent, row.getAttribute("aria-checked") === "true"]);
+		const rows = [...(pop()?.querySelectorAll('[data-value^="claude:"]') ?? [])].map(row => [
+			row.querySelector(".ui-item-label")?.textContent,
+			row.getAttribute("aria-checked") === "true",
+		]);
 		expect(rows).toEqual([
 			["Default (recommended)", true],
 			["Opus", false],
@@ -431,7 +533,11 @@ describe("the start composer's agent picker", () => {
 		chip("agent", true);
 		await createWithout();
 		expect(created).toHaveLength(1);
-		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened", place: { kind: "machine", machineId: "m_nas" } });
+		expect(created[0]).toMatchObject({
+			harness: "claude",
+			profile: "docker-hardened",
+			place: { kind: "machine", machineId: "m_nas" },
+		});
 		expect(created[0]?.model).toBeUndefined();
 	});
 
@@ -442,8 +548,12 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		const offered = modes();
-		expect(offered.map((one) => one.name)).toEqual(["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
-		expect(offered.find((one) => one.chosen)).toEqual({ name: "Auto", text: "Automatically assess tool permissions.", chosen: true });
+		expect(offered.map(one => one.name)).toEqual(["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
+		expect(offered.find(one => one.chosen)).toEqual({
+			name: "Auto",
+			text: "Automatically assess tool permissions.",
+			chosen: true,
+		});
 		mode("Plan");
 		expect(value("mode")).toBe("Plan");
 		await createWithout();
@@ -453,17 +563,27 @@ describe("the start composer's agent picker", () => {
 	it("starts Windlass on the chosen sandbox's approval, of Ask and that one", async () => {
 		await open();
 		// This platform's first sandbox has Windlass's command sandbox: Ask and Auto, on Auto.
-		expect(modes().map((one) => [one.name, one.chosen])).toEqual([
+		expect(modes().map(one => [one.name, one.chosen])).toEqual([
 			["Ask", false],
 			["Auto", true],
 		]);
-		expect(modes().find((one) => one.chosen)?.text).toBe("Runs safe commands, asks for the rest.");
+		expect(modes().find(one => one.chosen)?.text).toBe("Runs safe commands, asks for the rest.");
 		// The hardened container has none: Ask and Full, on Full, in the warning tone.
 		chip("sandbox");
-		act(() => void pop()?.querySelector('[data-value="platform"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
-		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		act(
+			() =>
+				void pop()
+					?.querySelector('[data-value="platform"]')
+					?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+		);
+		act(
+			() =>
+				void document.activeElement?.dispatchEvent(
+					new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+				),
+		);
 		act(() => (document.querySelector('.ui-pop-sub [data-value="docker-hardened"]') as HTMLElement).click());
-		expect(modes().map((one) => [one.name, one.chosen])).toEqual([
+		expect(modes().map(one => [one.name, one.chosen])).toEqual([
 			["Ask", false],
 			["Full", true],
 		]);
@@ -495,20 +615,36 @@ describe("the start composer's agent picker", () => {
 
 	it("says the isolation and whose sign-in the agent uses in one plain line, and Strict or Open with nas's sandboxes", async () => {
 		await open();
-		expect(sandboxLine()).toMatch(/^Isolation: Strict: Commands sandboxed, no internet\. For untrusted code\. Runs hosted/);
+		expect(sandboxLine()).toMatch(
+			/^Isolation: Strict: Commands sandboxed, no internet\. For untrusted code\. Runs hosted/,
+		);
 		place("m_nas");
 		await settle();
 		agents();
 		agent("claude");
-		expect(sandboxLine()).toBe("Isolation: Open: Commands run freely and can reach the internet. Runs on nas. Uses nas's Claude Code sign-in.");
+		expect(sandboxLine()).toBe(
+			"Isolation: Open: Commands run freely and can reach the internet. Runs on nas. Uses nas's Claude Code sign-in.",
+		);
 		expect(sandboxLine()).not.toMatch(/token|relay|Docker/);
 		// nas's sandboxes: Strict and Open, each with its outcome line, and no amber.
 		chip("sandbox");
-		act(() => void pop()?.querySelector('[data-value="m_nas"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
-		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		act(
+			() =>
+				void pop()
+					?.querySelector('[data-value="m_nas"]')
+					?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+		);
+		act(
+			() =>
+				void document.activeElement?.dispatchEvent(
+					new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+				),
+		);
 		const row = document.querySelector('.ui-pop-sub [aria-checked="true"]') as HTMLElement;
 		expect(row.querySelector(".ui-item-label")?.textContent).toBe("Open");
-		expect(row.querySelector(".ui-item-description")?.textContent).toBe("Commands run freely and can reach the internet.");
+		expect(row.querySelector(".ui-item-description")?.textContent).toBe(
+			"Commands run freely and can reach the internet.",
+		);
 		expect(document.querySelector(".ui-pop-sub [class*=warn]")).toBeNull();
 	});
 
@@ -529,15 +665,25 @@ it("shows the update and re-pair instructions for an old runner on a signed plat
 	const root = createRoot(host);
 	const client = make("outdated");
 	const info = await client.info();
-	vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, platformFingerprint: "fixture" } });
+	vi.spyOn(client, "info").mockResolvedValue({
+		...info,
+		machines: { ...info.machines!, platformFingerprint: "fixture" },
+	});
 	saveAuth("mock", auth);
 	try {
-		act(() => root.render(createElement(AppProvider, { client, children: createElement(Machines, { adding: false }) })));
-		for (let i = 0; i < 50 && !host.querySelector(".machine-row-outdated"); i++) await act(async () => { await tick(); });
+		act(() =>
+			root.render(createElement(AppProvider, { client, children: createElement(Machines, { adding: false }) })),
+		);
+		for (let i = 0; i < 50 && !host.querySelector(".machine-row-outdated"); i++)
+			await act(async () => {
+				await tick();
+			});
 		const row = host.querySelector(".machine-row-outdated");
 		expect(row?.textContent).toContain("Needs an update");
 		expect(row?.textContent).toContain("pair again to pin the platform key");
-		expect(row?.querySelector('pre[aria-label="The update command"]')?.textContent).toContain(info.machines!.runnerImage);
+		expect(row?.querySelector('pre[aria-label="The update command"]')?.textContent).toContain(
+			info.machines!.runnerImage,
+		);
 	} finally {
 		act(() => root.unmount());
 		host.remove();
@@ -546,51 +692,75 @@ it("shows the update and re-pair instructions for an old runner on a signed plat
 	}
 });
 
-it.each([true, false])("offers OpenCode setup and import only for a runner image reporting support (%s)", async supported => {
-	HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
-	HTMLDialogElement.prototype.close ??= function () { this.open = false; };
-	const { Machines } = await import("../screens/Machines");
-	const host = document.createElement("div");
-	document.body.append(host);
-	const root = createRoot(host);
-	const client = make();
-	const info = await client.info();
-	if (!supported) vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, runnerHarnesses: ["claude"] } });
-	saveAuth("mock",auth);
-	try {
-		act(() => root.render(createElement(AppProvider,{client,children:createElement(Machines,{adding:true})})));
-		for (let i=0;i<30 && !host.querySelector(".machine-command");i++) await act(async () => {await tick();});
-		const command = () => host.querySelector('pre[aria-label="The setup command"]')?.textContent;
-		expect(command()).toContain("docker run -it --rm");
-		expect(command()).toContain(" setup --platform ");
-		expect(command()).not.toContain("/import/opencode");
-		const checkbox = (text: string) => [...host.querySelectorAll("label")].find(element => element.textContent?.includes(text))!.querySelector("input")!;
-		act(() => checkbox("Enable Claude Code").click());
-		if (!supported) {
-			expect(host.textContent).not.toContain("Enable OpenCode");
-			expect(host.textContent).not.toContain("Enable Codex");
-			expect(host.textContent).not.toContain("Import existing OpenCode");
-			expect(command()).not.toMatch(/--harness opencode|\/import\/opencode/);
-			return;
+it.each([true, false])(
+	"offers OpenCode setup and import only for a runner image reporting support (%s)",
+	async supported => {
+		HTMLDialogElement.prototype.showModal ??= function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close ??= function () {
+			this.open = false;
+		};
+		const { Machines } = await import("../screens/Machines");
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		const client = make();
+		const info = await client.info();
+		if (!supported)
+			vi.spyOn(client, "info").mockResolvedValue({
+				...info,
+				machines: { ...info.machines!, runnerHarnesses: ["claude"] },
+			});
+		saveAuth("mock", auth);
+		try {
+			act(() =>
+				root.render(createElement(AppProvider, { client, children: createElement(Machines, { adding: true }) })),
+			);
+			for (let i = 0; i < 30 && !host.querySelector(".machine-command"); i++)
+				await act(async () => {
+					await tick();
+				});
+			const command = () => host.querySelector('pre[aria-label="The setup command"]')?.textContent;
+			expect(command()).toContain("docker run -it --rm");
+			expect(command()).toContain(" setup --platform ");
+			expect(command()).not.toContain("/import/opencode");
+			const checkbox = (text: string) =>
+				[...host.querySelectorAll("label")]
+					.find(element => element.textContent?.includes(text))!
+					.querySelector("input")!;
+			act(() => checkbox("Enable Claude Code").click());
+			if (!supported) {
+				expect(host.textContent).not.toContain("Enable OpenCode");
+				expect(host.textContent).not.toContain("Enable Codex");
+				expect(host.textContent).not.toContain("Import existing OpenCode");
+				expect(command()).not.toMatch(/--harness opencode|\/import\/opencode/);
+				return;
+			}
+			act(() => checkbox("Enable OpenCode").click());
+			expect(command()).toContain("--harness claude --harness opencode");
+			act(() => checkbox("Enable Codex").click());
+			expect(command()).toContain("docker run -it --rm --log-driver none");
+			expect(command()).toContain("--harness codex");
+			const background = () => host.querySelector('pre[aria-label="The background command"]')?.textContent;
+			expect(background()).toContain("--harness claude --harness opencode");
+			expect(command()).toContain("--harness opencode");
+			expect(command()).not.toContain("/import/opencode");
+			act(() => checkbox("Import existing OpenCode API keys").click());
+			expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
+			expect(background()).not.toContain("/import/opencode");
+			// Windlass's command sandbox is allowed unless the person turns it off, in both commands.
+			expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+			expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+			act(() => checkbox("Allow locked-down commands").click());
+			// Turned off, both say so: the setup wizard then starts with the sandbox off as well.
+			expect(command()).toMatch(/ --allow-profile docker-hardened$/);
+			expect(background()).toMatch(/ --allow-profile docker-hardened$/);
+		} finally {
+			act(() => root.unmount());
+			host.remove();
+			client.dispose();
+			saveAuth("mock", null);
 		}
-		act(() => checkbox("Enable OpenCode").click());
-		expect(command()).toContain("--harness claude --harness opencode");
-		act(() => checkbox("Enable Codex").click());
-		expect(command()).toContain("docker run -it --rm --log-driver none");
-		expect(command()).toContain("--harness codex");
-		const background = () => host.querySelector('pre[aria-label="The background command"]')?.textContent;
-		expect(background()).toContain("--harness claude --harness opencode");
-		expect(command()).toContain("--harness opencode");
-		expect(command()).not.toContain("/import/opencode");
-		act(() => checkbox("Import existing OpenCode API keys").click());
-		expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
-		expect(background()).not.toContain('/import/opencode');
-		// Windlass's command sandbox is allowed unless the person turns it off, in both commands.
-		expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
-		expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
-		act(() => checkbox("Allow locked-down commands").click());
-		// Turned off, both say so: the setup wizard then starts with the sandbox off as well.
-		expect(command()).toMatch(/ --allow-profile docker-hardened$/);
-		expect(background()).toMatch(/ --allow-profile docker-hardened$/);
-	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
-});
+	},
+);

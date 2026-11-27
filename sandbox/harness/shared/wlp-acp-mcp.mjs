@@ -63,7 +63,13 @@ child.stdin.on("error", () => {});
 const token = serverId => createHmac("sha256", secret).update(`wlp-acp-mcp\0${serverId}`).digest("base64url");
 const route = serverId => `mcp-${Buffer.from(serverId, "utf8").toString("base64url")}`;
 const isObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
-const parse = line => { try { return JSON.parse(line); } catch { return undefined; } };
+const parse = line => {
+	try {
+		return JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+};
 
 function lines(stream, onLine) {
 	let buffer = "";
@@ -83,10 +89,13 @@ function lines(stream, onLine) {
 
 function listen() {
 	listening ??= new Promise((resolve, reject) => {
-		const server = createServer((req, res) => void serve(req, res).catch(() => {
-			if (!res.headersSent) reply(res, 500, rpcError(null, -33002, "MCP bridge failure"));
-			else res.destroy();
-		}));
+		const server = createServer(
+			(req, res) =>
+				void serve(req, res).catch(() => {
+					if (!res.headersSent) reply(res, 500, rpcError(null, -33002, "MCP bridge failure"));
+					else res.destroy();
+				}),
+		);
 		server.once("error", reject);
 		server.listen({ port: PORT, host: "127.0.0.1", exclusive: true }, () => {
 			server.off("error", reject);
@@ -106,7 +115,12 @@ async function adapt(list) {
 		if (typeof server.serverId !== "string" || typeof server.name !== "string") return server;
 		const path = route(server.serverId);
 		servers.set(path, { serverId: server.serverId, name: server.name, token: token(server.serverId) });
-		return { type: "http", name: server.name, url: `http://127.0.0.1:${port}/${path}`, headers: [{ name: "Authorization", value: `Bearer ${token(server.serverId)}` }] };
+		return {
+			type: "http",
+			name: server.name,
+			url: `http://127.0.0.1:${port}/${path}`,
+			headers: [{ name: "Authorization", value: `Bearer ${token(server.serverId)}` }],
+		};
 	});
 }
 
@@ -119,16 +133,45 @@ lines(process.stdin, line => {
 		if (message.method === undefined && typeof message.id === "string" && message.id.startsWith(ID_PREFIX)) {
 			const resolve = pending.get(message.id);
 			pending.delete(message.id);
-			resolve?.(isObject(message.result) ? message.result : { error: { code: -33002, message: isObject(message.error) && typeof message.error.message === "string" ? message.error.message : "The client did not serve the request." } });
+			resolve?.(
+				isObject(message.result)
+					? message.result
+					: {
+							error: {
+								code: -33002,
+								message:
+									isObject(message.error) && typeof message.error.message === "string"
+										? message.error.message
+										: "The client did not serve the request.",
+							},
+						},
+			);
 			return;
 		}
 		if (message.method === "initialize" && message.id !== undefined) initialize.add(JSON.stringify(message.id));
-		if (["session/new", "session/load", "session/resume"].includes(message.method) && isObject(message.params) && Array.isArray(message.params.mcpServers)) {
+		if (
+			["session/new", "session/load", "session/resume"].includes(message.method) &&
+			isObject(message.params) &&
+			Array.isArray(message.params.mcpServers)
+		) {
 			try {
-				return toAgent(JSON.stringify({ ...message, params: { ...message.params, mcpServers: await adapt(message.params.mcpServers) } }));
+				return toAgent(
+					JSON.stringify({
+						...message,
+						params: { ...message.params, mcpServers: await adapt(message.params.mcpServers) },
+					}),
+				);
 			} catch {
 				// No endpoint: the session starts without the client's servers, as one Claude Code cannot reach.
-				return toAgent(JSON.stringify({ ...message, params: { ...message.params, mcpServers: message.params.mcpServers.filter(s => !isObject(s) || s.type !== "acp") } }));
+				return toAgent(
+					JSON.stringify({
+						...message,
+						params: {
+							...message.params,
+							mcpServers: message.params.mcpServers.filter(s => !isObject(s) || s.type !== "acp"),
+						},
+					}),
+				);
 			}
 		}
 		toAgent(line);
@@ -139,11 +182,25 @@ process.stdin.on("end", () => order.then(() => child.stdin.end()));
 // Agent -> client: its answer to `initialize` says that it takes `acp` servers.
 lines(child.stdout, line => {
 	const message = parse(line);
-	if (isObject(message) && message.method === undefined && initialize.delete(JSON.stringify(message.id)) && isObject(message.result)) {
+	if (
+		isObject(message) &&
+		message.method === undefined &&
+		initialize.delete(JSON.stringify(message.id)) &&
+		isObject(message.result)
+	) {
 		const caps = isObject(message.result.agentCapabilities) ? message.result.agentCapabilities : {};
 		const mcp = isObject(caps.mcpCapabilities) ? caps.mcpCapabilities : {};
 		const meta = isObject(message.result._meta) ? message.result._meta : {};
-		return toClient(JSON.stringify({ ...message, result: { ...message.result, agentCapabilities: { ...caps, mcpCapabilities: { ...mcp, acp: true } }, _meta: { ...meta, "windlass-platform/acpMcp": 1 } } }));
+		return toClient(
+			JSON.stringify({
+				...message,
+				result: {
+					...message.result,
+					agentCapabilities: { ...caps, mcpCapabilities: { ...mcp, acp: true } },
+					_meta: { ...meta, "windlass-platform/acpMcp": 1 },
+				},
+			}),
+		);
 	}
 	toClient(line);
 });
@@ -183,10 +240,24 @@ async function body(req) {
 function forward(server, id, method, params) {
 	const ours = `${ID_PREFIX}${nextId++}`;
 	const meta = isObject(params?._meta) ? params._meta : {};
-	const inner = { ...(isObject(params) ? params : {}), _meta: { ...meta, "io.modelcontextprotocol/protocolVersion": PROTOCOL, "io.modelcontextprotocol/clientCapabilities": {} } };
+	const inner = {
+		...(isObject(params) ? params : {}),
+		_meta: {
+			...meta,
+			"io.modelcontextprotocol/protocolVersion": PROTOCOL,
+			"io.modelcontextprotocol/clientCapabilities": {},
+		},
+	};
 	return new Promise(resolve => {
 		pending.set(ours, resolve);
-		toClient(JSON.stringify({ jsonrpc: "2.0", id: ours, method: "mcp/message", params: { serverId: server.serverId, requestId: `${ours}:${JSON.stringify(id)}`, method, params: inner } }));
+		toClient(
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: ours,
+				method: "mcp/message",
+				params: { serverId: server.serverId, requestId: `${ours}:${JSON.stringify(id)}`, method, params: inner },
+			}),
+		);
 	});
 }
 
@@ -205,12 +276,21 @@ async function serve(req, res) {
 	const text = await body(req);
 	if (text === null) return reply(res, 413, rpcError(null, -32600, "Request too large"));
 	const message = parse(text);
-	if (!isObject(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") return reply(res, 400, rpcError(null, -32600, "Invalid request"));
+	if (!isObject(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string")
+		return reply(res, 400, rpcError(null, -32600, "Invalid request"));
 	const { id, method, params } = message;
 	if (id === undefined || id === null) return reply(res, 202);
 	if (method === "initialize") {
 		const asked = isObject(params) && typeof params.protocolVersion === "string" ? params.protocolVersion : LEGACY[1];
-		return reply(res, 200, { jsonrpc: "2.0", id, result: { protocolVersion: LEGACY.includes(asked) ? asked : LEGACY[1], capabilities: { tools: { listChanged: false } }, serverInfo: { name: server.name, version: "1" } } });
+		return reply(res, 200, {
+			jsonrpc: "2.0",
+			id,
+			result: {
+				protocolVersion: LEGACY.includes(asked) ? asked : LEGACY[1],
+				capabilities: { tools: { listChanged: false } },
+				serverInfo: { name: server.name, version: "1" },
+			},
+		});
 	}
 	if (method === "ping") return reply(res, 200, { jsonrpc: "2.0", id, result: {} });
 	if (active >= MAX_ACTIVE) return reply(res, 429, rpcError(id, -33000, "Too many requests at once"));

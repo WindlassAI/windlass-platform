@@ -18,7 +18,9 @@ export function reportWebhook(enabled: boolean): void {
  * server is one of several, and a token one of them signs must be accepted by all the others: a
  * secret each would make up for itself, or keep in its own `.data/secret`, would not be.
  */
-export function startupProblem(config: Pick<Config, "engine" | "secretConfigured" | "browsers" | "unusable" | "sandbox" | "allowDockerHosted">): string | null {
+export function startupProblem(
+	config: Pick<Config, "engine" | "secretConfigured" | "browsers" | "unusable" | "sandbox" | "allowDockerHosted">,
+): string | null {
 	// A setting that is set means something: one that cannot be used is not replaced by its default unsaid.
 	if (config.unusable.length > 0) return `[wlp] ${config.unusable.join("; ")}.`;
 	if (config.engine.remote && !config.secretConfigured) {
@@ -40,7 +42,10 @@ export function startupProblem(config: Pick<Config, "engine" | "secretConfigured
  * visitor: `[wlp] WARNING: ...`. The server starts all the same, and asks again when a browser does.
  * `tokens` is null when the engine asks for none. Returns what it printed, or null.
  */
-export async function warnAboutConnectionTokens(tokens: Pick<ConnectionTokens, "current"> | null, print: (line: string) => void = (line) => console.error(line)): Promise<string | null> {
+export async function warnAboutConnectionTokens(
+	tokens: Pick<ConnectionTokens, "current"> | null,
+	print: (line: string) => void = line => console.error(line),
+): Promise<string | null> {
 	if (tokens === null) return null;
 	try {
 		await tokens.current();

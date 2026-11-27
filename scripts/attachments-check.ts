@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { crc32, deflateSync } from "node:zlib";
-import { ATTACHMENT_LIMITS, attachmentKey, pngHeader, shotRequest, type ShotRequest } from "../server/src/factory/attachments.js";
+import {
+	ATTACHMENT_LIMITS,
+	attachmentKey,
+	pngHeader,
+	shotRequest,
+	type ShotRequest,
+} from "../server/src/factory/attachments.js";
 import { S3ObjectStore } from "../server/src/bucket/s3.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { commitScript } from "../server/src/github/git.js";
@@ -27,7 +33,10 @@ const docker = process.argv.includes("--docker");
 const digest = (body: Buffer | string) => createHash("sha256").update(body).digest("hex");
 const name = ".wlp-shots/home.png";
 const shot: ShotRequest = { file: name, caption: "Home", page: null, shows: null };
-const one = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=", "base64");
+const one = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=",
+	"base64",
+);
 function png1280() {
 	const chunk = (name: string, data: Buffer) => {
 		const body = Buffer.concat([Buffer.from(name), data]);
@@ -41,7 +50,12 @@ function png1280() {
 	header.writeUInt32BE(1280);
 	header.writeUInt32BE(800, 4);
 	header[9] = 0;
-	return Buffer.concat([one.subarray(0, 8), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.alloc(1281 * 800))), chunk("IEND", Buffer.alloc(0))]);
+	return Buffer.concat([
+		one.subarray(0, 8),
+		chunk("IHDR", header),
+		chunk("IDAT", deflateSync(Buffer.alloc(1281 * 800))),
+		chunk("IEND", Buffer.alloc(0)),
+	]);
 }
 let failed = 0;
 async function check(title: string, test: () => unknown) {
@@ -54,7 +68,13 @@ async function check(title: string, test: () => unknown) {
 	}
 }
 function run(bin: string, args: string[], cwd = root, input = "", env: NodeJS.ProcessEnv = {}) {
-	const result = spawnSync(bin, args, { cwd, input, env: { PATH: process.env.PATH, HOME: root, ...env }, encoding: "utf8", timeout: 45_000 });
+	const result = spawnSync(bin, args, {
+		cwd,
+		input,
+		env: { PATH: process.env.PATH, HOME: root, ...env },
+		encoding: "utf8",
+		timeout: 45_000,
+	});
 	assert.ok(result.status === 0, "fixture command failed");
 	return result.stdout.trim();
 }
@@ -119,7 +139,14 @@ async function cases() {
 	});
 
 	const store = new StandInObjectStore();
-	const settings = { endpoint: "https://storage.invalid", bucket: "test", region: "auto", style: "path" as const, accessKeyId: "fixture", secretAccessKey: "fixture" };
+	const settings = {
+		endpoint: "https://storage.invalid",
+		bucket: "test",
+		region: "auto",
+		style: "path" as const,
+		accessKeyId: "fixture",
+		secretAccessKey: "fixture",
+	};
 	const signed = new S3ObjectStore(settings, {
 		fetch: async (_url, init) => {
 			const h = new Headers(init?.headers);
@@ -129,10 +156,17 @@ async function cases() {
 		},
 	});
 	await check("S3 signs length and type, both response overrides and the range request", async () => {
-		const put = new URL((await signed.linkToPut("pic", { size: one.length, ttlMs: 60000, contentType: "image/png" })).url);
+		const put = new URL(
+			(await signed.linkToPut("pic", { size: one.length, ttlMs: 60000, contentType: "image/png" })).url,
+		);
 		assert.ok(put.searchParams.get("X-Amz-SignedHeaders") === "content-length;content-type;host");
-		const get = new URL((await signed.linkToGet("pic", { ttlMs: 60000, contentType: "image/png", disposition: "inline" })).url);
-		assert.ok(get.searchParams.get("response-content-type") === "image/png" && get.searchParams.get("response-content-disposition") === "inline");
+		const get = new URL(
+			(await signed.linkToGet("pic", { ttlMs: 60000, contentType: "image/png", disposition: "inline" })).url,
+		);
+		assert.ok(
+			get.searchParams.get("response-content-type") === "image/png" &&
+				get.searchParams.get("response-content-disposition") === "inline",
+		);
 		assert.deepEqual(Buffer.from((await signed.readStart("pic", 33))!), one.subarray(0, 33));
 	});
 	const put = await store.linkToPut("pic", { size: one.length, ttlMs: 60000, contentType: "image/png" });
@@ -141,7 +175,9 @@ async function cases() {
 		["HTML header", one, "text/html"],
 		["extra byte", Buffer.concat([one, Buffer.alloc(1)]), "image/png"],
 	] as const)
-		await check("PUT rejects " + label, () => assert.equal(store.use(put.url, "PUT", body, type ? { "content-type": type } : {}).status, 403));
+		await check("PUT rejects " + label, () =>
+			assert.equal(store.use(put.url, "PUT", body, type ? { "content-type": type } : {}).status, 403),
+		);
 	await check("GET overrides stored HTML, bounded prefix, missing object", async () => {
 		const html = await store.linkToPut("pic", { size: one.length, ttlMs: 60000, contentType: "text/html" });
 		assert.equal(store.use(html.url, "PUT", one, { "content-type": "text/html" }).status, 200);
@@ -155,7 +191,10 @@ async function cases() {
 	const { backupConfig, config } = await import("../server/src/config.js");
 	if (process.argv.includes("--bucket")) {
 		const { bucket } = backupConfig();
-		assert.ok(bucket && ["localhost", "127.0.0.1", "[::1]"].includes(new URL(bucket.endpoint).hostname), "Configure a loopback S3 test bucket.");
+		assert.ok(
+			bucket && ["localhost", "127.0.0.1", "[::1]"].includes(new URL(bucket.endpoint).hostname),
+			"Configure a loopback S3 test bucket.",
+		);
 		const local = new S3ObjectStore(bucket);
 		const key = "attachments-check/" + randomBytes(12).toString("hex");
 		try {
@@ -165,7 +204,10 @@ async function cases() {
 				[one, "text/html"],
 				[Buffer.concat([one, Buffer.alloc(1)]), "image/png"],
 			] as const)
-				assert.equal((await fetch(url, { method: "PUT", body, headers: type ? { "content-type": type } : {} })).status, 403);
+				assert.equal(
+					(await fetch(url, { method: "PUT", body, headers: type ? { "content-type": type } : {} })).status,
+					403,
+				);
 			const html = (await local.linkToPut(key, { size: one.length, ttlMs: 60000, contentType: "text/html" })).url;
 			assert.ok((await fetch(html, { method: "PUT", body: one, headers: { "content-type": "text/html" } })).ok);
 			const get = (await local.linkToGet(key, { ttlMs: 60000, contentType: "image/png", disposition: "inline" })).url;
@@ -176,7 +218,9 @@ async function cases() {
 		}
 		assert.equal(await local.readStart(key, 33), null);
 	}
-	const { ATTACH_PACK, ATTACH_CLEAN, ATTACH_UPLOAD, attachmentStore, uploadShots } = await import("../server/src/sandbox/attach.js");
+	const { ATTACH_PACK, ATTACH_CLEAN, ATTACH_UPLOAD, attachmentStore, uploadShots } = await import(
+		"../server/src/sandbox/attach.js"
+	);
 	const top = join(root, "clone"),
 		dir = join(top, ".wlp-shots");
 	mkdirSync(dir, { recursive: true });
@@ -185,9 +229,14 @@ async function cases() {
 	symlinkSync("home.png", join(dir, "link.png"));
 	mkdirSync(join(dir, "dir.png"));
 	writeFileSync(join(dir, "large.png"), Buffer.alloc(3 * 1024 * 1024));
-	const names = ["home", "outside", "link", "dir", "large", "missing"].map((s) => ".wlp-shots/" + s + ".png");
+	const names = ["home", "outside", "link", "dir", "large", "missing"].map(s => ".wlp-shots/" + s + ".png");
 	const prefix = docker ? "/tmp/.wlp-attach-" : join(root, ".wlp-attach-");
-	const scriptEnv = { WLP_ATTACH_TOP: top, WLP_ATTACH_FILES: names.join("\n"), WLP_ATTACH_COPY: prefix + "a".repeat(24), WLP_ATTACH_MAX: String(ATTACHMENT_LIMITS.bytes) };
+	const scriptEnv = {
+		WLP_ATTACH_TOP: top,
+		WLP_ATTACH_FILES: names.join("\n"),
+		WLP_ATTACH_COPY: prefix + "a".repeat(24),
+		WLP_ATTACH_MAX: String(ATTACHMENT_LIMITS.bytes),
+	};
 	const container = docker
 		? run("docker", [
 				"run",
@@ -214,7 +263,9 @@ async function cases() {
 		script,
 	];
 	const sh = (script: string, env: Record<string, string> = {}, input = "") =>
-		docker ? run("docker", dockerExec(env, script), root, input) : run("bash", ["-c", script.replaceAll("/tmp/.wlp-attach-", prefix)], root, input, env);
+		docker
+			? run("docker", dockerExec(env, script), root, input)
+			: run("bash", ["-c", script.replaceAll("/tmp/.wlp-attach-", prefix)], root, input, env);
 	try {
 		const pack = () => sh(ATTACH_PACK, scriptEnv).split("\n");
 		const clean = () => {
@@ -223,7 +274,11 @@ async function cases() {
 		};
 		const packed = pack();
 		for (const [i, why] of ["file", "outside", "not_regular", "not_regular", "too_large", "missing"].entries())
-			await check("shell " + names[i], () => (i ? assert.equal(packed[i], `refused ${i} ${why}`) : assert.ok(packed[i].startsWith(`file 0 ${one.length} ${digest(one)} `))));
+			await check("shell " + names[i], () =>
+				i
+					? assert.equal(packed[i], `refused ${i} ${why}`)
+					: assert.ok(packed[i].startsWith(`file 0 ${one.length} ${digest(one)} `)),
+			);
 		await check("shell uploads private copy after original changes; hash mismatch and cleanup", async () => {
 			const path = scriptEnv.WLP_ATTACH_COPY + "-0.png";
 			const env = { WLP_ATTACH_PATH: path, WLP_ATTACH_SHA: digest(one) };
@@ -237,22 +292,34 @@ async function cases() {
 				for await (const chunk of request) chunks.push(Buffer.from(chunk));
 				const target = "wlp-stand-in://bucket" + request.url;
 				const type = request.headers["content-type"] ?? "";
-				response.writeHead(request.method === "PUT" ? store.use(target, "PUT", Buffer.concat(chunks), { "content-type": type }).status : 403).end();
+				response
+					.writeHead(
+						request.method === "PUT"
+							? store.use(target, "PUT", Buffer.concat(chunks), { "content-type": type }).status
+							: 403,
+					)
+					.end();
 			});
 			await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
 			try {
-				const script = `curl() { [ "$1" = -q ] || return 1; shift; command curl -q --unix-socket "${socket}" "$@"; }\n` + ATTACH_UPLOAD;
-				const call = promisify(execFile)(docker ? "docker" : "bash", docker ? dockerExec(env, script) : ["-c", script], {
-					cwd: root,
-					env: docker ? process.env : { PATH: process.env.PATH, HOME: root, ...env },
-					timeout: 30000,
-				});
+				const script =
+					`curl() { [ "$1" = -q ] || return 1; shift; command curl -q --unix-socket "${socket}" "$@"; }\n` +
+					ATTACH_UPLOAD;
+				const call = promisify(execFile)(
+					docker ? "docker" : "bash",
+					docker ? dockerExec(env, script) : ["-c", script],
+					{
+						cwd: root,
+						env: docker ? process.env : { PATH: process.env.PATH, HOME: root, ...env },
+						timeout: 30000,
+					},
+				);
 				call.child.stdin!.end(`url = "http://localhost${original.pathname}${original.search}"\n`);
 				assert.ok((await call).stdout.trim() === "http 200");
 				const downloaded = store.use((await store.linkToGet("snapshot", { ttlMs: 1000 })).url, "GET");
 				assert.ok(downloaded.body?.equals(one));
 			} finally {
-				await new Promise<void>((resolve) => server.close(() => resolve()));
+				await new Promise<void>(resolve => server.close(() => resolve()));
 			}
 			assert.equal(sh(`test ! -e "${path}" && echo gone`), "gone");
 			pack();
@@ -278,12 +345,14 @@ async function cases() {
 		sessionId = "s_fixture",
 		key = itemId + ":1:build:1";
 	const id = await layer.sandboxes.create({ uid, sessionId, profile: layer.sandboxes.profiles()[0].id });
-	const handle = (await layer.sandboxes.connect(id))! as SandboxHandle & { sandbox: { shots: Map<string, Buffer | "outside" | "not_regular">; copies: Map<string, Buffer> } };
+	const handle = (await layer.sandboxes.connect(id))! as SandboxHandle & {
+		sandbox: { shots: Map<string, Buffer | "outside" | "not_regular">; copies: Map<string, Buffer> };
+	};
 	const { ITEM_TABLES, itemActions, loadItems } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { issueServiceToken, issueUserToken } = await import("../server/src/tokens.js");
 	const sql = new DatabaseSync(":memory:");
-	ITEM_TABLES.forEach((q) => sql.exec(q));
+	ITEM_TABLES.forEach(q => sql.exec(q));
 	type Query = { execute<T>(q: string, ...args: SQLInputValue[]): Promise<T[]> };
 	const db = {
 		async execute<T>(q: string, ...args: SQLInputValue[]) {
@@ -303,12 +372,24 @@ async function cases() {
 	};
 	const state = await loadItems(db as never);
 	// The live feed groups items by repository and source (item-pages.ts), so the summary carries both.
-	const summary = { id: itemId, sessionId, state: "working", revision: 1, updatedAt: Date.now(), createdAt: Date.now(), source: "web",
-		repository: { provider: "github", id: 7101, owner: "ada", name: "harbor", branch: "main" } } as ItemSummary;
+	const summary = {
+		id: itemId,
+		sessionId,
+		state: "working",
+		revision: 1,
+		updatedAt: Date.now(),
+		createdAt: Date.now(),
+		source: "web",
+		repository: { provider: "github", id: 7101, owner: "ada", name: "harbor", branch: "main" },
+	} as ItemSummary;
 	state.items.set(itemId, summary);
 	const alarms = new Set<string>();
 	const c = {
-		vars: { tokenGen: 0, items: state, sessions: new Map([[sessionId, { id: sessionId, item: { id: itemId } } as SessionSummary]]) },
+		vars: {
+			tokenGen: 0,
+			items: state,
+			sessions: new Map([[sessionId, { id: sessionId, item: { id: itemId } } as SessionSummary]]),
+		},
 		db,
 		key: [uid],
 		conn: { params: serviceParams() },
@@ -324,17 +405,18 @@ async function cases() {
 		log: { warn() {}, error() {} },
 	} as unknown as ItemsCtx;
 	const ledger: AttachmentLedger = {
-		internalReserveAttachment: (v) => itemActions.internalReserveAttachment(c, v),
-		internalRecordAttachment: (v) => itemActions.internalRecordAttachment(c, v),
-		internalSettleAttachments: (v) => itemActions.internalSettleAttachments(c, v),
-		internalReleaseAttachment: (id) => itemActions.internalReleaseAttachment(c, id),
-		internalDeleteItemAttachments: (id) => itemActions.internalDeleteItemAttachments(c, id),
+		internalReserveAttachment: v => itemActions.internalReserveAttachment(c, v),
+		internalRecordAttachment: v => itemActions.internalRecordAttachment(c, v),
+		internalSettleAttachments: v => itemActions.internalSettleAttachments(c, v),
+		internalReleaseAttachment: id => itemActions.internalReleaseAttachment(c, id),
+		internalDeleteItemAttachments: id => itemActions.internalDeleteItemAttachments(c, id),
 	};
-	const file = (shots = [shot]) => uploadShots(handle, handle.cwd, shots, { by: "builder", uid, itemId, sessionId, key }, ledger, bucket);
+	const file = (shots = [shot]) =>
+		uploadShots(handle, handle.cwd, shots, { by: "builder", uid, itemId, sessionId, key }, ledger, bucket);
 	const { fileReport, reportBlocks, itemComment } = await import("../server/src/factory/review.js");
 	const { platformTools } = await import("../server/src/agent-publish.js");
 	await check("report schema, 180 seconds, checked refusals preserve filing, storage-off reply", async () => {
-		const tool = platformTools({ publish: false, push: false, report: true }, 1000).find((t) => t.name === "report")!;
+		const tool = platformTools({ publish: false, push: false, report: true }, 1000).find(t => t.name === "report")!;
 		assert.equal(tool.timeoutSeconds, 180);
 		assert.ok(JSON.stringify(tool.inputSchema).includes("screenshots"));
 		let taken = 0;
@@ -342,15 +424,21 @@ async function cases() {
 			assert.deepEqual(r.screenshots, []);
 			taken++;
 		};
-		const answer = await fileReport({ title: "Keep", screenshots: [raw] }, { text: (s) => s }, take, null);
+		const answer = await fileReport({ title: "Keep", screenshots: [raw] }, { text: s => s }, take, null);
 		assert.ok(answer.includes("your report was filed without them"));
 		assert.equal(taken, 1);
-		const refused = await fileReport({ title: "", screenshots: [{ ...raw, file: "../a.png" }] }, { text: (s) => s }, take, null);
+		const refused = await fileReport(
+			{ title: "", screenshots: [{ ...raw, file: "../a.png" }] },
+			{ text: s => s },
+			take,
+			null,
+		);
 		assert.ok(refused.includes("title") && refused.includes("screenshots[0].file"));
 		assert.equal(taken, 1);
 	});
 	const settle = (keep: string[]) => ledger.internalSettleAttachments({ sessionId, key, keep });
-	const rows = () => sql.prepare("SELECT * FROM attachments").all() as Array<{ id: string; key: string; state: string; at: number }>;
+	const rows = () =>
+		sql.prepare("SELECT * FROM attachments").all() as Array<{ id: string; key: string; state: string; at: number }>;
 	const reset = () => {
 		sql.exec("DELETE FROM attachments");
 		handle.sandbox.shots.clear();
@@ -379,7 +467,7 @@ async function cases() {
 	await check("signed-in item links, scoped API link, and page-only GitHub comment", async () => {
 		reset();
 		const { screenshots } = await file();
-		await settle(screenshots.map((s) => s.id));
+		await settle(screenshots.map(s => s.id));
 		const profile = { uid, email: null, demo: false };
 		c.vars.profile = profile;
 		c.conn!.params = { token: issueUserToken(profile, 0) };
@@ -390,13 +478,17 @@ async function cases() {
 			const read = await createApiToken(c.db, uid, { name: "read", scopes: ["items:read"] }, Date.now());
 			const write = await createApiToken(c.db, uid, { name: "write", scopes: ["items:create"] }, Date.now());
 			c.conn!.params = { token: issueServiceToken("api") };
-			const ask = (token: string, attachment = screenshots[0].id) => itemActions.internalApiItemAttachment(c, { id: itemId, attachment, token });
+			const ask = (token: string, attachment = screenshots[0].id) =>
+				itemActions.internalApiItemAttachment(c, { id: itemId, attachment, token });
 			await assert.rejects(
 				() => ask(write.secret),
 				(e: unknown) => (e as { code: string }).code === "missing_scope",
 			);
 			const url = await ask(read.secret);
-			assert.ok(bucket.use(url, "GET").status === 200 && Math.abs(Number(new URL(url).searchParams.get("expires")) - Date.now() - 60000) < 1000);
+			assert.ok(
+				bucket.use(url, "GET").status === 200 &&
+					Math.abs(Number(new URL(url).searchParams.get("expires")) - Date.now() - 60000) < 1000,
+			);
 			await assert.rejects(
 				() => ask(read.secret, "a_0000000000000000"),
 				(e: unknown) => (e as { code: string }).code === "item_not_found",
@@ -412,10 +504,22 @@ async function cases() {
 			} as unknown as import("../server/src/contract.js").Verdict;
 			const blocks = reportBlocks({ title: "Report", lookAt: "", concerns: "", description: "Done", screenshots });
 			assert.deepEqual(blocks[1], { kind: "screenshot", attachment: screenshots[0].id });
-			const comment = itemComment(verdict, "Ready", { by: "builder", key, run: 1, sessionId, head: verdict.head, at: 0, title: "Report", screenshots, blocks, records: [] });
+			const comment = itemComment(verdict, "Ready", {
+				by: "builder",
+				key,
+				run: 1,
+				sessionId,
+				head: verdict.head,
+				at: 0,
+				title: "Report",
+				screenshots,
+				blocks,
+				records: [],
+			});
 			assert.ok(
-				comment.endsWith(`[View 1 screenshot on the work item](${config.origins[0]}/items/${itemId}) (opens for the item's owner only)`) &&
-					!/!\[|wlp-stand-in|X-Amz-/.test(comment),
+				comment.endsWith(
+					`[View 1 screenshot on the work item](${config.origins[0]}/items/${itemId}) (opens for the item's owner only)`,
+				) && !/!\[|wlp-stand-in|X-Amz-/.test(comment),
 			);
 		} finally {
 			c.conn!.params = serviceParams();
@@ -435,7 +539,7 @@ async function cases() {
 			assert.equal(r.screenshots.length, 0);
 			assert.ok(r.problems[0].includes(name));
 			assert.equal(handle.sandbox.copies.size, 0);
-			assert.ok(rows().every((r) => r.state === "discarded"));
+			assert.ok(rows().every(r => r.state === "discarded"));
 		});
 	await check("expired link returns 403, releases reservation, cleans copy", async () => {
 		reset();
@@ -464,19 +568,20 @@ async function cases() {
 			bucket.size = orig;
 		}
 	});
-	const reserve = (n: number, bytes: number) => ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(String(n)), bytes });
+	const reserve = (n: number, bytes: number) =>
+		ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(String(n)), bytes });
 	await check("40 admitted, 41st file named and dropped, same item cannot consume more concurrently", async () => {
 		reset();
 		const results = await Promise.all(Array.from({ length: 40 }, (_, i) => reserve(i, 1)));
-		assert.ok(results.every((r) => "id" in r));
+		assert.ok(results.every(r => "id" in r));
 		const r = await file();
 		assert.ok(r.problems[0].includes(name) && r.problems[0].includes("item"));
 		assert.equal(r.screenshots.length, 0);
 		let kept = false;
 		const reply = await fileReport(
 			{ title: "At capacity", screenshots: [raw] },
-			{ text: (s) => s },
-			(report) => {
+			{ text: s => s },
+			report => {
 				kept = report.title === "At capacity" && !report.screenshots.length;
 			},
 			file,
@@ -544,7 +649,13 @@ async function cases() {
 		await sweep(discarded.at + cleanupDelay - 1);
 		assert.equal(rows()[0].state, "discarded");
 		assert.equal(await bucket.size(discarded.key), bad.length);
-		const retry = await ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(bad), bytes: bad.length });
+		const retry = await ledger.internalReserveAttachment({
+			itemId,
+			sessionId,
+			key,
+			sha256: digest(bad),
+			bytes: bad.length,
+		});
 		assert.ok("id" in retry && retry.id !== discarded.id);
 		await sweep(discarded.at + cleanupDelay);
 		assert.equal(await bucket.size(discarded.key), null);
@@ -559,7 +670,9 @@ async function cases() {
 		try {
 			const held = await reserve(1, 10);
 			assert.ok("id" in held);
-			bucket.remove = async () => { throw Error("offline"); };
+			bucket.remove = async () => {
+				throw Error("offline");
+			};
 			await ledger.internalReleaseAttachment(held.id);
 			assert.deepEqual(await reserve(2, 1), { refused: "account" });
 			const due = rows()[0].at + cleanupDelay;
@@ -574,18 +687,27 @@ async function cases() {
 			config.factory.attachments.accountBytes = limit;
 		}
 	});
-	await check("retrying an unfinished reservation protects the newly issued PUT from the stale-reservation sweep", async () => {
-		reset();
-		const first = await ledger.internalReserveAttachment({ itemId, sessionId, key, sha256: digest(one), bytes: one.length });
-		assert.ok("id" in first);
-		sql.prepare("UPDATE attachments SET at=? WHERE id=?").run(Date.now() - 3 * 3600_000, first.id);
-		const { result } = await signedFiling();
-		assert.equal(result.screenshots[0]?.id, first.id);
-		await sweep(Date.now());
-		const [retried] = rows();
-		assert.equal(retried.state, "reserved");
-		assert.equal(await bucket.size(retried.key), one.length);
-	});
+	await check(
+		"retrying an unfinished reservation protects the newly issued PUT from the stale-reservation sweep",
+		async () => {
+			reset();
+			const first = await ledger.internalReserveAttachment({
+				itemId,
+				sessionId,
+				key,
+				sha256: digest(one),
+				bytes: one.length,
+			});
+			assert.ok("id" in first);
+			sql.prepare("UPDATE attachments SET at=? WHERE id=?").run(Date.now() - 3 * 3600_000, first.id);
+			const { result } = await signedFiling();
+			assert.equal(result.screenshots[0]?.id, first.id);
+			await sweep(Date.now());
+			const [retried] = rows();
+			assert.equal(retried.state, "reserved");
+			assert.equal(await bucket.size(retried.key), one.length);
+		},
+	);
 	await check("deleting an item keeps its recently signed key sweepable", async () => {
 		reset();
 		try {
@@ -661,7 +783,11 @@ async function cases() {
 		const repo = join(root, "git");
 		mkdirSync(repo);
 		run("git", ["init", "--quiet", "-b", "work"], repo);
-		run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "Base", "--allow-empty"], repo);
+		run(
+			"git",
+			["-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "Base", "--allow-empty"],
+			repo,
+		);
 		const baseSha = run("git", ["rev-parse", "HEAD"], repo);
 		mkdirSync(join(repo, ".wlp-shots"));
 		writeFileSync(join(repo, name), one);
@@ -673,11 +799,23 @@ async function cases() {
 		try {
 			run(
 				"bash",
-				["-c", commitScript({ sessionId, branch: "work", baseSha, pushed: null, author: { name: "test", email: "test@example.org" } })],
+				[
+					"-c",
+					commitScript({
+						sessionId,
+						branch: "work",
+						baseSha,
+						pushed: null,
+						author: { name: "test", email: "test@example.org" },
+					}),
+				],
 				repo,
 				"normal change\n",
 			);
-			assert.equal(run("git", ["--git-dir=" + join(handover, "repo"), "ls-tree", "-r", "--name-only", "HEAD"], repo), "normal");
+			assert.equal(
+				run("git", ["--git-dir=" + join(handover, "repo"), "ls-tree", "-r", "--name-only", "HEAD"], repo),
+				"normal",
+			);
 			assert.ok(existsSync(join(repo, name)));
 		} finally {
 			rmSync(handover, { recursive: true, force: true });

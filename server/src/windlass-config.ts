@@ -44,6 +44,7 @@
  */
 
 import { PUBLISH_SERVER } from "./agent-publish.js";
+import { isRecord } from "./util.js";
 
 /** Windlass's configuration file of the sandbox's user. */
 export const WINDLASS_CONFIG_FILE = "/home/agent/.config/windlass/config.json";
@@ -78,7 +79,13 @@ const TURN_TIME_SCRIPT = [
 ].join("\n");
 
 /** The platform's hook as the file holds it: a hook that cannot run lets the call through (`onError: "allow"`). */
-export const TURN_TIME_HOOK = { name: TURN_TIME_HOOK_NAME, tools: ["shell"], command: TURN_TIME_SCRIPT, timeoutSeconds: 5, onError: "allow" } as const;
+export const TURN_TIME_HOOK = {
+	name: TURN_TIME_HOOK_NAME,
+	tools: ["shell"],
+	command: TURN_TIME_SCRIPT,
+	timeoutSeconds: 5,
+	onError: "allow",
+} as const;
 
 /** The file's `wake` section: no session the platform opens is offered the wake-up tools. */
 export const PLATFORM_WAKE = { enabled: false } as const;
@@ -88,8 +95,6 @@ export interface ConfigServer {
 	name: string;
 	definition: Record<string, unknown>;
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** What the platform's list holds: the names it wrote, and what the file had under a name before. */
 interface Written {
@@ -107,9 +112,13 @@ function writtenOf(text: string | null): Written {
 	} catch {
 		return none;
 	}
-	if (!isObject(parsed) || !Array.isArray(parsed.names)) return none;
+	if (!isRecord(parsed) || !Array.isArray(parsed.names)) return none;
 	const names = parsed.names.filter((name): name is string => typeof name === "string");
-	const replaced = isObject(parsed.replaced) ? Object.fromEntries(Object.entries(parsed.replaced).filter(([name, definition]) => names.includes(name) && isObject(definition))) : {};
+	const replaced = isRecord(parsed.replaced)
+		? Object.fromEntries(
+				Object.entries(parsed.replaced).filter(([name, definition]) => names.includes(name) && isRecord(definition)),
+			)
+		: {};
 	return { names, replaced };
 }
 
@@ -123,10 +132,13 @@ export interface PlatformConfig {
 
 /** Whether two values of JSON's shapes say the same, whatever order their keys are in. */
 function same(a: unknown, b: unknown): boolean {
-	if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => same(item, b[index]));
-	if (isObject(a) && isObject(b)) {
+	if (Array.isArray(a) || Array.isArray(b))
+		return (
+			Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => same(item, b[index]))
+		);
+	if (isRecord(a) && isRecord(b)) {
 		const keys = Object.keys(a);
-		return keys.length === Object.keys(b).length && keys.every((key) => key in b && same(a[key], b[key]));
+		return keys.length === Object.keys(b).length && keys.every(key => key in b && same(a[key], b[key]));
 	}
 	return a === b;
 }
@@ -142,7 +154,11 @@ function same(a: unknown, b: unknown): boolean {
  * Null when the file is there and is not what Windlass reads (not JSON, or `mcp` or `mcp.servers` is
  * not an object): it is left alone then, and nothing is written.
  */
-export function platformConfig(text: string | null, written: string | null, servers: readonly ConfigServer[]): PlatformConfig | null {
+export function platformConfig(
+	text: string | null,
+	written: string | null,
+	servers: readonly ConfigServer[],
+): PlatformConfig | null {
 	let config: unknown = {};
 	if (text !== null && text.trim() !== "") {
 		try {
@@ -151,17 +167,19 @@ export function platformConfig(text: string | null, written: string | null, serv
 			return null;
 		}
 	}
-	if (!isObject(config)) return null;
+	if (!isRecord(config)) return null;
 	const mcp = config.mcp === undefined ? {} : config.mcp;
-	if (!isObject(mcp)) return null;
+	if (!isRecord(mcp)) return null;
 	const there = mcp.servers === undefined ? {} : mcp.servers;
-	if (!isObject(there)) return null;
+	if (!isRecord(there)) return null;
 
 	// What the platform wrote before goes, and so does anything under its own server's name.
 	const before = writtenOf(written);
 	const kept: Record<string, unknown> = {};
-	for (const [name, definition] of Object.entries(there)) if (!before.names.includes(name) && name !== PUBLISH_SERVER) kept[name] = definition;
-	for (const [name, definition] of Object.entries(before.replaced)) if (!(name in kept) && name !== PUBLISH_SERVER) kept[name] = definition;
+	for (const [name, definition] of Object.entries(there))
+		if (!before.names.includes(name) && name !== PUBLISH_SERVER) kept[name] = definition;
+	for (const [name, definition] of Object.entries(before.replaced))
+		if (!(name in kept) && name !== PUBLISH_SERVER) kept[name] = definition;
 
 	const now: Written = { names: [], replaced: {} };
 	const next: Record<string, unknown> = { ...kept };
@@ -173,15 +191,30 @@ export function platformConfig(text: string | null, written: string | null, serv
 
 	// The file's own hooks stay; the platform's goes first among those before a call, in place of any of its name.
 	const hooks = config.hooks === undefined ? {} : config.hooks;
-	if (!isObject(hooks) || (hooks.beforeTool !== undefined && !Array.isArray(hooks.beforeTool))) return null;
-	const theirs = ((hooks.beforeTool as unknown[] | undefined) ?? []).filter((hook) => !(isObject(hook) && hook.name === TURN_TIME_HOOK_NAME));
+	if (!isRecord(hooks) || (hooks.beforeTool !== undefined && !Array.isArray(hooks.beforeTool))) return null;
+	const theirs = ((hooks.beforeTool as unknown[] | undefined) ?? []).filter(
+		hook => !(isRecord(hook) && hook.name === TURN_TIME_HOOK_NAME),
+	);
 	const hooksNow = { ...hooks, beforeTool: [TURN_TIME_HOOK, ...theirs] };
 
 	const { servers: _servers, ...restOfMcp } = mcp;
 	// `checks`, `requiredChecks`, `verify` and `wake` are the platform's: what the file had under them goes.
-	const { mcp: _mcp, checks: _checks, requiredChecks: _required, verify: _verify, wake: _wake, hooks: _hooks, ...rest } = config;
+	const {
+		mcp: _mcp,
+		checks: _checks,
+		requiredChecks: _required,
+		verify: _verify,
+		wake: _wake,
+		hooks: _hooks,
+		...rest
+	} = config;
 	const mcpNow = Object.keys(next).length > 0 ? { ...restOfMcp, servers: next } : restOfMcp;
-	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), hooks: hooksNow, wake: PLATFORM_WAKE };
+	const configNow = {
+		...rest,
+		...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}),
+		hooks: hooksNow,
+		wake: PLATFORM_WAKE,
+	};
 	return {
 		config: `${JSON.stringify(configNow, null, 2)}\n`,
 		written: now.names.length === 0 ? null : `${JSON.stringify(now)}\n`,
@@ -211,7 +244,7 @@ export function projectChecks(text: string | null): ProjectChecks | null {
 	} catch {
 		return null;
 	}
-	if (!isObject(config)) return null;
-	const verify = isObject(config.verify) && typeof config.verify.mode === "string" ? config.verify.mode : null;
+	if (!isRecord(config)) return null;
+	const verify = isRecord(config.verify) && typeof config.verify.mode === "string" ? config.verify.mode : null;
 	return { checks: Array.isArray(config.checks) ? config.checks.length : null, verify };
 }

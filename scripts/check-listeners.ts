@@ -4,7 +4,7 @@ import { createSocket, type Socket } from "node:dgram";
 import { createServer } from "node:net";
 
 export function portFree(port: number): Promise<boolean> {
-	return new Promise((done) => {
+	return new Promise(done => {
 		const probe = createServer();
 		probe.once("error", () => done(false));
 		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
@@ -15,9 +15,10 @@ export function portFree(port: number): Promise<boolean> {
 // TCP port to an outgoing connection before Rivet binds it. Keep all three engine ports and HTTP
 // out of the automatic port range. Above 10080, fetch also accepts every HTTP port.
 function listenerRange(): [number, number] {
-	const [first, last] = process.platform === "linux"
-		? readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/).map(Number)
-		: [49152, 65535];
+	const [first, last] =
+		process.platform === "linux"
+			? readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/).map(Number)
+			: [49152, 65535];
 	return first - 10081 >= 11 ? [10081, first] : [Math.max(10081, last + 1), 65536];
 }
 
@@ -28,7 +29,7 @@ function listenerRange(): [number, number] {
 export async function localListeners(httpCount = 1) {
 	const [min, end] = listenerRange();
 	// A custom kernel range can cover every candidate. Fall back to the original OS allocation there.
-	const candidate = (offset = 0) => end - min > offset ? randomInt(min, end - offset) : 0;
+	const candidate = (offset = 0) => (end - min > offset ? randomInt(min, end - offset) : 0);
 	for (;;) {
 		const reservations: Socket[] = [];
 		let allocated = false;
@@ -51,7 +52,9 @@ export async function localListeners(httpCount = 1) {
 			await reserve(engine + 10);
 			const http: number[] = [];
 			for (let i = 0; i < httpCount; i++) http.push(await reserve(candidate()));
-			console.log(`Local ports: engine ${engine}, ${engine + 1}, ${engine + 10}${http.length ? "; HTTP " + http.join(", ") : ""}`);
+			console.log(
+				`Local ports: engine ${engine}, ${engine + 1}, ${engine + 10}${http.length ? "; HTTP " + http.join(", ") : ""}`,
+			);
 			allocated = true;
 			return { engine, http };
 		} catch (error) {

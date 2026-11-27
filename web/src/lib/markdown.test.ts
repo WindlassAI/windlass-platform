@@ -4,7 +4,9 @@ import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "./markdown
 
 describe("the assistant's Markdown", () => {
 	it("renders prose, code and lists", () => {
-		const html = renderMarkdown("Fixed. `add` in `src/add.ts` returned `a - b`.\n\n- one\n- **two**\n\n```ts\nconst a = 1 < 2\n```");
+		const html = renderMarkdown(
+			"Fixed. `add` in `src/add.ts` returned `a - b`.\n\n- one\n- **two**\n\n```ts\nconst a = 1 < 2\n```",
+		);
 		expect(html).toContain("<code>src/add.ts</code>");
 		expect(html).toContain("<li><strong>two</strong></li>");
 		expect(html).toContain("<pre><code");
@@ -13,7 +15,16 @@ describe("the assistant's Markdown", () => {
 
 	it("removes anything that could run or load", () => {
 		const html = renderMarkdown(
-			['<script>alert(1)</script>', '<img src="https://example.com/x.png" onerror="alert(1)">', '<a href="javascript:alert(1)">x</a>', "[y](javascript:alert(2))", '<iframe src="https://example.com"></iframe>', '<p style="position:fixed" onclick="alert(3)">z</p>', "<form><input name=q></form>", "![alt](https://example.com/track.gif)"].join("\n\n"),
+			[
+				"<script>alert(1)</script>",
+				'<img src="https://example.com/x.png" onerror="alert(1)">',
+				'<a href="javascript:alert(1)">x</a>',
+				"[y](javascript:alert(2))",
+				'<iframe src="https://example.com"></iframe>',
+				'<p style="position:fixed" onclick="alert(3)">z</p>',
+				"<form><input name=q></form>",
+				"![alt](https://example.com/track.gif)",
+			].join("\n\n"),
 		);
 		expect(html).not.toMatch(/<script|<img|<iframe|<form|onerror|onclick|javascript:|style=/i);
 		expect(html).not.toMatch(/<input(?![^>]*type="checkbox")/i);
@@ -50,8 +61,12 @@ describe("a reasoning summary's title", () => {
 
 describe("a server's sentence, inline", () => {
 	it("renders code spans and emphasis, and no block, link or markup of its own", () => {
-		expect(renderInlineMarkdown("A check's command came to ignore an exit status (`|| true` or the like)")).toBe("A check's command came to ignore an exit status (<code>|| true</code> or the like)");
+		expect(renderInlineMarkdown("A check's command came to ignore an exit status (`|| true` or the like)")).toBe(
+			"A check's command came to ignore an exit status (<code>|| true</code> or the like)",
+		);
 		expect(renderInlineMarkdown("# Not a heading, **bold**")).toBe("# Not a heading, <strong>bold</strong>");
-		expect(renderInlineMarkdown("See https://example.com and [this](https://example.com) <img src=x onerror=alert(1)>")).toBe("See https://example.com and this ");
+		expect(
+			renderInlineMarkdown("See https://example.com and [this](https://example.com) <img src=x onerror=alert(1)>"),
+		).toBe("See https://example.com and this ");
 	});
 });

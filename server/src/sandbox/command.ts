@@ -6,7 +6,9 @@ const STDERR_CAP = 256 * 1024;
 
 export function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), ms); });
+	const timeout = new Promise<boolean>(resolve => {
+		timer = setTimeout(() => resolve(false), ms);
+	});
 	return Promise.race([promise.then(() => true), timeout]).finally(() => clearTimeout(timer));
 }
 
@@ -17,7 +19,17 @@ export function runCommand(
 	clientStopMessage: string,
 	monitor?: () => () => Promise<void>,
 ): Promise<InternalExecResult> {
-	if (options.signal?.aborted) return Promise.resolve({ exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "", killed: false, stopLog: [], leftovers: 0 });
+	if (options.signal?.aborted)
+		return Promise.resolve({
+			exitCode: null,
+			timedOut: false,
+			aborted: true,
+			stdout: "",
+			stderr: "",
+			killed: false,
+			stopLog: [],
+			leftovers: 0,
+		});
 	let stdout = "";
 	let stderr = "";
 	const run = sandbox.start(argv, {
@@ -25,11 +37,11 @@ export function runCommand(
 		cwd: options.cwd,
 		env: options.env,
 		secretEnv: options.secretEnv,
-		onStdout: (text) => {
+		onStdout: text => {
 			if (stdout.length < STDOUT_CAP) stdout += text.slice(0, STDOUT_CAP - stdout.length);
 			options.onStdout?.(text);
 		},
-		onStderr: (text) => {
+		onStderr: text => {
 			stderr = (stderr + text).slice(-STDERR_CAP);
 			options.onStderr?.(text);
 		},
@@ -72,14 +84,15 @@ export function runCommand(
 					stop();
 				}, options.timeoutMs);
 
-	const result = run.ended.then(async (end) => {
+	const result = run.ended.then(async end => {
 		if (timer) clearTimeout(timer);
 		options.signal?.removeEventListener("abort", onAbort);
 		if (end.error !== null) throw end.error;
 		if (stopping !== null) await stopping;
 		const stopped = stopping !== null;
 		const leftovers = await sandbox.sweep(run.tag, { waitMs: stopped ? 2000 : 0 });
-		const exitCode = killed || end.signal !== null || (stopped && end.code !== null && end.code > 128) ? null : end.code;
+		const exitCode =
+			killed || end.signal !== null || (stopped && end.code !== null && end.code > 128) ? null : end.code;
 		return { exitCode, timedOut, aborted, stdout, stderr, killed, stopLog, leftovers };
 	});
 	return release ? result.finally(release) : result;

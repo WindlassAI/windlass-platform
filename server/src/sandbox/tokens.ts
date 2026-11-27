@@ -9,8 +9,11 @@ export async function probeImage(image: string = IMAGE): Promise<string | null> 
 	const known = probed.get(image);
 	if (known?.imageId === imageId) return known.version;
 	const name = tmpName();
-	const said = await runHelper(helperFlags(name, "none"), name, ["windlass", "--version"], { timeoutMs: 60_000, image });
-	const version = said.code === 0 ? /^Windlass\s+(\S+)/.exec(said.stdout.trim())?.[1] ?? null : null;
+	const said = await runHelper(helperFlags(name, "none"), name, ["windlass", "--version"], {
+		timeoutMs: 60_000,
+		image,
+	});
+	const version = said.code === 0 ? (/^Windlass\s+(\S+)/.exec(said.stdout.trim())?.[1] ?? null) : null;
 	if (version !== null) probed.set(image, { imageId, version });
 	return version;
 }

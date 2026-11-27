@@ -7,9 +7,19 @@
  * the dimmed page, Done and dragging it down by its handle close it. The page behind does not
  * scroll while it is open.
  */
-import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import {
+	useEffect,
+	useId,
+	useRef,
+	useState,
+	type PointerEvent as ReactPointerEvent,
+	type KeyboardEvent,
+	type ReactNode,
+	type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeftIcon } from "../Icons";
+import { FOCUSABLE } from "./focus";
 
 export interface SheetProps {
 	open: boolean;
@@ -30,25 +40,36 @@ export interface SheetProps {
 	children: ReactNode;
 }
 
-const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
-
 /** How far the sheet is dragged down before letting go closes it. */
 const DISMISS_PX = 96;
 
 export function Sheet({ open, ...props }: SheetProps) {
 	if (!open || typeof document === "undefined") return null;
 	// Inside a modal dialog it is drawn in the dialog's own top layer, or the dialog would cover it.
-	const opener = props.returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+	const opener =
+		props.returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
 	return createPortal(<SheetPanel {...props} />, opener?.closest("dialog") ?? document.body);
 }
 
-function SheetPanel({ onClose, title, onBack, backLabel, done = "Done", returnFocus, toolbar, footer, id, children }: Omit<SheetProps, "open">) {
+function SheetPanel({
+	onClose,
+	title,
+	onBack,
+	backLabel,
+	done = "Done",
+	returnFocus,
+	toolbar,
+	footer,
+	id,
+	children,
+}: Omit<SheetProps, "open">) {
 	const titleId = useId();
 	const panel = useRef<HTMLDivElement>(null);
 	const [drag, setDrag] = useState<{ from: number; by: number } | null>(null);
 
 	useEffect(() => {
-		const opener = returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+		const opener =
+			returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
 		const element = panel.current;
 		(element?.querySelector<HTMLElement>("[data-autofocus]") ?? element)?.focus({ preventScroll: true });
 		const overflow = document.body.style.overflow;
@@ -109,7 +130,13 @@ function SheetPanel({ onClose, title, onBack, backLabel, done = "Done", returnFo
 				style={drag ? { transform: `translateY(${drag.by}px)` } : undefined}
 				onKeyDown={onKeyDown}
 			>
-				<div className="ui-sheet-grab" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)}>
+				<div
+					className="ui-sheet-grab"
+					onPointerDown={onPointerDown}
+					onPointerMove={onPointerMove}
+					onPointerUp={onPointerUp}
+					onPointerCancel={() => setDrag(null)}
+				>
 					<span aria-hidden="true" />
 				</div>
 				<div className="ui-sheet-head">

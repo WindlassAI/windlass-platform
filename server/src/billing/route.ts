@@ -18,7 +18,11 @@ import { BILLING_UID, billing } from "./config.js";
 export const BILLING_WEBHOOK_PATH = "/billing/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 
-const answer = (status: number, text: string) => new Response(`${text}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+const answer = (status: number, text: string) =>
+	new Response(`${text}\n`, {
+		status,
+		headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+	});
 
 /** Resolve verified deliveries using the durable customer owner, with metadata for older checkouts. */
 export function webhookOwner(owner: string | null, metadata: string | null): string | null {
@@ -70,7 +74,9 @@ export async function billingWebhookRoute(request: Request): Promise<Response> {
 			const uid = webhookOwner(owner, event.uid);
 			if (uid === null) {
 				if (owner && event.uid !== null) {
-					console.warn(`[wlp] billing.customer_mismatch ${ids} owner=${owner} metadata=${BILLING_UID.test(event.uid) ? event.uid : "-"}`);
+					console.warn(
+						`[wlp] billing.customer_mismatch ${ids} owner=${owner} metadata=${BILLING_UID.test(event.uid) ? event.uid : "-"}`,
+					);
 					continue;
 				}
 				console.warn(`[wlp] billing.unmatched ${ids}: the event names no account of this deployment`);

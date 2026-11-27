@@ -2,7 +2,14 @@
 import type { SessionStatus, SessionSummary, TurnOutcome } from "@contract";
 import { AskIcon, CheckIcon, CrossIcon, Mark, PauseIcon, RingIcon, StopIcon, WarnIcon } from "./Icons";
 
-export const STATUS_WORD: Record<SessionStatus, string> = { idle: "idle", starting: "starting", running: "working", waiting: "needs you", stopping: "stopping", paused: "paused" };
+export const STATUS_WORD: Record<SessionStatus, string> = {
+	idle: "idle",
+	starting: "starting",
+	running: "working",
+	waiting: "needs you",
+	stopping: "stopping",
+	paused: "paused",
+};
 
 export const OUTCOME_WORD: Record<TurnOutcome, string> = {
 	succeeded: "done",
@@ -24,7 +31,8 @@ export const OUTCOME_TONE: Record<TurnOutcome, "good" | "warn" | "bad" | "dim"> 
 
 export function StatusGlyph({ status, size = 16 }: { status: SessionStatus; size?: number }) {
 	if (status === "running") return <Mark size={size + 2} turning className="status-glyph status-running" />;
-	if (status === "starting") return <span className="status-glyph status-starting" style={{ width: size, height: size }} aria-hidden="true" />;
+	if (status === "starting")
+		return <span className="status-glyph status-starting" style={{ width: size, height: size }} aria-hidden="true" />;
 	if (status === "stopping") return <StopIcon size={size} className="status-glyph status-stopping" />;
 	// Waiting on the user: still, not turning. Nothing moves until they answer.
 	if (status === "waiting") return <AskIcon size={size} className="status-glyph status-waiting" />;
@@ -35,7 +43,16 @@ export function StatusGlyph({ status, size = 16 }: { status: SessionStatus; size
 
 export function StatusBadge({ status }: { status: SessionStatus }) {
 	return (
-		<span className={`status-badge status-badge-${status}`} title={status === "waiting" ? "A question waits for your answer" : status === "paused" ? "The turn is paused and resumes by itself" : undefined}>
+		<span
+			className={`status-badge status-badge-${status}`}
+			title={
+				status === "waiting"
+					? "A question waits for your answer"
+					: status === "paused"
+						? "The turn is paused and resumes by itself"
+						: undefined
+			}
+		>
 			<StatusGlyph status={status} size={14} />
 			{STATUS_WORD[status]}
 		</span>
@@ -50,14 +67,19 @@ export function OutcomeGlyph({ outcome, size = 14 }: { outcome: TurnOutcome; siz
 	return <StopIcon size={size} className={`tone-${tone}`} />;
 }
 
-const SANDBOX_WORD: Record<SessionSummary["sandbox"], string> = { none: "no sandbox yet", running: "sandbox running", paused: "sandbox paused" };
+const SANDBOX_WORD: Record<SessionSummary["sandbox"], string> = {
+	none: "no sandbox yet",
+	running: "sandbox running",
+	paused: "sandbox paused",
+};
 
 /** `asOf`: the state is only the last one reported, at that time (its machine is offline). */
 export function SandboxState({ state, asOf }: { state: SessionSummary["sandbox"]; asOf?: string }) {
 	return (
 		<span className={`sandbox-state sandbox-state-${state}${asOf ? " sandbox-state-stale" : ""}`} title={asOf}>
 			<span className="sandbox-state-dot" aria-hidden="true" />
-			{SANDBOX_WORD[state]}{asOf && " when last seen"}
+			{SANDBOX_WORD[state]}
+			{asOf && " when last seen"}
 		</span>
 	);
 }

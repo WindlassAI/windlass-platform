@@ -29,6 +29,8 @@ export function claudeStream(emit: (text: string) => void) {
 			}
 			if (text) emit(cleanClaudeOutput(text));
 		},
-		end() { if (pending) emit(pending); },
+		end() {
+			if (pending) emit(pending);
+		},
 	};
 }

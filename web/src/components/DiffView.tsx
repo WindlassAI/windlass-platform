@@ -5,7 +5,12 @@ import { parseDiff, type DiffFile } from "../lib/diff";
 import { plural } from "../lib/format";
 import { CopyButton } from "./Copy";
 
-const STATUS_WORD: Record<DiffFile["status"], string> = { modified: "modified", added: "new file", deleted: "deleted", renamed: "renamed" };
+const STATUS_WORD: Record<DiffFile["status"], string> = {
+	modified: "modified",
+	added: "new file",
+	deleted: "deleted",
+	renamed: "renamed",
+};
 const SIGN = { add: "+", remove: "-", context: " ", meta: "\\" } as const;
 
 /** The hunks of one file, without its header: also used inside an edit call's body. */
@@ -26,7 +31,11 @@ export function DiffHunks({ file }: { file: DiffFile }) {
 								<td className="diff-number">{line.newNumber ?? ""}</td>
 								<td className="diff-sign">
 									{SIGN[line.kind]}
-									{line.kind === "add" ? <span className="visually-hidden">added: </span> : line.kind === "remove" ? <span className="visually-hidden">removed: </span> : null}
+									{line.kind === "add" ? (
+										<span className="visually-hidden">added: </span>
+									) : line.kind === "remove" ? (
+										<span className="visually-hidden">removed: </span>
+									) : null}
 								</td>
 								<td className="diff-text">{line.kind === "meta" ? line.text : line.text || " "}</td>
 							</tr>
@@ -68,7 +77,9 @@ export function DiffView({ diff }: { diff: string }) {
 							{file.oldPath ? <span className="diff-old-path">{file.oldPath} → </span> : null}
 							{file.path}
 						</h3>
-						{parts?.[index] !== undefined ? <CopyButton text={parts[index]} label={`Copy the diff of ${file.path}`} /> : null}
+						{parts?.[index] !== undefined ? (
+							<CopyButton text={parts[index]} label={`Copy the diff of ${file.path}`} />
+						) : null}
 						<span className="diff-status">{STATUS_WORD[file.status]}</span>
 						<span className="diff-added">+{file.added}</span>
 						<span className="diff-removed">-{file.removed}</span>

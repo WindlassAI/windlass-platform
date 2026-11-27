@@ -8,8 +8,17 @@
  * and by kind (an agent session or a work item). The filters are the viewer's own, kept in this
  * browser (`loadFilters`, `saveFilters`); a browser that keeps nothing starts with none.
  */
-import type { GithubId, HarnessId, ItemFeed, ItemSummary, SandboxPlace, SavedRepository, SessionSummary } from "@contract";
+import type {
+	GithubId,
+	HarnessId,
+	ItemFeed,
+	ItemSummary,
+	SandboxPlace,
+	SavedRepository,
+	SessionSummary,
+} from "@contract";
 import { ownAgents } from "./repositories";
+import { HARNESS_DISPLAY_ORDER } from "./acp";
 
 // ---- the filters -----------------------------------------------------------------------------------
 
@@ -19,8 +28,12 @@ export type KindFilter = "agent" | "item";
 export type PlaceFilter = string;
 
 export const STATUS_FILTERS: readonly StatusFilter[] = ["running", "needs", "done", "failed"];
-export const STATUS_FILTER_WORD: Record<StatusFilter, string> = { running: "Running", needs: "Needs you", done: "Done", failed: "Failed" };
-export const AGENT_FILTERS: readonly HarnessId[] = ["windlass", "claude", "codex", "opencode"];
+export const STATUS_FILTER_WORD: Record<StatusFilter, string> = {
+	running: "Running",
+	needs: "Needs you",
+	done: "Done",
+	failed: "Failed",
+};
 export const KIND_FILTERS: readonly KindFilter[] = ["agent", "item"];
 export const KIND_FILTER_WORD: Record<KindFilter, string> = { agent: "Agent sessions", item: "Work items" };
 
@@ -35,16 +48,18 @@ export interface Filters {
 export const NO_FILTERS: Filters = { status: [], agent: [], place: [], kind: [] };
 
 /** How many filters are on. */
-export const filterCount = (filters: Filters): number => filters.status.length + filters.agent.length + filters.place.length + filters.kind.length;
+export const filterCount = (filters: Filters): number =>
+	filters.status.length + filters.agent.length + filters.place.length + filters.kind.length;
 
 /** One value of one filter turned on or off. */
 export function toggleFilter<K extends keyof Filters>(filters: Filters, key: K, value: Filters[K][number]): Filters {
 	const now = filters[key] as string[];
-	const next = now.includes(value) ? now.filter((one) => one !== value) : [...now, value];
+	const next = now.includes(value) ? now.filter(one => one !== value) : [...now, value];
 	return { ...filters, [key]: next };
 }
 
-export const placeKey = (place: SandboxPlace): PlaceFilter => (place.kind === "machine" ? `machine:${place.machineId}` : "hosted");
+export const placeKey = (place: SandboxPlace): PlaceFilter =>
+	place.kind === "machine" ? `machine:${place.machineId}` : "hosted";
 
 /** Where a session stands, in the filters' words; null for an agent that never ran a turn. */
 export function sessionStatus(session: Pick<SessionSummary, "status" | "lastOutcome">): StatusFilter | null {
@@ -93,7 +108,8 @@ export function matchesItem(item: ItemSummary, filters: Filters): boolean {
 
 const FILTERS_KEY = "wlp.workspace.filters";
 
-const only = <T extends string>(value: unknown, allowed: (one: string) => one is T): T[] => (Array.isArray(value) ? [...new Set(value.filter((one): one is T => typeof one === "string" && allowed(one)))] : []);
+const only = <T extends string>(value: unknown, allowed: (one: string) => one is T): T[] =>
+	Array.isArray(value) ? [...new Set(value.filter((one): one is T => typeof one === "string" && allowed(one)))] : [];
 
 /** The viewer's filters as this browser kept them; none where it kept nothing, or cannot keep anything. */
 export function loadFilters(storage: Pick<Storage, "getItem"> | null = safeStorage()): Filters {
@@ -103,7 +119,7 @@ export function loadFilters(storage: Pick<Storage, "getItem"> | null = safeStora
 		const value = JSON.parse(text) as Partial<Record<keyof Filters, unknown>>;
 		return {
 			status: only(value.status, (one): one is StatusFilter => (STATUS_FILTERS as readonly string[]).includes(one)),
-			agent: only(value.agent, (one): one is HarnessId => (AGENT_FILTERS as readonly string[]).includes(one)),
+			agent: only(value.agent, (one): one is HarnessId => (HARNESS_DISPLAY_ORDER as readonly string[]).includes(one)),
 			place: only(value.place, (one): one is PlaceFilter => one === "hosted" || /^machine:.+/.test(one)),
 			kind: only(value.kind, (one): one is KindFilter => (KIND_FILTERS as readonly string[]).includes(one)),
 		};
@@ -112,7 +128,10 @@ export function loadFilters(storage: Pick<Storage, "getItem"> | null = safeStora
 	}
 }
 
-export function saveFilters(filters: Filters, storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage()): void {
+export function saveFilters(
+	filters: Filters,
+	storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage(),
+): void {
 	try {
 		if (filterCount(filters) === 0) storage?.removeItem(FILTERS_KEY);
 		else storage?.setItem(FILTERS_KEY, JSON.stringify(filters));
@@ -132,7 +151,10 @@ export function loadRailFolded(storage: Pick<Storage, "getItem"> | null = safeSt
 	}
 }
 
-export function saveRailFolded(folded: boolean, storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage()): void {
+export function saveRailFolded(
+	folded: boolean,
+	storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage(),
+): void {
 	try {
 		if (folded) storage?.setItem(RAIL_KEY, "folded");
 		else storage?.removeItem(RAIL_KEY);
@@ -274,9 +296,11 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 		}
 	}
 	if (keep !== null && !found.has(String(keep))) {
-		const known = saved.find((one) => String(one.id) === String(keep));
-		const fromSession = sessions?.find((session) => session.repository && String(session.repository.id) === String(keep))?.repository;
-		const fromItem = items?.find((item) => String(item.repository.id) === String(keep))?.repository;
+		const known = saved.find(one => String(one.id) === String(keep));
+		const fromSession = sessions?.find(
+			session => session.repository && String(session.repository.id) === String(keep),
+		)?.repository;
+		const fromItem = items?.find(item => String(item.repository.id) === String(keep))?.repository;
 		const named = fromSession ?? fromItem;
 		if (named) entry(named.id, named.owner, named.name);
 		else if (known) {
@@ -290,9 +314,13 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 		list.push(repository);
 		byOwner.set(repository.owner, list);
 	}
-	const order = (a: RailRepository, b: RailRepository) => Number(a.saved) - Number(b.saved) || b.usedAt - a.usedAt || a.name.localeCompare(b.name);
-	const groups = [...byOwner.entries()].map(([owner, repositories]) => ({ owner, repositories: repositories.sort(order) }));
-	const newest = (group: RailGroup) => Math.max(0, ...group.repositories.map((repository) => repository.usedAt));
+	const order = (a: RailRepository, b: RailRepository) =>
+		Number(a.saved) - Number(b.saved) || b.usedAt - a.usedAt || a.name.localeCompare(b.name);
+	const groups = [...byOwner.entries()].map(([owner, repositories]) => ({
+		owner,
+		repositories: repositories.sort(order),
+	}));
+	const newest = (group: RailGroup) => Math.max(0, ...group.repositories.map(repository => repository.usedAt));
 	groups.sort((a, b) => newest(b) - newest(a) || a.owner.localeCompare(b.owner));
 	return { groups, everything, none, repositories: found.size };
 }
@@ -309,14 +337,26 @@ function splitName(name: string | null, id: GithubId): [string, string] {
 export function searchRail(groups: readonly RailGroup[], query: string): RailGroup[] {
 	const needle = query.trim().toLowerCase();
 	if (needle === "") return [...groups];
-	return groups.map((group) => ({ ...group, repositories: group.repositories.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(needle)) })).filter((group) => group.repositories.length > 0);
+	return groups
+		.map(group => ({
+			...group,
+			repositories: group.repositories.filter(repository =>
+				`${repository.owner}/${repository.name}`.toLowerCase().includes(needle),
+			),
+		}))
+		.filter(group => group.repositories.length > 0);
 }
 
 /**
  * What a rail row shows at its end: the amber count of what asks and a running ring. A quiet one shows
  * no count (its name is dimmer), only "saved" where nothing but settings is saved for it.
  */
-export function railBadge(entry: Pick<RailRepository, "running" | "needs" | "agents" | "items" | "saved">): { needs: number; running: boolean; count: number | null; saved: boolean } {
+export function railBadge(entry: Pick<RailRepository, "running" | "needs" | "agents" | "items" | "saved">): {
+	needs: number;
+	running: boolean;
+	count: number | null;
+	saved: boolean;
+} {
 	const count = entry.agents + entry.items;
 	return { needs: entry.needs, running: entry.running > 0, count: null, saved: entry.saved && count === 0 };
 }
@@ -324,8 +364,8 @@ export function railBadge(entry: Pick<RailRepository, "running" | "needs" | "age
 /** The repositories with something running or asking, what asks first, then the one used last: the rail's "Active now". */
 export function activeRepositories(groups: readonly RailGroup[]): RailRepository[] {
 	return groups
-		.flatMap((group) => group.repositories)
-		.filter((repository) => repository.running > 0 || repository.needs > 0)
+		.flatMap(group => group.repositories)
+		.filter(repository => repository.running > 0 || repository.needs > 0)
 		.sort((a, b) => Number(b.needs > 0) - Number(a.needs > 0) || b.usedAt - a.usedAt || a.name.localeCompare(b.name));
 }
 
@@ -341,7 +381,10 @@ export function loadFoldedOwners(storage: Pick<Storage, "getItem"> | null = safe
 	}
 }
 
-export function saveFoldedOwners(owners: ReadonlySet<string>, storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage()): void {
+export function saveFoldedOwners(
+	owners: ReadonlySet<string>,
+	storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage(),
+): void {
 	try {
 		if (owners.size === 0) storage?.removeItem(OWNERS_KEY);
 		else storage?.setItem(OWNERS_KEY, JSON.stringify([...owners].sort()));

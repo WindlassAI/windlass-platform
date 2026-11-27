@@ -14,7 +14,13 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { type AccessToken, type AccessTokens, type ChatgptAccount, type ChatgptLogins, SandboxUserError } from "../sandbox/api.js";
+import {
+	type AccessToken,
+	type AccessTokens,
+	type ChatgptAccount,
+	type ChatgptLogins,
+	SandboxUserError,
+} from "../sandbox/api.js";
 import { ATTEMPT_UNKNOWN, type SignInCommands } from "./commands.js";
 import { ActorSignInDirectory, MemorySignInDirectory, type SignInDirectory } from "./directory.js";
 import type { StoredSignIn } from "./holder.js";
@@ -50,7 +56,11 @@ export class SignInLogins implements ChatgptLogins {
 		return { url, redirectPrefix, attempt: this.seal(attemptId, { files: material.files }) };
 	}
 
-	async finish(attemptId: string, attempt: string, pastedUrl: string): Promise<{ account: ChatgptAccount; attempt: string }> {
+	async finish(
+		attemptId: string,
+		attempt: string,
+		pastedUrl: string,
+	): Promise<{ account: ChatgptAccount; attempt: string }> {
 		assertName(attemptId, "sign-in attempt id");
 		const state = this.open(attemptId, attempt);
 		// Whether it is the address the browser ended on is the commands' to say: Windlass's rules are theirs.
@@ -61,12 +71,18 @@ export class SignInLogins implements ChatgptLogins {
 		// without a second exchange (OpenAI takes a code once). Any other address is a new attempt's.
 		if (state.finishedWith !== undefined) {
 			const account = accountOf(material);
-			if (state.finishedWith !== digest || account === null) throw new SandboxUserError("This sign-in attempt is no longer waiting for an address. Start the sign-in again.");
+			if (state.finishedWith !== digest || account === null)
+				throw new SandboxUserError(
+					"This sign-in attempt is no longer waiting for an address. Start the sign-in again.",
+				);
 			return { account, attempt: this.options.sealer.isCurrent(attempt) ? attempt : this.seal(attemptId, state) };
 		}
 		const commands = await this.options.commands();
 		const finished = await commands.finish(material, pasted);
-		return { account: finished.account, attempt: this.seal(attemptId, { files: signInOnly(finished.material).files, finishedWith: digest }) };
+		return {
+			account: finished.account,
+			attempt: this.seal(attemptId, { files: signInOnly(finished.material).files, finishedWith: digest }),
+		};
 	}
 
 	async adopt(attemptId: string, attempt: string, uid: string, pendingId?: string): Promise<void> {
@@ -143,9 +159,17 @@ export function signInFacade(options: SignInFacadeOptions): { logins: SignInLogi
  * For a server: the sign-ins are in the users' actors, and Windlass's commands run where this server is
  * configured to run them (signin/index.ts). Right for any number of servers.
  */
-export function actorSignIns(options: { ensureUserData?: (uid: string) => Promise<void> } = {}): { logins: SignInLogins; tokens: SignInTokens } {
+export function actorSignIns(options: { ensureUserData?: (uid: string) => Promise<void> } = {}): {
+	logins: SignInLogins;
+	tokens: SignInTokens;
+} {
 	const sealer = serverSealer();
-	return signInFacade({ commands: async () => (await getSignIns()).commands, directory: new ActorSignInDirectory(sealer), sealer, ensureUserData: options.ensureUserData });
+	return signInFacade({
+		commands: async () => (await getSignIns()).commands,
+		directory: new ActorSignInDirectory(sealer),
+		sealer,
+		ensureUserData: options.ensureUserData,
+	});
 }
 
 /** The key of the sign-ins kept in this process's memory: made up when the process starts, and gone with it. */
@@ -164,10 +188,27 @@ export interface MemorySignInsOptions {
  * For checks that run without a server: the same holders, over a store in this process's memory. One
  * process only, and nothing outlives it: never for a deployment.
  */
-export function memorySignIns(options: MemorySignInsOptions): { logins: SignInLogins; tokens: SignInTokens; directory: MemorySignInDirectory; sealer: Sealer } {
+export function memorySignIns(options: MemorySignInsOptions): {
+	logins: SignInLogins;
+	tokens: SignInTokens;
+	directory: MemorySignInDirectory;
+	sealer: Sealer;
+} {
 	memoryKey ??= createSealer(randomBytes(32));
 	const sealer = memoryKey;
-	const directory = new MemorySignInDirectory({ commands: options.commands, sealer, revoke: options.revoke, log: options.log, rows: options.rows });
-	const facade = signInFacade({ commands: async () => options.commands, directory, sealer, ensureUserData: options.ensureUserData, asked: () => options.commands.asked });
+	const directory = new MemorySignInDirectory({
+		commands: options.commands,
+		sealer,
+		revoke: options.revoke,
+		log: options.log,
+		rows: options.rows,
+	});
+	const facade = signInFacade({
+		commands: async () => options.commands,
+		directory,
+		sealer,
+		ensureUserData: options.ensureUserData,
+		asked: () => options.commands.asked,
+	});
 	return { ...facade, directory, sealer };
 }

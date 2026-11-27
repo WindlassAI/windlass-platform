@@ -32,7 +32,9 @@ function copyBySelection(text: string, near?: Element | null): boolean {
 	const host = near?.closest("dialog") ?? document.body;
 	const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 	const selection = document.getSelection();
-	const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index)) : [];
+	const ranges = selection
+		? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index))
+		: [];
 
 	const area = document.createElement("textarea");
 	area.value = text;
@@ -40,7 +42,8 @@ function copyBySelection(text: string, near?: Element | null): boolean {
 	area.setAttribute("aria-hidden", "true");
 	area.tabIndex = -1;
 	// Fixed in the corner, so that selecting it scrolls nothing; unseen, and out of the way of the pointer.
-	area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none;";
+	area.style.cssText =
+		"position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none;";
 	host.append(area);
 	let copied = false;
 	try {
@@ -99,7 +102,7 @@ export function toolCopyLabels(block: ToolBlock): { input: string; output: strin
  */
 export function splitDiff(text: string): string[] {
 	const lines = text.split("\n");
-	const git = lines.some((line) => line.startsWith("diff --git "));
+	const git = lines.some(line => line.startsWith("diff --git "));
 	const starts: number[] = [];
 	let oldLeft = 0;
 	let newLeft = 0;
@@ -119,7 +122,10 @@ export function splitDiff(text: string): string[] {
 		if (hunk) {
 			oldLeft = Number(hunk[1] ?? 1);
 			newLeft = Number(hunk[2] ?? 1);
-		} else if (git ? line.startsWith("diff --git ") : line.startsWith("--- ") && (lines[index + 1] ?? "").startsWith("+++ ")) starts.push(index);
+		} else if (
+			git ? line.startsWith("diff --git ") : line.startsWith("--- ") && (lines[index + 1] ?? "").startsWith("+++ ")
+		)
+			starts.push(index);
 	}
 	return starts.map((start, index) => {
 		const part = lines.slice(start, starts[index + 1] ?? lines.length).join("\n");

@@ -45,7 +45,9 @@ it("describes the actual workspace egress for commands outside the command sandb
 });
 
 it("describes a hosted sandbox's network in the deployment's words, and nothing new where it has no mode", () => {
-	expect(workspaceNetwork("restricted", true)).toBe("The workspace can reach only the model API, GitHub and the hosts this deployment allows.");
+	expect(workspaceNetwork("restricted", true)).toBe(
+		"The workspace can reach only the model API, GitHub and the hosts this deployment allows.",
+	);
 	expect(workspaceNetwork("none", true)).toBe("The workspace can reach only the model API.");
 	expect(workspaceNetwork(undefined, true)).toBe(workspaceNetwork());
 });

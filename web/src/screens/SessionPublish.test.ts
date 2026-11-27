@@ -17,9 +17,22 @@ import { setPanelHidden } from "../state/sessionChrome";
 import { Session, SessionCrumb } from "./Session";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
-HTMLDialogElement.prototype.close ??= function () { this.open = false; };
-window.matchMedia ??= ((query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia;
+HTMLDialogElement.prototype.showModal ??= function () {
+	this.open = true;
+};
+HTMLDialogElement.prototype.close ??= function () {
+	this.open = false;
+};
+window.matchMedia ??= ((query: string) => ({
+	matches: false,
+	media: query,
+	addEventListener() {},
+	removeEventListener() {},
+	addListener() {},
+	removeListener() {},
+	onchange: null,
+	dispatchEvent: () => false,
+})) as typeof window.matchMedia;
 
 let host: HTMLElement;
 let root: Root;
@@ -30,14 +43,25 @@ let hold: boolean;
 
 function Page({ id }: { id: string }) {
 	const state = useSession(id);
-	return createElement(Fragment, null, createElement(SessionCrumb, { title: state.summary?.title ?? null, status: state.summary?.status ?? null, summary: state.summary }), createElement(Session, { sessionId: id, state }));
+	return createElement(
+		Fragment,
+		null,
+		createElement(SessionCrumb, {
+			title: state.summary?.title ?? null,
+			status: state.summary?.status ?? null,
+			summary: state.summary,
+		}),
+		createElement(Session, { sessionId: id, state }),
+	);
 }
 
 async function wait(steps = 6): Promise<void> {
 	for (let step = 0; step < steps; step++) await act(async () => void vi.advanceTimersByTime(400));
 }
 
-async function open(pick: (session: SessionSummary) => boolean): Promise<{ auth: AuthResult; session: SessionSummary }> {
+async function open(
+	pick: (session: SessionSummary) => boolean,
+): Promise<{ auth: AuthResult; session: SessionSummary }> {
 	client = createMockClient({ origin: "http://localhost:5173", machine: "online" });
 	const begun = client.login.start();
 	vi.advanceTimersByTime(1000);
@@ -58,7 +82,9 @@ async function open(pick: (session: SessionSummary) => boolean): Promise<{ auth:
 			...api,
 			publishState: () =>
 				hold
-					? new Promise<PublishState>((resolve, reject) => held.push(() => void api.publishState().then(resolve, reject)))
+					? new Promise<PublishState>((resolve, reject) =>
+							held.push(() => void api.publishState().then(resolve, reject)),
+						)
 					: api.publishState(),
 		};
 	};
@@ -67,7 +93,10 @@ async function open(pick: (session: SessionSummary) => boolean): Promise<{ auth:
 	return { auth, session: session! };
 }
 
-const publish = () => [...host.querySelectorAll<HTMLButtonElement>(".bar-button")].find((button) => button.textContent?.includes("Publish pull request") || button.textContent?.includes("Reading changes"));
+const publish = () =>
+	[...host.querySelectorAll<HTMLButtonElement>(".bar-button")].find(
+		button => button.textContent?.includes("Publish pull request") || button.textContent?.includes("Reading changes"),
+	);
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -92,7 +121,14 @@ afterEach(() => {
 
 it("says it is reading while the panel is hidden and its state still loading, then opens the dialog", async () => {
 	hold = true;
-	await open((session) => session.repository !== undefined && session.repository !== null && !session.pullRequest && session.status === "idle" && !session.item);
+	await open(
+		session =>
+			session.repository !== undefined &&
+			session.repository !== null &&
+			!session.pullRequest &&
+			session.status === "idle" &&
+			!session.item,
+	);
 	// The panel's first read has not come back.
 	expect(held.length).toBeGreaterThan(0);
 	expect(host.querySelector(".session-panel-hidden")).not.toBeNull();
@@ -111,15 +147,30 @@ it("says it is reading while the panel is hidden and its state still loading, th
 });
 
 it("says why at the button when nothing can be pushed, and opens the panel's section from there", async () => {
-	await open((session) => session.repository !== undefined && session.repository !== null && !session.pullRequest && session.status === "idle" && !session.item);
+	await open(
+		session =>
+			session.repository !== undefined &&
+			session.repository !== null &&
+			!session.pullRequest &&
+			session.status === "idle" &&
+			!session.item,
+	);
 	// The workspace as the panel last read it: nothing can be pushed now.
 	hold = false;
 	const real = client.session.bind(client);
 	(client as { session: typeof client.session }).session = (who, id) => {
 		const api = real(who, id);
-		return { ...api, publishState: async () => ({ ...(await api.publishState()), blocked: "The workspace cannot be read while its machine is offline." }) };
+		return {
+			...api,
+			publishState: async () => ({
+				...(await api.publishState()),
+				blocked: "The workspace cannot be read while its machine is offline.",
+			}),
+		};
 	};
-	await act(async () => (host.querySelector<HTMLButtonElement>(`[aria-label="Read the pull request's state again"]`))?.click());
+	await act(async () =>
+		host.querySelector<HTMLButtonElement>(`[aria-label="Read the pull request's state again"]`)?.click(),
+	);
 	await wait();
 	act(() => publish()?.click());
 	await wait(1);
@@ -128,7 +179,11 @@ it("says why at the button when nothing can be pushed, and opens the panel's sec
 	expect(why?.textContent).toContain("Open the pull request section");
 	expect(document.querySelector("dialog[open]")).toBeNull();
 	// From there, the hidden panel is shown.
-	act(() => [...(why?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "Open the pull request section")?.click());
+	act(() =>
+		[...(why?.querySelectorAll("button") ?? [])]
+			.find(button => button.textContent === "Open the pull request section")
+			?.click(),
+	);
 	await wait(1);
 	expect(host.querySelector(".session-panel-hidden")).toBeNull();
 	expect(document.querySelector(".bar-publish-why")).toBeNull();

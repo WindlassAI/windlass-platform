@@ -11,9 +11,17 @@ export type StoreLimits = { machine: number; user: number; free: number };
 export type StoreCaps = Partial<StoreLimits>;
 
 /** The defaults: the platform's own Docker without its settings, and a runner without its flags. */
-export const DEFAULT_STORE_LIMITS: Readonly<StoreLimits> = Object.freeze({ machine: 10_000_000_000, user: 2_000_000_000, free: 40_000_000_000 });
+export const DEFAULT_STORE_LIMITS: Readonly<StoreLimits> = Object.freeze({
+	machine: 10_000_000_000,
+	user: 2_000_000_000,
+	free: 40_000_000_000,
+});
 /** What runner 0.3.1 and older apply on their own: they take no flags and report nothing of it. */
-export const BUILT_IN_STORE_LIMITS: Readonly<StoreLimits> = Object.freeze({ machine: 10_000_000_000, user: 2_000_000_000, free: 15_000_000_000 });
+export const BUILT_IN_STORE_LIMITS: Readonly<StoreLimits> = Object.freeze({
+	machine: 10_000_000_000,
+	user: 2_000_000_000,
+	free: 15_000_000_000,
+});
 
 /** The limits a store uses where it is given none. The checks change it in place. */
 export const snapshotLimits: StoreLimits = { ...DEFAULT_STORE_LIMITS };
@@ -55,7 +63,11 @@ export const MIRROR_BYTES = 512 * 1024 * 1024;
 export const MIRROR_CONFIG = "[core]\n\tbare = true\n\trepositoryformatversion = 0";
 
 /** The deployment's settings of the stores, in GB (decimal): WLP_SNAPSHOT_MACHINE_MAX_GB, WLP_SNAPSHOT_USER_MAX_GB, WLP_KEEP_FREE_MIN_GB. */
-export const STORE_SETTINGS = { machine: "WLP_SNAPSHOT_MACHINE_MAX_GB", user: "WLP_SNAPSHOT_USER_MAX_GB", free: "WLP_KEEP_FREE_MIN_GB" } as const;
+export const STORE_SETTINGS = {
+	machine: "WLP_SNAPSHOT_MACHINE_MAX_GB",
+	user: "WLP_SNAPSHOT_USER_MAX_GB",
+	free: "WLP_KEEP_FREE_MIN_GB",
+} as const;
 
 /**
  * The stores' limits on the platform's own Docker (`own`: each setting, or its default), and the caps the
@@ -63,15 +75,24 @@ export const STORE_SETTINGS = { machine: "WLP_SNAPSHOT_MACHINE_MAX_GB", user: "W
  * of GB (above 0 for the two sizes, 0 or more for keep-free, at most 1,000,000) goes into `problems` and
  * counts as not set.
  */
-export function storeSettings(env: Record<string, string | undefined>): { own: StoreLimits; caps: StoreCaps; problems: string[] } {
-	const own: StoreLimits = { ...DEFAULT_STORE_LIMITS }, caps: StoreCaps = {}, problems: string[] = [];
+export function storeSettings(env: Record<string, string | undefined>): {
+	own: StoreLimits;
+	caps: StoreCaps;
+	problems: string[];
+} {
+	const own: StoreLimits = { ...DEFAULT_STORE_LIMITS },
+		caps: StoreCaps = {},
+		problems: string[] = [];
 	for (const key of ["machine", "user", "free"] as const) {
-		const name = STORE_SETTINGS[key], text = (env[name] ?? "").trim();
+		const name = STORE_SETTINGS[key],
+			text = (env[name] ?? "").trim();
 		if (text === "") continue;
 		const gb = /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : NaN;
 		const bytes = Math.round(gb * 1e9);
 		if (!Number.isSafeInteger(bytes) || bytes > MAX_STORE_BYTES || (key !== "free" && bytes <= 0)) {
-			problems.push(`${name} must be a number of GB ${key === "free" ? "of 0 or more" : "above 0"}, at most 1000000, or not set for ${DEFAULT_STORE_LIMITS[key] / 1e9}`);
+			problems.push(
+				`${name} must be a number of GB ${key === "free" ? "of 0 or more" : "above 0"}, at most 1000000, or not set for ${DEFAULT_STORE_LIMITS[key] / 1e9}`,
+			);
 			continue;
 		}
 		own[key] = caps[key] = bytes;

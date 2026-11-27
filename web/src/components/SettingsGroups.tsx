@@ -33,14 +33,17 @@ export function SettingsLayout({ label, children }: { label: string; children: (
 		if (typeof IntersectionObserver === "undefined") return;
 		const order = ids.split(" ");
 		const shown = new Set<string>();
-		const observer = new IntersectionObserver(entries => {
-			for (const entry of entries) {
-				if (entry.isIntersecting) shown.add(entry.target.id);
-				else shown.delete(entry.target.id);
-			}
-			const first = order.find(id => shown.has(id));
-			if (first) setCurrent(first);
-		}, { rootMargin: "-20% 0px -60% 0px" });
+		const observer = new IntersectionObserver(
+			entries => {
+				for (const entry of entries) {
+					if (entry.isIntersecting) shown.add(entry.target.id);
+					else shown.delete(entry.target.id);
+				}
+				const first = order.find(id => shown.has(id));
+				if (first) setCurrent(first);
+			},
+			{ rootMargin: "-20% 0px -60% 0px" },
+		);
 		for (const id of order) {
 			const node = document.getElementById(id);
 			if (node) observer.observe(node);
@@ -63,7 +66,9 @@ export function SettingsLayout({ label, children }: { label: string; children: (
 			<div className="settings-layout">
 				<nav className="settings-nav" aria-label={label}>
 					{groups.map(({ props: { id, title } }) => (
-						<a key={id} href={`#${id}`} aria-current={current === id || undefined} onClick={event => go(event, id)}>{title}</a>
+						<a key={id} href={`#${id}`} aria-current={current === id || undefined} onClick={event => go(event, id)}>
+							{title}
+						</a>
 					))}
 				</nav>
 				<div>{children}</div>
@@ -76,7 +81,12 @@ export function SettingsRefreshError({ error, reload }: { error: string; reload(
 	return (
 		<p className="callout callout-warn" role="status">
 			<WarnIcon />
-			<span>{error} <button className="link" onClick={reload}>Try again</button></span>
+			<span>
+				{error}{" "}
+				<button className="link" onClick={reload}>
+					Try again
+				</button>
+			</span>
 		</p>
 	);
 }
@@ -89,7 +99,9 @@ export function SettingsPending({ subject, error, reload }: { subject: string; e
 					<WarnIcon size={22} />
 					<h3>{subject} could not be loaded</h3>
 					<p>{error}</p>
-					<button type="button" className="button button-outline" onClick={reload}>Try again</button>
+					<button type="button" className="button button-outline" onClick={reload}>
+						Try again
+					</button>
 				</div>
 			) : (
 				<div className="usage-loading" aria-busy="true" aria-label={`Loading ${subject.toLowerCase()}`}>
@@ -102,10 +114,23 @@ export function SettingsPending({ subject, error, reload }: { subject: string; e
 	);
 }
 
-export function SettingsSection({ id, title, count, children }: { id: string; title: string; count?: number; children: ReactNode }) {
+export function SettingsSection({
+	id,
+	title,
+	count,
+	children,
+}: {
+	id: string;
+	title: string;
+	count?: number;
+	children: ReactNode;
+}) {
 	return (
 		<section className="usage-section repo-saved" aria-labelledby={id}>
-			<h3 className="usage-title" id={id}>{title}{count ? <span className="usage-count">{count}</span> : null}</h3>
+			<h3 className="usage-title" id={id}>
+				{title}
+				{count ? <span className="usage-count">{count}</span> : null}
+			</h3>
 			{children}
 		</section>
 	);

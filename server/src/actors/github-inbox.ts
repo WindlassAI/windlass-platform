@@ -13,6 +13,7 @@ import { internalConnection, requireServiceFor, serviceParams } from "../auth.js
 import { githubConfig } from "../config.js";
 import { githubApp, GithubError } from "../github/app.js";
 import { isAddressed, githubIdKey, type Delivery } from "../github/events.js";
+import type { ActorClient } from "./internal.js";
 
 // https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
 // Redeliveries have "the same" delivery GUID. This is the inbox primary key.
@@ -27,7 +28,10 @@ const CLOCK_SKEW = 60_000;
 const STATE_KEPT = 7 * DAY;
 type Vars = { writing: Promise<unknown>; draining: boolean; drainAgain: boolean };
 type Ctx = {
-	key: string[]; db: RawAccess; vars: Vars; client(): any;
+	key: string[];
+	db: RawAccess;
+	vars: Vars;
+	client(): ActorClient;
 	keepAwake<T>(work: Promise<T>): Promise<T>;
 	schedule: { at(time: number, action: string): Promise<string>; cancel(id: string): Promise<boolean> };
 };
@@ -51,7 +55,8 @@ async function arm(c: Ctx, at: number | null, action: string) {
 	}
 	if (old) await c.schedule.cancel(old.id).catch(() => false);
 }
-const TIMER = "CREATE TABLE IF NOT EXISTS timer (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL, at INTEGER NOT NULL)";
+const TIMER =
+	"CREATE TABLE IF NOT EXISTS timer (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL, at INTEGER NOT NULL)";
 
 async function refreshInstallation(d: Delivery, c: Ctx) {
 	console.log(`github.installation event=${d.event}.${d.action} installation=${d.installationId} delivery=${d.guid}`);
@@ -63,7 +68,7 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 	if (d.event === "installation" && ["suspend", "deleted"].includes(d.action)) {
 		// A missed suspension redelivered after its unsuspend would be received last. GitHub's current state decides.
 		const app = d.action === "suspend" ? githubApp() : null;
-		if (app && await app.activeInstallation(d.installationId)) {
+		if (app && (await app.activeInstallation(d.installationId))) {
 			await hooks.internalInstallationActive(d.installationId, d.at);
 			return;
 		}
@@ -75,7 +80,10 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 		change = { kind: "repositories", installationId: d.installationId };
 		users = new Set(await hooks.internalInstallationUsers(d.installationId));
 	} else {
-		const attach = d.event === "installation" ? ["created", "new_permissions_accepted", "unsuspend"].includes(d.action) : d.action === "added";
+		const attach =
+			d.event === "installation"
+				? ["created", "new_permissions_accepted", "unsuspend"].includes(d.action)
+				: d.action === "added";
 		if (!attach) return;
 		const app = githubApp();
 		if (!app) throw new Error("GitHub App unavailable.");
@@ -90,16 +98,24 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 		const candidate = account.type === "User" ? account.id : senderId;
 		if (candidate !== null) {
 			try {
-				const connected: string[] = await c.client().githubAccount.get([String(candidate)], params).internalUsers();
+				const connected: string[] = await c
+					.client()
+					.githubAccount.get([String(candidate)], params)
+					.internalUsers();
 				for (const uid of connected) users.add(uid);
-			} catch (error) { if (!missingActor(error)) throw error; }
+			} catch (error) {
+				if (!missingActor(error)) throw error;
+			}
 		}
 	}
 	// Each actor checks its current connection again, in case it was replaced since the lookup.
 	let retry = false;
 	for (const uid of users) {
-		try { await c.client().user.get([uid], params).internalUpdateGithubInstallation(change); }
-		catch (error) { if (!missingActor(error)) retry = true; }
+		try {
+			await c.client().user.get([uid], params).internalUpdateGithubInstallation(change);
+		} catch (error) {
+			if (!missingActor(error)) retry = true;
+		}
 	}
 	if (retry) throw new Error("An installation refresh could not finish");
 }
@@ -109,7 +125,8 @@ function missingActor(error: unknown): boolean {
 }
 
 async function checkGuides(d: Delivery, c: Ctx) {
-	if (!d.repositoryId || !(d.event === "push" || d.event === "pull_request" && d.action !== "closed") || !d.data.base) return;
+	if (!d.repositoryId || !(d.event === "push" || (d.event === "pull_request" && d.action !== "closed")) || !d.data.base)
+		return;
 	const repo = c.client().githubRepository.getOrCreate([String(d.repositoryId)], { params: serviceParams() });
 	await repo.internalGuideCheck(d.installationId, d.data.base, d.data.head, d.event === "pull_request");
 }
@@ -123,15 +140,31 @@ async function environmentPush(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (!d.repositoryId || !(d.event === "push" || (d.event === "pull_request" && d.data.toDefault))) return "no item";
 	const params = { params: serviceParams() };
 	let users: string[] = [];
-	try { users = await c.client().githubRepository.get([String(d.repositoryId)], params).internalEnvironmentUsers(); }
-	catch { return "no item"; }
-	for (const uid of users) await c.client().user.get([uid], params).internalEnvironmentPushed(d.repositoryId).catch(() => undefined);
+	try {
+		users = await c
+			.client()
+			.githubRepository.get([String(d.repositoryId)], params)
+			.internalEnvironmentUsers();
+	} catch {
+		return "no item";
+	}
+	for (const uid of users)
+		await c
+			.client()
+			.user.get([uid], params)
+			.internalEnvironmentPushed(d.repositoryId)
+			.catch(() => undefined);
 	if (!users.length) return "no item";
 }
 
 async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
-	if (!d.repositoryId || !(d.event === "check_run" || d.event === "check_suite" || d.event === "status" || d.event === "pull_request")) return "no item";
-	const subject = d.event === "pull_request" ? { kind: "pr" as const, pr: d.data.pr } : { kind: "ci" as const, head: d.data.head };
+	if (
+		!d.repositoryId ||
+		!(d.event === "check_run" || d.event === "check_suite" || d.event === "status" || d.event === "pull_request")
+	)
+		return "no item";
+	const subject =
+		d.event === "pull_request" ? { kind: "pr" as const, pr: d.data.pr } : { kind: "ci" as const, head: d.data.head };
 	const directory = c.client().githubRepository.get([String(d.repositoryId)], { params: serviceParams() });
 	let matches: { uid: string; itemId: string }[];
 	try {
@@ -146,12 +179,14 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 		const item = c.client().workItem.get([uid, itemId], { params: serviceParams() });
 		try {
 			const binding = { repositoryId: d.repositoryId, installationId: d.installationId };
-			const woke = d.event === "check_run" && d.action === "rerequested"
-				? await item.internalReverify({ ...binding, head: d.data.head })
-				: await item.internalGithubNudge({ ...subject, ...binding });
+			const woke =
+				d.event === "check_run" && d.action === "rerequested"
+					? await item.internalReverify({ ...binding, head: d.data.head })
+					: await item.internalGithubNudge({ ...subject, ...binding });
 			if (woke) waiting = true;
 		} catch (error) {
-			if (missingActor(error) || (error as { code?: string })?.code === "item_not_found") await directory.internalForget(itemId);
+			if (missingActor(error) || (error as { code?: string })?.code === "item_not_found")
+				await directory.internalForget(itemId);
 			else retry = true;
 		}
 	}
@@ -159,9 +194,20 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (!waiting) return "no item";
 }
 export type FeedbackSubject = {
-	kind: "review" | "review_comment" | "issue_comment"; id: string; sender: GithubUser; association: string;
+	kind: "review" | "review_comment" | "issue_comment";
+	id: string;
+	sender: GithubUser;
+	association: string;
 };
-export type FeedbackNotice = { installationId: GithubId; repositoryId: GithubId; pr: number; entries: FeedbackEntry[]; requestedReview?: { id: string; head: string; base: string; owner: boolean; sender: string }; denied?: string; approval?: { id: string; author: string } };
+export type FeedbackNotice = {
+	installationId: GithubId;
+	repositoryId: GithubId;
+	pr: number;
+	entries: FeedbackEntry[];
+	requestedReview?: { id: string; head: string; base: string; owner: boolean; sender: string };
+	denied?: string;
+	approval?: { id: string; author: string };
+};
 export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + subject.id;
 
 /**
@@ -172,7 +218,13 @@ export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + sub
  * `author_association` decides nothing: GitHub reckons it for the reader, and to an App a private
  * organisation member, the organisation's owner among them, can read as CONTRIBUTOR or NONE.
  */
-export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, { pollingOwner, itemPull = true }: { pollingOwner?: GithubId; itemPull?: boolean } = {}): Promise<(FeedbackNotice & { repo?: Repository; addressed?: boolean; reviewNodeId?: string }) | null> {
+export async function readFeedback(
+	c: Pick<Ctx, "client">,
+	uid: string | null,
+	target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">,
+	subject: FeedbackSubject,
+	{ pollingOwner, itemPull = true }: { pollingOwner?: GithubId; itemPull?: boolean } = {},
+): Promise<(FeedbackNotice & { repo?: Repository; addressed?: boolean; reviewNodeId?: string }) | null> {
 	const { repositoryId, installationId, pr } = target;
 	const denied = { ...target, entries: [], denied: feedbackId(subject) };
 	const params = { params: serviceParams() };
@@ -181,51 +233,127 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 	let owner = pollingOwner === subject.sender.id;
 	if (uid && pollingOwner === undefined) {
 		try {
-			const link = await c.client().githubAccount.get([String(subject.sender.id)], params).internalWho();
+			const link = await c
+				.client()
+				.githubAccount.get([String(subject.sender.id)], params)
+				.internalWho();
 			owner = link?.uid === uid && link.installations.includes(installationId);
-		} catch (e) { if (!missingActor(e)) throw e; }
+		} catch (e) {
+			if (!missingActor(e)) throw e;
+		}
 	}
 	// The item's person needs write access too, as issue intake asks of them: an owner GitHub has since shut out sends nothing back.
-	if (await c.client().githubRepository.get([String(repositoryId)], params).internalIssuePermission(installationId, subject.sender) !== "write") return denied;
+	if (
+		(await c
+			.client()
+			.githubRepository.get([String(repositoryId)], params)
+			.internalIssuePermission(installationId, subject.sender)) !== "write"
+	)
+		return denied;
 	const app = githubApp();
 	if (!app) throw new Error("GitHub App unavailable.");
 	try {
-		return await app.withToken(installationId, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
-			const repo = await app.repositoryById(token, repositoryId);
-			if (repo.id !== repositoryId) return null;
-			const entry = (kind: FeedbackEntry["kind"], id: string, body: string, at: number, url: string, author: string): FeedbackEntry => ({
-				id, author, access: owner ? "owner" : "write", kind, body: cleanFeedback(body).slice(0, 16000), at, url, commit: null, path: null, line: null,
-			});
-			const valid = (r: { author: GithubUser; at: number }) => r.author.id === subject.sender.id && recentSubject(r.at);
-			if (subject.kind === "issue_comment") {
-				const r = await app.issueCommand(token, repo, pr, subject.id);
-				if (!r || !valid(r)) return null;
-				const note = isAddressed(r.body, app.settings.slug);
-				if (note === null) return null;
-				const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
-				if (itemPull && /^\/windlass\s+review$/i.test(r.body.trim())) {
-					const pull = await app.pull(token, repo.owner, repo.name, pr);
-					if (!["open", "draft"].includes(pull.state) || ![pull.headSha, pull.baseSha].every(sha => /^[a-f0-9]{40}$/.test(sha))) return null;
-					return { ...target, repo, addressed: true, entries: [], requestedReview: { id: feedbackId(subject), head: pull.headSha, base: pull.baseSha, owner, sender: r.author.login } };
+		return await app.withToken(
+			installationId,
+			{ repositoryId, permissions: { metadata: "read", pull_requests: "read" } },
+			async token => {
+				const repo = await app.repositoryById(token, repositoryId);
+				if (repo.id !== repositoryId) return null;
+				const entry = (
+					kind: FeedbackEntry["kind"],
+					id: string,
+					body: string,
+					at: number,
+					url: string,
+					author: string,
+				): FeedbackEntry => ({
+					id,
+					author,
+					access: owner ? "owner" : "write",
+					kind,
+					body: cleanFeedback(body).slice(0, 16000),
+					at,
+					url,
+					commit: null,
+					path: null,
+					line: null,
+				});
+				const valid = (r: { author: GithubUser; at: number }) =>
+					r.author.id === subject.sender.id && recentSubject(r.at);
+				if (subject.kind === "issue_comment") {
+					const r = await app.issueCommand(token, repo, pr, subject.id);
+					if (!r || !valid(r)) return null;
+					const note = isAddressed(r.body, app.settings.slug);
+					if (note === null) return null;
+					const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
+					if (itemPull && /^\/windlass\s+review$/i.test(r.body.trim())) {
+						const pull = await app.pull(token, repo.owner, repo.name, pr);
+						if (
+							!["open", "draft"].includes(pull.state) ||
+							![pull.headSha, pull.baseSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
+						)
+							return null;
+						return {
+							...target,
+							repo,
+							addressed: true,
+							entries: [],
+							requestedReview: {
+								id: feedbackId(subject),
+								head: pull.headSha,
+								base: pull.baseSha,
+								owner,
+								sender: r.author.login,
+							},
+						};
+					}
+					return {
+						...target,
+						repo,
+						addressed: true,
+						entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)],
+					};
 				}
-				return { ...target, repo, addressed: true, entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)] };
-			}
-			const review = subject.kind === "review";
-			const r = review ? await app.review(token, repo, pr, subject.id) : await app.reviewComment(token, repo, pr, subject.id);
-			if (!r || !valid(r)) return null;
-			if (review && r.state === "approved") return { ...target, entries: [], approval: { id: feedbackId(subject), author: r.author.login } };
-			const requested = review && r.state === "changes_requested";
-			if (review && !requested && r.state !== "commented") return null;
-			const address = isAddressed(r.body, app.settings.slug);
-			const body = requested ? r.body : address;
-			if (body === null) return null;
-			const entries = [{ ...entry(review ? requested ? "changes_requested" : "commented" : "review_comment", feedbackId(subject), body, r.at, r.url, r.author.login), commit: r.commit, path: r.path, line: r.line }];
-			if (review) for (const line of await app.reviewComments(token, repo, pr, r.id)) {
-				if (!valid(line)) continue;
-				entries.push({ ...entry("review_comment", "review_comment:" + line.id, line.body, line.at, line.url, line.author.login), commit: line.commit, path: line.path, line: line.line });
-			}
-			return { ...target, repo, entries, addressed: address !== null, ...(review && { reviewNodeId: r.nodeId }) };
-		});
+				const review = subject.kind === "review";
+				const r = review
+					? await app.review(token, repo, pr, subject.id)
+					: await app.reviewComment(token, repo, pr, subject.id);
+				if (!r || !valid(r)) return null;
+				if (review && r.state === "approved")
+					return { ...target, entries: [], approval: { id: feedbackId(subject), author: r.author.login } };
+				const requested = review && r.state === "changes_requested";
+				if (review && !requested && r.state !== "commented") return null;
+				const address = isAddressed(r.body, app.settings.slug);
+				const body = requested ? r.body : address;
+				if (body === null) return null;
+				const entries = [
+					{
+						...entry(
+							review ? (requested ? "changes_requested" : "commented") : "review_comment",
+							feedbackId(subject),
+							body,
+							r.at,
+							r.url,
+							r.author.login,
+						),
+						commit: r.commit,
+						path: r.path,
+						line: r.line,
+					},
+				];
+				if (review)
+					for (const line of await app.reviewComments(token, repo, pr, r.id)) {
+						if (!valid(line)) continue;
+						entries.push({
+							...entry("review_comment", "review_comment:" + line.id, line.body, line.at, line.url, line.author.login),
+							commit: line.commit,
+							path: line.path,
+							line: line.line,
+						});
+					}
+				return { ...target, repo, entries, addressed: address !== null, ...(review && { reviewNodeId: r.nodeId }) };
+			},
+		);
 	} catch (e) {
 		if (e instanceof GithubError && [404, 410].includes(e.status)) return null;
 		throw e;
@@ -233,14 +361,24 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 }
 
 /** Publish reports the session's repository and pull request together in the owner's session index. */
-async function sessionForPull(c: Ctx, users: string[], target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">) {
+async function sessionForPull(
+	c: Ctx,
+	users: string[],
+	target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">,
+) {
 	const params = { params: serviceParams() };
 	for (const uid of users) {
 		try {
 			const user = c.client().user.get([uid], params);
-			const link: { sessionId: string | null } | null = await user.internalSessionForPull(target.installationId, target.repositoryId, target.pr);
+			const link: { sessionId: string | null } | null = await user.internalSessionForPull(
+				target.installationId,
+				target.repositoryId,
+				target.pr,
+			);
 			if (link) return { uid, ...link };
-		} catch (error) { if (!missingActor(error)) throw error; }
+		} catch (error) {
+			if (!missingActor(error)) throw error;
+		}
 	}
 	return null;
 }
@@ -248,11 +386,23 @@ async function sessionForPull(c: Ctx, users: string[], target: Pick<FeedbackNoti
 const UNLINKED = "This pull request is not linked to a Windlass agent.";
 
 async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
-	if (!d.repositoryId || (d.event !== "pull_request_review" && d.event !== "pull_request_review_comment" && d.event !== "issue_comment")) return "no item";
+	if (
+		!d.repositoryId ||
+		(d.event !== "pull_request_review" && d.event !== "pull_request_review_comment" && d.event !== "issue_comment")
+	)
+		return "no item";
 	const data = d.data;
-	const target = { installationId: d.installationId, repositoryId: d.repositoryId, pr: "pr" in data ? data.pr : data.issue };
-	const subject: FeedbackSubject = { sender: data.sender, association: data.sender.association,
-		kind: "reviewId" in data ? "review" : "pr" in data ? "review_comment" : "issue_comment", id: "reviewId" in data ? data.reviewId : data.commentId };
+	const target = {
+		installationId: d.installationId,
+		repositoryId: d.repositoryId,
+		pr: "pr" in data ? data.pr : data.issue,
+	};
+	const subject: FeedbackSubject = {
+		sender: data.sender,
+		association: data.sender.association,
+		kind: "reviewId" in data ? "review" : "pr" in data ? "review_comment" : "issue_comment",
+		id: "reviewId" in data ? data.reviewId : data.commentId,
+	};
 	const params = { params: serviceParams() };
 	try {
 		const directory = c.client().githubRepository.getOrCreate([String(d.repositoryId)], params);
@@ -262,7 +412,10 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 			if (notice) await c.client().workItem.get([uid, itemId], params).internalGithubFeedback(notice);
 		}
 		if (matches.length) return;
-		const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(target.installationId);
+		const users: string[] = await c
+			.client()
+			.githubHooks.get(["app"], params)
+			.internalInstallationUsers(target.installationId);
 		if (!users.length) return "no item";
 		const session = await sessionForPull(c, users, target);
 		if (session && !session.sessionId) return "no item";
@@ -270,20 +423,46 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 		if (!notice?.repo || !notice.entries.length) return "no item";
 		const { repo, entries } = notice;
 		const app = githubApp()!;
-		if (session && await c.client().agentSession.get([session.uid, session.sessionId], params).internalGithubFeedback({ ...target, entries })) {
-			for (const entry of entries) await app.acknowledgeFeedback(target.installationId, repo, entry.id, notice.reviewNodeId).catch(() => {
-				console.warn(`github.feedback.ack_failed delivery=${d.guid} entry=${entry.id}`);
-			});
+		if (
+			session &&
+			(await c
+				.client()
+				.agentSession.get([session.uid, session.sessionId], params)
+				.internalGithubFeedback({ ...target, entries }))
+		) {
+			for (const entry of entries)
+				await app.acknowledgeFeedback(target.installationId, repo, entry.id, notice.reviewNodeId).catch(() => {
+					console.warn(`github.feedback.ack_failed delivery=${d.guid} entry=${entry.id}`);
+				});
 			return;
 		}
 		if (!notice.addressed) return "no item";
-		await app.withToken(target.installationId, { repositoryId: repo.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
-			const { items: comments, truncated } = await app.issueCommentPages(token, repo.owner, repo.name, target.pr);
-			if (truncated) return;
-			if (!comments.some(comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && comment.body === UNLINKED))
-				await app.createIssueComment(token, repo.owner, repo.name, target.pr, UNLINKED, "explain the unlinked pull request");
-		});
-	} catch (e) { if (missingActor(e)) return "no item"; throw e; }
+		await app.withToken(
+			target.installationId,
+			{ repositoryId: repo.id, permissions: { metadata: "read", pull_requests: "write" } },
+			async token => {
+				const { items: comments, truncated } = await app.issueCommentPages(token, repo.owner, repo.name, target.pr);
+				if (truncated) return;
+				if (
+					!comments.some(
+						comment =>
+							comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && comment.body === UNLINKED,
+					)
+				)
+					await app.createIssueComment(
+						token,
+						repo.owner,
+						repo.name,
+						target.pr,
+						UNLINKED,
+						"explain the unlinked pull request",
+					);
+			},
+		);
+	} catch (e) {
+		if (missingActor(e)) return "no item";
+		throw e;
+	}
 }
 
 async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
@@ -294,28 +473,56 @@ async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
 		// Who may file is decided by the sender's linked account and GitHub's permission (github-intake.ts), never by `author_association`.
 		if (d.event === "issue_comment" && d.data.isPullRequest) return "no item";
 		let link;
-		try { link = await c.client().githubAccount.get([String(sender.id)], params).internalWho(); }
-		catch (error) { if (!missingActor(error)) throw error; }
+		try {
+			link = await c
+				.client()
+				.githubAccount.get([String(sender.id)], params)
+				.internalWho();
+		} catch (error) {
+			if (!missingActor(error)) throw error;
+		}
 		if (!link?.installations.includes(d.installationId)) {
 			console.log(`github.intake.unlinked installation=${d.installationId} delivery=${d.guid}`);
 			return "no item";
 		}
-		await c.client().user.get([link.uid], params).internalGithubIntake({ installationId: d.installationId, repositoryId: d.repositoryId, issue, senderId: sender.id,
-			...(d.event === "issue_comment" ? { via: "mention", commentId: d.data.commentId } : { via: "label", label: d.data.label }) });
+		await c
+			.client()
+			.user.get([link.uid], params)
+			.internalGithubIntake({
+				installationId: d.installationId,
+				repositoryId: d.repositoryId,
+				issue,
+				senderId: sender.id,
+				...(d.event === "issue_comment"
+					? { via: "mention", commentId: d.data.commentId }
+					: { via: "label", label: d.data.label }),
+			});
 		return;
 	}
 	if (d.action === "reopened") return "no item";
 	const directory = c.client().githubRepository.get([String(d.repositoryId)], params);
 	try {
 		const matches = await directory.internalFind({ issue, installationId: d.installationId });
-		for (const { uid, itemId } of matches) await c.client().workItem.get([uid, itemId], params).internalGithubIssue({
-			installationId: d.installationId, repositoryId: d.repositoryId, issue, action: d.action, senderId: sender.id });
+		for (const { uid, itemId } of matches)
+			await c.client().workItem.get([uid, itemId], params).internalGithubIssue({
+				installationId: d.installationId,
+				repositoryId: d.repositoryId,
+				issue,
+				action: d.action,
+				senderId: sender.id,
+			});
 		if (!matches.length) return "no item";
-	} catch (error) { if (missingActor(error)) return "no item"; throw error; }
+	} catch (error) {
+		if (missingActor(error)) return "no item";
+		throw error;
+	}
 }
-export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c: Ctx) => void | Promise<void | "no item">>> = {
+export const HANDLERS: Partial<
+	Record<Delivery["event"], (delivery: Delivery, c: Ctx) => void | Promise<void | "no item">>
+> = {
 	issues: issueDelivery,
-	issue_comment: (d, c) => d.event === "issue_comment" && d.data.isPullRequest ? prFeedback(d, c) : issueDelivery(d, c),
+	issue_comment: (d, c) =>
+		d.event === "issue_comment" && d.data.isPullRequest ? prFeedback(d, c) : issueDelivery(d, c),
 	pull_request_review: prFeedback,
 	pull_request_review_comment: prFeedback,
 	check_run: nudgeItems,
@@ -324,26 +531,47 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c:
 	pull_request: async (d, c) => {
 		if (d.event === "pull_request" && d.data.setupGuides && d.repositoryId) {
 			const params = { params: serviceParams() };
-			const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(d.installationId);
-			for (const uid of users) await c.client().user.get([uid], params).internalSetupPullClosed(d.installationId, d.repositoryId, d.data.pr, d.data.merged);
+			const users: string[] = await c
+				.client()
+				.githubHooks.get(["app"], params)
+				.internalInstallationUsers(d.installationId);
+			for (const uid of users)
+				await c
+					.client()
+					.user.get([uid], params)
+					.internalSetupPullClosed(d.installationId, d.repositoryId, d.data.pr, d.data.merged);
 		}
 		await checkGuides(d, c);
 		if (d.action === "opened") return;
 		await environmentPush(d, c);
 		return nudgeItems(d, c);
 	},
-	push: async (d, c) => { await checkGuides(d, c); return environmentPush(d, c); },
+	push: async (d, c) => {
+		await checkGuides(d, c);
+		return environmentPush(d, c);
+	},
 	installation: refreshInstallation,
 	installation_repositories: refreshInstallation,
 };
 
-type Row = { guid: string; event: Delivery["event"]; action: string; repository: string | null; data: string; received_at: number; attempts: number };
+type Row = {
+	guid: string;
+	event: Delivery["event"];
+	action: string;
+	repository: string | null;
+	data: string;
+	received_at: number;
+	attempts: number;
+};
 
 async function armInbox(c: Ctx) {
-	const [row] = await c.db.execute<{ at: number | null }>(`SELECT min(at) AS at FROM (
+	const [row] = await c.db.execute<{ at: number | null }>(
+		`SELECT min(at) AS at FROM (
 		SELECT min(received_at) + ? AS at FROM deliveries UNION ALL
 		SELECT min(next_at) FROM deliveries WHERE state = 'received' UNION ALL
-		SELECT next_at FROM hook_start WHERE started = 0)`, 7 * DAY);
+		SELECT next_at FROM hook_start WHERE started = 0)`,
+		7 * DAY,
+	);
 	const due = row?.at;
 	// Due work is already being drained. Leave a watchdog if the node stops during a handler.
 	await arm(c, due == null ? null : due <= Date.now() ? Date.now() + FIRST_RETRY : due, "internalDue");
@@ -364,26 +592,61 @@ async function drainDue(c: Ctx) {
 		await queued(c, () => c.db.execute("UPDATE hook_start SET next_at = ?", Date.now() + SWEEP));
 	}
 	while (true) {
-		const [row] = await c.db.execute<Row>("SELECT guid, event, action, CAST(repository AS TEXT) AS repository, data, received_at, attempts FROM deliveries WHERE state = 'received' AND next_at <= ? ORDER BY received_at, rowid LIMIT 1", Date.now());
+		const [row] = await c.db.execute<Row>(
+			"SELECT guid, event, action, CAST(repository AS TEXT) AS repository, data, received_at, attempts FROM deliveries WHERE state = 'received' AND next_at <= ? ORDER BY received_at, rowid LIMIT 1",
+			Date.now(),
+		);
 		if (!row) break;
 		const attempts = row.attempts + 1;
-		let state = "done", said = "", next = 0;
+		let state = "done",
+			said = "",
+			next = 0;
 		try {
 			const handler = HANDLERS[row.event];
 			if (handler) {
 				// Older inbox rows have safe numeric comment and review IDs.
-				const data = JSON.parse(row.data, (key, value) => key === "commentId" || key === "reviewId" ? decimalId(value) : value);
-				const ignored = await handler({ guid: row.guid, event: row.event, action: row.action, installationId: githubId(c.key[0])!, repositoryId: githubId(row.repository), data, at: row.received_at }, c);
-				if (ignored) { state = "ignored"; said = ignored; }
-			} else { state = "ignored"; said = "no handler yet"; }
+				const data = JSON.parse(row.data, (key, value) =>
+					key === "commentId" || key === "reviewId" ? decimalId(value) : value,
+				);
+				const ignored = await handler(
+					{
+						guid: row.guid,
+						event: row.event,
+						action: row.action,
+						installationId: githubId(c.key[0])!,
+						repositoryId: githubId(row.repository),
+						data,
+						at: row.received_at,
+					},
+					c,
+				);
+				if (ignored) {
+					state = "ignored";
+					said = ignored;
+				}
+			} else {
+				state = "ignored";
+				said = "no handler yet";
+			}
 		} catch {
 			said = "handler failed"; // thrown errors can contain delivery text
 			state = attempts >= 8 ? "failed" : "received";
 			next = Date.now() + Math.min(30 * 60_000, FIRST_RETRY * 2 ** (attempts - 1));
 		}
-		await queued(c, () => c.db.execute("UPDATE deliveries SET state = ?, said = ?, next_at = ?, attempts = ? WHERE guid = ?", state, said, next, attempts, row.guid));
-		if (state === "ignored") console.log(`github.delivery.ignored(${said}) event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
-		if (state === "failed") console.warn(`github.delivery.failed event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
+		await queued(c, () =>
+			c.db.execute(
+				"UPDATE deliveries SET state = ?, said = ?, next_at = ?, attempts = ? WHERE guid = ?",
+				state,
+				said,
+				next,
+				attempts,
+				row.guid,
+			),
+		);
+		if (state === "ignored")
+			console.log(`github.delivery.ignored(${said}) event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
+		if (state === "failed")
+			console.warn(`github.delivery.failed event=${row.event} installation=${c.key[0]} delivery=${row.guid}`);
 	}
 }
 
@@ -411,14 +674,22 @@ function runDrain(c: Ctx) {
 
 export const githubInbox = actor({
 	onBeforeConnect: internalConnection,
-	onCreate: c => { if (!githubIdKey(c.key)) c.destroy(); },
-	db: db({ onMigrate: async db => {
-		await db.execute("CREATE TABLE IF NOT EXISTS deliveries (guid TEXT PRIMARY KEY, event TEXT NOT NULL, action TEXT NOT NULL, repository INTEGER, data TEXT NOT NULL, received_at INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, said TEXT NOT NULL)");
-		await db.execute("CREATE INDEX IF NOT EXISTS delivery_due ON deliveries(state, next_at)");
-		await db.execute("CREATE INDEX IF NOT EXISTS delivery_age ON deliveries(received_at)");
-		await db.execute(TIMER);
-		await db.execute("CREATE TABLE IF NOT EXISTS hook_start (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), started INTEGER NOT NULL, next_at INTEGER NOT NULL)");
-	} }),
+	onCreate: c => {
+		if (!githubIdKey(c.key)) c.destroy();
+	},
+	db: db({
+		onMigrate: async db => {
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS deliveries (guid TEXT PRIMARY KEY, event TEXT NOT NULL, action TEXT NOT NULL, repository INTEGER, data TEXT NOT NULL, received_at INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, said TEXT NOT NULL)",
+			);
+			await db.execute("CREATE INDEX IF NOT EXISTS delivery_due ON deliveries(state, next_at)");
+			await db.execute("CREATE INDEX IF NOT EXISTS delivery_age ON deliveries(received_at)");
+			await db.execute(TIMER);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS hook_start (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), started INTEGER NOT NULL, next_at INTEGER NOT NULL)",
+			);
+		},
+	}),
 	createVars: vars,
 	onWake: runDrain,
 	actions: {
@@ -429,14 +700,26 @@ export const githubInbox = actor({
 				const result = await c.db.transaction(async tx => {
 					await tx.execute("DELETE FROM deliveries WHERE received_at <= ?", Date.now() - 7 * DAY);
 					if ((await tx.execute("SELECT 1 FROM deliveries WHERE guid = ?", d.guid)).length) return "duplicate";
-					const [count] = await tx.execute<{ waiting: number; total: number }>("SELECT count(*) AS total, count(CASE WHEN state = 'received' THEN 1 END) AS waiting FROM deliveries");
+					const [count] = await tx.execute<{ waiting: number; total: number }>(
+						"SELECT count(*) AS total, count(CASE WHEN state = 'received' THEN 1 END) AS waiting FROM deliveries",
+					);
 					if (count.waiting >= 2_000) return "busy";
 					if (count.total >= 20_000) {
 						// Preserve waiting work. Prefer reclaiming a completed/ignored row to a failed row.
-						await tx.execute("DELETE FROM deliveries WHERE rowid = (SELECT rowid FROM deliveries WHERE state <> 'received' ORDER BY (state = 'failed'), received_at, rowid LIMIT 1)");
+						await tx.execute(
+							"DELETE FROM deliveries WHERE rowid = (SELECT rowid FROM deliveries WHERE state <> 'received' ORDER BY (state = 'failed'), received_at, rowid LIMIT 1)",
+						);
 					}
-					const rows = await tx.execute("INSERT OR IGNORE INTO deliveries VALUES (?, ?, ?, ?, ?, ?, 'received', 0, ?, '') RETURNING guid",
-						d.guid, d.event, d.action, d.repositoryId, JSON.stringify(d.data), d.at, d.at);
+					const rows = await tx.execute(
+						"INSERT OR IGNORE INTO deliveries VALUES (?, ?, ?, ?, ?, ?, 'received', 0, ?, '') RETURNING guid",
+						d.guid,
+						d.event,
+						d.action,
+						d.repositoryId,
+						JSON.stringify(d.data),
+						d.at,
+						d.at,
+					);
 					await tx.execute("INSERT OR IGNORE INTO hook_start VALUES (1, 0, 0)");
 					return rows.length ? "stored" : "duplicate";
 				});
@@ -444,13 +727,19 @@ export const githubInbox = actor({
 				if (result !== "busy") await armInbox(c);
 				return result;
 			});
-			if (result === "stored") console.log(`github.delivery.stored event=${d.event}${d.action ? "." + d.action : ""} installation=${d.installationId} delivery=${d.guid}`);
+			if (result === "stored")
+				console.log(
+					`github.delivery.stored event=${d.event}${d.action ? "." + d.action : ""} installation=${d.installationId} delivery=${d.guid}`,
+				);
 			if (result !== "busy") runDrain(c);
 			return result;
 		},
 		internalKnows: async (c, guid: string) => {
 			requireServiceFor(c, "call");
-			return (await c.db.execute("SELECT 1 FROM deliveries WHERE guid = ? AND received_at > ?", guid, Date.now() - 7 * DAY)).length !== 0;
+			return (
+				(await c.db.execute("SELECT 1 FROM deliveries WHERE guid = ? AND received_at > ?", guid, Date.now() - 7 * DAY))
+					.length !== 0
+			);
 		},
 		internalDue: async c => {
 			if (!c.scheduledFire) requireServiceFor(c, "call");
@@ -467,7 +756,9 @@ async function linked(db: RawAccess, installation: GithubId) {
 async function sweep(c: Ctx) {
 	const app = githubApp();
 	if (!app || !githubConfig().webhook) return;
-	const [window] = await c.db.execute<{ last_at: number; started_at: number; cursor: string | null }>("SELECT last_at, started_at, cursor FROM sweeps");
+	const [window] = await c.db.execute<{ last_at: number; started_at: number; cursor: string | null }>(
+		"SELECT last_at, started_at, cursor FROM sweeps",
+	);
 	if (!window) return;
 	const now = Date.now();
 	const started = window.started_at || now;
@@ -482,11 +773,14 @@ async function sweep(c: Ctx) {
 		// Advance the cursor with the durable candidates. A full installation cannot pin the scan
 		// to its own page, and excess work survives a restart between ten-minute ticks.
 		await c.db.transaction(async tx => {
-			await tx.execute(`INSERT OR IGNORE INTO pending_redelivery (guid, delivery, installation, at)
+			await tx.execute(
+				`INSERT OR IGNORE INTO pending_redelivery (guid, delivery, installation, at)
 				SELECT d.value ->> 'guid', d.value ->> 'id', d.value ->> 'installationId', d.value ->> 'at'
 				FROM json_each(?) d
 				WHERE EXISTS (SELECT 1 FROM installation_links WHERE installation = d.value ->> 'installationId')
-				AND NOT EXISTS (SELECT 1 FROM redelivered WHERE guid = d.value ->> 'guid')`, JSON.stringify(inWindow));
+				AND NOT EXISTS (SELECT 1 FROM redelivered WHERE guid = d.value ->> 'guid')`,
+				JSON.stringify(inWindow),
+			);
 			if (next) await tx.execute("UPDATE sweeps SET cursor = ?, started_at = ?", next, started);
 			else await tx.execute("UPDATE sweeps SET last_at = ?, started_at = 0, cursor = NULL", started);
 		});
@@ -504,12 +798,13 @@ async function sweep(c: Ctx) {
 	const unavailable = new Set<string>();
 	for (const d of candidates) {
 		if (unavailable.has(d.installation)) continue;
-		if (!await linked(c.db, d.installation)) continue;
+		if (!(await linked(c.db, d.installation))) continue;
 		const inbox = c.client().githubInbox.getOrCreate([String(d.installation)], { params: serviceParams() });
 		await c.db.execute("INSERT OR REPLACE INTO redelivery_turn VALUES (1, ?)", d.installation);
 		let known: boolean;
-		try { known = await inbox.internalKnows(d.guid); }
-		catch {
+		try {
+			known = await inbox.internalKnows(d.guid);
+		} catch {
 			unavailable.add(d.installation);
 			continue;
 		}
@@ -519,8 +814,10 @@ async function sweep(c: Ctx) {
 		}
 		// Reserve before POST. Recheck membership after the actor call, in the same transaction.
 		const reserved = await c.db.transaction(async tx => {
-			if (!await linked(tx, d.installation)) return false;
-			return (await tx.execute("INSERT OR IGNORE INTO redelivered VALUES (?, ?) RETURNING guid", d.guid, now)).length > 0;
+			if (!(await linked(tx, d.installation))) return false;
+			return (
+				(await tx.execute("INSERT OR IGNORE INTO redelivered VALUES (?, ?) RETURNING guid", d.guid, now)).length > 0
+			);
 		});
 		if (reserved) {
 			try {
@@ -546,39 +843,59 @@ async function runSweep(c: Ctx) {
 	c.vars.draining = true;
 	try {
 		await sweep(c);
-	} finally { c.vars.draining = false; }
+	} finally {
+		c.vars.draining = false;
+	}
 }
 
 export const githubHooks = actor({
 	onBeforeConnect: internalConnection,
-	onCreate: c => { if (c.key.length !== 1 || c.key[0] !== "app") c.destroy(); },
-	db: db({ onMigrate: async db => {
-		await db.execute(TIMER);
-		await db.execute("CREATE TABLE IF NOT EXISTS sweeps (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_at INTEGER NOT NULL, started_at INTEGER NOT NULL, cursor TEXT)");
-		await db.execute("CREATE TABLE IF NOT EXISTS installation_links (installation INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY (installation, uid))");
-		await db.execute("CREATE INDEX IF NOT EXISTS links_by_user ON installation_links(uid)");
-		// The latest removal or activation seen for an installation, by the time its event was received.
-		await db.execute("CREATE TABLE IF NOT EXISTS installation_state (installation INTEGER PRIMARY KEY, removed INTEGER NOT NULL, at INTEGER NOT NULL)");
-		const pending = "CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery TEXT NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)";
-		await db.execute(pending);
-		const columns = await db.execute<{ name: string; type: string }>("PRAGMA table_info(pending_redelivery)");
-		if (columns.some(c => c.name === "delivery" && c.type === "INTEGER")) {
-			await db.execute("ALTER TABLE pending_redelivery RENAME TO old_pending_redelivery");
+	onCreate: c => {
+		if (c.key.length !== 1 || c.key[0] !== "app") c.destroy();
+	},
+	db: db({
+		onMigrate: async db => {
+			await db.execute(TIMER);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS sweeps (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_at INTEGER NOT NULL, started_at INTEGER NOT NULL, cursor TEXT)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS installation_links (installation INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY (installation, uid))",
+			);
+			await db.execute("CREATE INDEX IF NOT EXISTS links_by_user ON installation_links(uid)");
+			// The latest removal or activation seen for an installation, by the time its event was received.
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS installation_state (installation INTEGER PRIMARY KEY, removed INTEGER NOT NULL, at INTEGER NOT NULL)",
+			);
+			const pending =
+				"CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery TEXT NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)";
 			await db.execute(pending);
-			// The old reader stored 0 for every unsafe ID. Re-list the three-day window to recover them.
-			await db.execute("INSERT INTO pending_redelivery SELECT guid, CAST(delivery AS TEXT), installation, at FROM old_pending_redelivery WHERE delivery BETWEEN 1 AND 9007199254740991");
-			await db.execute("UPDATE sweeps SET last_at = 0, started_at = 0, cursor = NULL");
-			await db.execute("DROP TABLE old_pending_redelivery");
-		}
-		await db.execute("CREATE INDEX IF NOT EXISTS pending_by_installation ON pending_redelivery(installation, at, length(delivery), delivery)");
-		await db.execute("CREATE TABLE IF NOT EXISTS redelivery_turn (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), installation INTEGER NOT NULL)");
-		await db.execute("CREATE TABLE IF NOT EXISTS redelivered (guid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
-	} }),
+			const columns = await db.execute<{ name: string; type: string }>("PRAGMA table_info(pending_redelivery)");
+			if (columns.some(c => c.name === "delivery" && c.type === "INTEGER")) {
+				await db.execute("ALTER TABLE pending_redelivery RENAME TO old_pending_redelivery");
+				await db.execute(pending);
+				// The old reader stored 0 for every unsafe ID. Re-list the three-day window to recover them.
+				await db.execute(
+					"INSERT INTO pending_redelivery SELECT guid, CAST(delivery AS TEXT), installation, at FROM old_pending_redelivery WHERE delivery BETWEEN 1 AND 9007199254740991",
+				);
+				await db.execute("UPDATE sweeps SET last_at = 0, started_at = 0, cursor = NULL");
+				await db.execute("DROP TABLE old_pending_redelivery");
+			}
+			await db.execute(
+				"CREATE INDEX IF NOT EXISTS pending_by_installation ON pending_redelivery(installation, at, length(delivery), delivery)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS redelivery_turn (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), installation INTEGER NOT NULL)",
+			);
+			await db.execute("CREATE TABLE IF NOT EXISTS redelivered (guid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+		},
+	}),
 	createVars: vars,
 	onWake: async c => {
 		if (!(await c.db.execute("SELECT 1 FROM sweeps")).length) return;
 		const [timer] = await c.db.execute<{ at: number }>("SELECT at FROM timer");
-		if (!timer || timer.at <= Date.now()) void c.keepAwake(runSweep(c).catch(() => console.warn("github.webhook.sweep_failed")));
+		if (!timer || timer.at <= Date.now())
+			void c.keepAwake(runSweep(c).catch(() => console.warn("github.webhook.sweep_failed")));
 	},
 	actions: {
 		/** Links the user to the installations, except one removed since the list was read. Returns the ids linked.
@@ -586,18 +903,43 @@ export const githubHooks = actor({
 		internalSetInstallations: async (c, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> => {
 			requireServiceFor(c, "call");
 			return c.db.transaction(async tx => {
-				const removed = new Set((await tx.execute<{ installation: string; at: number }>(`SELECT CAST(s.installation AS TEXT) AS installation, s.at
-					FROM installation_state s JOIN json_each(?) d ON s.installation = d.value WHERE s.removed = 1`, JSON.stringify(ids)))
-					.filter(r => readAt === undefined || r.at >= readAt - CLOCK_SKEW).map(r => r.installation));
+				const removed = new Set(
+					(
+						await tx.execute<{ installation: string; at: number }>(
+							`SELECT CAST(s.installation AS TEXT) AS installation, s.at
+					FROM installation_state s JOIN json_each(?) d ON s.installation = d.value WHERE s.removed = 1`,
+							JSON.stringify(ids),
+						)
+					)
+						.filter(r => readAt === undefined || r.at >= readAt - CLOCK_SKEW)
+						.map(r => r.installation),
+				);
 				const accepted = ids.filter(id => !removed.has(String(id)));
 				// A list read well after a removal shows the installation active again, as after a lifted suspension.
-				if (readAt !== undefined) await tx.execute(`UPDATE installation_state SET removed = 0, at = ? WHERE removed = 1 AND at < ?
-					AND installation IN (SELECT value FROM json_each(?))`, readAt, readAt - CLOCK_SKEW, JSON.stringify(accepted));
-				const old = await tx.execute<{ installation: string }>("DELETE FROM installation_links WHERE uid = ? RETURNING CAST(installation AS TEXT) AS installation", uid);
-				await tx.execute("INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)", uid, JSON.stringify(accepted));
+				if (readAt !== undefined)
+					await tx.execute(
+						`UPDATE installation_state SET removed = 0, at = ? WHERE removed = 1 AND at < ?
+					AND installation IN (SELECT value FROM json_each(?))`,
+						readAt,
+						readAt - CLOCK_SKEW,
+						JSON.stringify(accepted),
+					);
+				const old = await tx.execute<{ installation: string }>(
+					"DELETE FROM installation_links WHERE uid = ? RETURNING CAST(installation AS TEXT) AS installation",
+					uid,
+				);
+				await tx.execute(
+					"INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)",
+					uid,
+					JSON.stringify(accepted),
+				);
 				for (const { installation } of old) {
-					await tx.execute(`DELETE FROM pending_redelivery WHERE installation = ?
-						AND NOT EXISTS (SELECT 1 FROM installation_links WHERE installation = ?)`, installation, installation);
+					await tx.execute(
+						`DELETE FROM pending_redelivery WHERE installation = ?
+						AND NOT EXISTS (SELECT 1 FROM installation_links WHERE installation = ?)`,
+						installation,
+						installation,
+					);
 				}
 				return accepted;
 			});
@@ -607,21 +949,37 @@ export const githubHooks = actor({
 			requireServiceFor(c, "call");
 			return c.db.transaction(async tx => {
 				await tx.execute("DELETE FROM installation_state WHERE at <= ?", Date.now() - STATE_KEPT);
-				await tx.execute(`INSERT INTO installation_state VALUES (?, 1, ?) ON CONFLICT(installation)
-					DO UPDATE SET removed = 1, at = excluded.at WHERE excluded.at >= installation_state.at`, installation, at);
-				const [state] = await tx.execute<{ removed: number }>("SELECT removed FROM installation_state WHERE installation = ?", installation);
+				await tx.execute(
+					`INSERT INTO installation_state VALUES (?, 1, ?) ON CONFLICT(installation)
+					DO UPDATE SET removed = 1, at = excluded.at WHERE excluded.at >= installation_state.at`,
+					installation,
+					at,
+				);
+				const [state] = await tx.execute<{ removed: number }>(
+					"SELECT removed FROM installation_state WHERE installation = ?",
+					installation,
+				);
 				if (!state?.removed) return [];
-				return (await tx.execute<{ uid: string }>("SELECT uid FROM installation_links WHERE installation = ?", installation)).map(r => r.uid);
+				return (
+					await tx.execute<{ uid: string }>("SELECT uid FROM installation_links WHERE installation = ?", installation)
+				).map(r => r.uid);
 			});
 		},
 		internalInstallationActive: async (c, installation: GithubId, at: number) => {
 			requireServiceFor(c, "call");
-			await c.db.execute(`INSERT INTO installation_state VALUES (?, 0, ?) ON CONFLICT(installation)
-				DO UPDATE SET removed = 0, at = excluded.at WHERE excluded.at > installation_state.at`, installation, at);
+			await c.db.execute(
+				`INSERT INTO installation_state VALUES (?, 0, ?) ON CONFLICT(installation)
+				DO UPDATE SET removed = 0, at = excluded.at WHERE excluded.at > installation_state.at`,
+				installation,
+				at,
+			);
 		},
 		internalInstallationUsers: async (c, installation: GithubId): Promise<string[]> => {
 			requireServiceFor(c, "call");
-			const rows = await c.db.execute<{ uid: string }>("SELECT uid FROM installation_links WHERE installation = ?", installation);
+			const rows = await c.db.execute<{ uid: string }>(
+				"SELECT uid FROM installation_links WHERE installation = ?",
+				installation,
+			);
 			return rows.map(r => r.uid);
 		},
 		internalLinked: async (c, installation: GithubId) => {

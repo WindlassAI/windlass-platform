@@ -50,7 +50,7 @@ export function setPublishFeedback(sessionId: string, value: PublishFeedback): v
 
 export function usePublishFeedback(sessionId: string): PublishFeedback {
 	return useSyncExternalStore(
-		(listener) => {
+		listener => {
 			feedbackListeners.add(listener);
 			return () => feedbackListeners.delete(listener);
 		},
@@ -86,7 +86,7 @@ export function setPanelHidden(hidden: boolean): void {
 /** Whether the user hid the side panel (on a wide screen; a narrow one shows it under the conversation). */
 export function usePanelHidden(): boolean {
 	return useSyncExternalStore(
-		(listener) => {
+		listener => {
 			panelListeners.add(listener);
 			return () => panelListeners.delete(listener);
 		},

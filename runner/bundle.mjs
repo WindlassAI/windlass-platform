@@ -15,14 +15,34 @@ for (const entry of pins) {
 		throw new Error("Pass a harness image as <harness>=<immutable image digest>.");
 	harnessImages[id] = image;
 }
-const relay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/opencode.cjs", import.meta.url))],
-	bundle: true, platform: "node", format: "cjs", write: false });
-const windlassRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/windlass.cjs", import.meta.url))],
-	bundle: true, platform: "node", format: "cjs", write: false });
-const claudeRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/server.cjs", import.meta.url))],
-	bundle: true, platform: "node", format: "cjs", write: false });
-const codexRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/codex.cjs", import.meta.url))],
-	bundle: true, platform: "node", format: "cjs", write: false });
+const relay = await build({
+	entryPoints: [fileURLToPath(new URL("../sandbox/relay/opencode.cjs", import.meta.url))],
+	bundle: true,
+	platform: "node",
+	format: "cjs",
+	write: false,
+});
+const windlassRelay = await build({
+	entryPoints: [fileURLToPath(new URL("../sandbox/relay/windlass.cjs", import.meta.url))],
+	bundle: true,
+	platform: "node",
+	format: "cjs",
+	write: false,
+});
+const claudeRelay = await build({
+	entryPoints: [fileURLToPath(new URL("../sandbox/relay/server.cjs", import.meta.url))],
+	bundle: true,
+	platform: "node",
+	format: "cjs",
+	write: false,
+});
+const codexRelay = await build({
+	entryPoints: [fileURLToPath(new URL("../sandbox/relay/codex.cjs", import.meta.url))],
+	bundle: true,
+	platform: "node",
+	format: "cjs",
+	write: false,
+});
 // These two public sandbox conventions also occur in the shared server implementation.
 // Ship them as explicit image configuration, so the executable scan can reject any host
 // home path or secret marker without an exception for arbitrary strings in the bundle.
@@ -32,24 +52,48 @@ const sandboxLayout = {
 	setup(builder) {
 		builder.onLoad({ filter: /[/\\]server[/\\]src[/\\]sandbox[/\\](provider|sandboxes)\.ts$/ }, async ({ path }) => {
 			const text = await readFile(path, "utf8");
-			const [variable, key] = path.endsWith("provider.ts") ? ["DATA_DIR", "dataDirectory"] : ["SECRET_ALIAS", "secretAlias"];
+			const [variable, key] = path.endsWith("provider.ts")
+				? ["DATA_DIR", "dataDirectory"]
+				: ["SECRET_ALIAS", "secretAlias"];
 			const declaration = `const ${variable} = ${JSON.stringify(layout[key])};`;
 			if (!text.includes(declaration)) throw new Error(`Review the runner layout after changing ${variable}.`);
-			return { contents: text.replace(declaration, `const ${variable} = require("./sandbox-layout.json").${key};`), loader: "ts" };
+			return {
+				contents: text.replace(declaration, `const ${variable} = require("./sandbox-layout.json").${key};`),
+				loader: "ts",
+			};
 		});
 	},
 };
 await writeFile(join(dirname(outfile), "sandbox-layout.json"), JSON.stringify(layout));
 await build({
-	entryPoints: [fileURLToPath(new URL("src/main.ts", import.meta.url))], outfile,
-	plugins: [sandboxLayout], external: ["./sandbox-layout.json"], sourcemap: false,
+	entryPoints: [fileURLToPath(new URL("src/main.ts", import.meta.url))],
+	outfile,
+	plugins: [sandboxLayout],
+	external: ["./sandbox-layout.json"],
+	sourcemap: false,
 	banner: { js: "#!/usr/bin/env node" },
-	bundle: true, platform: "node", target: "node22", format: "cjs",
-	define: { PRIVATE_GIT_SOURCE: JSON.stringify(await readFile(new URL("../server/src/github/private-git.py", import.meta.url), "utf8")), EGRESS_SOURCE: JSON.stringify(await readFile(new URL("src/egress-proxy.mjs", import.meta.url), "utf8")), "import.meta.dirname": "__dirname", BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"), SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages),
+	bundle: true,
+	platform: "node",
+	target: "node22",
+	format: "cjs",
+	define: {
+		PRIVATE_GIT_SOURCE: JSON.stringify(
+			await readFile(new URL("../server/src/github/private-git.py", import.meta.url), "utf8"),
+		),
+		EGRESS_SOURCE: JSON.stringify(await readFile(new URL("src/egress-proxy.mjs", import.meta.url), "utf8")),
+		"import.meta.dirname": "__dirname",
+		BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"),
+		SANDBOX_IMAGE: JSON.stringify(pin),
+		SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""),
+		HARNESS_IMAGES: JSON.stringify(harnessImages),
 		CODEX_RELAY_SCRIPT: JSON.stringify(codexRelay.outputFiles[0].text),
 		WINDLASS_RELAY_SCRIPT: JSON.stringify(windlassRelay.outputFiles[0].text),
 		OPENCODE_RELAY_SCRIPT: JSON.stringify(relay.outputFiles[0].text),
-		CLAUDE_RELAY_SCRIPT: JSON.stringify(claudeRelay.outputFiles[0].text) },
+		CLAUDE_RELAY_SCRIPT: JSON.stringify(claudeRelay.outputFiles[0].text),
+	},
 });
 await copyFile(new URL("../sandbox/seccomp-bwrap.json", import.meta.url), join(dirname(outfile), "seccomp-bwrap.json"));
-await copyFile(new URL("../sandbox/seccomp-bwrap.LICENSE", import.meta.url), join(dirname(outfile), "seccomp-bwrap.LICENSE"));
+await copyFile(
+	new URL("../sandbox/seccomp-bwrap.LICENSE", import.meta.url),
+	join(dirname(outfile), "seccomp-bwrap.LICENSE"),
+);

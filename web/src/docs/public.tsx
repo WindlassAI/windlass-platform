@@ -27,7 +27,7 @@ export interface DocsPublicPage {
 export const DOCS_LLMS_SECTION = "Docs";
 
 export function docsPublicPages(): DocsPublicPage[] {
-	return DOCS_PAGES.map((page) => ({
+	return DOCS_PAGES.map(page => ({
 		path: docsPath(page.slug),
 		title: docsTitle(page),
 		description: page.description,

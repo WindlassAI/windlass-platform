@@ -13,7 +13,17 @@
  * On a phone a row's submenu is pushed into the same sheet, with a back chevron; the row itself is
  * still chosen by tapping it, and its chevron opens the submenu.
  */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
+import {
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+	type KeyboardEvent,
+	type ReactNode,
+	type Ref,
+	type RefObject,
+} from "react";
 import { CheckIcon, ChevronRightIcon, SearchIcon } from "../Icons";
 import { Kbd } from "./Kbd";
 import { Popover, type CloseReason } from "./Popover";
@@ -108,7 +118,9 @@ const textOf = (item: MenuItem) => item.textValue ?? (typeof item.label === "str
 function filtered(groups: MenuGroup[], query: string): MenuGroup[] {
 	const needle = query.trim().toLowerCase();
 	if (needle === "") return groups;
-	return groups.map((group) => ({ ...group, items: group.items.filter((item) => textOf(item).toLowerCase().includes(needle)) })).filter((group) => group.items.length > 0);
+	return groups
+		.map(group => ({ ...group, items: group.items.filter(item => textOf(item).toLowerCase().includes(needle)) }))
+		.filter(group => group.items.length > 0);
 }
 
 /** A string label with the letters the query matched marked. */
@@ -146,10 +158,13 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 	const [localQuery, setLocalQuery] = useState("");
 	const controlled = spec.filter?.onChange !== undefined;
 	const query = controlled ? (spec.filter?.value ?? "") : localQuery;
-	const groups = useMemo(() => (spec.filter && !controlled ? filtered(spec.groups, query) : spec.groups), [spec.filter, spec.groups, controlled, query]);
-	const rows = groups.flatMap((group) => group.items);
-	const enabled = rows.map((item, index) => (item.disabled ? -1 : index)).filter((index) => index >= 0);
-	const chosen = rows.findIndex((item) => item.checked && !item.disabled);
+	const groups = useMemo(
+		() => (spec.filter && !controlled ? filtered(spec.groups, query) : spec.groups),
+		[spec.filter, spec.groups, controlled, query],
+	);
+	const rows = groups.flatMap(group => group.items);
+	const enabled = rows.map((item, index) => (item.disabled ? -1 : index)).filter(index => index >= 0);
+	const chosen = rows.findIndex(item => item.checked && !item.disabled);
 	const [active, setActive] = useState(() => (chosen >= 0 ? chosen : (enabled[0] ?? -1)));
 	const [sub, setSub] = useState<{ id: string; focus: boolean } | null>(null);
 	const ownList = useRef<HTMLDivElement>(null);
@@ -228,7 +243,11 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 		} else if (key === "Enter" || (key === " " && !spec.filter && Date.now() - typed.current.at >= 500)) {
 			event.preventDefault();
 			if (activeItem) choose(activeItem);
-		} else if (key === "ArrowRight" && activeItem?.submenu && !(spec.filter && event.target === input.current && (input.current?.selectionStart ?? 0) < query.length)) {
+		} else if (
+			key === "ArrowRight" &&
+			activeItem?.submenu &&
+			!(spec.filter && event.target === input.current && (input.current?.selectionStart ?? 0) < query.length)
+		) {
 			event.preventDefault();
 			openSub(activeItem, true);
 		} else if (key === "ArrowLeft" && nested && !(spec.filter && event.target === input.current && query !== "")) {
@@ -243,19 +262,29 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 		} else if (!spec.filter && key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
 			// Typeahead: the next row that starts with what was typed in the last half second.
 			const now = Date.now();
-			typed.current = { text: now - typed.current.at < 500 ? typed.current.text + key.toLowerCase() : key.toLowerCase(), at: now };
+			typed.current = {
+				text: now - typed.current.at < 500 ? typed.current.text + key.toLowerCase() : key.toLowerCase(),
+				at: now,
+			};
 			const text = typed.current.text;
-			const order = [...enabled.slice(at + (text.length === 1 ? 1 : 0)), ...enabled.slice(0, at + (text.length === 1 ? 1 : 0))];
-			const found = order.find((index) => textOf(rows[index] as MenuItem).toLowerCase().startsWith(text));
+			const order = [
+				...enabled.slice(at + (text.length === 1 ? 1 : 0)),
+				...enabled.slice(0, at + (text.length === 1 ? 1 : 0)),
+			];
+			const found = order.find(index =>
+				textOf(rows[index] as MenuItem)
+					.toLowerCase()
+					.startsWith(text),
+			);
 			if (found !== undefined) move(found);
 		}
 	};
 
 	const hints = spec.hints === undefined ? true : spec.hints;
-	const subItem = sub ? rows.find((item) => item.id === sub.id) : undefined;
+	const subItem = sub ? rows.find(item => item.id === sub.id) : undefined;
 	subAnchor.current = subItem ? (rowRefs.current.get(subItem.id) ?? null) : null;
 	const optionId = (item: MenuItem) => `${ids.option}-${item.id}`;
-	const anySub = rows.some((item) => item.submenu);
+	const anySub = rows.some(item => item.submenu);
 
 	return (
 		<div className={`ui-menu ui-menu-${surface}`}>
@@ -274,7 +303,9 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 						aria-activedescendant={activeItem ? optionId(activeItem) : undefined}
 						autoComplete="off"
 						spellCheck={false}
-						onChange={(event) => (controlled ? spec.filter?.onChange?.(event.target.value) : setLocalQuery(event.target.value))}
+						onChange={event =>
+							controlled ? spec.filter?.onChange?.(event.target.value) : setLocalQuery(event.target.value)
+						}
 						onKeyDown={onKeyDown}
 					/>
 				</div>
@@ -291,10 +322,17 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 				onKeyDown={spec.filter ? undefined : onKeyDown}
 			>
 				{rows.length === 0 ? (
-					<div className="ui-menu-empty">{spec.empty ?? (query ? `Nothing matches “${query.trim()}”.` : "Nothing to choose from.")}</div>
+					<div className="ui-menu-empty">
+						{spec.empty ?? (query ? `Nothing matches “${query.trim()}”.` : "Nothing to choose from.")}
+					</div>
 				) : (
 					groups.map((group, groupIndex) => (
-						<div key={group.id} role="group" aria-labelledby={group.label ? `${ids.label}-${group.id}` : undefined} className="ui-menu-group">
+						<div
+							key={group.id}
+							role="group"
+							aria-labelledby={group.label ? `${ids.label}-${group.id}` : undefined}
+							className="ui-menu-group"
+						>
 							{groupIndex > 0 ? <div className="ui-menu-sep" role="separator" /> : null}
 							{group.label ? (
 								<div className="ui-menu-group-label" id={`${ids.label}-${group.id}`}>
@@ -302,14 +340,19 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 									{group.note ? <span className="ui-menu-group-note">{group.note}</span> : null}
 								</div>
 							) : null}
-							{group.items.map((item) => {
+							{group.items.map(item => {
 								const index = rows.indexOf(item);
 								const highlighted = index === current;
-								const label = typeof item.label === "string" && spec.filter && !controlled ? <Highlight text={item.label} query={query} /> : item.label;
+								const label =
+									typeof item.label === "string" && spec.filter && !controlled ? (
+										<Highlight text={item.label} query={query} />
+									) : (
+										item.label
+									);
 								return (
 									<div
 										key={item.id}
-										ref={(element) => {
+										ref={element => {
 											if (element) rowRefs.current.set(item.id, element);
 											else rowRefs.current.delete(item.id);
 										}}
@@ -324,16 +367,19 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 										data-highlighted={highlighted || undefined}
 										className={`ui-item${item.tone ? ` ui-item-${item.tone}` : ""}${item.description ? " ui-item-two" : ""}${item.wrap ? " ui-item-wrap" : ""}`}
 										// The focus stays where it is (the list or the filter): a press must not take it.
-										onPointerDown={(event) => event.preventDefault()}
+										onPointerDown={event => event.preventDefault()}
 										onPointerMove={() => {
 											if (item.disabled || index === current) return;
 											setActive(index);
 											if (hover.current) clearTimeout(hover.current);
 											if (surface === "popover")
-												hover.current = setTimeout(() => {
-													if (item.submenu) item.onSubmenuOpen?.();
-													setSub(item.submenu ? { id: item.id, focus: false } : null);
-												}, item.submenu ? 120 : 160);
+												hover.current = setTimeout(
+													() => {
+														if (item.submenu) item.onSubmenuOpen?.();
+														setSub(item.submenu ? { id: item.id, focus: false } : null);
+													},
+													item.submenu ? 120 : 160,
+												);
 										}}
 										onClick={() => choose(item)}
 									>
@@ -351,7 +397,7 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 														type="button"
 														className="ui-item-push"
 														aria-label={`${item.submenu?.label ?? textOf(item)}…`}
-														onClick={(event) => {
+														onClick={event => {
 															event.stopPropagation();
 															openSub(item, true);
 														}}
@@ -398,7 +444,7 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 					anchor={subAnchor}
 					focus={sub?.focus ?? false}
 					listRef={subList}
-					onClose={(reason) => {
+					onClose={reason => {
 						setSub(null);
 						if (reason === "back") focusSelf();
 						else onClose(reason);
@@ -409,11 +455,43 @@ export function MenuList({ spec, surface, onClose, onPush, nested = false, takeF
 	);
 }
 
-function SubmenuPopover({ item, anchor, focus, listRef, onClose }: { item: MenuItem; anchor: RefObject<HTMLElement | null>; focus: boolean; listRef: RefObject<HTMLDivElement | null>; onClose(reason: CloseReason): void }) {
+function SubmenuPopover({
+	item,
+	anchor,
+	focus,
+	listRef,
+	onClose,
+}: {
+	item: MenuItem;
+	anchor: RefObject<HTMLElement | null>;
+	focus: boolean;
+	listRef: RefObject<HTMLDivElement | null>;
+	onClose(reason: CloseReason): void;
+}) {
 	const spec = item.submenu as MenuSpec;
 	return (
-		<Popover open anchor={anchor} onClose={onClose} side="right" align="start" offset={6} width={spec.width ?? 200} dismissable={false} initialFocus="none" role="group" label={spec.label} className="ui-pop-menu ui-pop-sub">
-			<MenuList spec={{ ...spec, hints: false }} surface="popover" onClose={onClose} nested takeFocus={focus} listRef={listRef} />
+		<Popover
+			open
+			anchor={anchor}
+			onClose={onClose}
+			side="right"
+			align="start"
+			offset={6}
+			width={spec.width ?? 200}
+			dismissable={false}
+			initialFocus="none"
+			role="group"
+			label={spec.label}
+			className="ui-pop-menu ui-pop-sub"
+		>
+			<MenuList
+				spec={{ ...spec, hints: false }}
+				surface="popover"
+				onClose={onClose}
+				nested
+				takeFocus={focus}
+				listRef={listRef}
+			/>
 		</Popover>
 	);
 }
@@ -432,7 +510,15 @@ export interface MenuProps {
 }
 
 /** A trigger and its menu: popover or bottom sheet by the screen's width. */
-export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side = "bottom", align = "start", surface: forced }: MenuProps) {
+export function Menu({
+	spec,
+	trigger,
+	open: controlledOpen,
+	onOpenChange,
+	side = "bottom",
+	align = "start",
+	surface: forced,
+}: MenuProps) {
 	const auto = useSurface();
 	const surface = forced ?? auto;
 	const [ownOpen, setOwnOpen] = useState(false);
@@ -452,7 +538,7 @@ export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side =
 		"aria-controls": open ? id : undefined,
 		"data-state": open ? "open" : "closed",
 		onClick: () => setOpen(!open),
-		onKeyDown: (event) => {
+		onKeyDown: event => {
 			if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !open) {
 				event.preventDefault();
 				setOpen(true);
@@ -464,7 +550,20 @@ export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side =
 		<>
 			{trigger(triggerProps)}
 			{surface === "popover" ? (
-				<Popover open={open} anchor={anchor} onClose={close} side={side} align={align} width={spec.width ?? 304} maxHeight={spec.maxHeight ?? 360} role="group" label={spec.label} id={id} initialFocus="none" className="ui-pop-menu">
+				<Popover
+					open={open}
+					anchor={anchor}
+					onClose={close}
+					side={side}
+					align={align}
+					width={spec.width ?? 304}
+					maxHeight={spec.maxHeight ?? 360}
+					role="group"
+					label={spec.label}
+					id={id}
+					initialFocus="none"
+					className="ui-pop-menu"
+				>
 					<MenuList spec={spec} surface="popover" onClose={close} />
 				</Popover>
 			) : (
@@ -479,32 +578,68 @@ export function Menu({ spec, trigger, open: controlledOpen, onOpenChange, side =
  * sheet, with the way back. With `settings`, choosing in a pushed list goes back to the first page
  * rather than closing: a sheet of settings is left with Done.
  */
-export function MenuSheet({ open, spec, onClose, anchor, id, title, settings = false, toolbar, footer }: { open: boolean; spec: MenuSpec; onClose(): void; anchor?: RefObject<HTMLElement | null>; id?: string; title?: string; settings?: boolean; toolbar?: ReactNode; footer?: ReactNode }) {
+export function MenuSheet({
+	open,
+	spec,
+	onClose,
+	anchor,
+	id,
+	title,
+	settings = false,
+	toolbar,
+	footer,
+}: {
+	open: boolean;
+	spec: MenuSpec;
+	onClose(): void;
+	anchor?: RefObject<HTMLElement | null>;
+	id?: string;
+	title?: string;
+	settings?: boolean;
+	toolbar?: ReactNode;
+	footer?: ReactNode;
+}) {
 	const [path, setPath] = useState<string[]>([]);
 	useEffect(() => {
 		if (!open) setPath([]);
 	}, [open]);
 	// The page shown: the spec, then each pushed row's submenu or panel, found again in this render's spec so it is live.
-	const pages: Array<{ label: string; spec: MenuSpec | null; panel: ReactNode }> = [{ label: spec.label, spec, panel: null }];
+	const pages: Array<{ label: string; spec: MenuSpec | null; panel: ReactNode }> = [
+		{ label: spec.label, spec, panel: null },
+	];
 	for (const itemId of path) {
 		const page = pages[pages.length - 1]?.spec;
-		const item = page?.groups.flatMap((group) => group.items).find((candidate) => candidate.id === itemId);
+		const item = page?.groups.flatMap(group => group.items).find(candidate => candidate.id === itemId);
 		if (!item || (!item.submenu && !item.panel)) break;
-		pages.push(item.submenu ? { label: item.submenu.label, spec: item.submenu, panel: null } : { label: textOf(item), spec: null, panel: item.panel });
+		pages.push(
+			item.submenu
+				? { label: item.submenu.label, spec: item.submenu, panel: null }
+				: { label: textOf(item), spec: null, panel: item.panel },
+		);
 	}
 	const page = pages[pages.length - 1] as (typeof pages)[number];
 	const depth = pages.length - 1;
-	const back = () => setPath((current) => current.slice(0, Math.max(0, depth - 1)));
+	const back = () => setPath(current => current.slice(0, Math.max(0, depth - 1)));
 	return (
-		<Sheet open={open} onClose={onClose} title={depth === 0 ? (title ?? spec.label) : page.label} onBack={depth > 0 ? back : undefined} backLabel={depth > 0 ? (pages[depth - 1]?.label ?? "Back") : undefined} returnFocus={anchor} id={id} toolbar={toolbar} footer={depth === 0 ? footer : undefined}>
+		<Sheet
+			open={open}
+			onClose={onClose}
+			title={depth === 0 ? (title ?? spec.label) : page.label}
+			onBack={depth > 0 ? back : undefined}
+			backLabel={depth > 0 ? (pages[depth - 1]?.label ?? "Back") : undefined}
+			returnFocus={anchor}
+			id={id}
+			toolbar={toolbar}
+			footer={depth === 0 ? footer : undefined}
+		>
 			{page.spec ? (
 				<MenuList
 					key={depth}
 					spec={page.spec}
 					surface="sheet"
 					nested={depth > 0}
-					onPush={(item) => setPath((current) => [...current.slice(0, depth), item.id])}
-					onClose={(reason) => {
+					onPush={item => setPath(current => [...current.slice(0, depth), item.id])}
+					onClose={reason => {
 						if (reason === "back") back();
 						else if (settings && depth > 0 && reason === "select") setPath([]);
 						else onClose();
@@ -521,7 +656,27 @@ export function MenuSheet({ open, spec, onClose, anchor, id, title, settings = f
 
 /** A form that opens from a control: a popover anchored to it on a wide screen, a bottom sheet on a phone. */
 /** `header`, where given, is shown in the title's place (and atop a phone's sheet); `title` still names the panel. */
-export function PickerPanel({ open, onClose, anchor, title, header, width = 340, surface: forced, children, id }: { open: boolean; onClose(): void; anchor: RefObject<HTMLElement | null>; title: string; header?: ReactNode; width?: number; surface?: Surface; children: ReactNode; id?: string }) {
+export function PickerPanel({
+	open,
+	onClose,
+	anchor,
+	title,
+	header,
+	width = 340,
+	surface: forced,
+	children,
+	id,
+}: {
+	open: boolean;
+	onClose(): void;
+	anchor: RefObject<HTMLElement | null>;
+	title: string;
+	header?: ReactNode;
+	width?: number;
+	surface?: Surface;
+	children: ReactNode;
+	id?: string;
+}) {
 	const auto = useSurface();
 	const surface = forced ?? auto;
 	const labelId = useId();
@@ -536,7 +691,16 @@ export function PickerPanel({ open, onClose, anchor, title, header, width = 340,
 		);
 	}
 	return (
-		<Popover open={open} anchor={anchor} onClose={onClose} width={width} labelledBy={labelId} id={id} maxHeight={520} className="ui-pop-panel">
+		<Popover
+			open={open}
+			anchor={anchor}
+			onClose={onClose}
+			width={width}
+			labelledBy={labelId}
+			id={id}
+			maxHeight={520}
+			className="ui-pop-panel"
+		>
 			{header ? (
 				<div className="ui-pop-panel-title ui-pop-panel-header" id={labelId}>
 					{header}

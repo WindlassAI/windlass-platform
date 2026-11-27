@@ -11,6 +11,10 @@ export class FakeAcpAgent {
 		this.peer = new FixturePeer(say, scenarios, stateDir);
 	}
 
-	input(chunk: string): void { this.peer.input(chunk); }
-	stop(): void { this.peer.stop(); }
+	input(chunk: string): void {
+		this.peer.input(chunk);
+	}
+	stop(): void {
+		this.peer.stop();
+	}
 }

@@ -13,7 +13,11 @@
 import { sources, untrustedWords } from "../factory/untrusted.js";
 import type { TimelineItem, TurnUsage, WindlassEvent } from "../contract.js";
 
-export type TurnCredential = { model: string; itemSignIn?: import("../sandbox/harnesses.js").SignInMethod; key?: import("../sandbox/provider.js").ModelKeyLease };
+export type TurnCredential = {
+	model: string;
+	itemSignIn?: import("../sandbox/harnesses.js").SignInMethod;
+	key?: import("../sandbox/provider.js").ModelKeyLease;
+};
 
 export type PauseReason = "restart" | "machine";
 
@@ -46,7 +50,14 @@ export interface TurnRun {
 	 * while its machine is away, and is asked for again, ahead of new turns, when it is back. `asked`: the
 	 * item was told the machine stayed away long (`machine_away`). `told`: the item was told it is paused.
 	 */
-	paused?: { reason: PauseReason; at: number; slotFreed?: boolean; asked?: boolean; told?: boolean; /** When the session next looks by itself whether the place is back: one look is scheduled at a time. */ lookAt?: number } | null;
+	paused?: {
+		reason: PauseReason;
+		at: number;
+		slotFreed?: boolean;
+		asked?: boolean;
+		told?: boolean /** When the session next looks by itself whether the place is back: one look is scheduled at a time. */;
+		lookAt?: number;
+	} | null;
 	/** What the person sent while the turn was paused, as the timeline shows it: given to the agent when the turn resumes. */
 	held?: string[];
 	/**
@@ -80,25 +91,40 @@ export function addUsage(a: TurnUsage | null, b: TurnUsage | null): TurnUsage | 
 }
 
 /** The time limit of a segment: what is left of the turn's, and never less than `floorMs` for one that resumes, so it can finish its step. */
-export function segmentLimit(limitMs: number, floorMs: number, run: Pick<TurnRun, "activeMs" | "resumes"> | null): number {
+export function segmentLimit(
+	limitMs: number,
+	floorMs: number,
+	run: Pick<TurnRun, "activeMs" | "resumes"> | null,
+): number {
 	if (!run || run.resumes === 0) return limitMs;
 	return Math.max(Math.min(floorMs, limitMs), limitMs - run.activeMs);
 }
 
 function quoted(text: string): string {
-	return text.split("\n").map((line) => `> ${line}`).join("\n");
+	return text
+		.split("\n")
+		.map(line => `> ${line}`)
+		.join("\n");
 }
 
 function heldPart(held: readonly string[]): string {
-	return held.length === 0 ? "" : `\n\nWhile the turn was paused, the person sent ${held.length === 1 ? "this message" : "these messages"}:\n\n${held.map(quoted).join("\n\n")}`;
+	return held.length === 0
+		? ""
+		: `\n\nWhile the turn was paused, the person sent ${held.length === 1 ? "this message" : "these messages"}:\n\n${held.map(quoted).join("\n\n")}`;
 }
 
-export const RESTARTED_COMMAND = "The platform restarted while this command ran; it was stopped. Run it again if you still need it.";
+export const RESTARTED_COMMAND =
+	"The platform restarted while this command ran; it was stopped. Run it again if you still need it.";
 
 /** Keep the command's output. Only replace the shell's own trailing shutdown status. */
 export function restartShellResult(event: WindlassEvent): WindlassEvent {
 	const data = event.data;
-	if (event.type !== "tool.settled" || (data?.display as { interrupted?: unknown } | null)?.interrupted !== "shutdown" || typeof data?.output !== "string") return event;
+	if (
+		event.type !== "tool.settled" ||
+		(data?.display as { interrupted?: unknown } | null)?.interrupted !== "shutdown" ||
+		typeof data?.output !== "string"
+	)
+		return event;
 	const status = data.output.lastIndexOf("\n") + 1;
 	if (!data.output.startsWith("[Interrupted because the harness is shutting down.", status)) return event;
 	return { ...event, data: { ...data, output: data.output.slice(0, status) + RESTARTED_COMMAND } };
@@ -106,9 +132,14 @@ export function restartShellResult(event: WindlassEvent): WindlassEvent {
 
 /** What the agent is told when its turn resumes with its memory: the step that was under way may not have finished. */
 export function resumePrompt(reason: PauseReason, held: readonly string[] = [], stoppedCommand = false): string {
-	const what = reason === "restart" ? "The platform restarted while you were working on this turn" : "Your machine was switched off, or lost its connection, while you were working on this turn";
-	const step = reason === "restart" && stoppedCommand ? RESTARTED_COMMAND
-		: `${what}, so your last step may not have finished: a command may have been cut off or its output may be missing.`;
+	const what =
+		reason === "restart"
+			? "The platform restarted while you were working on this turn"
+			: "Your machine was switched off, or lost its connection, while you were working on this turn";
+	const step =
+		reason === "restart" && stoppedCommand
+			? RESTARTED_COMMAND
+			: `${what}, so your last step may not have finished: a command may have been cut off or its output may be missing.`;
 	return `${step} Check the state of the workspace, then carry on with the task.${heldPart(held)}`;
 }
 
@@ -120,7 +151,9 @@ export function pausedLine(reason: PauseReason, machineName: string | null): str
 
 /** The timeline's line when a turn resumes, with how long it was paused (`spell` says a duration). */
 export function resumedLine(reason: PauseReason, pausedMs: number, spell: (ms: number) => string): string {
-	return reason === "restart" ? `Resumed after a server restart (the turn was paused ${spell(pausedMs)}).` : `Resumed after the machine came back (offline ${spell(pausedMs)}).`;
+	return reason === "restart"
+		? `Resumed after a server restart (the turn was paused ${spell(pausedMs)}).`
+		: `Resumed after the machine came back (offline ${spell(pausedMs)}).`;
 }
 
 const CLIP = 600;
@@ -175,7 +208,8 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 		} else if (item.kind === "windlass") {
 			const data = (item.event.data ?? {}) as Record<string, unknown>;
 			if (item.event.type === "text.ended" && textOf(data.text).trim()) of(item.turn).said = textOf(data.text);
-			if (item.event.type === "workspace.changes" && Array.isArray(data.files)) of(item.turn).files = data.files.filter((file): file is string => typeof file === "string");
+			if (item.event.type === "workspace.changes" && Array.isArray(data.files))
+				of(item.turn).files = data.files.filter((file): file is string => typeof file === "string");
 		} else if (item.kind === "acp" && item.update.sessionUpdate === "agent_message_chunk") {
 			const content = (item.update as { content?: { text?: unknown } }).content;
 			const text = textOf(content?.text);
@@ -183,22 +217,33 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 		}
 	}
 	const now = turns.get(turn);
-	const first = [...turns.entries()].filter(([n, entry]) => n < turn && entry.prompt !== "").sort((a, b) => a[0] - b[0])[0];
-	const parts: string[] = ["Your earlier conversation is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then work on the prompt for this turn from the start."];
+	const first = [...turns.entries()]
+		.filter(([n, entry]) => n < turn && entry.prompt !== "")
+		.sort((a, b) => a[0] - b[0])[0];
+	const parts: string[] = [
+		"Your earlier conversation is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then work on the prompt for this turn from the start.",
+	];
 	parts.push(`The prompt for this turn was:\n\n${quoted(now?.prompt || "(not recorded)")}`);
 	const later = [...steers, ...held];
-	if (later.length > 0) parts.push(`While the turn ran or was paused, the person also sent:\n\n${later.map(quoted).join("\n\n")}`);
+	if (later.length > 0)
+		parts.push(`While the turn ran or was paused, the person also sent:\n\n${later.map(quoted).join("\n\n")}`);
 	let quotedAgent = false;
 	const quotedSources = [...(now?.untrusted ?? [])];
 	if (first) {
 		quotedSources.push(...(first[1].untrusted ?? []));
 		parts.push(`The session's first prompt was:\n\n${quoted(first[1].prompt)}`);
-		const earlier = [...turns.entries()].filter(([n]) => n < turn).sort((a, b) => a[0] - b[0]).slice(-MAX_EARLIER);
+		const earlier = [...turns.entries()]
+			.filter(([n]) => n < turn)
+			.sort((a, b) => a[0] - b[0])
+			.slice(-MAX_EARLIER);
 		const lines = earlier.map(([n, entry]) => {
 			quotedSources.push(...(entry.untrusted ?? []));
 			const bits = [`Turn ${n}: “${clip(entry.prompt || "(no prompt recorded)", TITLE)}”`];
 			if (entry.outcome) bits.push(`it ended ${entry.outcome}`);
-			if (entry.files.length) bits.push(`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`);
+			if (entry.files.length)
+				bits.push(
+					`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`,
+				);
 			let line = `- ${bits.join("; ")}.`;
 			if (entry.said) {
 				quotedAgent = true;
@@ -206,7 +251,12 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 			}
 			return line;
 		});
-		parts.push(`A short account of the earlier turns, reconstructed by the platform from the session's timeline (not your own memory; it may leave things out):\n\n${lines.join("\n")}`);
+		parts.push(
+			`A short account of the earlier turns, reconstructed by the platform from the session's timeline (not your own memory; it may leave things out):\n\n${lines.join("\n")}`,
+		);
 	}
-	return { text: parts.join("\n\n"), untrusted: sources(quotedSources, quotedAgent ? [untrustedWords.conversation] : []) };
+	return {
+		text: parts.join("\n\n"),
+		untrusted: sources(quotedSources, quotedAgent ? [untrustedWords.conversation] : []),
+	};
 }

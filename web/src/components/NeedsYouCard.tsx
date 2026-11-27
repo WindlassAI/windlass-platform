@@ -11,7 +11,7 @@ import { useId } from "react";
 import { acpHarnessName, sessionModelWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { asking, questionLine } from "../screens/Items";
+import { asking, questionLine } from "../lib/items";
 import { LongText } from "./Fold";
 import { ChevronRightIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";
@@ -39,7 +39,9 @@ function AgentNeed({ session, now }: { session: SessionSummary; now: number }) {
 						{session.title}
 					</a>
 				</p>
-				<p className="needs-what">Its agent asks before it goes on. The question is on its page, under the call it is about.</p>
+				<p className="needs-what">
+					Its agent asks before it goes on. The question is on its page, under the call it is about.
+				</p>
 				<p className="needs-meta">
 					<span>
 						<AgentGlyph harness={session.harness ?? "windlass"} size={11} inline />
@@ -49,7 +51,11 @@ function AgentNeed({ session, now }: { session: SessionSummary; now: number }) {
 					<Since at={session.updatedAt} now={now} />
 				</p>
 			</div>
-			<a className="needs-answer" {...linkProps({ name: "session", id: session.id })} aria-label={`Answer ${session.title}`}>
+			<a
+				className="needs-answer"
+				{...linkProps({ name: "session", id: session.id })}
+				aria-label={`Answer ${session.title}`}
+			>
 				Answer
 				<ChevronRightIcon size={13} className="needs-answer-arrow" />
 			</a>
@@ -62,7 +68,8 @@ function AgentNeed({ session, now }: { session: SessionSummary; now: number }) {
  * line (`questionLine`), so a plan to approve says so rather than printing its figures.
  */
 export function needLine(item: ItemSummary): string | null {
-	const asked = item.question?.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0]?.trim() : undefined;
+	const asked =
+		item.question?.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0]?.trim() : undefined;
 	return asked || questionLine(item);
 }
 
@@ -90,7 +97,11 @@ function ItemNeed({ item, now }: { item: ItemSummary; now: number }) {
 					</span>
 					{item.state === "draft" ? null : (
 						<span>
-							<a className="needs-agent" {...linkProps({ name: "session", id: item.sessionId })} aria-label={`The agent of ${item.title}`}>
+							<a
+								className="needs-agent"
+								{...linkProps({ name: "session", id: item.sessionId })}
+								aria-label={`The agent of ${item.title}`}
+							>
 								its agent
 							</a>
 						</span>
@@ -107,13 +118,24 @@ function ItemNeed({ item, now }: { item: ItemSummary; now: number }) {
 }
 
 /** `sessions`: the user's own agents (no work item's); `items`: their work items, null until read. Nothing when nothing waits. */
-export function NeedsYouCard({ sessions, items, now }: { sessions: readonly SessionSummary[]; items: readonly ItemSummary[] | null; now: number }) {
+export function NeedsYouCard({
+	sessions,
+	items,
+	now,
+}: {
+	sessions: readonly SessionSummary[];
+	items: readonly ItemSummary[] | null;
+	now: number;
+}) {
 	const heading = useId();
-	const agents = sessions.filter((session) => session.status === "waiting").sort((a, b) => a.updatedAt - b.updatedAt);
+	const agents = sessions.filter(session => session.status === "waiting").sort((a, b) => a.updatedAt - b.updatedAt);
 	const asked = asking(items ?? []);
 	const total = agents.length + asked.length;
 	if (total === 0) return null;
-	const parts = [agents.length > 0 ? plural(agents.length, "agent") : null, asked.length > 0 ? plural(asked.length, "work item") : null].filter((part) => part !== null);
+	const parts = [
+		agents.length > 0 ? plural(agents.length, "agent") : null,
+		asked.length > 0 ? plural(asked.length, "work item") : null,
+	].filter(part => part !== null);
 	return (
 		<section className="needs" aria-labelledby={heading}>
 			<h2 className="needs-head" id={heading}>
@@ -121,10 +143,10 @@ export function NeedsYouCard({ sessions, items, now }: { sessions: readonly Sess
 				<span className="needs-count">{parts.join(" · ")}</span>
 			</h2>
 			<ul className="needs-card">
-				{agents.map((session) => (
+				{agents.map(session => (
 					<AgentNeed key={session.id} session={session} now={now} />
 				))}
-				{asked.map((item) => (
+				{asked.map(item => (
 					<ItemNeed key={item.id} item={item} now={now} />
 				))}
 			</ul>

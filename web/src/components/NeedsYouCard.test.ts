@@ -11,7 +11,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { NeedsYouCard, needLine } from "./NeedsYouCard";
 
-const auth = { token: "mock:user:u_needs:ada@example.com", profile: { uid: "u_needs", email: "ada@example.com", demo: false } };
+const auth = {
+	token: "mock:user:u_needs:ada@example.com",
+	profile: { uid: "u_needs", email: "ada@example.com", demo: false },
+};
 
 let items: ItemSummary[] = [];
 
@@ -29,7 +32,7 @@ function card(only: ItemSummary[]) {
 
 describe("the Needs you card", () => {
 	it("says a plan waits for approval, not the plan's figures", () => {
-		const asking = items.find((one) => one.question);
+		const asking = items.find(one => one.question);
 		expect(asking).toBeDefined();
 		const text = "index. Build the search index at release — 2,400,000 tokens, 6 turns, 5400 active seconds";
 		const item: ItemSummary = { ...asking!, question: { ...asking!.question!, kind: "plan_approval", text } };
@@ -42,7 +45,7 @@ describe("the Needs you card", () => {
 	});
 
 	it("shows the first line of an agent's own question", () => {
-		const item = items.find((one) => one.question?.kind === "agent_ask" && one.question.asked);
+		const item = items.find(one => one.question?.kind === "agent_ask" && one.question.asked);
 		expect(item).toBeDefined();
 		const first = item!.question!.asked!.text.trim().split("\n")[0]!.trim();
 		expect(needLine(item!)).toBe(first);

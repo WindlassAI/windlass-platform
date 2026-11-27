@@ -122,7 +122,21 @@ export function takeLaunchDraft(): LaunchDraft | null {
 	if (typeof draft !== "object" || draft === null) return null;
 	const text = (value: unknown) => (typeof value === "string" ? value : "");
 	const chosen = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	return { ...(typeof draft.title === "string" && { title: draft.title }), prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, ...(draft.kind === "item" && (draft.itemMode === "single" || draft.itemMode === "orchestrate") && { itemMode: draft.itemMode }), criteria: text(draft.criteria) };
+	return {
+		...(typeof draft.title === "string" && { title: draft.title }),
+		prompt: text(draft.prompt),
+		repoUrl: text(draft.repoUrl),
+		profile: chosen(draft.profile),
+		model: text(draft.model),
+		effort: text(draft.effort),
+		place: chosen(draft.place),
+		harness: chosen(draft.harness),
+		mode: chosen(draft.mode),
+		kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null,
+		...(draft.kind === "item" &&
+			(draft.itemMode === "single" || draft.itemMode === "orchestrate") && { itemMode: draft.itemMode }),
+		criteria: text(draft.criteria),
+	};
 }
 
 // ---- actions ------------------------------------------------------------------------------------
@@ -134,7 +148,7 @@ function load(client: PlatformClient, auth: AuthResult, explain: (error: unknown
 		.user(auth)
 		.github()
 		.then(
-			(status) => mine === key && set({ status, loading: false }),
+			status => mine === key && set({ status, loading: false }),
 			(error: unknown) => mine === key && set({ loading: false, error: explain(error) }),
 		);
 }
@@ -146,7 +160,8 @@ const RETURN_ERRORS: Record<string, string> = {
 	denied: "GitHub was not connected: the authorization was declined at GitHub.",
 	code: "GitHub did not accept the authorization. Connect GitHub again.",
 	not_yours: "That installation is not one your GitHub account can reach, so it was not connected.",
-	pending: "The GitHub App is not installed yet. If you asked an organization for it, an owner has to approve the request first; connect GitHub again once it is installed.",
+	pending:
+		"The GitHub App is not installed yet. If you asked an organization for it, an owner has to approve the request first; connect GitHub again once it is installed.",
 	unreachable: "GitHub could not be reached. Try again in a moment.",
 };
 
@@ -169,7 +184,12 @@ const POPUP_WATCH_MS = 500;
 const POPUP_GRACE_MS = 600;
 
 /** The popup that is open, where its result is said, and the watch on it. */
-let popup: { window: Window; where: GithubNotice["where"]; timer: ReturnType<typeof setInterval>; done: boolean } | null = null;
+let popup: {
+	window: Window;
+	where: GithubNotice["where"];
+	timer: ReturnType<typeof setInterval>;
+	done: boolean;
+} | null = null;
 
 /** Whether a window is this page's own origin: reading another origin's location throws. */
 function sameOrigin(other: Window, self: Window): boolean {
@@ -201,7 +221,10 @@ export function relayGithubReturn(self: Window = window): boolean {
  * The fragment a message carries, when the message is the popup's: from this origin, from a window this
  * page opened, and of that shape. Null for anything else, which is ignored.
  */
-export function githubMessageHash(event: Pick<MessageEvent, "origin" | "source" | "data">, self: Window = window): string | null {
+export function githubMessageHash(
+	event: Pick<MessageEvent, "origin" | "source" | "data">,
+	self: Window = window,
+): string | null {
 	if (event.origin !== self.location.origin) return null;
 	const source = event.source as Window | null;
 	if (!source || typeof (source as { postMessage?: unknown }).postMessage !== "function") return null;
@@ -213,7 +236,8 @@ export function githubMessageHash(event: Pick<MessageEvent, "origin" | "source" 
 	}
 	if (!opened) return null;
 	const data = event.data as { type?: unknown; hash?: unknown } | null;
-	if (typeof data !== "object" || data === null || data.type !== MESSAGE_TYPE || typeof data.hash !== "string") return null;
+	if (typeof data !== "object" || data === null || data.type !== MESSAGE_TYPE || typeof data.hash !== "string")
+		return null;
 	return readGithubReturn(data.hash) === null ? null : data.hash;
 }
 
@@ -233,7 +257,8 @@ function openPopup(): Window | null {
 	try {
 		// While the address is asked for: a dark page that says what is coming, not a white flash.
 		opened.document.title = "Connecting GitHub…";
-		opened.document.body.style.cssText = "margin:0;display:grid;place-items:center;height:100vh;background:#0b0c0e;color:#9a9ca3;font:14px system-ui,sans-serif";
+		opened.document.body.style.cssText =
+			"margin:0;display:grid;place-items:center;height:100vh;background:#0b0c0e;color:#9a9ca3;font:14px system-ui,sans-serif";
 		opened.document.body.textContent = "Opening GitHub…";
 	} catch {
 		// Another origin's page is already in a window of this name: it is navigated all the same.
@@ -247,20 +272,35 @@ function stopWatching(): void {
 }
 
 /** Watches the popup: a window closed without a message leaves things as they were, and says so. */
-function watchPopup(client: PlatformClient, auth: AuthResult, explain: (error: unknown) => string, opened: Window, where: GithubNotice["where"]): void {
+function watchPopup(
+	client: PlatformClient,
+	auth: AuthResult,
+	explain: (error: unknown) => string,
+	opened: Window,
+	where: GithubNotice["where"],
+): void {
 	stopWatching();
-	const watch = { window: opened, where, done: false, timer: setInterval(() => {
-		if (!opened.closed || watch.done) return;
-		clearInterval(watch.timer);
-		// The message is posted just before the window closes: a moment for it to arrive.
-		setTimeout(() => {
-			if (watch.done || popup !== watch) return;
-			popup = null;
-			if (state.busy === "popup" || state.busy === "leaving") set({ busy: null, notice: { tone: "bad", text: "GitHub was not connected: its window was closed before it finished.", where } });
-			// What the connection is now, in case it was finished elsewhere meanwhile.
-			load(client, auth, explain);
-		}, POPUP_GRACE_MS);
-	}, POPUP_WATCH_MS) };
+	const watch = {
+		window: opened,
+		where,
+		done: false,
+		timer: setInterval(() => {
+			if (!opened.closed || watch.done) return;
+			clearInterval(watch.timer);
+			// The message is posted just before the window closes: a moment for it to arrive.
+			setTimeout(() => {
+				if (watch.done || popup !== watch) return;
+				popup = null;
+				if (state.busy === "popup" || state.busy === "leaving")
+					set({
+						busy: null,
+						notice: { tone: "bad", text: "GitHub was not connected: its window was closed before it finished.", where },
+					});
+				// What the connection is now, in case it was finished elsewhere meanwhile.
+				load(client, auth, explain);
+			}, POPUP_GRACE_MS);
+		}, POPUP_WATCH_MS),
+	};
 	popup = watch;
 }
 
@@ -273,13 +313,18 @@ function listen(client: PlatformClient, auth: AuthResult, explain: (error: unkno
 	receiver = { client, auth, explain };
 	if (listening) return;
 	listening = true;
-	window.addEventListener("message", (event) => {
+	window.addEventListener("message", event => {
 		if (receiver) onGithubMessage(receiver.client, receiver.auth, receiver.explain, event);
 	});
 }
 
 /** Takes a message from the popup: finishes the return it carries, where the popup was opened from. */
-function onGithubMessage(client: PlatformClient, auth: AuthResult, explain: (error: unknown) => string, event: MessageEvent): void {
+function onGithubMessage(
+	client: PlatformClient,
+	auth: AuthResult,
+	explain: (error: unknown) => string,
+	event: MessageEvent,
+): void {
 	const hash = githubMessageHash(event);
 	if (hash === null) return;
 	const where = popup?.where ?? "account";
@@ -299,12 +344,22 @@ function completeGithubReturn(client: PlatformClient, auth: AuthResult, explain:
 	const from = take<Return>(RETURN_KEY);
 	const where = from?.where === "launch" ? "launch" : "account";
 	const route: Route | null = from && typeof from.path === "string" ? parseRoute(from.path) : null;
-	if (route && (route.name === "new" || route.name === "session" || route.name === "home" || route.name === "repository")) navigate(route, { replace: true });
+	if (
+		route &&
+		(route.name === "new" || route.name === "session" || route.name === "home" || route.name === "repository")
+	)
+		navigate(route, { replace: true });
 	finishReturn(client, auth, explain, hash, where);
 }
 
 /** Hands a return's ticket to the user's actor, or says why there is none, where the user started. */
-function finishReturn(client: PlatformClient, auth: AuthResult, explain: (error: unknown) => string, hash: string, where: GithubNotice["where"]): void {
+function finishReturn(
+	client: PlatformClient,
+	auth: AuthResult,
+	explain: (error: unknown) => string,
+	hash: string,
+	where: GithubNotice["where"],
+): void {
 	const back = readGithubReturn(hash);
 	if (!back) return;
 	use(client, auth);
@@ -320,10 +375,20 @@ function finishReturn(client: PlatformClient, auth: AuthResult, explain: (error:
 		.user(auth)
 		.githubComplete(back.ticket)
 		.then(
-			(status) => {
+			status => {
 				if (mine !== key) return;
-				const accounts = status.connection?.accounts.map((account) => account.login) ?? [];
-				set({ status, busy: null, loading: false, error: null, notice: { tone: "good", text: `GitHub connected as ${status.connection?.login ?? "you"}${accounts.length > 0 ? `, for ${list(accounts)}` : ""}.`, where } });
+				const accounts = status.connection?.accounts.map(account => account.login) ?? [];
+				set({
+					status,
+					busy: null,
+					loading: false,
+					error: null,
+					notice: {
+						tone: "good",
+						text: `GitHub connected as ${status.connection?.login ?? "you"}${accounts.length > 0 ? `, for ${list(accounts)}` : ""}.`,
+						where,
+					},
+				});
 			},
 			(error: unknown) => mine === key && set({ busy: null, notice: { tone: "bad", text: explain(error), where } }),
 		);
@@ -371,7 +436,8 @@ export function useGithub(): Github {
 		use(client, auth);
 		// A page that was loaded with a return from GitHub finishes it; that answers what the connection is, too.
 		if (readGithubReturn(location.hash)) completeGithubReturn(client, auth, explain);
-		else if (state.status === null && !state.loading && state.busy === null && state.error === null) load(client, auth, explain);
+		else if (state.status === null && !state.loading && state.busy === null && state.error === null)
+			load(client, auth, explain);
 	}, [client, auth, enabled, explain]);
 
 	const connect = useCallback<Github["connect"]>(
@@ -399,7 +465,14 @@ export function useGithub(): Github {
 							return;
 						}
 						if (opened.closed) {
-							set({ busy: null, notice: { tone: "bad", text: "GitHub was not connected: its window was closed before it finished.", where } });
+							set({
+								busy: null,
+								notice: {
+									tone: "bad",
+									text: "GitHub was not connected: its window was closed before it finished.",
+									where,
+								},
+							});
 							return;
 						}
 						opened.location.href = url;

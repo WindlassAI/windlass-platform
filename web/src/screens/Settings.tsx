@@ -12,7 +12,8 @@ import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
 import { machineLabel } from "../lib/machines";
 import { runOf } from "../lib/run";
-import { settingsKeyUpgrade, useMachines } from "./Machines";
+import { settingsKeyUpgrade } from "../lib/machines";
+import { useMachines } from "../state/machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount } from "../state/hooks";
@@ -28,13 +29,24 @@ export function Settings() {
 	const { settings } = account;
 	const info = platform.info;
 	const machines = useMachines(!!info?.machines);
-	const hostedProfile = runOf({ account: settings?.defaults, item: { place: "hosted" }, machines: machines.list }).profile;
-	const secretsProfile = info?.profiles.some((p) => p.id === hostedProfile && p.available) ? hostedProfile : null;
+	const hostedProfile = runOf({
+		account: settings?.defaults,
+		item: { place: "hosted" },
+		machines: machines.list,
+	}).profile;
+	const secretsProfile = info?.profiles.some(p => p.id === hostedProfile && p.available) ? hostedProfile : null;
 
-	const upgrades = machines.list?.flatMap(machine => {
-		const note = settingsKeyUpgrade(machine);
-		return note ? [<p className="field-note" key={machine.machineId}>{machineLabel(machine)}: {note}</p>] : [];
-	}) ?? [];
+	const upgrades =
+		machines.list?.flatMap(machine => {
+			const note = settingsKeyUpgrade(machine);
+			return note
+				? [
+						<p className="field-note" key={machine.machineId}>
+							{machineLabel(machine)}: {note}
+						</p>,
+					]
+				: [];
+		}) ?? [];
 
 	return (
 		<main className="home usage repo settings">
@@ -64,24 +76,43 @@ export function Settings() {
 				<SettingsGroup
 					id="settings-models"
 					title="Models"
-					lede={<>The agent and model your work uses, unless a repository or an item says otherwise. Keys stay on Windlass. <a className="link" href="/docs/settings#model-providers">How keys are used →</a></>}
+					lede={
+						<>
+							The agent and model your work uses, unless a repository or an item says otherwise. Keys stay on Windlass.{" "}
+							<a className="link" href="/docs/settings#model-providers">
+								How keys are used →
+							</a>
+						</>
+					}
 				>
 					<section className="usage-section" aria-label="Default models">
-						{settings === null ? <SettingsPending subject="Your settings" error={account.error} reload={account.reload} /> : <DefaultAgent account={account} />}
+						{settings === null ? (
+							<SettingsPending subject="Your settings" error={account.error} reload={account.reload} />
+						) : (
+							<DefaultAgent account={account} />
+						)}
 					</section>
 					<ModelProviders />
 					{upgrades.length > 0 && <div className="settings-row settings-row-notes">{upgrades}</div>}
 				</SettingsGroup>
 
 				{settings !== null ? (
-					<SettingsGroup id="settings-tools" title="Tools" lede="MCP servers every agent gets, and the secrets they read.">
+					<SettingsGroup
+						id="settings-tools"
+						title="Tools"
+						lede="MCP servers every agent gets, and the secrets they read."
+					>
 						<PersonalServers settings={settings} onChanged={account.replace} />
 						<SettingsSecrets profile={secretsProfile} onChanged={account.reload} />
 					</SettingsGroup>
 				) : null}
 
 				{info?.items || github.enabled ? (
-					<SettingsGroup id="settings-integrations" title="Integrations" lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}>
+					<SettingsGroup
+						id="settings-integrations"
+						title="Integrations"
+						lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}
+					>
 						<GithubSettings />
 						{info?.items ? <LinearSettings /> : null}
 						{info?.items ? <ApiTokens /> : null}
@@ -113,19 +144,61 @@ function SessionSettings() {
 	return (
 		<section className="settings-row" aria-label="Sign out">
 			<span className="settings-row-text">Signed in on this device</span>
-			<button type="button" className="button button-outline button-small settings-row-end" onClick={() => { setError(null); setRevokeApiTokens(true); setConfirm(true); }}>
+			<button
+				type="button"
+				className="button button-outline button-small settings-row-end"
+				onClick={() => {
+					setError(null);
+					setRevokeApiTokens(true);
+					setConfirm(true);
+				}}
+			>
 				Sign out everywhere
 			</button>
 			{confirm && (
-				<Dialog title="Sign out everywhere?" size="small" dismissable={!busy} onClose={() => setConfirm(false)}
-					footer={<>
-						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setConfirm(false)} data-autofocus>Cancel</button>
-						<button type="button" className="button button-danger" disabled={busy} onClick={revoke}>{busy ? "Signing out…" : "Sign out everywhere"}</button>
-					</>}>
-					<p>You’ll need to sign in again on every device, including this one. Your running agents will keep working.</p>
-					<p>Paired machines keep working. You can remove them on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.</p>
-					<Check checked={revokeApiTokens} disabled={busy} onChange={setRevokeApiTokens} label="Also revoke all API tokens" />
-					{error && <p className="callout callout-warn" role="alert">{error}</p>}
+				<Dialog
+					title="Sign out everywhere?"
+					size="small"
+					dismissable={!busy}
+					onClose={() => setConfirm(false)}
+					footer={
+						<>
+							<button
+								type="button"
+								className="button button-quiet"
+								disabled={busy}
+								onClick={() => setConfirm(false)}
+								data-autofocus
+							>
+								Cancel
+							</button>
+							<button type="button" className="button button-danger" disabled={busy} onClick={revoke}>
+								{busy ? "Signing out…" : "Sign out everywhere"}
+							</button>
+						</>
+					}
+				>
+					<p>
+						You’ll need to sign in again on every device, including this one. Your running agents will keep working.
+					</p>
+					<p>
+						Paired machines keep working. You can remove them on the{" "}
+						<a className="link" {...linkProps({ name: "machines" })}>
+							Machines
+						</a>{" "}
+						page.
+					</p>
+					<Check
+						checked={revokeApiTokens}
+						disabled={busy}
+						onChange={setRevokeApiTokens}
+						label="Also revoke all API tokens"
+					/>
+					{error && (
+						<p className="callout callout-warn" role="alert">
+							{error}
+						</p>
+					)}
 				</Dialog>
 			)}
 		</section>

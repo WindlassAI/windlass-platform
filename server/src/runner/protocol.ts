@@ -16,10 +16,31 @@ import { forwardHost, forwardPlaceholder, validProofKey } from "../../../sandbox
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
-import { MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
+import { MACHINE_HARNESS_IDS, MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
 import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
-import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
+import {
+	type Assert,
+	type Check,
+	type Of,
+	type Same,
+	anything,
+	boolean,
+	count,
+	either,
+	integer,
+	is,
+	json,
+	list,
+	nil,
+	nullable,
+	object,
+	oneOf,
+	optional,
+	plain,
+	string,
+	text,
+} from "./check.js";
 
 export const positiveLimit = is<number>(v => count(v) && v > 0);
 
@@ -46,21 +67,36 @@ export const OP_MS = 180_000;
  * either end; the platform's longest is the setup command's (WLP_SETUP_TIMEOUT_MS, ten minutes unless
  * a deployment raises it), so a day refuses nothing real.
  */
-const duration = is<number>((v) => count(v) && (v as number) <= 24 * 60 * 60 * 1000);
+const duration = is<number>(v => count(v) && (v as number) <= 24 * 60 * 60 * 1000);
 const id = text(255);
-const tag = is<string>((v) => id(v) && RUN_TAG.test(v));
-const env = is<Record<string, string>>((v) => plain(v) && Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"));
+const tag = is<string>(v => id(v) && RUN_TAG.test(v));
+const env = is<Record<string, string>>(
+	v =>
+		plain(v) &&
+		Object.entries(v).every(([k, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof value === "string"),
+);
 /** A machine serves the two Docker profiles; E2B's and the rest are the deployment's. */
 export const MACHINE_PROFILES = ["docker-hardened", "docker-windlass-sandbox"] as const;
-export type MachineProfile = typeof MACHINE_PROFILES[number];
+export type MachineProfile = (typeof MACHINE_PROFILES)[number];
 export const machineProfile = oneOf(...MACHINE_PROFILES);
-export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
-const harness = optional(oneOf("claude", "opencode", "codex"));
+export const PROFILE_DENIED =
+	"This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
+const harness = optional(oneOf(...MACHINE_HARNESS_IDS));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
-const forwardKey = object({ provider: oneOf(...MODEL_PROVIDERS),
-	host: forwardHost, placeholder: forwardPlaceholder, proofKey: optional(validProofKey), expiresAt: count });
-const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
+const forwardKey = object({
+	provider: oneOf(...MODEL_PROVIDERS),
+	host: forwardHost,
+	placeholder: forwardPlaceholder,
+	proofKey: optional(validProofKey),
+	expiresAt: count,
+});
+const startOptions = {
+	gitUser: optional(oneOf(true)),
+	cwd: optional(string),
+	env: optional(env),
+	secretEnv: optional(env),
+};
 
 /**
  * The methods of `Sandboxes`, `SandboxHandle`, `TurnSandbox` and `SandboxProcess` that cross to a
@@ -68,50 +104,137 @@ const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), en
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const fingerprint = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
-const snapshotKey = { attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)), generation: fingerprint, repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)), inputs: fingerprint };
-const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)), created: count });
+const snapshotKey = {
+	attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)),
+	generation: fingerprint,
+	repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)),
+	inputs: fingerprint,
+};
+const snapshotSource = object({
+	...snapshotKey,
+	commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)),
+	created: count,
+});
 // Only a canonical DNS name or an IP may cross the session socket, even from a faulty helper.
-const destination = nullable(is<string>(v => typeof v === "string" && v.length <= 253 && !v.includes("%") && (!!isIP(v) || v.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))));
+const destination = nullable(
+	is<string>(
+		v =>
+			typeof v === "string" &&
+			v.length <= 253 &&
+			!v.includes("%") &&
+			(!!isIP(v) || v.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))),
+	),
+);
 const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
-const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
+const refusalEntry = object({
+	...endpoint,
+	reason: oneOf("machine_policy", "private", "provider", "malformed"),
+	firstAt: count,
+	lastAt: count,
+	count: positiveLimit,
+});
 const operations = {
 	openCodeDefault: [object({ providers: list(oneOf(...MODEL_PROVIDERS), MODEL_PROVIDERS.length) }), text(512)],
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
-	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
-	create: [object({ privateData: optional(oneOf(true)), environmentBuild: optional(oneOf(true)), spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	blockedNetwork: [
+		object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }),
+		object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count }),
+	],
+	create: [
+		object({
+			privateData: optional(oneOf(true)),
+			environmentBuild: optional(oneOf(true)),
+			spare: optional(spareRecipe),
+			profile: machineProfile,
+			mirrorRepo: optional(snapshotKey.repo),
+			size: optional(is<number>(v => positiveLimit(v) && v <= 4)),
+			harness,
+			screenshots: optional(boolean),
+			prepared: optional(
+				object({
+					...snapshotKey,
+					inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)),
+					writer: boolean,
+					privateData: boolean,
+				}),
+			),
+		}),
+		id,
+	],
 	seedSpare: [object({ ...sandbox, spare: spareRecipe, screenshots: optional(boolean) }), boolean],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
-	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
-	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
+	saveMirror: [
+		object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }),
+		boolean,
+	],
+	saveSnapshot: [
+		object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }),
+		boolean,
+	],
 	/** `ownData`: its Windlass data directory is a volume of its own (SandboxHandle.ownData), said only to a server that named `session-volumes`. */
-	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)),
-		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
-		modelRelay: optional(oneOf(true)),
-		windlassKeyRelay: optional(oneOf(true)),
-		blockedNetwork: optional(oneOf(true)),
-		memoryEvents: optional(oneOf(true)),
-		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		needsSpareSeed: optional(oneOf(true)), readyKey: optional(fingerprint), readySetup: optional(spareSetup),
-		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
-		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
-		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],
+	connect: [
+		object(sandbox),
+		nullable(
+			object({
+				cwd: string,
+				profile: machineProfile,
+				harness,
+				snapshot: optional(snapshotSource),
+				screenshots: optional(boolean),
+				ownData: optional(oneOf(true)),
+				/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
+				modelRelay: optional(oneOf(true)),
+				windlassKeyRelay: optional(oneOf(true)),
+				blockedNetwork: optional(oneOf(true)),
+				memoryEvents: optional(oneOf(true)),
+				/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
+				needsSpareSeed: optional(oneOf(true)),
+				readyKey: optional(fingerprint),
+				readySetup: optional(spareSetup),
+				startTimes: optional(
+					object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count }),
+				),
+				/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
+				image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))),
+			}),
+		),
+	],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],
 	/** Its output streams as `out` with this operation's id; `cancel` is its abort signal. */
-	run: [object({ ...sandbox, command: string, options: optional(object({ ...startOptions, stdin: optional(string), timeoutMs: optional(duration) })) }),
-		object({ exitCode: nullable(integer), timedOut: boolean, aborted: boolean, stdout: string, stderr: string })],
+	run: [
+		object({
+			...sandbox,
+			command: string,
+			options: optional(object({ ...startOptions, stdin: optional(string), timeoutMs: optional(duration) })),
+		}),
+		object({ exitCode: nullable(integer), timedOut: boolean, aborted: boolean, stdout: string, stderr: string }),
+	],
 	readTextFile: [object({ ...sandbox, path: string }), string],
 	writeTextFile: [object({ ...sandbox, path: string, content: string }), nil],
 	/** The server names the tag, so a process has it before the runner answers. Its id is the process. */
 	start: [object({ ...sandbox, tag, argv: list(string), options: optional(object(startOptions)) }), nil],
 	signal: [object({ process: id, sig: oneOf("INT", "TERM", "KILL"), who: oneOf("leader", "all") }), nil],
 	killClient: [object({ process: id }), nil],
-	ask: [object({ ...sandbox, argv: list(string), options: optional(object({ env: optional(env), timeoutMs: optional(duration) })) }),
-		nullable(object({ code: nullable(integer), stdout: string, stderr: string }))],
+	ask: [
+		object({
+			...sandbox,
+			argv: list(string),
+			options: optional(object({ env: optional(env), timeoutMs: optional(duration) })),
+		}),
+		nullable(object({ code: nullable(integer), stdout: string, stderr: string })),
+	],
 	stopLeftovers: [object({ ...sandbox, program: string }), count],
-	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(duration), files: optional(list(string)) })) }), count],
+	sweep: [
+		object({
+			...sandbox,
+			tag,
+			options: optional(object({ waitMs: optional(duration), files: optional(list(string)) })),
+		}),
+		count,
+	],
 	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
 	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
 	/**
@@ -119,8 +242,23 @@ const operations = {
 	 * lease for one turn (its forwarder listens in the sandbox), the turn's token handed to the relay, and
 	 * the lease's end. `lease` names the lease on the runner; it is no credential.
 	 */
-	modelRelay: [object({ ...sandbox, forward: optional(forwardKey) }), object({ lease: relayLease, placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)), env })],
-	modelRelayToken: [object({ ...sandbox, lease: relayLease, accessToken: is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,16384}$/.test(v)), expiresAt: count }), nil],
+	modelRelay: [
+		object({ ...sandbox, forward: optional(forwardKey) }),
+		object({
+			lease: relayLease,
+			placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)),
+			env,
+		}),
+	],
+	modelRelayToken: [
+		object({
+			...sandbox,
+			lease: relayLease,
+			accessToken: is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,16384}$/.test(v)),
+			expiresAt: count,
+		}),
+		nil,
+	],
 	modelRelayClose: [object({ ...sandbox, lease: relayLease }), nil],
 } as const satisfies Record<string, readonly [Check<unknown>, Check<unknown>]>;
 
@@ -140,26 +278,54 @@ export type Failure = Of<typeof failure>;
 const body = either(
 	either(
 		object({ kind: oneOf("op"), id, name: string, args: is<Record<string, unknown>>(plain) }),
-		either(object({ kind: oneOf("res"), id, ok: oneOf(true), value: anything }), object({ kind: oneOf("res"), id, ok: oneOf(false), error: failure })),
+		either(
+			object({ kind: oneOf("res"), id, ok: oneOf(true), value: anything }),
+			object({ kind: oneOf("res"), id, ok: oneOf(false), error: failure }),
+		),
 	),
 	either(
-		either(object({ kind: oneOf("out"), id, fd: oneOf(1, 2), data: string }), object({ kind: oneOf("end"), id, code: nullable(integer), signal: nullable(string), error: nullable(string) })),
+		either(
+			object({ kind: oneOf("out"), id, fd: oneOf(1, 2), data: string }),
+			object({ kind: oneOf("end"), id, code: nullable(integer), signal: nullable(string), error: nullable(string) }),
+		),
 		either(object({ kind: oneOf("in"), id, data: string }), object({ kind: oneOf("close-in", "cancel"), id })),
 	),
 );
 export type Body = Of<typeof body>;
 
 const resume = object({ conversation: id, received: count });
-const helloBase = { kind: oneOf("hello"), runnerVersion: text(64), machineId: id, ticket: text(1024), signature: text(1024), resume: nullable(resume) };
-const hello = either(object({ ...helloBase, protocol: oneOf(1) }), object({ ...helloBase, protocol: oneOf(PROTOCOL_VERSION), ...helloFields }));
+const helloBase = {
+	kind: oneOf("hello"),
+	runnerVersion: text(64),
+	machineId: id,
+	ticket: text(1024),
+	signature: text(1024),
+	resume: nullable(resume),
+};
+const hello = either(
+	object({ ...helloBase, protocol: oneOf(1) }),
+	object({ ...helloBase, protocol: oneOf(PROTOCOL_VERSION), ...helloFields }),
+);
 /** A refusal keeps this shape in every version, so a runner of any version can show it. */
 const refusal = object({ kind: oneOf("welcome"), protocol: integer, refused: text(1000) });
 const welcomeBase = { kind: oneOf("welcome"), conversation: id, received: count, resumed: boolean };
-const welcome = either(either(object({ ...welcomeBase, protocol: oneOf(1) }), object({ ...welcomeBase, protocol: oneOf(PROTOCOL_VERSION), ...welcomeFields })), refusal);
-const seq = is<number>((v) => count(v) && v !== 0);
+const welcome = either(
+	either(
+		object({ ...welcomeBase, protocol: oneOf(1) }),
+		object({ ...welcomeBase, protocol: oneOf(PROTOCOL_VERSION), ...welcomeFields }),
+	),
+	refusal,
+);
+const seq = is<number>(v => count(v) && v !== 0);
 const frame = either(
 	either(hello, welcome),
-	either(either(object({ kind: oneOf("msg"), seq, ack: count, body }), object({ kind: oneOf("part"), seq, ack: count, data: text(MAX_FRAME_BYTES), last: boolean })), object({ kind: oneOf("ack"), ack: count })),
+	either(
+		either(
+			object({ kind: oneOf("msg"), seq, ack: count, body }),
+			object({ kind: oneOf("part"), seq, ack: count, data: text(MAX_FRAME_BYTES), last: boolean }),
+		),
+		object({ kind: oneOf("ack"), ack: count }),
+	),
 );
 export type Hello = Of<typeof hello>;
 export type Welcome = Of<typeof welcome>;
@@ -169,9 +335,11 @@ export type Frame = Of<typeof frame> | Foreign;
 
 /** Null for anything that is not a frame of this protocol. Nothing of a refused frame is kept. */
 export function parseFrame(data: unknown, protocol = PROTOCOL_VERSION): Frame | null {
-	if (typeof data !== "string" || data.length > MAX_FRAME_BYTES || Buffer.byteLength(data) > MAX_FRAME_BYTES) return null;
+	if (typeof data !== "string" || data.length > MAX_FRAME_BYTES || Buffer.byteLength(data) > MAX_FRAME_BYTES)
+		return null;
 	const v = json(data);
-	if (plain(v) && v.kind === "hello" && Number.isSafeInteger(v.protocol) && v.protocol !== protocol) return { kind: "foreign", protocol: v.protocol as number };
+	if (plain(v) && v.kind === "hello" && Number.isSafeInteger(v.protocol) && v.protocol !== protocol)
+		return { kind: "foreign", protocol: v.protocol as number };
 	return frame(v) ? v : null;
 }
 

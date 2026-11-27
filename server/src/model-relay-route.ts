@@ -24,7 +24,8 @@ import {
 	type RemoteLease,
 	type RelayToken,
 	type Placeholder,
-	verifiedMachine, revokeMachineLeases,
+	verifiedMachine,
+	revokeMachineLeases,
 	RelayLimiter,
 	ROUTE_LIMITS,
 	UserRate,
@@ -41,36 +42,67 @@ const { scrubStream, limitHeaders } = require("../../sandbox/relay/server.cjs") 
 	scrubStream: (secrets: Iterable<string>, type: string, responses?: boolean) => NodeJS.ReadWriteStream;
 	limitHeaders: (headers: Record<string, string>, secrets?: Iterable<string>) => Record<string, string>;
 };
-const { errorBody, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } = require("../../sandbox/relay/windlass.cjs") as {
-	errorBody: (status: number, text: string, secrets: string[]) => string;
-	LEASE_ENDED: string;
-	wireTarget(provider: ModelProvider | "chatgpt", path: string, headers: Record<string, string>, secret: string):
-		{ hostname: string; headers: Record<string, string>; path: string } | undefined;
-	anyMethod(path: string): "GET" | "POST" | undefined;
-	placeholderOf(headers: Record<string, string>): string | undefined;
-};
+const { errorBody, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } =
+	require("../../sandbox/relay/windlass.cjs") as {
+		errorBody: (status: number, text: string, secrets: string[]) => string;
+		LEASE_ENDED: string;
+		wireTarget(
+			provider: ModelProvider | "chatgpt",
+			path: string,
+			headers: Record<string, string>,
+			secret: string,
+		): { hostname: string; headers: Record<string, string>; path: string } | undefined;
+		anyMethod(path: string): "GET" | "POST" | undefined;
+		placeholderOf(headers: Record<string, string>): string | undefined;
+	};
 /** Preserve Windlass's encoding preference among codecs the relay can decode. */
 const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
-	["gzip", createGunzip], ["deflate", createInflate], ["br", createBrotliDecompress],
-	...((typeof (zlib as { createZstdDecompress?: unknown }).createZstdDecompress === "function" ? [["zstd", (zlib as unknown as { createZstdDecompress: () => NodeJS.ReadWriteStream }).createZstdDecompress]] : []) as [string, () => NodeJS.ReadWriteStream][]),
+	["gzip", createGunzip],
+	["deflate", createInflate],
+	["br", createBrotliDecompress],
+	...((typeof (zlib as { createZstdDecompress?: unknown }).createZstdDecompress === "function"
+		? [["zstd", (zlib as unknown as { createZstdDecompress: () => NodeJS.ReadWriteStream }).createZstdDecompress]]
+		: []) as [string, () => NodeJS.ReadWriteStream][]),
 ]);
 /** Remote leases share a token-cache and revocation-poll interval. */
 const REMOTE_CACHE_MS = 5_000;
 const UPSTREAM_TIMEOUT_MS = 600_000;
 
-function refusal(status: number, message: string, headers: Record<string, string> = {}, code: string | null = null): Response {
-	const type = status === 401 ? "authentication_error" : status === 403 ? "permission_error" : status === 429 ? "rate_limit_error" : "api_error";
-	return Response.json({ error: { type, code, message } }, { status, headers: { ...headers, "cache-control": "no-store" } });
+function refusal(
+	status: number,
+	message: string,
+	headers: Record<string, string> = {},
+	code: string | null = null,
+): Response {
+	const type =
+		status === 401
+			? "authentication_error"
+			: status === 403
+				? "permission_error"
+				: status === 429
+					? "rate_limit_error"
+					: "api_error";
+	return Response.json(
+		{ error: { type, code, message } },
+		{ status, headers: { ...headers, "cache-control": "no-store" } },
+	);
 }
 /** Distinguish an ended lease from an upstream authentication error. */
-const leaseEnded = (message = "The session placeholder is no longer valid: its turn has ended.") => refusal(401, message, {}, LEASE_ENDED);
+const leaseEnded = (message = "The session placeholder is no longer valid: its turn has ended.") =>
+	refusal(401, message, {}, LEASE_ENDED);
 
 export interface RelayRouteDeps {
 	paired(uid: string, machine: string): Promise<boolean>;
 	/** Returns a sealed key bound to this request nonce. */
 	key(uid: string, provider: ModelProvider, request: string): Promise<string | null>;
 	/** The session actor returns a sealed token or a key reference. */
-	remote(uid: string, sessionId: string, nonce: string, request: string, consume?: boolean): Promise<RemoteLease | null>;
+	remote(
+		uid: string,
+		sessionId: string,
+		nonce: string,
+		request: string,
+		consume?: boolean,
+	): Promise<RemoteLease | null>;
 	fetch: typeof fetch;
 	limiter: RelayLimiter;
 	rate: UserRate;
@@ -84,13 +116,19 @@ let client: ReturnType<typeof createClient<Registry>> | undefined;
 const engine = () => (client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() }));
 const defaults: RelayRouteDeps = {
 	paired: async (uid, machine) => {
-		try { return await engine().machine.get([uid, machine], { params: serviceParams() }).internalPaired(); }
-		catch (error) { if (isActorGone(error)) return false; throw error; }
+		try {
+			return await engine().machine.get([uid, machine], { params: serviceParams() }).internalPaired();
+		} catch (error) {
+			if (isActorGone(error)) return false;
+			throw error;
+		}
 	},
 	key: (uid, provider, request) => modelKeyActor({ client: engine }, uid).internalModelKey(provider, request),
 	remote: async (uid, sessionId, nonce, request, consume) => {
 		try {
-			return await engine().agentSession.get([uid, sessionId], { params: serviceParams() }).internalModelRelay({ nonce, request, consume });
+			return await engine()
+				.agentSession.get([uid, sessionId], { params: serviceParams() })
+				.internalModelRelay({ nonce, request, consume });
 		} catch (error) {
 			if (isActorGone(error)) return null;
 			throw error;
@@ -111,7 +149,7 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 	if (body !== undefined) headers["content-length"] = String(body.byteLength);
 	return new Promise<Response>((resolve, reject) => {
 		const send = target.protocol === "http:" ? httpRequest : httpsRequest;
-		const req = send(target, { method: init.method ?? "GET", headers, signal: init.signal ?? undefined }, (res) => {
+		const req = send(target, { method: init.method ?? "GET", headers, signal: init.signal ?? undefined }, res => {
 			const out = new Headers();
 			for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) out.append(res.rawHeaders[i]!, res.rawHeaders[i + 1]!);
 			const encoding = (res.headers["content-encoding"] ?? "").trim().toLowerCase();
@@ -127,7 +165,12 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 			const status = res.statusCode ?? 502;
 			const nullBody = [101, 204, 205, 304].includes(status) || init.method === "HEAD";
 			if (nullBody) res.resume();
-			resolve(new Response(nullBody ? null : (Readable.toWeb(stream) as unknown as ReadableStream), { status: status < 200 || status > 599 ? 502 : status, headers: out }));
+			resolve(
+				new Response(nullBody ? null : (Readable.toWeb(stream) as unknown as ReadableStream), {
+					status: status < 200 || status > 599 ? 502 : status,
+					headers: out,
+				}),
+			);
 		});
 		req.on("error", reject);
 		req.end(body);
@@ -137,12 +180,17 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 const cached = new Map<string, { token: Extract<RelayToken, { kind: "access" }>; until: number }>();
 
 /** Revoked nonces stay invalid until their placeholders expire. */
-async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine: string | undefined, consume = false): Promise<RelayToken | "limit" | null> {
+async function tokenFor(
+	deps: RelayRouteDeps,
+	placeholder: Placeholder,
+	machine: string | undefined,
+	consume = false,
+): Promise<RelayToken | "limit" | null> {
 	const { uid, sessionId, nonce, expiresAt: placeholderExpires } = placeholder;
 	if (machine !== placeholder.machine) return null;
 	const now = deps.now();
 	if (placeholderExpires <= now || endedLease(nonce, now)) return null;
-	if (machine && !await deps.paired(uid, machine)) {
+	if (machine && !(await deps.paired(uid, machine))) {
 		revokeMachineLeases(uid, machine);
 		endLease(nonce, placeholderExpires, now);
 		return null;
@@ -167,28 +215,50 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 	}
 	if (typeof answer.token !== "string") {
 		const { provider, generation, harness } = answer.token;
-		return isModelProvider(provider) && typeof generation === "string" ? { kind: "key", provider, generation, harness } : null;
+		return isModelProvider(provider) && typeof generation === "string"
+			? { kind: "key", provider, generation, harness }
+			: null;
 	}
-	const token = JSON.parse(serverSealer().open("transit", relayTransitSubject(uid, sessionId, nonce, request), answer.token));
-	if (!Number.isSafeInteger(token.exp) || token.exp <= deps.now() || !Number.isSafeInteger(token.expiresAt)
-		|| token.expiresAt <= deps.now() || typeof token.accessToken !== "string") return null;
+	const token = JSON.parse(
+		serverSealer().open("transit", relayTransitSubject(uid, sessionId, nonce, request), answer.token),
+	);
+	if (
+		!Number.isSafeInteger(token.exp) ||
+		token.exp <= deps.now() ||
+		!Number.isSafeInteger(token.expiresAt) ||
+		token.expiresAt <= deps.now() ||
+		typeof token.accessToken !== "string"
+	)
+		return null;
 	const access = { kind: "access" as const, accessToken: token.accessToken, expiresAt: token.expiresAt };
 	cached.set(nonce, { token: access, until: Math.min(token.exp, now + REMOTE_CACHE_MS) });
 	return access;
 }
 
 /** A remote owner cannot abort local requests directly. Poll its lease while requests are active. */
-const watched = new Map<string, { lookup: () => Promise<RelayToken | null>; expires: number; requests: Set<AbortController> }>();
+const watched = new Map<
+	string,
+	{ lookup: () => Promise<RelayToken | null>; expires: number; requests: Set<AbortController> }
+>();
 let watching: NodeJS.Timeout | null = null;
-function watchRemote(nonce: string, expires: number, lookup: () => Promise<RelayToken | null>, controller: AbortController): () => void {
+function watchRemote(
+	nonce: string,
+	expires: number,
+	lookup: () => Promise<RelayToken | null>,
+	controller: AbortController,
+): () => void {
 	let entry = watched.get(nonce);
 	if (!entry) watched.set(nonce, (entry = { expires, lookup, requests: new Set() }));
 	entry.requests.add(controller);
 	watching ??= setInterval(() => {
 		for (const [key, lease] of watched) {
-			void lease.lookup().then((token) => {
-				if (token === null && (endedLease(key) || lease.expires <= Date.now())) for (const request of lease.requests) request.abort(new Error("the turn's model relay lease has ended"));
-			}, () => undefined);
+			void lease.lookup().then(
+				token => {
+					if (token === null && (endedLease(key) || lease.expires <= Date.now()))
+						for (const request of lease.requests) request.abort(new Error("the turn's model relay lease has ended"));
+				},
+				() => undefined,
+			);
 		}
 	}, REMOTE_CACHE_MS);
 	watching.unref?.();
@@ -204,8 +274,14 @@ function watchRemote(nonce: string, expires: number, lookup: () => Promise<Relay
 }
 
 /** The relay host serves only relay routes. Other hosts reject those paths. */
-export function modelRelayRoute(request: Request, pathname: string, relayHost: string | null, deps: RelayRouteDeps = defaults): Promise<Response> | Response | null {
-	const onRelayHost = relayHost !== null && requestHost(request.headers.get("host") ?? new URL(request.url).host) === relayHost;
+export function modelRelayRoute(
+	request: Request,
+	pathname: string,
+	relayHost: string | null,
+	deps: RelayRouteDeps = defaults,
+): Promise<Response> | Response | null {
+	const onRelayHost =
+		relayHost !== null && requestHost(request.headers.get("host") ?? new URL(request.url).host) === relayHost;
 	const relayPath = pathname.startsWith(RELAY_PREFIX + "/");
 	if (onRelayHost) return relayPath ? modelRelayResponse(request, deps) : refusal(404, "Unknown model relay route.");
 	if (relayPath) return refusal(404, "The model relay is not served on this host.");
@@ -213,7 +289,11 @@ export function modelRelayRoute(request: Request, pathname: string, relayHost: s
 }
 
 /** RivetKit already buffers uploads. Apply both budgets and send the body upstream with its length. */
-async function readBody(request: Request, max: number, budget: BodyBudget): Promise<{ body: Uint8Array; taken: number } | { over: "large" | "busy"; taken: number }> {
+async function readBody(
+	request: Request,
+	max: number,
+	budget: BodyBudget,
+): Promise<{ body: Uint8Array; taken: number } | { over: "large" | "busy"; taken: number }> {
 	const parts: Uint8Array[] = [];
 	let size = 0;
 	if (request.body === null) return { body: new Uint8Array(), taken: 0 };
@@ -258,8 +338,11 @@ function relayLog(line: string): void {
 export async function modelRelayResponse(request: Request, deps: RelayRouteDeps = defaults): Promise<Response> {
 	const began = Date.now();
 	let reason = "";
-	const response = await answer(request, deps, detail => { reason = detail; }).catch(() => refusal(502, "The relay could not complete the request."));
-	if (response.status !== 200) relayLog(`[wlp] model_relay.failed status=${response.status} ms=${Date.now() - began} ${reason}`);
+	const response = await answer(request, deps, detail => {
+		reason = detail;
+	}).catch(() => refusal(502, "The relay could not complete the request."));
+	if (response.status !== 200)
+		relayLog(`[wlp] model_relay.failed status=${response.status} ms=${Date.now() - began} ${reason}`);
 	return response;
 }
 
@@ -292,8 +375,13 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		return leaseEnded("The session placeholder is not valid.");
 	}
 	// Before any lookup: a placeholder that keeps being sent costs at most this much.
-	if (!deps.rate.take(placeholder.uid, deps.now())) return refusal(503, `Too many model requests from your sessions (${ROUTE_LIMITS.userPerMinute} a minute).`, { "retry-after": "2" });
-	const machine = placeholder.machine && verifiedMachine(bearer!, placeholder.machine, incoming[proofHeader], method, path, deps.now());
+	if (!deps.rate.take(placeholder.uid, deps.now()))
+		return refusal(503, `Too many model requests from your sessions (${ROUTE_LIMITS.userPerMinute} a minute).`, {
+			"retry-after": "2",
+		});
+	const machine =
+		placeholder.machine &&
+		verifiedMachine(bearer!, placeholder.machine, incoming[proofHeader], method, path, deps.now());
 	if (placeholder.machine) delete incoming[proofHeader];
 	const lookup = async () => {
 		const current = await tokenFor(deps, placeholder, machine);
@@ -340,7 +428,9 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			taken = read.taken;
 			if ("over" in read) {
 				release();
-				return read.over === "large" ? refusal(413, "The request is too large for the relay.") : refusal(503, "The relay is sending too many request bodies at once. Try again.", { "retry-after": "2" });
+				return read.over === "large"
+					? refusal(413, "The request is too large for the relay.")
+					: refusal(503, "The relay is sending too many request bodies at once. Try again.", { "retry-after": "2" });
 			}
 			upstreamBody = read.body;
 		}
@@ -351,7 +441,11 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			token = await lookup();
 			if (token?.kind === "key") {
 				provider = token.provider;
-				if (method !== "HEAD" && harnessMethod(token.harness, provider, path) !== method) { note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`); release(); return refusal(403, "This request is not allowed by the relay."); }
+				if (method !== "HEAD" && harnessMethod(token.harness, provider, path) !== method) {
+					note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`);
+					release();
+					return refusal(403, "This request is not allowed by the relay.");
+				}
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);
 				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);
@@ -361,20 +455,35 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			release();
 			return refusal(503, "The relay could not resolve the credential. Try again.", { "retry-after": "1" });
 		}
-		if (!secret || ended.signal.aborted) { release(); return leaseEnded(); }
+		if (!secret || ended.signal.aborted) {
+			release();
+			return leaseEnded();
+		}
 		if (method === "HEAD") {
 			release();
 			return new Response(null, { headers: { "cache-control": "no-store" } });
 		}
 		const target = wireTarget(provider, path, incoming, secret);
-		if (!target) { release(); return refusal(403, "This request is not allowed by the relay."); }
+		if (!target) {
+			release();
+			return refusal(403, "This request is not allowed by the relay.");
+		}
 		const secrets = [secret];
 		const headers = target.headers;
-		const accepted = (incoming["accept-encoding"] ?? "").split(",").map(part => part.trim().split(";")[0]!.toLowerCase()).filter(name => DECODERS.has(name));
+		const accepted = (incoming["accept-encoding"] ?? "")
+			.split(",")
+			.map(part => part.trim().split(";")[0]!.toLowerCase())
+			.filter(name => DECODERS.has(name));
 		if (accepted.length) headers["accept-encoding"] = [...new Set(accepted)].join(", ");
 		let reply: Response;
 		try {
-			reply = await deps.fetch(`https://${target.hostname}${target.path}`, { method, headers, body: upstreamBody as BodyInit | undefined, redirect: "manual", signal });
+			reply = await deps.fetch(`https://${target.hostname}${target.path}`, {
+				method,
+				headers,
+				body: upstreamBody as BodyInit | undefined,
+				redirect: "manual",
+				signal,
+			});
 		} catch {
 			release();
 			if (ended.signal.aborted) return leaseEnded();
@@ -389,15 +498,27 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			release();
 			return new Response(errorBody(status, text, secrets), {
 				status,
-				headers: { ...([429, 503, 529].includes(status) ? limitHeaders(replyHeaders, secrets) : {}), "content-type": "application/json", "cache-control": "no-store" },
+				headers: {
+					...([429, 503, 529].includes(status) ? limitHeaders(replyHeaders, secrets) : {}),
+					"content-type": "application/json",
+					"cache-control": "no-store",
+				},
 			});
 		}
 		const given = (reply.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
 		// Windlass reads a Responses answer as an event stream whatever its type says: one with no type, or a
 		// plain-text one, is passed on as the event stream it is. Anything else (a page, a download) is not a model's answer.
-		const type = given === "text/event-stream" || given === "application/json" ? given
-			: path === "/v1/responses" && (given === "" || given === "text/plain") ? "text/event-stream" : null;
-		if (type === null || reply.body === null || (reply.headers.has("content-encoding") && reply.headers.get("content-encoding") !== "identity")) {
+		const type =
+			given === "text/event-stream" || given === "application/json"
+				? given
+				: path === "/v1/responses" && (given === "" || given === "text/plain")
+					? "text/event-stream"
+					: null;
+		if (
+			type === null ||
+			reply.body === null ||
+			(reply.headers.has("content-encoding") && reply.headers.get("content-encoding") !== "identity")
+		) {
 			await reply.body?.cancel().catch(() => undefined);
 			release();
 			return refusal(502, "The provider answered with something that is not a model's answer.");

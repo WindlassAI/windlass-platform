@@ -16,7 +16,11 @@ export async function readProvenance(c: ItemContext) {
 }
 
 export function pollUntil(defaultTimeout: number) {
-	return async function until<T>(label: string, probe: () => Promise<T | null | undefined | false>, timeout = defaultTimeout): Promise<T> {
+	return async function until<T>(
+		label: string,
+		probe: () => Promise<T | null | undefined | false>,
+		timeout = defaultTimeout,
+	): Promise<T> {
 		const end = Date.now() + timeout;
 		do {
 			const answer = await probe();

@@ -32,7 +32,7 @@ import type { Fact, ReviewerInput } from "../factory/types.js";
 import { readWork } from "../github/git.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
-import { itemActor, userActor } from "./internal.js";
+import { itemActor, userActor, type ActorClient } from "./internal.js";
 import { taskKind } from "../factory/readiness-track.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 
@@ -135,7 +135,11 @@ export interface TurnRelease {
 }
 
 /** What the outbox sends: a fact to the item, or a slot given back to the user's turn queue. */
-export type OutboxMessage = { to: "network"; itemId: string; revision: number; network: import("../contract.js").BlockedNetwork } | { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
+export type OutboxMessage =
+	| { to: "network"; itemId: string; revision: number; network: import("../contract.js").BlockedNetwork }
+	| { to: "tokens"; receipt: TokenReceipt }
+	| { to: "item"; itemId: string; fact: Fact }
+	| { to: "user"; done: Omit<TurnRelease, "sessionId"> };
 
 /** What a slot request hands the user's turn queue (user-items.ts `internalRequestTurn`). */
 export interface TurnRequest {
@@ -157,23 +161,65 @@ interface InboxCtx {
 	db: RawAccess;
 	key: string[];
 	log: { warn(entry: unknown): void };
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
-	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
+	client(): ActorClient;
+	schedule: {
+		at(timestamp: number, action: string, ...args: unknown[]): Promise<string>;
+		cancel(id: string): Promise<boolean>;
+	};
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; fresh: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = {
+	key: string;
+	item: string;
+	title: string;
+	text: string;
+	agent: string | null;
+	max_steps: number;
+	fetch_base: string | null;
+	checkout: string | null;
+	asks_left: number | null;
+	untrusted: string | null;
+	unsandboxed: number | null;
+	fresh: string | null;
+	starts_run: number;
+	state: InboxRow["state"];
+	turn: number | null;
+	slot: string | null;
+	ended: string | null;
+};
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, fresh: row.fresh ? freshOf(JSON.parse(row.fresh)) : null, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return {
+		key: row.key,
+		itemId: row.item,
+		title: row.title,
+		text: row.text,
+		agent: row.agent,
+		maxSteps: row.max_steps,
+		fetchBase: row.fetch_base,
+		checkout: row.checkout ? (JSON.parse(row.checkout) as ReviewDelivery) : null,
+		asksLeft: row.asks_left,
+		untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []),
+		unsandboxed: row.unsandboxed === 1,
+		fresh: row.fresh ? freshOf(JSON.parse(row.fresh)) : null,
+		startsRun: row.starts_run === 1,
+		state: row.state,
+		turn: row.turn,
+		slot: row.slot,
+	};
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT =
+	"SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended FROM inbox";
 
 /** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
 export function untrustedOf(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
-	return sources(value.filter((source): source is string => typeof source === "string").map(source => source.slice(0, UNTRUSTED_SOURCE_MAX))).slice(0, 8);
+	return sources(
+		value
+			.filter((source): source is string => typeof source === "string")
+			.map(source => source.slice(0, UNTRUSTED_SOURCE_MAX)),
+	).slice(0, 8);
 }
 
 export async function inboxRow(db: RawAccess, key: string): Promise<InboxRow | null> {
@@ -194,11 +240,44 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const key = text(given.key);
 	const itemId = text(given.itemId);
 	const body = text(given.text);
-	if (!key || !itemId || body === null || (body.trim() === "" && !given.checkout) || typeof given.maxSteps !== "number" || !Number.isInteger(given.maxSteps) || given.maxSteps < 1) return null;
+	if (
+		!key ||
+		!itemId ||
+		body === null ||
+		(body.trim() === "" && !given.checkout) ||
+		typeof given.maxSteps !== "number" ||
+		!Number.isInteger(given.maxSteps) ||
+		given.maxSteps < 1
+	)
+		return null;
 	const checkout = given.checkout as ReviewDelivery | undefined;
-	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
-	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true, fresh: freshOf(given.fresh) };
+	if (
+		checkout &&
+		(!/^[0-9a-f]{40}$/.test(checkout.head) ||
+			!/^[0-9a-f]{40}$/.test(checkout.baseSha) ||
+			!Number.isSafeInteger(checkout.pr) ||
+			checkout.pr < 1)
+	)
+		return null;
+	const asksLeft =
+		typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0
+			? given.asksLeft
+			: null;
+	return {
+		key,
+		itemId,
+		checkout,
+		title: text(given.title) ?? "",
+		text: body,
+		agent: text(given.agent),
+		maxSteps: given.maxSteps,
+		fetchBase: text(given.fetchBase),
+		startsRun: given.startsRun === true,
+		asksLeft,
+		untrusted: untrustedOf(given.untrusted),
+		unsandboxed: given.unsandboxed === true,
+		fresh: freshOf(given.fresh),
+	};
 }
 
 /** A whole-task prompt of a delivery or a row, checked; null for none or one that cannot be taken. */
@@ -206,14 +285,22 @@ function freshOf(value: unknown): FreshPrompt | null {
 	if (typeof value !== "object" || value === null) return null;
 	const given = value as Record<string, unknown>;
 	if (typeof given.text !== "string" || given.text.trim() === "") return null;
-	return { text: given.text, untrusted: untrustedOf(given.untrusted), ...(given.unsandboxed === true && { unsandboxed: true }) };
+	return {
+		text: given.text,
+		untrusted: untrustedOf(given.untrusted),
+		...(given.unsandboxed === true && { unsandboxed: true }),
+	};
 }
 
 /**
  * What an item's turn gives its agent: the row's text and its sources, or its whole-task prompt (`fresh`) when the
  * agent has no conversation to go on with (no session id to resume: a new sandbox, a memory that was lost).
  */
-export function itemTurnText(row: Pick<InboxRow, "untrusted" | "unsandboxed" | "fresh">, text: string, resumed: string | null | undefined): { text: string; untrusted: string[]; unsandboxed?: boolean; fresh: boolean } {
+export function itemTurnText(
+	row: Pick<InboxRow, "untrusted" | "unsandboxed" | "fresh">,
+	text: string,
+	resumed: string | null | undefined,
+): { text: string; untrusted: string[]; unsandboxed?: boolean; fresh: boolean } {
 	if (row.fresh && !resumed) return { ...row.fresh, fresh: true };
 	return { text, untrusted: row.untrusted, unsandboxed: row.unsandboxed, fresh: false };
 }
@@ -243,24 +330,52 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 }
 
 /** Asks the user's turn queue for a slot for the row. A queue that does not answer leaves the request to be sent again (the item's check, or the next wake). */
-export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentFull: number | null = null, resumeAt?: number): Promise<TurnAnswer> {
-	const request: TurnRequest = { sessionId: c.key[1] as string, itemId: row.itemId, key: row.key, title: row.title, startsRun: row.startsRun, deploymentFull, ...(resumeAt !== undefined && { resumeAt }) };
+export function requestTurn(
+	c: InboxCtx,
+	uid: string,
+	row: InboxRow,
+	deploymentFull: number | null = null,
+	resumeAt?: number,
+): Promise<TurnAnswer> {
+	const request: TurnRequest = {
+		sessionId: c.key[1] as string,
+		itemId: row.itemId,
+		key: row.key,
+		title: row.title,
+		startsRun: row.startsRun,
+		deploymentFull,
+		...(resumeAt !== undefined && { resumeAt }),
+	};
 	return userActor(c, uid).internalRequestTurn(request);
 }
 
 /** Puts a row back to waiting for a slot: its turn could not start (the deployment's sandboxes are all in use), and its slot is given back. */
 export async function requeue(tx: RawAccess, key: string, slot: string): Promise<void> {
-	await tx.execute("UPDATE inbox SET state = 'waiting', turn = NULL, slot = NULL WHERE key = ? AND state = 'started'", key);
+	await tx.execute(
+		"UPDATE inbox SET state = 'waiting', turn = NULL, slot = NULL WHERE key = ? AND state = 'started'",
+		key,
+	);
 	await queueMessage(tx, { to: "user", done: { slot, key } });
 }
 
 /** The session could not reach the runner before work began. Retrying or withdrawing the delivery and
  * returning its slot are one durable operation, including when removal raced the runner's attach. */
-export async function machineUnavailable(tx: RawAccess, row: InboxRow, slot: string, reason: "offline" | "removed"): Promise<void> {
+export async function machineUnavailable(
+	tx: RawAccess,
+	row: InboxRow,
+	slot: string,
+	reason: "offline" | "removed",
+): Promise<void> {
 	const state = reason === "removed" ? "withdrawn" : "waiting";
-	const changed = await tx.execute("UPDATE inbox SET state = ?, turn = NULL, slot = NULL WHERE key = ? AND (state = 'waiting' OR (state = 'started' AND slot = ?)) RETURNING key", state, row.key, slot);
+	const changed = await tx.execute(
+		"UPDATE inbox SET state = ?, turn = NULL, slot = NULL WHERE key = ? AND (state = 'waiting' OR (state = 'started' AND slot = ?)) RETURNING key",
+		state,
+		row.key,
+		slot,
+	);
 	const at = Date.now();
-	if (reason === "removed" && changed.length) await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_removed", at } });
+	if (reason === "removed" && changed.length)
+		await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_removed", at } });
 	const machineWait = reason === "offline" && changed.length ? { startsRun: row.startsRun, at } : undefined;
 	await queueMessage(tx, { to: "user", done: { slot, key: row.key, machineWait } });
 }
@@ -270,7 +385,12 @@ export async function machineUnavailable(tx: RawAccess, row: InboxRow, slot: str
  * the turn's first timeline item: the row says which turn and which slot.
  */
 export async function markTaken(tx: RawAccess, key: string, turn: number, slot: string): Promise<void> {
-	await tx.execute("UPDATE inbox SET state = 'started', turn = ?, slot = ? WHERE key = ? AND state = 'waiting'", turn, slot, key);
+	await tx.execute(
+		"UPDATE inbox SET state = 'started', turn = ?, slot = ? WHERE key = ? AND state = 'waiting'",
+		turn,
+		slot,
+		key,
+	);
 }
 
 /** The statements that end the row's turn, for the caller's transaction with the session's meta: the fact for the item, and the slot back to the queue. */
@@ -283,8 +403,15 @@ export async function markEnded(tx: RawAccess, row: InboxRow, fact: EndedFact): 
 /** A waiting row is withdrawn: true when it was waiting, so the queue's request goes too. */
 export async function withdrawWaiting(db: RawAccess, key: string): Promise<boolean> {
 	// Reserve an absent key first so a delivery arriving between the two statements cannot start it.
-	await db.execute("INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, starts_run, state, turn, slot, ended, at) VALUES (?, '', '', '', NULL, 1, NULL, 0, 'withdrawn', NULL, NULL, NULL, ?)", key, Date.now());
-	const rows = await db.execute("UPDATE inbox SET state = 'withdrawn' WHERE key = ? AND state = 'waiting' RETURNING key", key);
+	await db.execute(
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, starts_run, state, turn, slot, ended, at) VALUES (?, '', '', '', NULL, 1, NULL, 0, 'withdrawn', NULL, NULL, NULL, ?)",
+		key,
+		Date.now(),
+	);
+	const rows = await db.execute(
+		"UPDATE inbox SET state = 'withdrawn' WHERE key = ? AND state = 'waiting' RETURNING key",
+		key,
+	);
 	return rows.length > 0;
 }
 
@@ -299,7 +426,11 @@ export async function publishReceipt(db: RawAccess, key: string): Promise<ItemPu
 }
 
 /** Keeps the answer of a push that went through, under its effect's key. */
-export async function rememberPublish(db: RawAccess, key: string, answer: Extract<ItemPublishAnswer, { kind: "published" }>): Promise<void> {
+export async function rememberPublish(
+	db: RawAccess,
+	key: string,
+	answer: Extract<ItemPublishAnswer, { kind: "published" }>,
+): Promise<void> {
 	await db.execute("INSERT OR REPLACE INTO publish_receipt (key, answer) VALUES (?, ?)", key, JSON.stringify(answer));
 }
 
@@ -322,7 +453,10 @@ export function queueMessage(tx: RawAccess, message: OutboxMessage): Promise<unk
 const SAFETY_MS = 5_000;
 
 /** After rows were written to the outbox: a durable schedule first, so that a session stopped by a deploy sends them when it is back; then the sending. */
-export async function flushOutbox(c: InboxCtx & { keepAwake<T>(promise: Promise<T>): Promise<T> }, uid: string): Promise<void> {
+export async function flushOutbox(
+	c: InboxCtx & { keepAwake<T>(promise: Promise<T>): Promise<T> },
+	uid: string,
+): Promise<void> {
 	await armOutbox(c, Date.now() + SAFETY_MS);
 	void c.keepAwake(sendOutbox(c, uid));
 }
@@ -334,16 +468,24 @@ export async function flushOutbox(c: InboxCtx & { keepAwake<T>(promise: Promise<
  */
 async function armOutbox(c: InboxCtx, at: number): Promise<void> {
 	const now = Date.now();
-	const [held] = await c.db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM outbox_schedule WHERE id = 1");
+	const [held] = await c.db.execute<{ schedule: string; at: number }>(
+		"SELECT schedule, at FROM outbox_schedule WHERE id = 1",
+	);
 	if (held && held.at > now && held.at <= at) return;
 	const id = await c.schedule.at(Math.max(at, now), OUTBOX_ACTION);
-	await c.db.execute("INSERT OR REPLACE INTO outbox_schedule (id, schedule, at) VALUES (1, ?, ?)", id, Math.max(at, now));
+	await c.db.execute(
+		"INSERT OR REPLACE INTO outbox_schedule (id, schedule, at) VALUES (1, ?, ?)",
+		id,
+		Math.max(at, now),
+	);
 	if (held) await c.schedule.cancel(held.schedule).catch(() => false);
 }
 
 /** Settle prior spending before a new personal turn or session deletion, including receipts awaiting retry. */
 export async function settleTokenReceipts(c: InboxCtx, uid: string): Promise<void> {
-	const rows = await c.db.execute<{ id: number; message: string }>("SELECT id, message FROM outbox WHERE json_extract(message, '$.to') = 'tokens' ORDER BY id");
+	const rows = await c.db.execute<{ id: number; message: string }>(
+		"SELECT id, message FROM outbox WHERE json_extract(message, '$.to') = 'tokens' ORDER BY id",
+	);
 	for (const row of rows) {
 		const { receipt } = JSON.parse(row.message) as { receipt: TokenReceipt };
 		await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt });
@@ -368,19 +510,32 @@ const sendable = `(json_extract(message, '$.to') = 'tokens' OR NOT EXISTS (
 export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 	try {
 		const now = Date.now();
-		const rows = await c.db.execute<{ id: number; message: string; attempts: number }>(`SELECT id, message, attempts FROM outbox WHERE next_at <= ? AND ${sendable} ORDER BY id`, now);
+		const rows = await c.db.execute<{ id: number; message: string; attempts: number }>(
+			`SELECT id, message, attempts FROM outbox WHERE next_at <= ? AND ${sendable} ORDER BY id`,
+			now,
+		);
 		for (const row of rows) {
 			const message = JSON.parse(row.message) as OutboxMessage;
 			try {
-				if (message.to === "network") await itemActor(c, uid, message.itemId).internalBlockedNetwork({ sessionId: c.key[1]!, revision: message.revision, network: message.network });
+				if (message.to === "network")
+					await itemActor(c, uid, message.itemId).internalBlockedNetwork({
+						sessionId: c.key[1]!,
+						revision: message.revision,
+						network: message.network,
+					});
 				else if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
-				else if (message.to === "tokens") await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt: message.receipt });
+				else if (message.to === "tokens")
+					await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt: message.receipt });
 				else await userActor(c, uid).internalTurnDone({ sessionId: c.key[1] as string, ...message.done });
 				await c.db.execute("DELETE FROM outbox WHERE id = ?", row.id);
 			} catch (error) {
 				const at = Date.now() + Math.min(OUTBOX_RETRY_MOST_MS, OUTBOX_RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
 				await c.db.execute("UPDATE outbox SET attempts = attempts + 1, next_at = ? WHERE id = ?", at, row.id);
-				c.log.warn({ msg: "could not send a message of the outbox; it is sent again", to: message.to, error: String(error) });
+				c.log.warn({
+					msg: "could not send a message of the outbox; it is sent again",
+					to: message.to,
+					error: String(error),
+				});
 			}
 		}
 		// After every drain, an empty one too: the schedule that fired, or the safety one, may be earlier than
@@ -393,20 +548,72 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 }
 
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
-export async function turnChanges(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
+export async function turnChanges(
+	sandbox: SandboxHandle,
+	baseSha: string | null,
+	checks: ReadonlyArray<RepositoryCheck>,
+	verified: Verified | null,
+	owns?: string[],
+) {
 	const work = await readWork(sandbox, baseSha);
 	if (!work) return { flags: [] };
-	const paths = work.files.flatMap(f => f.to ? [f.path, f.to] : [f.path]);
-	return { taskKind: paths.length ? taskKind(paths) : undefined, flags: workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns?.length ? path => ownsPath(owns, path) : undefined) };
+	const paths = work.files.flatMap(f => (f.to ? [f.path, f.to] : [f.path]));
+	return {
+		taskKind: paths.length ? taskKind(paths) : undefined,
+		flags: workFlags(
+			work,
+			[...checks, ...(verified?.run?.checks ?? [])],
+			owns?.length ? path => ownsPath(owns, path) : undefined,
+		),
+	};
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */
-export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null, agent?: AgentTurn, asked?: AgentAsk | null): Extract<Fact, { kind: "turn_ended" }> {
-	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, ...(asked ? { asked } : {}), spend: turnSpend(usage, agent) };
+export function endedFactOf(
+	key: string,
+	at: number,
+	outcome: TurnOutcome,
+	verified: Verified | null,
+	flags: Extract<Fact, { kind: "turn_ended" }>["flags"],
+	changes: boolean,
+	report: Extract<Fact, { kind: "turn_ended" }>["report"],
+	usage: TurnUsage | null,
+	agent?: AgentTurn,
+	asked?: AgentAsk | null,
+): Extract<Fact, { kind: "turn_ended" }> {
+	return {
+		kind: "turn_ended",
+		at,
+		key,
+		outcome,
+		verified,
+		flags,
+		changes,
+		report,
+		...(asked ? { asked } : {}),
+		spend: turnSpend(usage, agent),
+	};
 }
 
 export type EndedFact = Extract<Fact, { kind: "turn_ended" | "review_ended" }>;
 
-export function reviewEndedFactOf(key: string, outcome: TurnOutcome, review: ItemReview | undefined, said: string | null, refused: string | null, usage: TurnUsage | null, agent?: AgentTurn): Extract<Fact, { kind: "review_ended" }> {
-	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: turnSpend(usage, agent) };
+export function reviewEndedFactOf(
+	key: string,
+	outcome: TurnOutcome,
+	review: ItemReview | undefined,
+	said: string | null,
+	refused: string | null,
+	usage: TurnUsage | null,
+	agent?: AgentTurn,
+): Extract<Fact, { kind: "review_ended" }> {
+	return {
+		kind: "review_ended",
+		key,
+		at: Date.now(),
+		outcome,
+		review: review?.id === key ? review : null,
+		said,
+		refused,
+		spend: turnSpend(usage, agent),
+	};
 }

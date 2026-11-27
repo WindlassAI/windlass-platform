@@ -10,5 +10,5 @@ export function docsSource(page: DocsPage): string {
 
 /** Every page with its text, in reading order. */
 export function docsWithSources(): { page: DocsPage; source: string }[] {
-	return DOCS_PAGES.map((page) => ({ page, source: docsSource(page) }));
+	return DOCS_PAGES.map(page => ({ page, source: docsSource(page) }));
 }

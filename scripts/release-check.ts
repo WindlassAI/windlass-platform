@@ -17,7 +17,14 @@ const refs = {
 type Role = keyof typeof refs;
 const roles = Object.keys(refs) as Role[];
 const arches = ["linux/amd64", "linux/arm64"] as const;
-type Entry = { ref: string; index: string; platforms: Record<string, string>; adapter?: string; cli?: string; version?: string };
+type Entry = {
+	ref: string;
+	index: string;
+	platforms: Record<string, string>;
+	adapter?: string;
+	cli?: string;
+	version?: string;
+};
 type Release = { version: string; commit: string; windlass: string; signer: string; images: Record<Role, Entry> };
 const digest = /^sha256:[0-9a-f]{64}$/;
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*))?$/;
@@ -27,10 +34,14 @@ function assert(test: unknown, message: string): asserts test {
 function versionTag(version: string) {
 	const match = semver.exec(version);
 	const leadingZero = match?.[4]?.split(".").some(id => /^0\d+$/.test(id));
-	assert(match && !leadingZero && version.length <= 120, "Use a Docker-tag-compatible semantic version (x.y.z, optionally with a prerelease).");
+	assert(
+		match && !leadingZero && version.length <= 120,
+		"Use a Docker-tag-compatible semantic version (x.y.z, optionally with a prerelease).",
+	);
 	return "runner-v" + version;
 }
-const identity = (version: string) => repository + "/.github/workflows/release-images.yml@refs/tags/" + versionTag(version);
+const identity = (version: string) =>
+	repository + "/.github/workflows/release-images.yml@refs/tags/" + versionTag(version);
 const read = (path: string) => readFileSync(path, "utf8");
 const output = (program: string, args: string[]) => execFileSync(program, args, { encoding: "utf8" }).trim();
 function scan(path: string) {
@@ -43,10 +54,14 @@ function scan(path: string) {
 }
 function bundlePins(path: string): Record<Role, string> {
 	const pins = JSON.parse(output(process.execPath, [path, "image-pins"]));
-	for (const role of Object.keys(pins)) assert(role !== "runner" && Object.hasOwn(refs, role), `Unlisted runner bundle pin: ${role}`);
+	for (const role of Object.keys(pins))
+		assert(role !== "runner" && Object.hasOwn(refs, role), `Unlisted runner bundle pin: ${role}`);
 	for (const role of roles.filter(role => role !== "runner")) {
 		const [ref, sum, extra] = (pins[role] ?? "").split("@");
-		assert(ref === refs[role] && digest.test(sum) && extra === undefined, `Missing or invalid ${role} registry pin in runner bundle`);
+		assert(
+			ref === refs[role] && digest.test(sum) && extra === undefined,
+			`Missing or invalid ${role} registry pin in runner bundle`,
+		);
 	}
 	return pins;
 }
@@ -56,10 +71,17 @@ function validate(release: Release) {
 	for (const role of roles) {
 		const entry = release.images?.[role];
 		assert(entry?.ref === refs[role] && digest.test(entry.index), `Missing or invalid ${role} index`);
-		for (const platform of arches) assert(digest.test(entry.platforms?.[platform]), `Missing ${role} ${platform} manifest`);
+		for (const platform of arches)
+			assert(digest.test(entry.platforms?.[platform]), `Missing ${role} ${platform} manifest`);
 	}
 	assert(Object.keys(release.images).length === roles.length, "Unexpected images in release");
-	for (const [name, value] of [["Claude adapter", release.images.claude.adapter], ["Claude CLI", release.images.claude.cli], ["OpenCode", release.images.opencode.version], ["Codex adapter", release.images.codex.adapter], ["Codex CLI", release.images.codex.cli]]) {
+	for (const [name, value] of [
+		["Claude adapter", release.images.claude.adapter],
+		["Claude CLI", release.images.claude.cli],
+		["OpenCode", release.images.opencode.version],
+		["Codex adapter", release.images.codex.adapter],
+		["Codex CLI", release.images.codex.cli],
+	]) {
 		assert(typeof value === "string" && semver.test(value), `Missing or invalid ${name} version`);
 	}
 }
@@ -72,11 +94,16 @@ export function verifyRelease(release: Release, bundle: string, verify: (ref: st
 	}
 	for (const role of roles) {
 		const pinned = release.images[role].ref + "@" + release.images[role].index;
-		try { verify(pinned, release.signer); }
-		catch (cause) { throw new Error(`Could not verify ${role} index ${pinned}`, { cause }); }
+		try {
+			verify(pinned, release.signer);
+		} catch (cause) {
+			throw new Error(`Could not verify ${role} index ${pinned}`, { cause });
+		}
 	}
 }
-function imagetools(...args: string[]) { return output("docker", ["buildx", "imagetools", ...args]); }
+function imagetools(...args: string[]) {
+	return output("docker", ["buildx", "imagetools", ...args]);
+}
 function createIndexes(version: string, dir: string, names: string[]) {
 	const tag = versionTag(version);
 	const revision = output("git", ["rev-parse", "HEAD"]);
@@ -89,8 +116,17 @@ function createIndexes(version: string, dir: string, names: string[]) {
 			assert(digest.test(sum), `Invalid ${role} ${platform} build digest`);
 			return ref + "@" + sum;
 		});
-		const annotations = { source: repository, licenses: "Apache-2.0", revision, version, description: "Windlass " + role };
-		const args = Object.entries(annotations).flatMap(([key, value]) => ["--annotation", `index:org.opencontainers.image.${key}=${value}`]);
+		const annotations = {
+			source: repository,
+			licenses: "Apache-2.0",
+			revision,
+			version,
+			description: "Windlass " + role,
+		};
+		const args = Object.entries(annotations).flatMap(([key, value]) => [
+			"--annotation",
+			`index:org.opencontainers.image.${key}=${value}`,
+		]);
 		imagetools("create", ...args, "-t", ref + ":" + tag, "-t", ref + ":sha-" + revision.slice(0, 12), ...sources);
 		const descriptor = imagetools("inspect", ref + ":" + tag).match(/^Digest:\s+(sha256:[0-9a-f]{64})$/m);
 		assert(descriptor, "Could not read pushed index digest for " + role);
@@ -107,7 +143,10 @@ function makeRelease(version: string, sums: Record<Role, string>): Release {
 		const platforms: Record<string, string> = {};
 		// BuildKit attestation descriptors are unknown/unknown. Record only runnable manifests.
 		for (const platform of arches) {
-			const matches = raw.manifests.filter((m: {platform?: {os: string; architecture: string}}) => m.platform?.os + "/" + m.platform?.architecture === platform);
+			const matches = raw.manifests.filter(
+				(m: { platform?: { os: string; architecture: string } }) =>
+					m.platform?.os + "/" + m.platform?.architecture === platform,
+			);
 			assert(matches.length === 1 && digest.test(matches[0].digest), `Expected one ${role} manifest for ${platform}`);
 			platforms[platform] = matches[0].digest;
 		}
@@ -118,29 +157,59 @@ function makeRelease(version: string, sums: Record<Role, string>): Release {
 		assert(match, "Missing pinned version in " + file);
 		return match[1]!;
 	};
-	images.claude.adapter = JSON.parse(read("sandbox/harness/claude/package.json")).dependencies["@agentclientprotocol/claude-agent-acp"];
+	images.claude.adapter = JSON.parse(read("sandbox/harness/claude/package.json")).dependencies[
+		"@agentclientprotocol/claude-agent-acp"
+	];
 	images.claude.cli = capture("sandbox/harness/claude/Dockerfile", /--cli --version\)" = '(\d+\.\d+\.\d+) /);
 	const codex = JSON.parse(read("sandbox/harness/codex/package.json")).dependencies;
 	images.codex.adapter = codex["@agentclientprotocol/codex-acp"];
 	images.codex.cli = codex["@openai/codex"];
 	images.opencode.version = capture("sandbox/harness/opencode/Dockerfile", /opencode --version\)" = (\d+\.\d+\.\d+)/);
 	const windlass = capture("sandbox/fetch-windlass.sh", /^RELEASE=(\S+)$/m);
-	const release = { version, commit: output("git", ["rev-parse", "HEAD"]), windlass, signer: identity(version), images };
+	const release = {
+		version,
+		commit: output("git", ["rev-parse", "HEAD"]),
+		windlass,
+		signer: identity(version),
+		images,
+	};
 	validate(release);
 	return release;
 }
 function main([command, arg, ...rest]: string[]) {
 	switch (command) {
-		case "scan": return scan(arg!);
-		case "pins": bundlePins(arg!); return;
-		case "tag": console.log(versionTag(arg!)); return;
-		case "indexes": return createIndexes(arg!, rest[0]!, rest.slice(1));
-		case "manifest": console.log(JSON.stringify(makeRelease(arg!, JSON.parse(process.env.INDEX_DIGESTS!)), null, 2)); return;
-		case "validate": return validate(JSON.parse(read(arg!)));
-		case "verify": return verifyRelease(JSON.parse(read(arg!)), rest[0]!, (ref, signer) => {
-			execFileSync("cosign", ["verify", "--certificate-identity", signer, "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", ref], { stdio: "inherit" });
-		});
-		default: throw new Error("Expected scan, pins, tag, indexes, manifest, validate or verify");
+		case "scan":
+			return scan(arg!);
+		case "pins":
+			bundlePins(arg!);
+			return;
+		case "tag":
+			console.log(versionTag(arg!));
+			return;
+		case "indexes":
+			return createIndexes(arg!, rest[0]!, rest.slice(1));
+		case "manifest":
+			console.log(JSON.stringify(makeRelease(arg!, JSON.parse(process.env.INDEX_DIGESTS!)), null, 2));
+			return;
+		case "validate":
+			return validate(JSON.parse(read(arg!)));
+		case "verify":
+			return verifyRelease(JSON.parse(read(arg!)), rest[0]!, (ref, signer) => {
+				execFileSync(
+					"cosign",
+					[
+						"verify",
+						"--certificate-identity",
+						signer,
+						"--certificate-oidc-issuer",
+						"https://token.actions.githubusercontent.com",
+						ref,
+					],
+					{ stdio: "inherit" },
+				);
+			});
+		default:
+			throw new Error("Expected scan, pins, tag, indexes, manifest, validate or verify");
 	}
 }
 if (resolve(process.argv[1]!) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));

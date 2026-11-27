@@ -9,7 +9,14 @@
  * Each change saves the whole list; a running sandbox gets it at its next turn (from a session's
  * timeline, "Allow for this repository" changes that session's sandbox at once while a turn runs in it).
  */
-import { type GithubId, type NetworkPreset, type NetworkProposal, type NetworkScan, type RepositoryNetwork, WIDE_HOSTS } from "@contract";
+import {
+	type GithubId,
+	type NetworkPreset,
+	type NetworkProposal,
+	type NetworkScan,
+	type RepositoryNetwork,
+	WIDE_HOSTS,
+} from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, plural } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -27,7 +34,7 @@ function appliesHere(network: RepositoryNetwork): string {
 
 /** What allowing any of these hosts reaches besides what was asked for, said where the click is: none for most. */
 export function WideHostNote({ hosts }: { hosts: readonly string[] }) {
-	const said = hosts.flatMap((host) => (WIDE_HOSTS[host] ? [WIDE_HOSTS[host]] : []));
+	const said = hosts.flatMap(host => (WIDE_HOSTS[host] ? [WIDE_HOSTS[host]] : []));
 	if (said.length === 0) return null;
 	return (
 		<p className="server-subject tone-warn">
@@ -37,17 +44,35 @@ export function WideHostNote({ hosts }: { hosts: readonly string[] }) {
 }
 
 /** One host or preset the scan found: what it is, what it reaches when it is a preset, and where the files name it. */
-export function ProposalItem({ proposal, preset, busy, onAllow }: { proposal: NetworkProposal; preset: NetworkPreset | undefined; busy: string | null; onAllow(proposal: NetworkProposal): void }) {
+export function ProposalItem({
+	proposal,
+	preset,
+	busy,
+	onAllow,
+}: {
+	proposal: NetworkProposal;
+	preset: NetworkPreset | undefined;
+	busy: string | null;
+	onAllow(proposal: NetworkProposal): void;
+}) {
 	return (
 		<li className="server">
 			<p className="server-head">
-				<span className="server-name" title={preset?.about}>{proposal.entry}</span>
+				<span className="server-name" title={preset?.about}>
+					{proposal.entry}
+				</span>
 				{proposal.entry.startsWith("@") ? <span className="server-state">{proposal.hosts.join(", ")}</span> : null}
 			</p>
 			<WideHostNote hosts={proposal.hosts} />
 			<p className="server-subject">{proposal.sources.join(" · ")}</p>
 			<p className="server-foot">
-				<button type="button" className="link" onClick={() => onAllow(proposal)} disabled={busy !== null} aria-label={`Allow ${proposal.entry}`}>
+				<button
+					type="button"
+					className="link"
+					onClick={() => onAllow(proposal)}
+					disabled={busy !== null}
+					aria-label={`Allow ${proposal.entry}`}
+				>
 					{busy === `proposal:${proposal.entry}` ? "Allowing…" : "Allow"}
 				</button>
 			</p>
@@ -63,7 +88,17 @@ const ago = (at: number, now: number) => {
 	return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
 };
 
-export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { repositoryId: GithubId; name: string; labelledBy: string; onSaved?(): void }) {
+export function NetworkSection({
+	repositoryId,
+	name,
+	labelledBy,
+	onSaved,
+}: {
+	repositoryId: GithubId;
+	name: string;
+	labelledBy: string;
+	onSaved?(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { host: useId(), hostNote: useId() };
@@ -83,7 +118,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 			.user(auth)
 			.repositoryNetwork(repositoryId)
 			.then(
-				(read) => current && setNetwork(read),
+				read => current && setNetwork(read),
 				(failure: unknown) => current && setLoadError(explain(failure)),
 			);
 		return () => {
@@ -150,18 +185,22 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 	}
 
 	const entries = network.entries;
-	const presetIds = new Set(network.presets.map((preset) => preset.id));
-	const singles = entries.filter((entry) => !presetIds.has(entry));
+	const presetIds = new Set(network.presets.map(preset => preset.id));
+	const singles = entries.filter(entry => !presetIds.has(entry));
 	const always = new Set(network.hosted?.mode === "restricted" ? network.hosted.hosts : []);
 	const has = (entry: string) => entries.includes(entry);
-	const toggle = (id: string, on: boolean) => void save(on ? [...entries, id] : entries.filter((entry) => entry !== id), id);
+	const toggle = (id: string, on: boolean) =>
+		void save(on ? [...entries, id] : entries.filter(entry => entry !== id), id);
 	const add = async () => {
 		const typed = host.trim().toLowerCase().replace(/\.$/, "");
 		if (typed === "") return;
 		if (await save([...entries, typed], "add")) setHost("");
 	};
 	const allowProposal = async (proposal: NetworkProposal) => {
-		if (await save([...entries, proposal.entry], `proposal:${proposal.entry}`)) setScan((current) => (current ? { ...current, proposals: current.proposals.filter((item) => item.entry !== proposal.entry) } : current));
+		if (await save([...entries, proposal.entry], `proposal:${proposal.entry}`))
+			setScan(current =>
+				current ? { ...current, proposals: current.proposals.filter(item => item.entry !== proposal.entry) } : current,
+			);
 	};
 	const now = Date.now();
 
@@ -171,16 +210,23 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 			<div className="repo-form">
 				<fieldset className="repo-network-presets" aria-labelledby={labelledBy}>
 					<legend className="label">Presets</legend>
-					{network.presets.map((preset) => {
+					{network.presets.map(preset => {
 						const on = has(preset.id);
-						const everywhere = preset.hosts.every((presetHost) => always.has(presetHost));
+						const everywhere = preset.hosts.every(presetHost => always.has(presetHost));
 						return (
-							<Check key={preset.id} checked={on || everywhere} disabled={busy !== null || everywhere} onChange={(on) => toggle(preset.id, on)}>
+							<Check
+								key={preset.id}
+								checked={on || everywhere}
+								disabled={busy !== null || everywhere}
+								onChange={on => toggle(preset.id, on)}
+							>
 								<span className="check-name" title={preset.about}>
 									{preset.name} <code className="repo-network-id">{preset.id}</code>
 								</span>
 								<span className="check-means">
-									{everywhere ? "Allowed for every sandbox of this deployment." : (
+									{everywhere ? (
+										"Allowed for every sandbox of this deployment."
+									) : (
 										<>
 											{preset.hosts.map((presetHost, index) => (
 												<span key={presetHost}>
@@ -202,10 +248,21 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 					</label>
 					{singles.length > 0 ? (
 						<ul className="repo-network-hosts" aria-label={`Hosts allowed for ${name}`}>
-							{singles.map((single) => (
+							{singles.map(single => (
 								<li key={single} className="repo-network-host">
 									<code title={WIDE_HOSTS[single]}>{single}</code>
-									<button type="button" className="link" onClick={() => void save(entries.filter((entry) => entry !== single), `remove:${single}`)} disabled={busy !== null} aria-label={`Remove ${single}`}>
+									<button
+										type="button"
+										className="link"
+										onClick={() =>
+											void save(
+												entries.filter(entry => entry !== single),
+												`remove:${single}`,
+											)
+										}
+										disabled={busy !== null}
+										aria-label={`Remove ${single}`}
+									>
 										{busy === `remove:${single}` ? "Removing…" : "Remove"}
 									</button>
 								</li>
@@ -221,8 +278,8 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 							spellCheck={false}
 							autoCapitalize="off"
 							aria-describedby={ids.hostNote}
-							onChange={(event) => setHost(event.target.value)}
-							onKeyDown={(event) => {
+							onChange={event => setHost(event.target.value)}
+							onKeyDown={event => {
 								if (event.key === "Enter") {
 									event.preventDefault();
 									void add();
@@ -230,7 +287,12 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 							}}
 							readOnly={busy !== null}
 						/>
-						<button type="button" className="button button-outline" onClick={() => void add()} disabled={busy !== null || host.trim() === ""}>
+						<button
+							type="button"
+							className="button button-outline"
+							onClick={() => void add()}
+							disabled={busy !== null || host.trim() === ""}
+						>
 							{busy === "add" ? "Adding…" : "Add"}
 						</button>
 					</div>
@@ -248,9 +310,12 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 			{network.requests.length > 0 ? (
 				<>
 					<h3 className="repo-network-subtitle">Asked for by its agents</h3>
-					<p className="usage-note">A command in one of {name}'s sandboxes looked these up and could not reach them. The agent and the repository's scripts choose what a command looks up: allow only a host you expect.</p>
+					<p className="usage-note">
+						A command in one of {name}'s sandboxes looked these up and could not reach them. The agent and the
+						repository's scripts choose what a command looks up: allow only a host you expect.
+					</p>
 					<ul className="servers repo-network-requests" aria-label={`Hosts the agents on ${name} could not reach`}>
-						{network.requests.map((request) => (
+						{network.requests.map(request => (
 							<li key={request.host} className="server">
 								<p className="server-head">
 									<span className="server-name">{request.host}</span>
@@ -262,10 +327,22 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 								</p>
 								<WideHostNote hosts={[request.host]} />
 								<p className="server-foot">
-									<button type="button" className="link" onClick={() => void save([...entries, request.host], `request:${request.host}`)} disabled={busy !== null} aria-label={`Allow ${request.host}`}>
+									<button
+										type="button"
+										className="link"
+										onClick={() => void save([...entries, request.host], `request:${request.host}`)}
+										disabled={busy !== null}
+										aria-label={`Allow ${request.host}`}
+									>
 										{busy === `request:${request.host}` ? "Allowing…" : "Allow"}
 									</button>
-									<button type="button" className="link" onClick={() => void dismiss(request.host)} disabled={busy !== null} aria-label={`Dismiss ${request.host}`}>
+									<button
+										type="button"
+										className="link"
+										onClick={() => void dismiss(request.host)}
+										disabled={busy !== null}
+										aria-label={`Dismiss ${request.host}`}
+									>
 										{busy === `dismiss:${request.host}` ? "Dismissing…" : "Dismiss"}
 									</button>
 								</p>
@@ -276,11 +353,14 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 			) : null}
 
 			<h3 className="repo-network-subtitle">Found in the repository</h3>
-			<p className="usage-note">
-				Find hosts this repository needs. Nothing is allowed until you allow it.
-			</p>
+			<p className="usage-note">Find hosts this repository needs. Nothing is allowed until you allow it.</p>
 			<p className="repo-forget">
-				<button type="button" className="button button-outline button-small" onClick={() => void look()} disabled={scanning}>
+				<button
+					type="button"
+					className="button button-outline button-small"
+					onClick={() => void look()}
+					disabled={scanning}
+				>
 					{scanning ? "Reading the files…" : scan ? "Read them again" : "Look for hosts in the repository"}
 				</button>
 			</p>
@@ -292,18 +372,26 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 			{scan ? (
 				scan.proposals.length === 0 ? (
 					<p className="usage-empty">
-						{plural(scan.files, "file")} read{scan.branch ? ` on ${scan.branch}` : ""}: nothing they name is out of reach.{scan.incomplete ? " Not every file was read, so something may be missing." : ""}
+						{plural(scan.files, "file")} read{scan.branch ? ` on ${scan.branch}` : ""}: nothing they name is out of
+						reach.{scan.incomplete ? " Not every file was read, so something may be missing." : ""}
 					</p>
 				) : (
 					<>
 						<ul className="servers repo-network-proposals" aria-label={`Hosts found in ${name}'s files`}>
-							{scan.proposals.map((proposal) => (
-								<ProposalItem key={proposal.entry} proposal={proposal} preset={network.presets.find((preset) => preset.id === proposal.entry)} busy={busy} onAllow={(chosen) => void allowProposal(chosen)} />
+							{scan.proposals.map(proposal => (
+								<ProposalItem
+									key={proposal.entry}
+									proposal={proposal}
+									preset={network.presets.find(preset => preset.id === proposal.entry)}
+									busy={busy}
+									onAllow={chosen => void allowProposal(chosen)}
+								/>
 							))}
 						</ul>
 						<p className="usage-note">
 							{plural(scan.files, "file")} read{scan.branch ? ` on ${scan.branch}` : ""}
-							{scan.commit ? ` at ${scan.commit.slice(0, 7)}` : ""}.{scan.incomplete ? " Not every file was read, so something may be missing." : ""}
+							{scan.commit ? ` at ${scan.commit.slice(0, 7)}` : ""}.
+							{scan.incomplete ? " Not every file was read, so something may be missing." : ""}
 						</p>
 					</>
 				)

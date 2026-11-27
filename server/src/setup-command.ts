@@ -54,7 +54,9 @@ export function setupProjectKey(repositoryId: unknown): string | null {
  * launched on. Null for a session on a pasted address or with no repository: it has no setup. The
  * session's files have no say in it.
  */
-export function setupProjectOf(session: { repo?: { id: GithubId; owner: string; name: string } | null }): SetupProject | null {
+export function setupProjectOf(session: {
+	repo?: { id: GithubId; owner: string; name: string } | null;
+}): SetupProject | null {
 	const repo = session.repo;
 	if (!repo) return null;
 	const key = setupProjectKey(repo.id);
@@ -76,7 +78,10 @@ export class SetupCommandProblem extends Error {}
 export function cleanSetupCommand(raw: unknown): string {
 	if (typeof raw !== "string") throw new SetupCommandProblem("The setup command must be text.");
 	const command = raw.replace(/\r\n?/g, "\n").trim();
-	if (command.length > MAX_SETUP_COMMAND_CHARS) throw new SetupCommandProblem(`The setup command is ${command.length} characters long; the limit is ${MAX_SETUP_COMMAND_CHARS}. Put a longer one in a script in the repository and run that.`);
+	if (command.length > MAX_SETUP_COMMAND_CHARS)
+		throw new SetupCommandProblem(
+			`The setup command is ${command.length} characters long; the limit is ${MAX_SETUP_COMMAND_CHARS}. Put a longer one in a script in the repository and run that.`,
+		);
 	if (command.includes("\0")) throw new SetupCommandProblem("The setup command holds a character a shell cannot take.");
 	return command;
 }
@@ -145,8 +150,8 @@ function minutes(ms: number): string {
 export function lastLines(output: string, lines = NOTE_LINES, chars = NOTE_CHARS): string {
 	const kept = plainLines(output)
 		.split("\n")
-		.map((line) => line.trimEnd())
-		.filter((line) => line !== "")
+		.map(line => line.trimEnd())
+		.filter(line => line !== "")
 		.slice(-lines)
 		.join("\n");
 	return kept.length > chars ? kept.slice(-chars) : kept;

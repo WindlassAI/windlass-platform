@@ -1,7 +1,20 @@
 /** Actors acquire sandboxes through this interface. Providers own isolation and resource lifetime; turns receive only their scoped credentials. */
 import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
 
-import type { AcpContext, AcpUpdate, EgressMode, HostedSize, HostedSizeOption, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
+import type {
+	AcpContext,
+	AcpUpdate,
+	EgressMode,
+	HostedSize,
+	HostedSizeOption,
+	SessionMode,
+	ModelList,
+	RepositoryCheck,
+	SandboxProfile,
+	SandboxProfileId,
+	TurnUsage,
+	WindlassEvent,
+} from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -49,7 +62,10 @@ export interface RunnerStartTimes {
 /** Start marks in order. Relay duration is available before the process starts. */
 export type StartMark = "relay" | "process" | "initialized" | "prompted" | "output";
 
-export type ProxyBlockedHost = Pick<import("../contract.js").BlockedHost, "host" | "port" | "firstAt" | "lastAt" | "count"> & {
+export type ProxyBlockedHost = Pick<
+	import("../contract.js").BlockedHost,
+	"host" | "port" | "firstAt" | "lastAt" | "count"
+> & {
 	reason: Exclude<import("../contract.js").BlockedHost["reason"], "unlisted">;
 };
 
@@ -83,7 +99,10 @@ export interface SandboxHandle {
 	/** Unreachable hosts in first-lookup order. Apply skip before the limit so old entries cannot hide new ones. */
 	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
 	/** A restricted runner proxy. The first read opens the turn, subsequent reads repeat its cumulative counts. */
-	blockedNetwork?(turn: number, retained: Pick<ProxyBlockedHost, "host" | "port">[]): Promise<{ broker: string; hosts: ProxyBlockedHost[]; overflow: number }>;
+	blockedNetwork?(
+		turn: number,
+		retained: Pick<ProxyBlockedHost, "host" | "port">[],
+	): Promise<{ broker: string; hosts: ProxyBlockedHost[]; overflow: number }>;
 	/** Install a staged Docker mirror from outside the sandbox and remove the stage. Partial mirrors only seed empty slots. */
 	saveMirror?(stage: string, partial: boolean): Promise<boolean>;
 }
@@ -329,7 +348,11 @@ export interface TurnCheckpoint {
 export const PLATFORM_RESTART = Symbol("platform restart");
 
 export interface RunTurnInput {
-	modelKey?: { sessionId: string; key: import("./provider.js").ModelKeyLease; takeRequest?: import("./provider.js").TakeRelayRequest };
+	modelKey?: {
+		sessionId: string;
+		key: import("./provider.js").ModelKeyLease;
+		takeRequest?: import("./provider.js").TakeRelayRequest;
+	};
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;
 	/** Read synchronously to checkpoint. Null until prompted, once stopping, or on providers without durable processes. */
@@ -430,7 +453,9 @@ export interface RunTurnResult {
 	/** Windlass ACP session/prompt stop reason, when the request was answered. */
 	stopReason?: string;
 	acp?: {
-		stopReason: string | null; usage: AcpContext | null; models: ModelList | null;
+		stopReason: string | null;
+		usage: AcpContext | null;
+		models: ModelList | null;
 		/** The turn's tokens from the `session/prompt` answer; null where the agent reported none. */
 		tokens?: TurnUsage | null;
 		/** The Claude 5h window at the turn's first usage update; `usage.fiveHourUsedPct` is its last. */
@@ -591,7 +616,12 @@ export interface SessionBackups {
 	/** Packs Windlass's session data in the sandbox and has the sandbox upload it, replacing the session's earlier copy. Never throws. */
 	save(sandbox: SandboxHandle, owner: BackupOwner): Promise<BackupSaveResult>;
 	/** Verify size, hash and expected Windlass session before restoring. Returns failure as a result. */
-	restore(sandbox: SandboxHandle, owner: BackupOwner, saved: SavedBackup, windlassSessionId: string): Promise<BackupRestoreResult>;
+	restore(
+		sandbox: SandboxHandle,
+		owner: BackupOwner,
+		saved: SavedBackup,
+		windlassSessionId: string,
+	): Promise<BackupRestoreResult>;
 	/** Removes the session's copy. A no-op when there is none. Throws when the store could not be told. */
 	remove(owner: BackupOwner): Promise<void>;
 	/** The name of the session's object in the bucket, for a log. */

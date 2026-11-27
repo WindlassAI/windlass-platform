@@ -9,10 +9,16 @@ import { within } from "../command.js";
 import type { DaytonaSettings } from "./config.js";
 import type { Machine } from "./provider.js";
 
-export type OpenPty = (options: NonNullable<Parameters<Process["createPty"]>[0]>) => Promise<Pick<PtyHandle, "wait" | "sendInput" | "kill" | "disconnect">>;
+export type OpenPty = (
+	options: NonNullable<Parameters<Process["createPty"]>[0]>,
+) => Promise<Pick<PtyHandle, "wait" | "sendInput" | "kill" | "disconnect">>;
 
 export class DaytonaGuest extends HostedGuest {
-	constructor(private readonly vm: Machine, size: HostedSize, settings: DaytonaSettings) {
+	constructor(
+		private readonly vm: Machine,
+		size: HostedSize,
+		settings: DaytonaSettings,
+	) {
 		super(vm.id, vm.labels[META.uid]!, "daytona", "full", settings, vm.labels[META.session]);
 		this.size = size;
 		this.image = vm.snapshot;
@@ -25,7 +31,9 @@ export class DaytonaGuest extends HostedGuest {
 			void this.vm.refreshActivity().catch(() => console.warn(`[wlp] daytona.activity_failed id=${this.id}`));
 		}, this.heartbeatMs);
 		timer.unref();
-		return async () => { clearInterval(timer); };
+		return async () => {
+			clearInterval(timer);
+		};
 	}
 	async holdForTurn() {
 		await this.vm.refreshActivity();
@@ -35,13 +43,18 @@ export class DaytonaGuest extends HostedGuest {
 	protected async startCommand(command: string, options: E2bCommandOptions): Promise<GuestCommand> {
 		if (options.root) throw new Error("Daytona session commands require an unprivileged user");
 		const user = options.gitUser ? "nobody" : "agent";
-		const stdout = new StringDecoder("utf8"), stderr = new StringDecoder("utf8");
-		let buffer = "", ready = false;
+		const stdout = new StringDecoder("utf8"),
+			stderr = new StringDecoder("utf8");
+		let buffer = "",
+			ready = false;
 		let exitCode: number | undefined, failure: Error | undefined;
 		let started!: () => void;
-		const handshake = new Promise<void>(resolve => { started = resolve; });
+		const handshake = new Promise<void>(resolve => {
+			started = resolve;
+		});
 		const pty = await this.vm.process.createPty({
-			id: "wlp-" + randomId(), cwd: "/",
+			id: "wlp-" + randomId(),
+			cwd: "/",
 			onData(chunk) {
 				buffer += Buffer.from(chunk).toString("ascii");
 				let end: number;
@@ -49,7 +62,10 @@ export class DaytonaGuest extends HostedGuest {
 					const line = buffer.slice(0, end);
 					buffer = buffer.slice(end + 1);
 					if (!ready) {
-						if (line === "wlp-ready") { ready = true; started(); }
+						if (line === "wlp-ready") {
+							ready = true;
+							started();
+						}
 						continue;
 					}
 					try {
@@ -58,7 +74,9 @@ export class DaytonaGuest extends HostedGuest {
 						else if (kind === "err") options.onStderr?.(stderr.write(Buffer.from(value, "base64")));
 						else if (kind === "exit" && Number.isInteger(value)) exitCode = value;
 						else throw new Error("Daytona guest process failed: " + kind);
-					} catch (error) { failure = error instanceof Error ? error : new Error("Invalid Daytona guest output"); }
+					} catch (error) {
+						failure = error instanceof Error ? error : new Error("Invalid Daytona guest output");
+					}
 				}
 			},
 		});
@@ -72,8 +90,11 @@ export class DaytonaGuest extends HostedGuest {
 		void done.catch(() => {});
 		const send = (frame: unknown) => pty.sendInput(JSON.stringify(frame) + "\n");
 		try {
-			await pty.sendInput(`exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /usr/bin/sudo -n -H -u ${user} -- /usr/bin/setpriv --no-new-privs /usr/bin/python3 -I /usr/local/lib/wlp-daytona-process.py\n`);
-			if (!await within(Promise.race([handshake, done]), 10_000)) throw new Error("Daytona guest launcher did not answer");
+			await pty.sendInput(
+				`exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /usr/bin/sudo -n -H -u ${user} -- /usr/bin/setpriv --no-new-privs /usr/bin/python3 -I /usr/local/lib/wlp-daytona-process.py\n`,
+			);
+			if (!(await within(Promise.race([handshake, done]), 10_000)))
+				throw new Error("Daytona guest launcher did not answer");
 			await send({ command, cwd: options.cwd, env: options.envs ?? {} });
 			if (!options.stdin) await send(null);
 		} catch (error) {
@@ -82,7 +103,9 @@ export class DaytonaGuest extends HostedGuest {
 		}
 		return {
 			sendStdin: data => send([Buffer.from(data).toString("base64")]),
-			closeStdin: () => send(null), wait: () => done, disconnect: () => pty.disconnect(),
+			closeStdin: () => send(null),
+			wait: () => done,
+			disconnect: () => pty.disconnect(),
 			kill: () => send("kill"),
 		};
 	}
@@ -99,7 +122,10 @@ export class DaytonaGuest extends HostedGuest {
 		return result.stdout;
 	}
 	async writeTextFile(path: string, content: string) {
-		const result = await this.plain(["sh", "-ec", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", path], { stdin: content, timeoutMs: 60_000 });
+		const result = await this.plain(["sh", "-ec", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", path], {
+			stdin: content,
+			timeoutMs: 60_000,
+		});
 		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.stderr.trim()}`);
 	}
 }

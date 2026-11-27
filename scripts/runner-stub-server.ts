@@ -9,30 +9,62 @@ import { connect, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { ServerChannel } from "../server/src/runner/channel.js";
-import { certify, readPlatformKey, signRemoval, machineStatement, platformWelcome, type FrameAuth, type PlatformIdentity } from "../server/src/runner/frame-auth.js";
+import {
+	certify,
+	readPlatformKey,
+	signRemoval,
+	machineStatement,
+	platformWelcome,
+	type FrameAuth,
+	type PlatformIdentity,
+} from "../server/src/runner/frame-auth.js";
 import type { Body } from "../server/src/runner/protocol.js";
 import {
-	CLOCK_TOLERANCE_MS, CONTROL_HEARTBEAT_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH,
-	connectionProof, parseRunnerFrame, parseConnectionRequest, parsePairPoll, parsePairRequest,
-	refuse, secondHello, welcomeCapabilities, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
+	CLOCK_TOLERANCE_MS,
+	CONTROL_HEARTBEAT_MS,
+	RUNNER_CONNECTION_PATH,
+	RUNNER_PAIR_PATH,
+	RUNNER_PAIR_POLL_PATH,
+	connectionProof,
+	parseRunnerFrame,
+	parseConnectionRequest,
+	parsePairPoll,
+	parsePairRequest,
+	refuse,
+	secondHello,
+	welcomeCapabilities,
+	type PairStatus,
+	type PairStarted,
+	type Refusal,
+	type Report,
+	type ServerFrame,
 } from "../server/src/runner/control.js";
 
 export async function until(test: () => boolean | Promise<boolean>, message: string, ms = 45_000) {
 	const deadline = Date.now() + ms;
-	while (!await test()) { if (Date.now() >= deadline) throw new Error(message); await wait(50); }
+	while (!(await test())) {
+		if (Date.now() >= deadline) throw new Error(message);
+		await wait(50);
+	}
 }
 const random = () => randomBytes(32).toString("base64url");
 type WS = import("../server/node_modules/rivetkit/dist/tsup/mod.js").UniversalWebSocket;
 
-
 export async function stub(storage: string, tls?: ServerOptions) {
 	for (const k of Object.keys(process.env)) if (k.startsWith("RIVET")) delete process.env[k];
 	const { engine: port } = await localListeners(0);
-	Object.assign(process.env, { RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(port), RIVET_LOG_LEVEL: "silent", NODE_ENV: "development" });
+	Object.assign(process.env, {
+		RIVETKIT_STORAGE_PATH: storage,
+		RIVET_RUN_ENGINE_PORT: String(port),
+		RIVET_LOG_LEVEL: "silent",
+		NODE_ENV: "development",
+	});
 	const require = createRequire(new URL("../server/package.json", import.meta.url));
 	const { actor, setup } = require("rivetkit") as typeof import("../server/node_modules/rivetkit/dist/tsup/mod.js");
 	const { createClient } = await import("../server/src/client.js");
-	let platformIdentity = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000));
+	let platformIdentity = readPlatformKey(
+		certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000),
+	);
 	const codecs = new WeakMap<WS, FrameAuth>();
 	const send = (ws: WS, frame: ServerFrame) => ws.send(codecs.get(ws)?.seal(frame) ?? JSON.stringify(frame));
 	const uid = "u_" + randomBytes(6).toString("hex");
@@ -40,11 +72,27 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	const sessionId = "s_" + randomBytes(8).toString("hex");
 	const other = sessionId + "_other";
 	let publicKey = "";
-	const signed = (statement: string, signature: string) => verify(null, Buffer.from(statement), publicKey, Buffer.from(signature, "base64url"));
+	const signed = (statement: string, signature: string) =>
+		verify(null, Buffer.from(statement), publicKey, Buffer.from(signature, "base64url"));
 	let live: { ws: WS; epoch: string; heardAt: number } | null = null;
 	const state = {
-		helloSlots: undefined as Report["slots"], report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
-		refusal: null as Refusal | null, httpRefusal: null as "removed" | "unknown" | null, idleMs: 600_000, removed: "", lastErrorKind: "",
+		helloSlots: undefined as Report["slots"],
+		report: null as Report | null,
+		reports: 0,
+		gatewayLifetime: 0,
+		epoch: "",
+		connections: 0,
+		connectionRequests: 0,
+		pairStarts: 0,
+		pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting",
+		startFailures: 0,
+		pollFailures: 0,
+		clockRefusals: 0,
+		refusal: null as Refusal | null,
+		httpRefusal: null as "removed" | "unknown" | null,
+		idleMs: 600_000,
+		removed: "",
+		lastErrorKind: "",
 	};
 	let observeControl: ((text: string) => void) | undefined;
 	const catalogs = new Map<string, import("../server/src/contract.js").HarnessOptions>();
@@ -68,10 +116,24 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	function channel(session: string) {
 		let ch = channels.get(session);
 		if (!ch) {
-			ch = new FixtureChannel({ platform: { identity: platformIdentity, uid, machineId, sessionId: session }, accept(h) {
-				if (h.machineId !== machineId || tickets.get(session) !== h.ticket || h.protocol !== 2 || !signed(machineStatement({ uid, machineId, sessionId: session, challenge: h.ticket, ticket: h.ticket }, h), h.signature)) return false;
-				tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
-			} });
+			ch = new FixtureChannel({
+				platform: { identity: platformIdentity, uid, machineId, sessionId: session },
+				accept(h) {
+					if (
+						h.machineId !== machineId ||
+						tickets.get(session) !== h.ticket ||
+						h.protocol !== 2 ||
+						!signed(
+							machineStatement({ uid, machineId, sessionId: session, challenge: h.ticket, ticket: h.ticket }, h),
+							h.signature,
+						)
+					)
+						return false;
+					tickets.delete(session);
+					joined.set(session, (joined.get(session) ?? 0) + 1);
+					return true;
+				},
+			});
 			channels.set(session, ch);
 		}
 		return ch;
@@ -79,63 +141,108 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	function ticket(session: string) {
 		if (!live) return;
 		const ticket = random();
-		tickets.set(session, ticket); send(live.ws, { kind: "attach", sessionId: session, ticket });
+		tickets.set(session, ticket);
+		send(live.ws, { kind: "attach", sessionId: session, ticket });
 	}
-	const machine = actor({ onWebSocket(_c, ws) {
-		const nonce = random();
-		ws.addEventListener("message", e => {
-			if (typeof e.data === "string") observeControl?.(e.data);
-			const f = parseRunnerFrame(codecs.get(ws)?.open(e.data, 2 * 1024 * 1024) ?? e.data);
-			if (!f) { ws.close(); return; }
-			if (f.kind === "hello") {
-				const context = { uid, machineId, challenge: nonce };
-				if (f.protocol !== 2 || !signed(machineStatement(context, f), f.signature)) { ws.close(); return; }
-				const refused = state.refusal ?? (secondHello(live, f, Date.now()) === "refuse" ? refuse("key-in-use") : null);
-				const greeting = platformWelcome(context, f, { kind: "welcome" as const, idleSuspendMs: state.idleMs, ...welcomeCapabilities(f.runnerVersion), refusal: refused ?? undefined }, platformIdentity);
-				send(ws, greeting.welcome); codecs.set(ws, greeting.auth);
-				if (refused) { ws.close(); return; }
-				live?.ws.close(); live = { ws, epoch: f.epoch, heardAt: Date.now() };
-				state.connections++; state.helloSlots = f.slots; state.epoch = f.epoch;
-				for (const s of wanted) ticket(s);
-			} else if (live?.ws === ws) {
-				live.heardAt = Date.now();
-				if (f.kind === "catalog") catalogs.set(f.id, f.options);
-				if (f.kind === "report") {
-					state.report = { ...f, harnesses: f.harnesses?.map(h => {
-						const options = h.optionsDigest ? catalogs.get(h.id) : h.options;
-						return { ...h, options: options && { ...options, checkedAt: h.optionsCheckedAt ?? options.checkedAt } };
-					}) };
-					state.reports++;
+	const machine = actor({
+		onWebSocket(_c, ws) {
+			const nonce = random();
+			ws.addEventListener("message", e => {
+				if (typeof e.data === "string") observeControl?.(e.data);
+				const f = parseRunnerFrame(codecs.get(ws)?.open(e.data, 2 * 1024 * 1024) ?? e.data);
+				if (!f) {
+					ws.close();
+					return;
 				}
-				if (f.kind === "host" && state.report) state.report.host = f.host ?? undefined;
-				if (f.kind === "removed") state.removed = f.sandbox;
-			}
-		});
-		ws.addEventListener("close", () => { if (live?.ws === ws) live = null; });
-		send(ws, { kind: "challenge", nonce });
-	} });
-	const agentSession = actor({ onWebSocket(c, ws) {
-		const session = c.key[1]!;
-		opened.set(session, (opened.get(session) ?? 0) + 1);
-		channel(session).attach({
-			send(text) {
-				const f = JSON.parse(text);
-				if (holdAcks && f?.kind === "ack") return;
-				ws.send(text);
-			},
-			close: () => ws.close(), onMessage(fn) { ws.addEventListener("message", e => {
-				const frame = typeof e.data === "string" && JSON.parse(e.data);
-				if (frame?.kind === "hello" && session === incompatible) { fn(JSON.stringify({ ...frame, protocol: 0 })); return; }
-				if (frame?.kind === "msg" && frame.body.kind === "res" && !frame.body.ok) state.lastErrorKind = frame.body.error.kind;
-				fn(e.data);
-			}); }, onClose(fn) { ws.addEventListener("close", () => {
-				fn();
-				if (wanted.has(session) && !channel(session).connected && !tickets.has(session)) ticket(session);
-			}); },
-		});
-	} });
+				if (f.kind === "hello") {
+					const context = { uid, machineId, challenge: nonce };
+					if (f.protocol !== 2 || !signed(machineStatement(context, f), f.signature)) {
+						ws.close();
+						return;
+					}
+					const refused =
+						state.refusal ?? (secondHello(live, f, Date.now()) === "refuse" ? refuse("key-in-use") : null);
+					const greeting = platformWelcome(
+						context,
+						f,
+						{
+							kind: "welcome" as const,
+							idleSuspendMs: state.idleMs,
+							...welcomeCapabilities(f.runnerVersion),
+							refusal: refused ?? undefined,
+						},
+						platformIdentity,
+					);
+					send(ws, greeting.welcome);
+					codecs.set(ws, greeting.auth);
+					if (refused) {
+						ws.close();
+						return;
+					}
+					live?.ws.close();
+					live = { ws, epoch: f.epoch, heardAt: Date.now() };
+					state.connections++;
+					state.helloSlots = f.slots;
+					state.epoch = f.epoch;
+					for (const s of wanted) ticket(s);
+				} else if (live?.ws === ws) {
+					live.heardAt = Date.now();
+					if (f.kind === "catalog") catalogs.set(f.id, f.options);
+					if (f.kind === "report") {
+						state.report = {
+							...f,
+							harnesses: f.harnesses?.map(h => {
+								const options = h.optionsDigest ? catalogs.get(h.id) : h.options;
+								return { ...h, options: options && { ...options, checkedAt: h.optionsCheckedAt ?? options.checkedAt } };
+							}),
+						};
+						state.reports++;
+					}
+					if (f.kind === "host" && state.report) state.report.host = f.host ?? undefined;
+					if (f.kind === "removed") state.removed = f.sandbox;
+				}
+			});
+			ws.addEventListener("close", () => {
+				if (live?.ws === ws) live = null;
+			});
+			send(ws, { kind: "challenge", nonce });
+		},
+	});
+	const agentSession = actor({
+		onWebSocket(c, ws) {
+			const session = c.key[1]!;
+			opened.set(session, (opened.get(session) ?? 0) + 1);
+			channel(session).attach({
+				send(text) {
+					const f = JSON.parse(text);
+					if (holdAcks && f?.kind === "ack") return;
+					ws.send(text);
+				},
+				close: () => ws.close(),
+				onMessage(fn) {
+					ws.addEventListener("message", e => {
+						const frame = typeof e.data === "string" && JSON.parse(e.data);
+						if (frame?.kind === "hello" && session === incompatible) {
+							fn(JSON.stringify({ ...frame, protocol: 0 }));
+							return;
+						}
+						if (frame?.kind === "msg" && frame.body.kind === "res" && !frame.body.ok)
+							state.lastErrorKind = frame.body.error.kind;
+						fn(e.data);
+					});
+				},
+				onClose(fn) {
+					ws.addEventListener("close", () => {
+						fn();
+						if (wanted.has(session) && !channel(session).connected && !tickets.has(session)) ticket(session);
+					});
+				},
+			});
+		},
+	});
 	const registry = setup({ use: { machine, agentSession }, startServices: false, maxIncomingMessageSize: 256 * 1024 });
-	registry.start(); await registry.startAndWait();
+	registry.start();
+	await registry.startAndWait();
 	const endpoint = "http://127.0.0.1:" + port;
 	const client = createClient<typeof registry>({ endpoint, namespace: "default" });
 	await client.machine.getOrCreate([uid, machineId]).resolve();
@@ -143,11 +250,14 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	const pipes = new Set<Duplex>();
 	let credential: { token: string; expiresAt: number; validForMs: number } | null = null;
 	let offline: "all" | "gateway" | undefined;
-	const server = (handler?: RequestListener) => tls ? https(tls, handler) : http(handler);
+	const server = (handler?: RequestListener) => (tls ? https(tls, handler) : http(handler));
 	const origin = tls ? "https://127.0.0.1:" : "http://127.0.0.1:";
 	const proxy = server();
 	proxy.on("upgrade", (req, incoming, head) => {
-		if (offline) { incoming.destroy(); return; }
+		if (offline) {
+			incoming.destroy();
+			return;
+		}
 		const url = new URL(req.url!, "http://localhost");
 		if (credential) {
 			if (url.searchParams.get("rvt-token") !== credential.token || Date.now() >= credential.expiresAt) {
@@ -160,9 +270,16 @@ export async function stub(storage: string, tls?: ServerOptions) {
 		const headers = Object.entries(req.headers).map(([k, v]) => k + ": " + v);
 		outgoing.write([`GET ${url.pathname}${url.search} HTTP/1.1`, ...headers, "", ""].join("\r\n"));
 		if (head.length) outgoing.write(head);
-		const close = () => { incoming.destroy(); outgoing.destroy(); pipes.delete(incoming); };
-		pipes.add(incoming); incoming.on("error", close); outgoing.on("error", close);
-		incoming.on("close", close); outgoing.on("close", close);
+		const close = () => {
+			incoming.destroy();
+			outgoing.destroy();
+			pipes.delete(incoming);
+		};
+		pipes.add(incoming);
+		incoming.on("error", close);
+		outgoing.on("error", close);
+		incoming.on("close", close);
+		outgoing.on("close", close);
 		incoming.pipe(outgoing).pipe(incoming);
 	});
 	await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
@@ -170,16 +287,24 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	let started: PairStarted | undefined;
 	let pendingKey = "";
 	const api = server(async (req, res) => {
-		const answer = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+		const answer = (status: number, body: unknown) => {
+			res.writeHead(status, { "content-type": "application/json" });
+			res.end(JSON.stringify(body));
+		};
 		try {
-			const chunks = []; for await (const chunk of req) chunks.push(chunk);
+			const chunks = [];
+			for await (const chunk of req) chunks.push(chunk);
 			const b: unknown = JSON.parse(Buffer.concat(chunks).toString());
 			if (req.method !== "POST") return answer(405, {});
 			if (req.url === RUNNER_PAIR_PATH) {
 				state.pairStarts++;
-				if (state.startFailures > 0) { state.startFailures--; return answer(503, {}); }
+				if (state.startFailures > 0) {
+					state.startFailures--;
+					return answer(503, {});
+				}
 				if (state.pairingMode === "refused") return answer(429, {});
-				const p = parsePairRequest(b); if (!p) return answer(400, {});
+				const p = parsePairRequest(b);
+				if (!p) return answer(400, {});
 				pendingKey = p.publicKey;
 				const digits = randomBytes(4).toString("hex").toUpperCase();
 				started = { pairing: random(), pollSecret: random(), code: digits.slice(0, 4) + "-" + digits.slice(4) };
@@ -191,47 +316,121 @@ export async function stub(storage: string, tls?: ServerOptions) {
 				if (!state.pollFailures++) return answer(503, {});
 				if (state.pairingMode !== "approve") return answer(200, { state: state.pairingMode });
 				publicKey = pendingKey;
-				return answer(200, { state: "approved", uid, machineId, githubLogin: "runner-check", platformRoot: platformIdentity.root, endpoint: advertised } satisfies PairStatus);
+				return answer(200, {
+					state: "approved",
+					uid,
+					machineId,
+					githubLogin: "runner-check",
+					platformRoot: platformIdentity.root,
+					endpoint: advertised,
+				} satisfies PairStatus);
 			}
 			if (req.url === RUNNER_CONNECTION_PATH) {
 				state.connectionRequests++;
 				const p = parseConnectionRequest(b);
-				if (!p || p.uid !== uid || p.machineId !== machineId || !signed(connectionProof(uid, machineId, p.time, p.nonce), p.signature)) return answer(403, { reason: "unknown" });
+				if (
+					!p ||
+					p.uid !== uid ||
+					p.machineId !== machineId ||
+					!signed(connectionProof(uid, machineId, p.time, p.nonce), p.signature)
+				)
+					return answer(403, { reason: "unknown" });
 				const now = Date.now() + 30 * 60_000;
-				if (Math.abs(now - p.time) > CLOCK_TOLERANCE_MS) { state.clockRefusals++; return answer(403, { reason: "clock", serverTime: now }); }
+				if (Math.abs(now - p.time) > CLOCK_TOLERANCE_MS) {
+					state.clockRefusals++;
+					return answer(403, { reason: "clock", serverTime: now });
+				}
 				if (state.httpRefusal === "unknown") return answer(403, { reason: "unknown" });
-				if (state.httpRefusal === "removed" && p.nonce) return answer(410, signRemoval(uid, machineId, p.nonce, false, platformIdentity));
+				if (state.httpRefusal === "removed" && p.nonce)
+					return answer(410, signRemoval(uid, machineId, p.nonce, false, platformIdentity));
 				if (offline === "all") return answer(503, {});
-				credential = state.gatewayLifetime ? { token: random(), expiresAt: Date.now() + state.gatewayLifetime, validForMs: state.gatewayLifetime } : null;
-				return answer(200, { endpoint: advertised, endpointChange: platformIdentity.endpointChange, namespace: "default", token: credential });
+				credential = state.gatewayLifetime
+					? { token: random(), expiresAt: Date.now() + state.gatewayLifetime, validForMs: state.gatewayLifetime }
+					: null;
+				return answer(200, {
+					endpoint: advertised,
+					endpointChange: platformIdentity.endpointChange,
+					namespace: "default",
+					token: credential,
+				});
 			}
 			answer(404, {});
-		} catch { answer(400, {}); }
+		} catch {
+			answer(400, {});
+		}
 	});
 	await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
-	const heartbeat = setInterval(() => { if (live) send(live.ws, { kind: "heartbeat" }); }, CONTROL_HEARTBEAT_MS);
-	return { state, uid, machineId, sessionId, other, advertised, setIdentity(value: PlatformIdentity) { platformIdentity = value; }, platform: origin + (api.address() as AddressInfo).port,
+	const heartbeat = setInterval(() => {
+		if (live) send(live.ws, { kind: "heartbeat" });
+	}, CONTROL_HEARTBEAT_MS);
+	return {
+		state,
+		uid,
+		machineId,
+		sessionId,
+		other,
+		advertised,
+		setIdentity(value: PlatformIdentity) {
+			platformIdentity = value;
+		},
+		platform: origin + (api.address() as AddressInfo).port,
 		unsignedCreate() {
 			if (!live) throw Error("Fixture socket is closed");
 			live.ws.send(JSON.stringify({ kind: "op", name: "create", id: "fixture", args: { profile: "docker-hardened" } }));
 		},
-		observeControl(fn: (text: string) => void) { observeControl = fn; },
-		channel, ticket, opened, incompatible(s?: string) { incompatible = s; }, online: () => !!live, send: (f: ServerFrame) => { if (!live) throw new Error("Control is offline"); send(live.ws, f); },
+		observeControl(fn: (text: string) => void) {
+			observeControl = fn;
+		},
+		channel,
+		ticket,
+		opened,
+		incompatible(s?: string) {
+			incompatible = s;
+		},
+		online: () => !!live,
+		send: (f: ServerFrame) => {
+			if (!live) throw new Error("Control is offline");
+			send(live.ws, f);
+		},
 		async attach(s = sessionId) {
 			await client.agentSession.getOrCreate([uid, s]).resolve();
 			const prior = joined.get(s) ?? 0;
-			wanted.add(s); ticket(s);
+			wanted.add(s);
+			ticket(s);
 			await until(() => (joined.get(s) ?? 0) > prior && channel(s).connected, "The session did not attach.");
 		},
-		detach(s = sessionId) { wanted.delete(s); channel(s).detach(); },
-		reset(s = sessionId) { wanted.delete(s); channel(s).close(); channels.delete(s); },
-		cut(link: "all" | "gateway" = "all") { offline = link; for (const p of pipes) p.destroy(); },
-		restore() { offline = undefined; },
-		acks(enabled: boolean) { holdAcks = !enabled; }, unknownOperation() { corrupt = true; },
+		detach(s = sessionId) {
+			wanted.delete(s);
+			channel(s).detach();
+		},
+		reset(s = sessionId) {
+			wanted.delete(s);
+			channel(s).close();
+			channels.delete(s);
+		},
+		cut(link: "all" | "gateway" = "all") {
+			offline = link;
+			for (const p of pipes) p.destroy();
+		},
+		restore() {
+			offline = undefined;
+		},
+		acks(enabled: boolean) {
+			holdAcks = !enabled;
+		},
+		unknownOperation() {
+			corrupt = true;
+		},
 		async close() {
-			clearInterval(heartbeat); wanted.clear(); for (const ch of channels.values()) ch.close();
-			live?.ws.close(); for (const p of pipes) p.destroy();
-			api.closeAllConnections(); api.close(); proxy.close(); await registry.shutdown();
+			clearInterval(heartbeat);
+			wanted.clear();
+			for (const ch of channels.values()) ch.close();
+			live?.ws.close();
+			for (const p of pipes) p.destroy();
+			api.closeAllConnections();
+			api.close();
+			proxy.close();
+			await registry.shutdown();
 		},
 	};
 }

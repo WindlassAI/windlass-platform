@@ -14,7 +14,13 @@ export async function requestPair(platform?: string, name?: string) {
 		const client = connect(path, () => client.end(name === undefined ? address : address + "\n" + name));
 		client.on("data", chunk => process.stdout.write(chunk));
 		client.on("end", resolve);
-		client.on("error", () => reject(new RunnerError("A runner command is already using the state volume. Wait for it to finish before pairing again.")));
+		client.on("error", () =>
+			reject(
+				new RunnerError(
+					"A runner command is already using the state volume. Wait for it to finish before pairing again.",
+				),
+			),
+		);
 	});
 }
 // The owner changed the volume. Only a fixed notification crosses this local socket;
@@ -29,7 +35,11 @@ export async function requestLoginReport(signedIn: boolean) {
 	});
 }
 
-export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?: (signedIn: boolean) => Promise<void>): Promise<{ client: Socket; platform?: string; name?: string } | undefined> {
+export function waitForPair(
+	signal: AbortSignal,
+	ready: () => void,
+	reportLogin?: (signedIn: boolean) => Promise<void>,
+): Promise<{ client: Socket; platform?: string; name?: string } | undefined> {
 	if (signal.aborted) return Promise.resolve(undefined);
 	rmSync(path, { force: true }); // Only the state lock holder may replace a stale socket.
 	return new Promise((resolve, reject) => {
@@ -37,27 +47,46 @@ export function waitForPair(signal: AbortSignal, ready: () => void, reportLogin?
 		const listener = createServer({ allowHalfOpen: true }, client => {
 			let address = "";
 			client.setEncoding("utf8");
-			client.on("data", chunk => { address += chunk; if (address.length > 2113) client.destroy(); });
+			client.on("data", chunk => {
+				address += chunk;
+				if (address.length > 2113) client.destroy();
+			});
 			client.on("error", () => client.destroy());
 			client.on("end", () => {
 				if (address === "report-login" || address === "report-logout") {
-					if (reportLogin) void reportLogin(address === "report-login").catch(() => {}).finally(() => client.end());
+					if (reportLogin)
+						void reportLogin(address === "report-login")
+							.catch(() => {})
+							.finally(() => client.end());
 					else client.end();
 					return;
 				}
-				if (accepted || signal.aborted) { client.end(); return; }
+				if (accepted || signal.aborted) {
+					client.end();
+					return;
+				}
 				let platform: string | undefined;
 				const [url, name, ...extra] = address.split("\n");
-				if (extra.length || (name !== undefined && !validMachineName(name))) { client.end("Invalid machine name.\n"); return; }
-				try { if (url) platform = origin(url); }
-				catch { client.end("Give a platform HTTPS origin.\n"); return; }
+				if (extra.length || (name !== undefined && !validMachineName(name))) {
+					client.end("Invalid machine name.\n");
+					return;
+				}
+				try {
+					if (url) platform = origin(url);
+				} catch {
+					client.end("Give a platform HTTPS origin.\n");
+					return;
+				}
 				accepted = true;
 				signal.removeEventListener("abort", stop);
 				listener.close();
 				resolve({ client, platform, name });
 			});
 		});
-		const stop = () => { listener.close(); resolve(undefined); };
+		const stop = () => {
+			listener.close();
+			resolve(undefined);
+		};
 		listener.once("error", reject);
 		listener.listen(path, () => {
 			if (signal.aborted) return stop();

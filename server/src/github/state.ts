@@ -47,7 +47,11 @@ export interface StatePayload {
 /** What GitHub confirmed about the user who authorized: who they are, and the installations they can reach. */
 export interface ConfirmedConnection {
 	user: { id: GithubId; login: string };
-	installations: Array<{ id: GithubId; account: { id: GithubId; login: string; type: "User" | "Organization" }; htmlUrl: string }>;
+	installations: Array<{
+		id: GithubId;
+		account: { id: GithubId; login: string; type: "User" | "Organization" };
+		htmlUrl: string;
+	}>;
 }
 
 export interface TicketPayload extends ConfirmedConnection {
@@ -64,10 +68,13 @@ function encode(payload: StatePayload | TicketPayload): string {
 }
 
 function decode(token: unknown, now: number): Record<string, unknown> | null {
-	const fields = readSignedPayload(token, PREFIX, 8192, kind => kind === "state" ? "github-state" : kind === "ticket" ? "github-ticket" : null);
+	const fields = readSignedPayload(token, PREFIX, 8192, kind =>
+		kind === "state" ? "github-state" : kind === "ticket" ? "github-ticket" : null,
+	);
 	if (!fields) return null;
 	if (typeof fields.exp !== "number" || fields.exp <= now) return null;
-	if (typeof fields.uid !== "string" || fields.uid === "" || typeof fields.nonce !== "string" || fields.nonce === "") return null;
+	if (typeof fields.uid !== "string" || fields.uid === "" || typeof fields.nonce !== "string" || fields.nonce === "")
+		return null;
 	return fields;
 }
 
@@ -87,7 +94,15 @@ export function verifyState(token: unknown, now = Date.now()): StatePayload | nu
 }
 
 export function issueTicket(uid: string, confirmed: ConfirmedConnection, now = Date.now(), readAt = now): string {
-	return encode({ k: "ticket", uid, nonce: newNonce(), exp: now + TICKET_TTL_MS, readAt, user: confirmed.user, installations: confirmed.installations });
+	return encode({
+		k: "ticket",
+		uid,
+		nonce: newNonce(),
+		exp: now + TICKET_TTL_MS,
+		readAt,
+		user: confirmed.user,
+		installations: confirmed.installations,
+	});
 }
 
 /** The ticket's payload, or null when it is malformed, forged or expired. Whose it is, the caller checks. */
@@ -95,7 +110,15 @@ export function verifyTicket(token: unknown, now = Date.now()): TicketPayload | 
 	const fields = decode(token, now);
 	if (!fields || fields.k !== "ticket") return null;
 	const user = fields.user as { id?: unknown; login?: unknown } | undefined;
-	if (typeof user !== "object" || user === null || !isGithubId(user.id) || typeof user.login !== "string" || !Array.isArray(fields.installations) || typeof fields.readAt !== "number") return null;
+	if (
+		typeof user !== "object" ||
+		user === null ||
+		!isGithubId(user.id) ||
+		typeof user.login !== "string" ||
+		!Array.isArray(fields.installations) ||
+		typeof fields.readAt !== "number"
+	)
+		return null;
 	return fields as unknown as TicketPayload;
 }
 

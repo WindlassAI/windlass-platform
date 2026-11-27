@@ -18,8 +18,8 @@ export interface Identity {
 
 export function whoIs(profile: UserProfile, linked: LinkedLogin[] | null): Identity {
 	if (profile.demo) return { name: "Demo user", detail: null, avatar: null, initial: "D" };
-	const github = linked?.find((login) => login.provider === "github");
-	const google = linked?.find((login) => login.provider === "google");
+	const github = linked?.find(login => login.provider === "github");
+	const google = linked?.find(login => login.provider === "google");
 	const login = github?.display ?? null;
 	const email = profile.email ?? google?.display ?? null;
 	const name = github?.name ?? google?.name ?? login ?? email;
@@ -46,7 +46,7 @@ export function useIdentity(): Identity {
 			.user(auth)
 			.linkedLogins()
 			.then(
-				(found) => {
+				found => {
 					cache = { token: auth.token, linked: found };
 					if (live) setLinked(found);
 				},

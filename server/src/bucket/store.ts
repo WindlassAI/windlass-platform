@@ -22,8 +22,16 @@ export interface SignedLink {
 	expiresAt: number;
 }
 
-export interface PutOptions { size: number; ttlMs: number; contentType?: string }
-export interface GetOptions { ttlMs: number; contentType?: string; disposition?: "inline" }
+export interface PutOptions {
+	size: number;
+	ttlMs: number;
+	contentType?: string;
+}
+export interface GetOptions {
+	ttlMs: number;
+	contentType?: string;
+	disposition?: "inline";
+}
 
 export interface ObjectStore {
 	/**
@@ -61,6 +69,12 @@ export class ObjectStoreError extends Error {
 const KEY = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
 
 export function checkKey(key: string): string {
-	if (typeof key !== "string" || key.length > 512 || !KEY.test(key) || key.split("/").some((segment) => segment === "." || segment === "..")) throw new ObjectStoreError("invalid object key");
+	if (
+		typeof key !== "string" ||
+		key.length > 512 ||
+		!KEY.test(key) ||
+		key.split("/").some(segment => segment === "." || segment === "..")
+	)
+		throw new ObjectStoreError("invalid object key");
 	return key;
 }

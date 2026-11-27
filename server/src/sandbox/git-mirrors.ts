@@ -92,26 +92,48 @@ const mountOf = (volume: string, slot: string, uid: string, repo: string) =>
 async function platformStore(volume: string, create: boolean): Promise<boolean> {
 	const label = LABEL + ".git-mirrors";
 	if (create) {
-		const created = await docker(["volume", "create", "--driver", "local", "--label", LABEL_ARG, "--label", label + "=1", volume], { timeoutMs: 5000 });
+		const created = await docker(
+			["volume", "create", "--driver", "local", "--label", LABEL_ARG, "--label", label + "=1", volume],
+			{ timeoutMs: 5000 },
+		);
 		if (created.code !== 0) return false;
 	}
 	const info = await docker(["volume", "inspect", volume], { timeoutMs: 5000 });
 	if (info.code !== 0) return false;
 	const [store] = JSON.parse(info.stdout);
-	return store?.Driver === "local" && !Object.keys(store.Options ?? {}).length && store.Labels?.[label] === "1" && store.Labels?.[LABEL] === "1";
+	return (
+		store?.Driver === "local" &&
+		!Object.keys(store.Options ?? {}).length &&
+		store.Labels?.[label] === "1" &&
+		store.Labels?.[LABEL] === "1"
+	);
 }
 
-type Mount = { Type?: string; Source?: string; Target?: string; ReadOnly?: boolean; VolumeOptions?: { Subpath?: string } };
+type Mount = {
+	Type?: string;
+	Source?: string;
+	Target?: string;
+	ReadOnly?: boolean;
+	VolumeOptions?: { Subpath?: string };
+};
 const slotOf = (mounts: Mount[] | null | undefined, volume: string) =>
-	mounts?.find(m => m.Type === "volume" && m.Source === volume && SLOT.test(m.VolumeOptions?.Subpath ?? ""))?.VolumeOptions?.Subpath;
+	mounts?.find(m => m.Type === "volume" && m.Source === volume && SLOT.test(m.VolumeOptions?.Subpath ?? ""))
+		?.VolumeOptions?.Subpath;
 
 /**
  * What `docker container inspect --format '{{json .HostConfig.Mounts}}' <ids>` says of the slots
  * those containers name. A container removed since it was listed names none: Docker prints the
  * others and an error for it. Null for any other failure.
  */
-export function slotsInInspect(info: { code: number | null; stdout: string; stderr: string }, volume: string): Set<string> | null {
-	const gone = info.stderr.split("\n").map(line => line.trim()).filter(Boolean).every(line => /No such container/i.test(line));
+export function slotsInInspect(
+	info: { code: number | null; stdout: string; stderr: string },
+	volume: string,
+): Set<string> | null {
+	const gone = info.stderr
+		.split("\n")
+		.map(line => line.trim())
+		.filter(Boolean)
+		.every(line => /No such container/i.test(line));
 	if (info.code !== 0 && !gone) return null;
 	const slots = new Set<string>();
 	for (const line of info.stdout.split("\n")) {
@@ -133,11 +155,31 @@ const HELPER = /^wlp-git-(?:allocate|save)-/;
  */
 export async function referencedSlots(volume = MIRROR_VOLUME): Promise<Set<string> | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
-		const ids = await docker(["ps", "-a", "--no-trunc", "--filter", "volume=" + volume, "--filter", "label=" + LABEL, "--format", "{{.ID}} {{.Names}}"], { timeoutMs: 10_000 });
+		const ids = await docker(
+			[
+				"ps",
+				"-a",
+				"--no-trunc",
+				"--filter",
+				"volume=" + volume,
+				"--filter",
+				"label=" + LABEL,
+				"--format",
+				"{{.ID}} {{.Names}}",
+			],
+			{ timeoutMs: 10_000 },
+		);
 		if (ids.code !== 0) return null;
-		const list = ids.stdout.split("\n").map(line => line.trim().split(" ")).filter(([id, name]) => id && !HELPER.test(name ?? "")).map(([id]) => id!);
+		const list = ids.stdout
+			.split("\n")
+			.map(line => line.trim().split(" "))
+			.filter(([id, name]) => id && !HELPER.test(name ?? ""))
+			.map(([id]) => id!);
 		if (!list.length) return new Set();
-		const slots = slotsInInspect(await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", ...list], { timeoutMs: 10_000 }), volume);
+		const slots = slotsInInspect(
+			await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", ...list], { timeoutMs: 10_000 }),
+			volume,
+		);
 		if (slots) return slots;
 	}
 	return null;
@@ -145,10 +187,40 @@ export async function referencedSlots(volume = MIRROR_VOLUME): Promise<Set<strin
 
 async function runAllocator(image: string, volume: string, args: string[]) {
 	const helper = "wlp-git-allocate-" + randomId(6);
-	const result = await docker(["run", "--rm", "--pull", "never", "--name", helper, ...NO_LOGS, "--network", "none",
-		"--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges",
-		"--mount", `type=volume,src=${volume},dst=/store,volume-nocopy`, "--entrypoint", "/usr/bin/python3", image,
-		"-I", "-S", "-c", allocate, ...args], { timeoutMs: 15_000 });
+	const result = await docker(
+		[
+			"run",
+			"--rm",
+			"--pull",
+			"never",
+			"--name",
+			helper,
+			...NO_LOGS,
+			"--network",
+			"none",
+			"--user",
+			"0:0",
+			"--cap-drop",
+			"ALL",
+			"--cap-add",
+			"CHOWN",
+			"--cap-add",
+			"DAC_OVERRIDE",
+			"--security-opt",
+			"no-new-privileges",
+			"--mount",
+			`type=volume,src=${volume},dst=/store,volume-nocopy`,
+			"--entrypoint",
+			"/usr/bin/python3",
+			image,
+			"-I",
+			"-S",
+			"-c",
+			allocate,
+			...args,
+		],
+		{ timeoutMs: 15_000 },
+	);
 	if (result.timedOut) await docker(["rm", "-f", helper], { timeoutMs: 5000 });
 	return result.code === 0;
 }
@@ -163,15 +235,29 @@ export interface MirrorStore {
 }
 
 /** `image` runs the allocator: the pinned base sandbox image. */
-export async function gitMirrorMount(image: string, deployment: string, machine: string, uid: string, repo: string,
-	{ volume = MIRROR_VOLUME, slots = SLOTS, floor = snapshotLimits.free, graceSeconds = 120 }: MirrorStore = {}): Promise<string | null> {
+export async function gitMirrorMount(
+	image: string,
+	deployment: string,
+	machine: string,
+	uid: string,
+	repo: string,
+	{ volume = MIRROR_VOLUME, slots = SLOTS, floor = snapshotLimits.free, graceSeconds = 120 }: MirrorStore = {},
+): Promise<string | null> {
 	if (!deployment || !/^[1-9]\d{0,19}$/.test(repo)) return null;
-	if (!await platformStore(volume, true)) return null;
+	if (!(await platformStore(volume, true))) return null;
 	const slot = mirrorSlot(deployment, machine, uid, repo);
 	const referenced = await referencedSlots(volume);
 	// A named slot cannot be evicted, so it exists. The clone refreshes its recency.
 	if (referenced?.has(slot)) return mountOf(volume, slot, uid, repo);
-	const admitted = await runAllocator(image, volume, ["admit", slot, String(slots), String(floor), String(graceSeconds), referenced ? "1" : "0", ...(referenced ?? [])]);
+	const admitted = await runAllocator(image, volume, [
+		"admit",
+		slot,
+		String(slots),
+		String(floor),
+		String(graceSeconds),
+		referenced ? "1" : "0",
+		...(referenced ?? []),
+	]);
 	return admitted ? mountOf(volume, slot, uid, repo) : null;
 }
 
@@ -180,14 +266,28 @@ export async function gitMirrorMount(image: string, deployment: string, machine:
  * `image` is the pinned base sandbox image, never the container's own (a snapshot is a commit taken
  * after the session's setup ran).
  */
-export async function restoreGitMirror(container: string, image: string, { volume = MIRROR_VOLUME, slots = SLOTS, graceSeconds = 120 }: MirrorStore = {}): Promise<boolean> {
-	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
+export async function restoreGitMirror(
+	container: string,
+	image: string,
+	{ volume = MIRROR_VOLUME, slots = SLOTS, graceSeconds = 120 }: MirrorStore = {},
+): Promise<boolean> {
+	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], {
+		timeoutMs: 10_000,
+	});
 	if (info.code !== 0) return false;
 	const slot = slotOf(JSON.parse(info.stdout.trim() || "null"), volume);
 	if (!slot) return false;
-	if (!await platformStore(volume, false)) return false;
+	if (!(await platformStore(volume, false))) return false;
 	const referenced = await referencedSlots(volume);
-	return runAllocator(image, volume, ["restore", slot, String(slots), "0", String(graceSeconds), referenced ? "1" : "0", ...(referenced ?? [])]);
+	return runAllocator(image, volume, [
+		"restore",
+		slot,
+		String(slots),
+		"0",
+		String(graceSeconds),
+		referenced ? "1" : "0",
+		...(referenced ?? []),
+	]);
 }
 
 /** Where a clone stages a mirror for the helper: in the session's /tmp, private to the transport uid. */
@@ -323,7 +423,15 @@ const HELPER_SECONDS = SAVE_TIMEOUT_MS / 1000 - 60;
 const MAX_WAITING = 4;
 
 type Target = { volume: string; slot: string };
-type Save = Target & { container: string; path: string; partial: boolean; image: string; floor: number; order: number; done?: Promise<boolean> };
+type Save = Target & {
+	container: string;
+	path: string;
+	partial: boolean;
+	image: string;
+	floor: number;
+	order: number;
+	done?: Promise<boolean>;
+};
 
 // Saves run one at a time per server or runner process. A save waiting to start stands for its
 // slot: a later stage for that slot takes its place (its refs are newer) and the older stage is
@@ -346,11 +454,20 @@ export async function mirrorSavesSettled(): Promise<void> {
  * never the session's own (a snapshot is a commit taken after the session's setup ran). True when
  * the slot holds the stage, or a later one that took its place.
  */
-export function saveSessionMirror(container: string, stage: string, partial: boolean, { image, floor = snapshotLimits.free }: { image: string; floor?: number }): Promise<boolean> {
-	const path = mirrorStage(stage), order = ++calls;
+export function saveSessionMirror(
+	container: string,
+	stage: string,
+	partial: boolean,
+	{ image, floor = snapshotLimits.free }: { image: string; floor?: number },
+): Promise<boolean> {
+	const path = mirrorStage(stage),
+		order = ++calls;
 	const run = (async () => {
 		const target = await targetOf(container).catch(() => null);
-		if (!target) { await dropStage(container, path); return false; }
+		if (!target) {
+			await dropStage(container, path);
+			return false;
+		}
 		return enqueue({ ...target, container, path, partial, image, floor, order });
 	})();
 	pending.add(run);
@@ -366,17 +483,32 @@ async function enqueue(next: Save): Promise<boolean> {
 		// stage over a single-branch one, whichever came later.
 		const wins = next.partial !== queued.partial ? !next.partial : next.order > queued.order;
 		const dropped = wins ? { container: queued.container, path: queued.path } : next;
-		if (wins) Object.assign(queued, { container: next.container, path: next.path, partial: next.partial, image: next.image, floor: next.floor, order: next.order });
+		if (wins)
+			Object.assign(queued, {
+				container: next.container,
+				path: next.path,
+				partial: next.partial,
+				image: next.image,
+				floor: next.floor,
+				order: next.order,
+			});
 		await dropStage(dropped.container, dropped.path);
 		return queued.done!;
 	}
-	if (waiting.size >= MAX_WAITING) { await dropStage(next.container, next.path); return false; }
+	if (waiting.size >= MAX_WAITING) {
+		await dropStage(next.container, next.path);
+		return false;
+	}
 	waiting.set(key, next);
 	const done = queue.then(async () => {
 		waiting.delete(key);
-		try { return await installMirror(next); }
-		catch { return false; }
-		finally { await dropStage(next.container, next.path); }
+		try {
+			return await installMirror(next);
+		} catch {
+			return false;
+		} finally {
+			await dropStage(next.container, next.path);
+		}
 	});
 	next.done = done;
 	queue = done;
@@ -384,37 +516,95 @@ async function enqueue(next: Save): Promise<boolean> {
 }
 
 async function dropStage(container: string, path: string) {
-	await docker(["exec", "--user", "65534:65534", "-w", "/", container, "/bin/rm", "-rf", "--", path], { timeoutMs: 30_000 }).catch(() => undefined);
+	await docker(["exec", "--user", "65534:65534", "-w", "/", container, "/bin/rm", "-rf", "--", path], {
+		timeoutMs: 30_000,
+	}).catch(() => undefined);
 }
 
 /** The slot `container` mounts read-only, in a store of the platform's. */
 async function targetOf(container: string): Promise<Target | null> {
-	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
+	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], {
+		timeoutMs: 10_000,
+	});
 	if (info.code !== 0) return null;
 	const mounts: Mount[] = JSON.parse(info.stdout.trim() || "null") ?? [];
-	const mount = mounts.find(m => m.Type === "volume" && m.ReadOnly === true && m.Target?.startsWith(MIRROR_ROOT + "/") && SLOT.test(m.VolumeOptions?.Subpath ?? ""));
-	const volume = mount?.Source, slot = mount?.VolumeOptions?.Subpath;
-	if (!volume || !slot || !await platformStore(volume, false)) return null;
+	const mount = mounts.find(
+		m =>
+			m.Type === "volume" &&
+			m.ReadOnly === true &&
+			m.Target?.startsWith(MIRROR_ROOT + "/") &&
+			SLOT.test(m.VolumeOptions?.Subpath ?? ""),
+	);
+	const volume = mount?.Source,
+		slot = mount?.VolumeOptions?.Subpath;
+	if (!volume || !slot || !(await platformStore(volume, false))) return null;
 	return { volume, slot };
 }
 
 async function installMirror({ container, path, partial, image, floor, volume, slot }: Save): Promise<boolean> {
 	const helper = "wlp-git-save-" + randomId(6);
 	const copy = spawn("docker", ["cp", `${container}:${path}/seed`, "-"], { stdio: ["ignore", "pipe", "ignore"] });
-	const install = spawn("docker", ["run", "--rm", "-i", "--pull", "never", "--name", helper, ...NO_LOGS, "--network", "none",
-		"--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
-		"--cpus", "1", "--memory", "1g", "--memory-swap", "1g", "--pids-limit", "64",
-		"--mount", `type=volume,src=${volume},volume-subpath=${slot},dst=/slot,volume-nocopy`,
-		"--entrypoint", "/usr/bin/timeout", image, "-k", "10s", `${HELPER_SECONDS}s`,
-		"/usr/bin/python3", "-I", "-S", "-c", save, partial ? "1" : "0", String(floor), String(MIRROR_BYTES - 65536), MIRROR_CONFIG], { stdio: ["pipe", "ignore", "ignore"] });
+	const install = spawn(
+		"docker",
+		[
+			"run",
+			"--rm",
+			"-i",
+			"--pull",
+			"never",
+			"--name",
+			helper,
+			...NO_LOGS,
+			"--network",
+			"none",
+			"--user",
+			"65534:65534",
+			"--cap-drop",
+			"ALL",
+			"--security-opt",
+			"no-new-privileges",
+			"--read-only",
+			"--cpus",
+			"1",
+			"--memory",
+			"1g",
+			"--memory-swap",
+			"1g",
+			"--pids-limit",
+			"64",
+			"--mount",
+			`type=volume,src=${volume},volume-subpath=${slot},dst=/slot,volume-nocopy`,
+			"--entrypoint",
+			"/usr/bin/timeout",
+			image,
+			"-k",
+			"10s",
+			`${HELPER_SECONDS}s`,
+			"/usr/bin/python3",
+			"-I",
+			"-S",
+			"-c",
+			save,
+			partial ? "1" : "0",
+			String(floor),
+			String(MIRROR_BYTES - 65536),
+			MIRROR_CONFIG,
+		],
+		{ stdio: ["pipe", "ignore", "ignore"] },
+	);
 	copy.stdout.pipe(install.stdin);
 	install.stdin.on("error", () => copy.kill("SIGKILL"));
-	const ended = (child: ReturnType<typeof spawn>) => new Promise<number | null>(resolve => {
-		child.on("error", () => resolve(null));
-		child.on("close", code => resolve(code));
-	});
+	const ended = (child: ReturnType<typeof spawn>) =>
+		new Promise<number | null>(resolve => {
+			child.on("error", () => resolve(null));
+			child.on("close", code => resolve(code));
+		});
 	let timedOut = false;
-	const timer = setTimeout(() => { timedOut = true; copy.kill("SIGKILL"); install.kill("SIGKILL"); }, SAVE_TIMEOUT_MS);
+	const timer = setTimeout(() => {
+		timedOut = true;
+		copy.kill("SIGKILL");
+		install.kill("SIGKILL");
+	}, SAVE_TIMEOUT_MS);
 	try {
 		const [copied, installed] = await Promise.all([ended(copy), ended(install)]);
 		// Killing the client leaves its container running.

@@ -6,7 +6,11 @@ export const BACK: unique symbol = Symbol("back");
 export const CANCEL: unique symbol = Symbol("cancel");
 export type Answer<T> = T | typeof BACK | typeof CANCEL;
 
-export interface Choice<T> { value: T; label: string; hint?: string }
+export interface Choice<T> {
+	value: T;
+	label: string;
+	hint?: string;
+}
 
 export interface Prompter {
 	/** True when a person can answer: questions are asked and a failed pairing can be tried again. */
@@ -21,7 +25,15 @@ export interface Prompter {
 	select<T>(question: { message: string; options: Choice<T>[]; initial?: T }): Promise<Answer<T>>;
 	multiselect<T>(question: { message: string; options: Choice<T>[]; initial: T[] }): Promise<Answer<T[]>>;
 	/** `validate` returns the reason a value is refused, or undefined. */
-	text(question: { message: string; initial: string; hint?: string; validate?: (value: string) => string | undefined }): Promise<Answer<string>>;
+	text(question: {
+		message: string;
+		initial: string;
+		hint?: string;
+		validate?: (value: string) => string | undefined;
+	}): Promise<Answer<string>>;
 	/** Runs `work` with a spinner; Escape aborts its signal and the answer is CANCEL. */
-	wait<T>(message: string, work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>): Promise<Answer<T>>;
+	wait<T>(
+		message: string,
+		work: (signal: AbortSignal, update: (message: string) => void) => Promise<T>,
+	): Promise<Answer<T>>;
 }

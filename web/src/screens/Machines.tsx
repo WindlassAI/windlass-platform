@@ -1,37 +1,71 @@
-import { MAX_MACHINES, type CredentialSource, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo, type ModelProvider } from "@contract";
+import {
+	MAX_MACHINES,
+	type CredentialSource,
+	type MachineClaim,
+	type MachineSummary,
+	type MachineWarning,
+	type MachinesInfo,
+	type ModelProvider,
+} from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { Command } from "../components/Command";
 import { Dialog } from "../components/Dialog";
-import { CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import {
+	CheckIcon,
+	ChevronIcon,
+	InfoIcon,
+	MachineIcon,
+	Mark,
+	PencilIcon,
+	PlusIcon,
+	TrashIcon,
+	WarnIcon,
+} from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
-import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
-import { linkProps, navigate } from "../lib/router";
+import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useHostedProviders, useNow } from "../state/hooks";
 import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
 import { anyOf } from "../../../server/src/sandbox/harnesses.js";
-import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
+import {
+	MAX_WHEN_TO_USE,
+	diskSize,
+	machineDetailsProblem,
+	machineHostNote,
+	machineLabel,
+	sandboxLimit,
+	settingsKeyUpgrade,
+	storeLimits,
+	tagsOf,
+} from "../lib/machines";
+import { MachineState, SandboxLine } from "../components/MachineState";
+import { useMachines } from "../state/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
-import { readTwice } from "../lib/retry";
-
-export { clockTime };
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
+function installCommand(
+	info: MachinesInfo,
+	agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {},
+	setup?: { importKeys: boolean },
+): string | null {
 	if (info.runnerImage === null) return null;
 	return [
-		(setup ? "docker run -it --rm" + (agents.codex ? " --log-driver none" : "") : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
+		(setup
+			? "docker run -it --rm" + (agents.codex ? " --log-driver none" : "")
+			: "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		...(setup ? [] : ["  --log-driver json-file --log-opt max-size=16m --log-opt max-file=3 \\"]),
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
+		...(agents.openCode && setup?.importKeys
+			? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\']
+			: []),
 		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}${agents.windlassSandbox ? " --allow-profile docker-windlass-sandbox" : " --allow-profile docker-hardened"}`,
 	].join("\n");
 }
@@ -41,107 +75,34 @@ export function oneLineInstall(info: MachinesInfo): string | null {
 	return info.runnerImage === null ? null : `curl -fsSL ${info.platformUrl}/install.sh | sh`;
 }
 
-/** Free disk in a sentence: "61 GB", "3.2 GB", "820 MB". */
-function diskSize(bytes: number): string {
-	if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1).replace(/\.0$/, "")} TB`;
-	if (bytes >= 1e9) return `${bytes >= 1e10 ? Math.round(bytes / 1e9) : (bytes / 1e9).toFixed(1).replace(/\.0$/, "")} GB`;
-	return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
-}
-
-/** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
-export function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
-	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
-}
-
 /** A code as it is typed: the eight characters the runner printed, in two groups of four. */
 function formatCode(typed: string): string {
-	const characters = typed.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 8);
+	const characters = typed
+		.toUpperCase()
+		.replace(/[^0-9A-Z]/g, "")
+		.slice(0, 8);
 	return characters.length > 4 ? `${characters.slice(0, 4)}-${characters.slice(4)}` : characters;
 }
 
-export interface MachinesState {
-	/** Null until it was read, and when it could not be. */
-	list: MachineSummary[] | null;
-	/** Why it could not be read the last time it was asked for. */
-	error: string | null;
-	reload(): void;
-	/** Takes the list as an action answered it. */
-	replace(list: MachineSummary[]): void;
-}
-
-/**
- * The user's machines: read when the screen opens, then as the user's actor sends them, and again
- * after the live feed was down. `enabled` false asks nothing: for a deployment that offers no machines,
- * and for a screen that needs them only sometimes (a session on a machine).
- */
-export function useMachines(enabled = true): MachinesState {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
-	const asked = useRef(0);
-	const samplesDuringReload = useRef<Map<string, MachineSummary["host"]> | null>(null);
-
-	const reload = useCallback(() => {
-		const mine = ++asked.current;
-		const samples = new Map<string, MachineSummary["host"]>();
-		samplesDuringReload.current = samples;
-		readTwice(() => client.user(auth).machines())
-			.then(
-				(list) => mine === asked.current && setState({ list: list.map(machine =>
-					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
-			).finally(() => { if (samplesDuringReload.current === samples) samplesDuringReload.current = null; });
-	}, [client, auth, explain]);
-
-	const replace = useCallback((list: MachineSummary[]) => {
-		asked.current += 1;
-		setState({ list, error: null });
-	}, []);
-
-	useEffect(() => {
-		if (!enabled) return;
-		reload();
-		let connected = false;
-		const close = client.user(auth).watch({
-			onSessions: () => undefined,
-			onMachines: replace,
-			onMachineHost: ({ machineId, host }) => {
-				samplesDuringReload.current?.set(machineId, host ?? undefined);
-				setState(now => ({ ...now, list: now.list?.map(machine =>
-					machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine) ?? null }));
-			},
-			onConnection: (connection) => {
-				if (connection !== "connected") return;
-				// What the actor sent while the feed was down is lost: the list is read again when it is back.
-				if (connected) reload();
-				connected = true;
-			},
-		});
-		return () => {
-			asked.current += 1;
-			close();
-		};
-	}, [client, auth, reload, replace, enabled]);
-
-	return { ...state, reload, replace };
-}
-
-/** Where a machine is, as a dot and a few words. A runner that is too old is refused, so that is what it says. */
-export function MachineState({ machine, now }: { machine: MachineSummary; now: number }) {
-	const outdated = machine.warnings.some((warning) => warning.kind === "outdated");
-	const kind = outdated ? "outdated" : machine.status;
-	const word = outdated ? "Needs an update" : machine.status === "online" ? "Online" : machine.status === "offline" ? `Offline since ${clockTime(machine.since, now)}` : "Waiting for the runner";
-	return (
-		<span className={`sandbox-state machine-state machine-state-${kind}`} title={machine.status === "offline" ? absoluteTime(machine.since) : undefined}>
-			<span className="sandbox-state-dot" aria-hidden="true" />
-			{word}
-		</span>
-	);
-}
-
 /** What the runner reported that needs the user, each only while it holds. */
-function Warning({ warning, machine, info, now }: { warning: MachineWarning; machine: MachineSummary; info: MachinesInfo; now: number }) {
-	if (warning.kind === "signing-disabled") return <p className="callout callout-warn" role="status"><WarnIcon />This runner requires signed connections. Ask the platform operator to enable them.</p>;
+function Warning({
+	warning,
+	machine,
+	info,
+	now,
+}: {
+	warning: MachineWarning;
+	machine: MachineSummary;
+	info: MachinesInfo;
+	now: number;
+}) {
+	if (warning.kind === "signing-disabled")
+		return (
+			<p className="callout callout-warn" role="status">
+				<WarnIcon />
+				This runner requires signed connections. Ask the platform operator to enable them.
+			</p>
+		);
 	if (warning.kind === "outdated") {
 		const install = installCommand(info);
 		return (
@@ -149,8 +110,13 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 				<WarnIcon />
 				<div>
 					<p className="callout-text">
-						This machine's runner is {machine.runnerVersion}; the platform needs {info.minRunnerVersion} or later, so it cannot connect.{" "}
-						{install ? info.platformFingerprint ? "Update it on the machine and pair again to pin the platform key." : "Update it on the machine: its volume keeps the key, so it stays paired." : "No newer runner is published yet."}
+						This machine's runner is {machine.runnerVersion}; the platform needs {info.minRunnerVersion} or later, so it
+						cannot connect.{" "}
+						{install
+							? info.platformFingerprint
+								? "Update it on the machine and pair again to pin the platform key."
+								: "Update it on the machine: its volume keeps the key, so it stays paired."
+							: "No newer runner is published yet."}
 					</p>
 					{install ? <Command text={`docker rm -f windlass-runner\n${install}`} label="The update command" /> : null}
 				</div>
@@ -162,7 +128,9 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 			<div className="callout callout-warn" role="status">
 				<WarnIcon />
 				<div>
-					<p className="callout-text">The runner cannot reach Docker on this machine, so no agent can start here. The runner reports:</p>
+					<p className="callout-text">
+						The runner cannot reach Docker on this machine, so no agent can start here. The runner reports:
+					</p>
 					<p className="callout-detail">{warning.reason}</p>
 				</div>
 			</div>
@@ -174,7 +142,8 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 			<p className="callout callout-warn" role="status">
 				<WarnIcon />
 				<span>
-					This machine's clock is {off} {warning.offsetSeconds > 0 ? "ahead of" : "behind"} the platform's, so a turn's access token can read as expired too early or too late. Set the clock from the network, for example with{" "}
+					This machine's clock is {off} {warning.offsetSeconds > 0 ? "ahead of" : "behind"} the platform's, so a turn's
+					access token can read as expired too early or too late. Set the clock from the network, for example with{" "}
 					<code>timedatectl set-ntp true</code>.
 				</span>
 			</p>
@@ -184,7 +153,9 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 		<p className="callout callout-warn" role="status">
 			<WarnIcon />
 			<span>
-				This machine's key was used from two places at <span title={absoluteTime(warning.at)}>{clockTime(warning.at, now)}</span>; if you did not copy it, remove the machine.
+				This machine's key was used from two places at{" "}
+				<span title={absoluteTime(warning.at)}>{clockTime(warning.at, now)}</span>; if you did not copy it, remove the
+				machine.
 			</span>
 		</p>
 	);
@@ -203,7 +174,7 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 			.user(auth)
 			.setMachineSecrets({ machineId: machine.machineId, send })
 			.then(
-				(list) => {
+				list => {
 					onChanged(list);
 					setBusy(false);
 				},
@@ -215,7 +186,7 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	};
 	return (
 		<div>
-			<Check checked={machine.sendSecrets} disabled={busy} onChange={(on) => set(on)}>
+			<Check checked={machine.sendSecrets} disabled={busy} onChange={on => set(on)}>
 				<span className="check-name">Send saved secrets to this machine</span>
 				<span className="check-means">
 					{machine.sendSecrets
@@ -250,9 +221,14 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 		setError(null);
 		client
 			.user(auth)
-			.setMachineDetails({ machineId: machine.machineId, whenToUse: machine.whenToUse ?? "", tags: machine.tags ?? [], orchestrator })
+			.setMachineDetails({
+				machineId: machine.machineId,
+				whenToUse: machine.whenToUse ?? "",
+				tags: machine.tags ?? [],
+				orchestrator,
+			})
 			.then(
-				(list) => {
+				list => {
 					onChanged(list);
 					setBusy(null);
 				},
@@ -267,25 +243,36 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 			<p className="machine-policy-label" id={ids.label}>
 				Subtasks of features
 			</p>
-			<div className="segmented machine-policy-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
-				{ORCHESTRATOR_CHOICES.map((choice) => (
-					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} title={choice.means}>
-						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+			<div
+				className="segmented machine-policy-choice"
+				role="radiogroup"
+				aria-labelledby={ids.label}
+				aria-describedby={ids.means}
+			>
+				{ORCHESTRATOR_CHOICES.map(choice => (
+					<label
+						key={choice.id}
+						className={`segment${shown === choice.id ? " segment-chosen" : ""}`}
+						title={choice.means}
+					>
+						<input
+							className="segment-radio"
+							type="radio"
+							name={ids.label}
+							value={choice.id}
+							checked={shown === choice.id}
+							disabled={busy !== null}
+							onChange={() => set(choice.id)}
+						/>
 						{choice.label}
 					</label>
 				))}
 			</div>
 			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
-				{error ?? ORCHESTRATOR_CHOICES.find((choice) => choice.id === shown)!.means}
+				{error ?? ORCHESTRATOR_CHOICES.find(choice => choice.id === shown)!.means}
 			</p>
 		</div>
 	);
-}
-
-/** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
-export function sandboxLimit(machine: MachineSummary): string {
-	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
-	return caps.length === 0 ? "no limit" : caps.join(", ");
 }
 
 function machineCapacity({ slots, turns, host }: MachineSummary) {
@@ -295,7 +282,9 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 		parts.push(`${slots.max} slot${slots.max === 1 ? "" : "s"} × ${slots.unit.cpus} CPU · ${memory} GB`);
 		parts.push(`${slots.busy} busy${slots.queued ? `, ${slots.queued} queued` : ""}`);
 	} else if (turns) {
-		parts.push(`${turns.running} of ${turns.max ?? "any number of"} turns running${turns.queued ? `, ${turns.queued} queued` : ""}`);
+		parts.push(
+			`${turns.running} of ${turns.max ?? "any number of"} turns running${turns.queued ? `, ${turns.queued} queued` : ""}`,
+		);
 	}
 	if (host) {
 		const cpus = slots ? `${host.cpus} CPUs` : `${host.sandboxCpus} of ${host.cpus} CPUs for sandboxes`;
@@ -304,38 +293,17 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 	return parts.join(" · ");
 }
 
-export function SandboxLine({ sandbox, now, offlineSince = null }: { sandbox: MachineSandbox; now: number; offlineSince?: number | null }) {
-	return (
-		<li>
-			{sandbox.title === null ? (
-				<span className="tone-dim">an agent that was deleted</span>
-			) : (
-				<a className="usage-agent" {...linkProps({ name: "session", id: sandbox.sessionId })}>
-					{sandbox.title}
-				</a>
-			)}
-			<SandboxState state={sandbox.state} asOf={offlineSince === null ? undefined : `Reported before the machine went offline, ${absoluteTime(offlineSince)}.`} />
-			{sandbox.resizePending && <span>resized at next restart</span>}
-			<span className="machine-used" title={absoluteTime(sandbox.usedAt)}>
-				used {relativeTime(sandbox.usedAt, now)}
-			</span>
-		</li>
-	);
-}
-
-export function settingsKeyUpgrade(machine: MachineSummary) {
-	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the machine software to use your API keys here." : null;
-}
-
 function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
 	const harnesses = machine.harnesses ?? [];
-	const saved = useHostedProviders(harnesses.some((harness) => harness.machineSignIns?.length));
+	const saved = useHostedProviders(harnesses.some(harness => harness.machineSignIns?.length));
 	if (harnesses.length === 0) return null;
 	return (
 		<ul className="machine-agents" aria-label="Agents on this machine">
-			{harnesses.map((harness) => {
+			{harnesses.map(harness => {
 				const command = loginCommand(harness);
-				const both = harness.keyRelay ? (harness.machineSignIns ?? []).filter((provider) => saved?.some((key) => key.provider === provider)) : [];
+				const both = harness.keyRelay
+					? (harness.machineSignIns ?? []).filter(provider => saved?.some(key => key.provider === provider))
+					: [];
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
 						<span className="machine-agent-name">
@@ -346,14 +314,18 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 							<span className="machine-agent-state">
 								{" "}
 								<CheckIcon size={13} />
-								{signInWords(harness)}{!harness.platformKeys?.length && harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
+								{signInWords(harness)}
+								{!harness.platformKeys?.length && harness.id === "codex" && harness.method
+									? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}`
+									: ""}
 							</span>
 						) : harness.signIn === "none" ? (
 							<span className="machine-agent-state">: {signInWords(harness)}</span>
 						) : (
 							// Unknown is the runner's check failing, not a sign-in to redo: its reason, where it gave one, and no login prompt.
 							<span className="machine-agent-state" title={harness.signInReason}>
-								: {signInWords(harness)}{harness.signInReason ? ` (${harness.signInReason})` : ""}
+								: {signInWords(harness)}
+								{harness.signInReason ? ` (${harness.signInReason})` : ""}
 							</span>
 						)}
 						{harness.signIn !== "none" ? null : (
@@ -362,7 +334,9 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
 							</span>
 						)}
-						{both.length > 0 ? <CredentialChoice machine={machine} harness={harness} providers={both} onChanged={onChanged} /> : null}
+						{both.length > 0 ? (
+							<CredentialChoice machine={machine} harness={harness} providers={both} onChanged={onChanged} />
+						) : null}
 					</li>
 				);
 			})}
@@ -370,7 +344,17 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 	);
 }
 
-function CredentialChoice({ machine, harness, providers, onChanged }: { machine: MachineSummary; harness: ReportedHarness; providers: ModelProvider[]; onChanged(list: MachineSummary[]): void }) {
+function CredentialChoice({
+	machine,
+	harness,
+	providers,
+	onChanged,
+}: {
+	machine: MachineSummary;
+	harness: ReportedHarness;
+	providers: ModelProvider[];
+	onChanged(list: MachineSummary[]): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState<CredentialSource | null>(null);
@@ -378,9 +362,16 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	const label = useId();
 	const saved: CredentialSource = harness.source ?? "machine";
 	const shown = busy ?? saved;
-	const here = machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
-	const keys = anyOf(providers.map((provider) => SOURCE_NAMES[provider]));
-	const plan = harness.id === "claude" ? "Claude subscription" : harness.machineMethod === "chatgpt" || (providers.includes("openai") && harness.machineProviders?.includes("chatgpt")) ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
+	const here =
+		machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
+	const keys = anyOf(providers.map(provider => SOURCE_NAMES[provider]));
+	const plan =
+		harness.id === "claude"
+			? "Claude subscription"
+			: harness.machineMethod === "chatgpt" ||
+					(providers.includes("openai") && harness.machineProviders?.includes("chatgpt"))
+				? "ChatGPT plan"
+				: `${keys} login${providers.length > 1 ? "s" : ""}`;
 	const choices: Array<{ id: CredentialSource; label: string }> = [
 		{ id: "machine", label: `Use ${here}'s ${plan}` },
 		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}` },
@@ -393,7 +384,7 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 			.user(auth)
 			.setCredentialSource({ machineId: machine.machineId, harness: harness.id, source })
 			.then(
-				(list) => {
+				list => {
 					onChanged(list);
 					setBusy(null);
 				},
@@ -405,17 +396,35 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	};
 	return (
 		<div className="machine-credential">
-			<span className="label" id={label}>Paid by</span>
+			<span className="label" id={label}>
+				Paid by
+			</span>
 			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={label}>
-				{choices.map((choice) => (
-					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} data-source={choice.id}>
-						<input className="segment-radio" type="radio" name={label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+				{choices.map(choice => (
+					<label
+						key={choice.id}
+						className={`segment${shown === choice.id ? " segment-chosen" : ""}`}
+						data-source={choice.id}
+					>
+						<input
+							className="segment-radio"
+							type="radio"
+							name={label}
+							value={choice.id}
+							checked={shown === choice.id}
+							disabled={busy !== null}
+							onChange={() => set(choice.id)}
+						/>
 						{choice.label}
 					</label>
 				))}
 			</div>
 			<p className="field-note">Only this one is used. If it can't be, the item stops and asks.</p>
-			{error && <p className="field-note tone-bad" role="alert">{error}</p>}
+			{error && (
+				<p className="field-note tone-bad" role="alert">
+					{error}
+				</p>
+			)}
 		</div>
 	);
 }
@@ -454,7 +463,7 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 			.user(auth)
 			.setMachineDetails({ machineId: machine.machineId, whenToUse: text.trim(), tags: typedTags })
 			.then(
-				(list) => {
+				list => {
 					onChanged(list);
 					setBusy(false);
 					setEditing(false);
@@ -473,14 +482,19 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 				) : (
 					<>
 						{whenToUse !== "" ? <span className="machine-use-text">{whenToUse}</span> : null}
-						{tags.map((tag) => (
+						{tags.map(tag => (
 							<span key={tag} className="machine-tag">
 								{tag}
 							</span>
 						))}
 					</>
 				)}
-				<button type="button" className="link machine-use-edit" onClick={edit} aria-label={`Edit when to use ${machineLabel(machine)}`}>
+				<button
+					type="button"
+					className="link machine-use-edit"
+					onClick={edit}
+					aria-label={`Edit when to use ${machineLabel(machine)}`}
+				>
 					<PencilIcon size={11} />
 					{whenToUse === "" && tags.length === 0 ? "Add" : "Edit"}
 				</button>
@@ -494,23 +508,58 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 					<label className="label" htmlFor={ids.text}>
 						When to use it
 					</label>
-					<input id={ids.text} className="input" value={text} maxLength={MAX_WHEN_TO_USE + 50} placeholder="Builds and browser tests; it has the GPU" onChange={(event) => setText(event.target.value)} readOnly={busy} aria-describedby={ids.note} data-autofocus autoFocus />
+					<input
+						id={ids.text}
+						className="input"
+						value={text}
+						maxLength={MAX_WHEN_TO_USE + 50}
+						placeholder="Builds and browser tests; it has the GPU"
+						onChange={event => setText(event.target.value)}
+						readOnly={busy}
+						aria-describedby={ids.note}
+						data-autofocus
+						autoFocus
+					/>
 				</div>
 				<div>
 					<label className="label" htmlFor={ids.tags}>
 						Tags<span className="label-optional">comma or space between</span>
 					</label>
-					<input id={ids.tags} className="input input-mono" value={tagText} placeholder="gpu, big-build" onChange={(event) => setTagText(event.target.value)} readOnly={busy} aria-describedby={ids.note} aria-invalid={problem !== null || undefined} />
+					<input
+						id={ids.tags}
+						className="input input-mono"
+						value={tagText}
+						placeholder="gpu, big-build"
+						onChange={event => setTagText(event.target.value)}
+						readOnly={busy}
+						aria-describedby={ids.note}
+						aria-invalid={problem !== null || undefined}
+					/>
 				</div>
 			</div>
-			<p className={`field-note${problem || error ? " tone-bad" : ""}`} id={ids.note} role={problem || error ? "alert" : undefined}>
-				{problem ?? error ?? "The planner of a feature reads this, with the machine's OS, capacity and what it can run, when it splits the work."}
+			<p
+				className={`field-note${problem || error ? " tone-bad" : ""}`}
+				id={ids.note}
+				role={problem || error ? "alert" : undefined}
+			>
+				{problem ??
+					error ??
+					"The planner of a feature reads this, with the machine's OS, capacity and what it can run, when it splits the work."}
 			</p>
 			<div className="machine-use-actions">
-				<button type="submit" className="button button-primary button-small" disabled={busy || problem !== null || !changed}>
+				<button
+					type="submit"
+					className="button button-primary button-small"
+					disabled={busy || problem !== null || !changed}
+				>
 					{busy ? "Saving…" : "Save"}
 				</button>
-				<button type="button" className="button button-quiet button-small" onClick={() => setEditing(false)} disabled={busy}>
+				<button
+					type="button"
+					className="button button-quiet button-small"
+					onClick={() => setEditing(false)}
+					disabled={busy}
+				>
 					Cancel
 				</button>
 			</div>
@@ -518,7 +567,19 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 	);
 }
 
-function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: MachineSummary; info: MachinesInfo; now: number; onChanged(list: MachineSummary[]): void; onRemove(machine: MachineSummary): void }) {
+function MachineRow({
+	machine,
+	info,
+	now,
+	onChanged,
+	onRemove,
+}: {
+	machine: MachineSummary;
+	info: MachinesInfo;
+	now: number;
+	onChanged(list: MachineSummary[]): void;
+	onRemove(machine: MachineSummary): void;
+}) {
 	const upgrade = settingsKeyUpgrade(machine);
 	const [open, setOpen] = useState(false);
 	const details = useId();
@@ -527,7 +588,8 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 
 	const host = machineHostNote(machine);
 	const outdated = machine.warnings.some(warning => warning.kind === "outdated");
-	const limited = machine.providerAccounts?.filter(account => account.state === "limited" && (account.limitedUntil ?? 0) > now) ?? [];
+	const limited =
+		machine.providerAccounts?.filter(account => account.state === "limited" && (account.limitedUntil ?? 0) > now) ?? [];
 	return (
 		<li className={`usage-kept-row machine-row machine-row-${outdated ? "outdated" : machine.status}`}>
 			<div className="machine-head">
@@ -542,14 +604,16 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 							<span className="chip">{machine.arch}</span>
 						</>
 					) : (
-						<span className="machine-host">
-							host {host}
-						</span>
+						<span className="machine-host">host {host}</span>
 					)}
 					{outdated && <span className="machine-update">Update available</span>}
 				</div>
 				<MachineState machine={machine} now={now} />
-				<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
+				<button
+					type="button"
+					className="button button-outline button-small machine-remove"
+					onClick={() => onRemove(machine)}
+				>
 					<TrashIcon size={13} />
 					<span>
 						Remove<span className="visually-hidden"> {machineLabel(machine)}</span>…
@@ -564,8 +628,12 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<div className="machine-part">
 					<MachineAgents machine={machine} onChanged={onChanged} />
 					{upgrade && <p className="field-note">{upgrade}</p>}
-					{limited.map(a =>
-						<p className="field-note" key={a.key}>{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+					{limited.map(a => (
+						<p className="field-note" key={a.key}>
+							{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until{" "}
+							{new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC
+						</p>
+					))}
 				</div>
 			) : null}
 
@@ -573,10 +641,12 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<div className="machine-notes">
 					{machine.status === "waiting" && machine.warnings.length === 0 ? (
 						<p className="usage-note">
-							Paired {paired === "now" ? "a moment ago" : paired}; its runner has not connected since. Check <code>docker logs windlass-runner</code> on the machine. A runner that lost its key before it connected never will: remove this machine and add it again.
+							Paired {paired === "now" ? "a moment ago" : paired}; its runner has not connected since. Check{" "}
+							<code>docker logs windlass-runner</code> on the machine. A runner that lost its key before it connected
+							never will: remove this machine and add it again.
 						</p>
 					) : null}
-					{machine.warnings.map((warning) => (
+					{machine.warnings.map(warning => (
 						<Warning key={warning.kind} warning={warning} machine={machine} info={info} now={now} />
 					))}
 				</div>
@@ -584,20 +654,35 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 
 			<p className="agent-meta machine-foot">
 				{orchestratorNote(machine) ? (
-					<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
+					<span
+						className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`}
+						title={ORCHESTRATOR_CHOICES.find(choice => choice.id === orchestratorOf(machine))!.means}
+					>
 						{orchestratorNote(machine)}
 					</span>
 				) : null}
 				<span>
-					{machine.sandboxes.length === 0 ? "No kept sandboxes" : plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
+					{machine.sandboxes.length === 0
+						? "No kept sandboxes"
+						: plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
 					{machine.maxSandboxes ? (
-						<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
+						<span
+							className="machine-meter"
+							role="img"
+							aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}
+						>
 							<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
 						</span>
 					) : null}
 				</span>
 				<span className="machine-foot-end">
-					<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={details} onClick={() => setOpen((value) => !value)}>
+					<button
+						type="button"
+						className="link machine-toggle"
+						aria-expanded={open}
+						aria-controls={details}
+						onClick={() => setOpen(value => !value)}
+					>
 						<ChevronIcon size={11} className="machine-chevron" />
 						{open ? "Hide details" : "Details"}
 					</button>
@@ -607,11 +692,18 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<div>
 					<h4 className="eyebrow">Sandboxes</h4>
 					{machine.sandboxes.length === 0 ? (
-						<p className="usage-lede">{reported ? "No agent's sandbox is on it." : "Its runner has not reported yet."}</p>
+						<p className="usage-lede">
+							{reported ? "No agent's sandbox is on it." : "Its runner has not reported yet."}
+						</p>
 					) : (
 						<ul className="machine-sandboxes">
-							{machine.sandboxes.map((sandbox) => (
-								<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} offlineSince={machine.status === "offline" ? machine.since : null} />
+							{machine.sandboxes.map(sandbox => (
+								<SandboxLine
+									key={sandbox.sessionId}
+									sandbox={sandbox}
+									now={now}
+									offlineSince={machine.status === "offline" ? machine.since : null}
+								/>
 							))}
 						</ul>
 					)}
@@ -619,7 +711,15 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<dl className="machine-facts">
 					<div>
 						<dt>Commands sandboxed by Windlass</dt>
-						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
+						<dd>
+							{machine.commandSandbox === null ? (
+								<span className="tone-faint">not reported yet</span>
+							) : machine.commandSandbox.ok ? (
+								"yes"
+							) : (
+								<>no: {machine.commandSandbox.reason}</>
+							)}
+						</dd>
 					</div>
 					{machine.slots || machine.turns || machine.host ? (
 						<div>
@@ -629,14 +729,27 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 					) : null}
 					<div>
 						<dt>Free disk</dt>
-						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>
+						<dd>
+							{machine.freeDiskBytes === null ? (
+								<span className="tone-faint">not reported yet</span>
+							) : (
+								diskSize(machine.freeDiskBytes)
+							)}
+						</dd>
 					</div>
 					<div>
 						<dt>Snapshot storage</dt>
 						<dd>
-							{machine.storeLimits ? storeLimits(machine.storeLimits) : <span className="tone-faint">not reported yet</span>}
+							{machine.storeLimits ? (
+								storeLimits(machine.storeLimits)
+							) : (
+								<span className="tone-faint">not reported yet</span>
+							)}
 							<p className="field-note">
-								Set on the machine. <a className="link" href="/docs/runner#run-options">Runner reference →</a>
+								Set on the machine.{" "}
+								<a className="link" href="/docs/runner#run-options">
+									Runner reference →
+								</a>
 							</p>
 						</dd>
 					</div>
@@ -645,7 +758,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dd>
 							{reported ? sandboxLimit(machine) : <span className="tone-faint">not reported yet</span>}
 							<p className="field-note">
-								Set on the machine. <a className="link" href="/docs/runner#run-options">Runner reference →</a>
+								Set on the machine.{" "}
+								<a className="link" href="/docs/runner#run-options">
+									Runner reference →
+								</a>
 							</p>
 						</dd>
 					</div>
@@ -660,7 +776,15 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 type AddStep = { step: "command" } | { step: "code" } | { step: "confirm"; claim: MachineClaim };
 
 /** Pairing a machine: the command that starts its runner, the code the runner prints, and what that machine says it is. */
-function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): void; onAdded(machine: MachineSummary): void }) {
+function AddDialog({
+	info,
+	onClose,
+	onAdded,
+}: {
+	info: MachinesInfo;
+	onClose(): void;
+	onAdded(machine: MachineSummary): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [step, setStep] = useState<AddStep>({ step: "command" });
@@ -686,7 +810,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const offersCodex = info.runnerHarnesses?.includes("codex") === true;
 	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
 	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
-	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode, windlassSandbox };
+	const agents = {
+		codex: offersCodex && codex,
+		claude: offersClaude && claude,
+		openCode: offersOpenCode && openCode,
+		windlassSandbox,
+	};
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
 	const oneLine = oneLineInstall(info);
@@ -754,7 +883,13 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<button type="button" className="button button-quiet" onClick={() => go({ step: "code" })} disabled={busy}>
 							Back
 						</button>
-						<button type="button" className="button button-primary" onClick={connect} disabled={busy || !keyMatches} aria-describedby={ids.trust}>
+						<button
+							type="button"
+							className="button button-primary"
+							onClick={connect}
+							disabled={busy || !keyMatches}
+							aria-describedby={ids.trust}
+						>
 							{busy ? "Connecting…" : "Connect"}
 						</button>
 					</>
@@ -764,16 +899,23 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 					<div className="machine-key">
 						<p className="eyebrow">Machine key</p>
 						<p className="machine-key-value">{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}</p>
-						<Check checked={keyMatches} disabled={busy} onChange={(on) => setKeyMatches(on)} inputRef={aim}>
+						<Check checked={keyMatches} disabled={busy} onChange={on => setKeyMatches(on)} inputRef={aim}>
 							{claim.keyPrinted ? (
 								<>
 									<span className="check-name">The runner's terminal shows the same machine key</span>
-									<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+									<span className="check-means">
+										The runner prints it under the code. If it shows another key, or someone gave you this code, press
+										Back: connecting would send your agents' work to their machine.
+									</span>
 								</>
 							) : (
 								<>
 									<span className="check-name">I started this runner myself, in the last few minutes</span>
-									<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+									<span className="check-means">
+										Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer
+										runner prints it under the code. If someone gave you this code, press Back: connecting would send
+										your agents' work to their machine.
+									</span>
 								</>
 							)}
 						</Check>
@@ -784,7 +926,9 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							<dt>Name</dt>
 							<dd>
 								{claim.name || <span className="tone-faint">none reported</span>}
-								{machineHostNote(claim) === null ? null : <span className="field-note machine-claim-note">Shown as “{machineLabel(claim)}”.</span>}
+								{machineHostNote(claim) === null ? null : (
+									<span className="field-note machine-claim-note">Shown as “{machineLabel(claim)}”.</span>
+								)}
 							</dd>
 							<dt>OS</dt>
 							<dd>{claim.os}</dd>
@@ -793,10 +937,14 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							<dt>Runner</dt>
 							<dd>{claim.runnerVersion}</dd>
 						</dl>
-						<p className="field-note">Nobody has checked these: connect it only if it is the machine you started the runner on.</p>
+						<p className="field-note">
+							Nobody has checked these: connect it only if it is the machine you started the runner on.
+						</p>
 					</div>
 					<p id={ids.trust}>
-						It will run the agents you start on it and receive what they need: your repository's files, its saved secrets and a one-hour ChatGPT token for each turn. The platform does not control this machine, and what a session there shows of checks and changes is what the machine reports.
+						It will run the agents you start on it and receive what they need: your repository's files, its saved
+						secrets and a one-hour ChatGPT token for each turn. The platform does not control this machine, and what a
+						session there shows of checks and changes is what the machine reports.
 					</p>
 					{failed}
 				</div>
@@ -813,7 +961,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 				dismissable={!busy}
 				footer={
 					<>
-						<button type="button" className="button button-quiet" onClick={() => go({ step: "command" })} disabled={busy}>
+						<button
+							type="button"
+							className="button button-quiet"
+							onClick={() => go({ step: "command" })}
+							disabled={busy}
+						>
 							Back
 						</button>
 						<button type="submit" form={ids.form} className="button button-primary" disabled={!complete || busy}>
@@ -840,7 +993,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							aria-describedby={ids.codeNote}
 							aria-invalid={unknown || undefined}
 							readOnly={busy}
-							onChange={(event) => {
+							onChange={event => {
 								setCode(formatCode(event.target.value));
 								setError(null);
 								setUnknown(false);
@@ -848,7 +1001,8 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							ref={aim}
 						/>
 						<p className="field-note" id={ids.codeNote}>
-							Setup prints the code in your terminal. For a background runner, read <code>docker logs windlass-runner</code>. The code lasts ten minutes.
+							Setup prints the code in your terminal. For a background runner, read{" "}
+							<code>docker logs windlass-runner</code>. The code lasts ten minutes.
 						</p>
 					</div>
 					{failed}
@@ -880,13 +1034,23 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<Command text={oneLine} label="The install command" />
 						<details className="field-note">
 							<summary>What setup asks</summary>
-							<p>Choose a name, sign in your agents and set network access, isolation and limits. Setup starts the machine software in the background. <a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">Read the script</a>.</p>
+							<p>
+								Choose a name, sign in your agents and set network access, isolation and limits. Setup starts the
+								machine software in the background.{" "}
+								<a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">
+									Read the script
+								</a>
+								.
+							</p>
 						</details>
 					</div>
 				) : (
 					<p className="callout callout-info">
 						<InfoIcon />
-						<span>The runner is not published yet, so there is nothing to install from here. Once it is, its command is shown here.</span>
+						<span>
+							The runner is not published yet, so there is nothing to install from here. Once it is, its command is
+							shown here.
+						</span>
 					</p>
 				)}
 				{oneLine && setup && install ? (
@@ -902,19 +1066,44 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 									{offersClaude && <Check checked={claude} onChange={setClaude} label="Enable Claude Code" />}
 									{offersCodex && <Check checked={codex} onChange={setCodex} label="Enable Codex" />}
 									{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
-									{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
-									{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
-									<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow locked-down commands (recommended for Windlass and Codex)" />
-									<p>{windlassSandbox ? "Commands can run without internet access." : "Only unrestricted commands are available on this machine."}</p>
+									{agents.openCode && importKeys && (
+										<p>
+											If you use a custom XDG data directory, replace the source path in the setup command with your
+											OpenCode directory.
+										</p>
+									)}
+									{agents.openCode && (
+										<Check
+											checked={importKeys}
+											onChange={setImportKeys}
+											label="Import existing OpenCode API keys during setup"
+										/>
+									)}
+									<Check
+										checked={windlassSandbox}
+										onChange={setWindlassSandbox}
+										label="Allow locked-down commands (recommended for Windlass and Codex)"
+									/>
+									<p>
+										{windlassSandbox
+											? "Commands can run without internet access."
+											: "Only unrestricted commands are available on this machine."}
+									</p>
 								</div>
 								<Command text={setup} label="The setup command" />
-								<p className="field-note">Follow the prompts to pair the machine and sign in your agents. <a className="link" href="/docs/runner">Runner reference →</a></p>
+								<p className="field-note">
+									Follow the prompts to pair the machine and sign in your agents.{" "}
+									<a className="link" href="/docs/runner">
+										Runner reference →
+									</a>
+								</p>
 							</div>
 							<div>
 								<p className="machine-step">Or start the runner in the background</p>
 								<Command text={install} label="The background command" />
 								<p className="field-note">
-									Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
+									Where rootless Docker works, use it: the runner then gets less of your machine. Mount{" "}
+									<code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
 								</p>
 							</div>
 						</div>
@@ -927,7 +1116,15 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	);
 }
 
-function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary; onClose(): void; onRemoved(list: MachineSummary[]): void }) {
+function RemoveDialog({
+	machine,
+	onClose,
+	onRemoved,
+}: {
+	machine: MachineSummary;
+	onClose(): void;
+	onRemoved(list: MachineSummary[]): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [sandboxes, setSandboxes] = useState(false);
@@ -971,9 +1168,13 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 					: `${agents === 1 ? "The agent on it keeps its conversation" : `The ${agents} agents on it keep their conversations`} here but cannot run again; ${agents === 1 ? "its" : "their"} files stay on the machine unless you also remove its sandboxes.`}
 			</p>
 			{agents > 0 || machine.sandboxes.length > 0 ? (
-				<Check className="machine-remove-check" checked={sandboxes} disabled={busy} onChange={(on) => setSandboxes(on)}>
+				<Check className="machine-remove-check" checked={sandboxes} disabled={busy} onChange={on => setSandboxes(on)}>
 					<span className="check-name">Also remove the agents' sandboxes on it</span>
-					<span className="check-means">{machine.status === "online" ? "Its runner removes them now." : "Its runner removes them when it is next online."}</span>
+					<span className="check-means">
+						{machine.status === "online"
+							? "Its runner removes them now."
+							: "Its runner removes them when it is next online."}
+					</span>
 				</Check>
 			) : null}
 			{error ? (
@@ -996,10 +1197,19 @@ function useMachineLimit(): number {
 	useEffect(() => {
 		if (!billed) return;
 		let current = true;
-		client.user(auth).billing().then((view) => {
-			if (current && view.enabled) setLimit(view.plans.find((plan) => plan.id === view.plan)?.machines ?? MAX_MACHINES);
-		}, () => undefined);
-		return () => { current = false; };
+		client
+			.user(auth)
+			.billing()
+			.then(
+				view => {
+					if (current && view.enabled)
+						setLimit(view.plans.find(plan => plan.id === view.plan)?.machines ?? MAX_MACHINES);
+				},
+				() => undefined,
+			);
+		return () => {
+			current = false;
+		};
 	}, [billed, client, auth]);
 	return limit;
 }
@@ -1036,14 +1246,22 @@ export function Machines({ adding }: { adding: boolean }) {
 				<div className="repo-head">
 					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Machines</h1>
-					<p className="home-account">Run agents on your own computer with Docker (Mac, Linux or Windows with WSL). No inbound connection is needed.</p>
+					<p className="home-account">
+						Run agents on your own computer with Docker (Mac, Linux or Windows with WSL). No inbound connection is
+						needed.
+					</p>
 				</div>
 				<div className="machines-add">
 					<button type="button" className="button button-outline" onClick={add} disabled={info === null || full}>
 						<PlusIcon />
 						Add a machine
 					</button>
-					{full ? <p className="field-note">Your account can connect up to {maxMachines} machines.{maxMachines < 10 && platform.info?.billing ? " Pro connects up to 10." : ""}</p> : null}
+					{full ? (
+						<p className="field-note">
+							Your account can connect up to {maxMachines} machines.
+							{maxMachines < 10 && platform.info?.billing ? " Pro connects up to 10." : ""}
+						</p>
+					) : null}
 				</div>
 			</header>
 
@@ -1074,13 +1292,22 @@ export function Machines({ adding }: { adding: boolean }) {
 					{machines.error ? (
 						<p className="callout callout-warn" role="status">
 							<WarnIcon />
-							<span>{machines.error} <button className="link" onClick={machines.reload}>Try again</button></span>
+							<span>
+								{machines.error}{" "}
+								<button className="link" onClick={machines.reload}>
+									Try again
+								</button>
+							</span>
 						</p>
 					) : null}
 
 					<section className="usage-section" aria-labelledby="machines-default">
-						<h2 className="usage-title" id="machines-default">Where work runs</h2>
-						<p className="usage-lede">Your default for work items and new agents. A repository or an item can choose another place.</p>
+						<h2 className="usage-title" id="machines-default">
+							Where work runs
+						</h2>
+						<p className="usage-lede">
+							Your default for work items and new agents. A repository or an item can choose another place.
+						</p>
 						<div className="usage-card run-card">
 							<DefaultPlace account={account} />
 						</div>
@@ -1103,8 +1330,15 @@ export function Machines({ adding }: { adding: boolean }) {
 						) : (
 							<>
 								<ul className="usage-kept">
-									{list.map((machine) => (
-										<MachineRow key={machine.machineId} machine={machine} info={info} now={now} onChanged={machines.replace} onRemove={setRemoving} />
+									{list.map(machine => (
+										<MachineRow
+											key={machine.machineId}
+											machine={machine}
+											info={info}
+											now={now}
+											onChanged={machines.replace}
+											onRemove={setRemoving}
+										/>
 									))}
 								</ul>
 								<p className="usage-note">Windlass sends a machine only what its agents need.</p>
@@ -1114,8 +1348,18 @@ export function Machines({ adding }: { adding: boolean }) {
 				</>
 			)}
 
-			{adding && info !== null && canAdd ? <AddDialog info={info} onClose={closeAdd} onAdded={(machine) => machines.replace([...(list ?? []).filter((one) => one.machineId !== machine.machineId), machine])} /> : null}
-			{removing ? <RemoveDialog machine={removing} onClose={() => setRemoving(null)} onRemoved={machines.replace} /> : null}
+			{adding && info !== null && canAdd ? (
+				<AddDialog
+					info={info}
+					onClose={closeAdd}
+					onAdded={machine =>
+						machines.replace([...(list ?? []).filter(one => one.machineId !== machine.machineId), machine])
+					}
+				/>
+			) : null}
+			{removing ? (
+				<RemoveDialog machine={removing} onClose={() => setRemoving(null)} onRemoved={machines.replace} />
+			) : null}
 		</main>
 	);
 }

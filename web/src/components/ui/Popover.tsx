@@ -9,9 +9,22 @@
  * inside it (a submenu) share its layer, so a press in one is not outside the other; a native
  * <dialog> opened from it (a secrets dialog) is part of it too.
  */
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import {
+	createContext,
+	useContext,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useRef,
+	useState,
+	type CSSProperties,
+	type KeyboardEvent,
+	type ReactNode,
+	type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { place, type Align, type Side } from "./position";
+import { FOCUSABLE } from "./focus";
 
 export type CloseReason = "escape" | "outside" | "select" | "trigger" | "tab" | "back";
 
@@ -25,7 +38,12 @@ export function inLayer(node: Node | null, layer: string): boolean {
 	const element = node instanceof Element ? node : (node?.parentElement ?? null);
 	if (!element) return false;
 	if (element.closest("dialog") !== null) return true;
-	for (let at: Element | null = element.closest("[data-layer]"); at !== null; at = at.parentElement?.closest("[data-layer]") ?? null) if (at.getAttribute("data-layer") === layer) return true;
+	for (
+		let at: Element | null = element.closest("[data-layer]");
+		at !== null;
+		at = at.parentElement?.closest("[data-layer]") ?? null
+	)
+		if (at.getAttribute("data-layer") === layer) return true;
 	return false;
 }
 
@@ -56,15 +74,31 @@ export interface PopoverProps {
 	children: ReactNode;
 }
 
-const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
-
 export function Popover({ open, ...props }: PopoverProps) {
 	if (!open || typeof document === "undefined") return null;
 	// Inside a modal dialog it is drawn in the dialog's own top layer, or the dialog would cover it.
 	return createPortal(<Panel {...props} />, props.anchor.current?.closest("dialog") ?? document.body);
 }
 
-function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, maxHeight = 360, width = "auto", minWidth = 220, maxWidth = 360, role = "dialog", label, labelledBy, id, className, initialFocus = "first", dismissable = true, children }: Omit<PopoverProps, "open">) {
+function Panel({
+	onClose,
+	anchor,
+	side = "bottom",
+	align = "start",
+	offset = 6,
+	maxHeight = 360,
+	width = "auto",
+	minWidth = 220,
+	maxWidth = 360,
+	role = "dialog",
+	label,
+	labelledBy,
+	id,
+	className,
+	initialFocus = "first",
+	dismissable = true,
+	children,
+}: Omit<PopoverProps, "open">) {
 	const own = useId();
 	const parent = useLayer();
 	const layer = parent ?? own;
@@ -84,9 +118,24 @@ function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, 
 			if (!target) return;
 			const rect = target.getBoundingClientRect();
 			const own = { width: element.offsetWidth, height: element.scrollHeight };
-			const placed = place({ x: rect.left, y: rect.top, width: rect.width, height: rect.height }, own, { width: window.innerWidth, height: window.innerHeight }, { side, align, offset, padding: 8, maxHeight });
+			const placed = place(
+				{ x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+				own,
+				{ width: window.innerWidth, height: window.innerHeight },
+				{ side, align, offset, padding: 8, maxHeight },
+			);
 			setPlacedSide(placed.side);
-			setStyle({ left: placed.x, top: placed.y, maxHeight: placed.maxHeight, transformOrigin: placed.origin, ...(width === "anchor" ? { width: rect.width } : typeof width === "number" ? { width } : { minWidth, maxWidth }) });
+			setStyle({
+				left: placed.x,
+				top: placed.y,
+				maxHeight: placed.maxHeight,
+				transformOrigin: placed.origin,
+				...(width === "anchor"
+					? { width: rect.width }
+					: typeof width === "number"
+						? { width }
+						: { minWidth, maxWidth }),
+			});
 		};
 		update();
 		window.addEventListener("resize", update);
@@ -106,7 +155,12 @@ function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, 
 		if (!element) return;
 		const opener = anchor.current;
 		if (initialFocus === "panel") element.focus({ preventScroll: true });
-		else if (initialFocus === "first") (element.querySelector<HTMLElement>("[data-autofocus]") ?? element.querySelector<HTMLElement>(FOCUSABLE) ?? element).focus({ preventScroll: true });
+		else if (initialFocus === "first")
+			(
+				element.querySelector<HTMLElement>("[data-autofocus]") ??
+				element.querySelector<HTMLElement>(FOCUSABLE) ??
+				element
+			).focus({ preventScroll: true });
 		else if (initialFocus !== "none") initialFocus.current?.focus({ preventScroll: true });
 		return () => {
 			const active = document.activeElement;
@@ -151,7 +205,7 @@ function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, 
 				tabIndex={-1}
 				style={style}
 				onKeyDown={onKeyDown}
-				onBlur={(event) => {
+				onBlur={event => {
 					// Focus that leaves the layer (Tab past its end) closes it; focus that leaves the page does not.
 					const next = event.relatedTarget as Node | null;
 					if (dismissable && next !== null && !inLayer(next, layer) && !anchor.current?.contains(next)) onClose("tab");

@@ -45,12 +45,26 @@ export function Plans() {
 					<PlanCompare view={view} />
 					<table className="usage-table">
 						<caption>Hosted time per minute of use</caption>
-						<thead><tr><th scope="col">Sandbox size</th><th scope="col">Minutes counted</th></tr></thead>
-						<tbody>{HOSTED_SIZES.map(size => (
-							<tr key={size}><th scope="row">{sizeName(size)}</th><td>{SIZE_WEIGHT[size]}</td></tr>
-						))}</tbody>
+						<thead>
+							<tr>
+								<th scope="col">Sandbox size</th>
+								<th scope="col">Minutes counted</th>
+							</tr>
+						</thead>
+						<tbody>
+							{HOSTED_SIZES.map(size => (
+								<tr key={size}>
+									<th scope="row">{sizeName(size)}</th>
+									<td>{SIZE_WEIGHT[size]}</td>
+								</tr>
+							))}
+						</tbody>
 					</table>
-					<p className="usage-note">Prices in US dollars, before any tax the payment page adds. You pay on the payment provider's own page; the platform never sees your card. Cancel at any time under Manage billing; Pro lasts to the end of the period you paid for, and nothing is deleted when an account moves to Free.</p>
+					<p className="usage-note">
+						Prices in US dollars, before any tax the payment page adds. You pay on the payment provider's own page; the
+						platform never sees your card. Cancel at any time under Manage billing; Pro lasts to the end of the period
+						you paid for, and nothing is deleted when an account moves to Free.
+					</p>
 				</section>
 			)}
 		</main>

@@ -39,9 +39,25 @@ export function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle(): voi
 type Tone = "good" | "warn" | "quiet";
 
 /** One line of the account menu: a connection, how it stands, and the way to its Settings section. */
-function StatusRow({ name, section, tone, state, onFollow }: { name: string; section: "settings-models" | "settings-github"; tone: Tone; state: string; onFollow(): void }) {
+function StatusRow({
+	name,
+	section,
+	tone,
+	state,
+	onFollow,
+}: {
+	name: string;
+	section: "settings-models" | "settings-github";
+	tone: Tone;
+	state: string;
+	onFollow(): void;
+}) {
 	return (
-		<a className={`menu-status menu-status-${tone}`} {...linkProps({ name: "settings", section })} onClickCapture={onFollow}>
+		<a
+			className={`menu-status menu-status-${tone}`}
+			{...linkProps({ name: "settings", section })}
+			onClickCapture={onFollow}
+		>
 			<span className="menu-status-name">{name}</span>
 			<span className="menu-status-state">
 				{tone === "good" ? <CheckIcon size={12} /> : tone === "warn" ? <WarnIcon size={12} /> : null}
@@ -59,7 +75,8 @@ function chatgptRow({ status, error }: ReturnType<typeof useChatgpt>): { tone: T
 
 function githubRow(github: ReturnType<typeof useGithub>): { tone: Tone; state: string } {
 	if (github.busy === "finishing") return { tone: "quiet", state: "finishing…" };
-	if (github.error || (github.notice?.where === "account" && github.notice.tone === "bad")) return { tone: "warn", state: "Check" };
+	if (github.error || (github.notice?.where === "account" && github.notice.tone === "bad"))
+		return { tone: "warn", state: "Check" };
 	if (github.status === null) return { tone: "quiet", state: "checking…" };
 	return github.status.connection ? { tone: "good", state: "connected" } : { tone: "quiet", state: "Connect" };
 }
@@ -70,7 +87,11 @@ function Avatar({ identity, size }: { identity: Identity; size: "small" | "large
 	const picture = identity.avatar && identity.avatar !== broken ? identity.avatar : null;
 	return (
 		<span className={`account-avatar account-avatar-${size}`} aria-hidden="true">
-			{picture ? <img src={picture} alt="" referrerPolicy="no-referrer" onError={() => setBroken(picture)} /> : (identity.initial ?? <UserIcon size={size === "large" ? 16 : 13} />)}
+			{picture ? (
+				<img src={picture} alt="" referrerPolicy="no-referrer" onError={() => setBroken(picture)} />
+			) : (
+				(identity.initial ?? <UserIcon size={size === "large" ? 16 : 13} />)
+			)}
 		</span>
 	);
 }
@@ -117,16 +138,36 @@ function SignedInMenu() {
 	const problem = notice?.where === "account" && notice.tone === "bad" ? notice.text : null;
 	return (
 		<div className="account">
-			<button ref={button} type="button" className="account-button" aria-haspopup="dialog" aria-expanded={open} aria-label={`Account: ${identity.name}`} onClick={() => setOpen((value) => !value)}>
+			<button
+				ref={button}
+				type="button"
+				className="account-button"
+				aria-haspopup="dialog"
+				aria-expanded={open}
+				aria-label={`Account: ${identity.name}`}
+				onClick={() => setOpen(value => !value)}
+			>
 				<Avatar identity={identity} size="small" />
 			</button>
-			<PickerPanel open={open} onClose={close} anchor={button} title="Account" header={header} width={296} id="account-menu">
+			<PickerPanel
+				open={open}
+				onClose={close}
+				anchor={button}
+				title="Account"
+				header={header}
+				width={296}
+				id="account-menu"
+			>
 				<div className="menu" role="group" aria-label="Account">
 					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls.</p> : null}
 					{client.kind === "mock" ? <p className="menu-note">Mock backend: nothing leaves this page.</p> : null}
 					<div className="menu-statuses">
-						{auth.profile.demo ? null : <StatusRow name="ChatGPT plan" section="settings-models" onFollow={close} {...chatgptRow(chatgpt)} />}
-						{github.enabled ? <StatusRow name="GitHub" section="settings-github" onFollow={close} {...githubRow(github)} /> : null}
+						{auth.profile.demo ? null : (
+							<StatusRow name="ChatGPT plan" section="settings-models" onFollow={close} {...chatgptRow(chatgpt)} />
+						)}
+						{github.enabled ? (
+							<StatusRow name="GitHub" section="settings-github" onFollow={close} {...githubRow(github)} />
+						) : null}
 						{problem ? (
 							<p className="menu-note tone-bad" role="alert">
 								{problem}
@@ -146,7 +187,11 @@ function SignedInMenu() {
 						<a className="menu-action menu-action-phone" {...linkProps({ name: "settings" })} onClickCapture={close}>
 							Settings
 						</a>
-						<a className="menu-action menu-action-phone" {...linkProps({ name: "docs", slug: "" })} onClickCapture={close}>
+						<a
+							className="menu-action menu-action-phone"
+							{...linkProps({ name: "docs", slug: "" })}
+							onClickCapture={close}
+						>
 							Docs
 						</a>
 						<button type="button" className="menu-action menu-action-out" onClick={() => signOut()}>
@@ -168,11 +213,19 @@ export function ListTabs({ current, asking = 0 }: { current?: Section | null; as
 	const { platform } = useApp();
 	return (
 		<nav className="topbar-tabs" aria-label="Main">
-			<a className="topbar-tab" aria-current={current === "agents" ? "page" : undefined} {...linkProps({ name: "home" })}>
+			<a
+				className="topbar-tab"
+				aria-current={current === "agents" ? "page" : undefined}
+				{...linkProps({ name: "home" })}
+			>
 				Agents
 			</a>
 			{platform.info?.items ? (
-				<a className="topbar-tab" aria-current={current === "factory" ? "page" : undefined} {...linkProps({ name: "factory" })}>
+				<a
+					className="topbar-tab"
+					aria-current={current === "factory" ? "page" : undefined}
+					{...linkProps({ name: "factory" })}
+				>
 					Factory
 					{asking > 0 ? (
 						<span className="topbar-tab-count">
@@ -186,12 +239,20 @@ export function ListTabs({ current, asking = 0 }: { current?: Section | null; as
 				</a>
 			) : null}
 			{platform.info?.machines ? (
-				<a className="topbar-tab" aria-current={current === "machines" ? "page" : undefined} {...linkProps({ name: "machines" })}>
+				<a
+					className="topbar-tab"
+					aria-current={current === "machines" ? "page" : undefined}
+					{...linkProps({ name: "machines" })}
+				>
 					Machines
 				</a>
 			) : null}
 			{/* On a phone there is no room for it: it is in the account menu there. */}
-			<a className="topbar-tab topbar-tab-wide" aria-current={current === "account" ? "page" : undefined} {...linkProps({ name: "settings" })}>
+			<a
+				className="topbar-tab topbar-tab-wide"
+				aria-current={current === "account" ? "page" : undefined}
+				{...linkProps({ name: "settings" })}
+			>
 				Settings
 			</a>
 		</nav>
@@ -203,11 +264,27 @@ export function ListTabs({ current, asking = 0 }: { current?: Section | null; as
  * where you are further in (lib/nav.ts: the back control and the trail). On a phone's page further
  * in, the section's name stands for the tabs and opens them.
  */
-export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: Section | null; asking?: number; children?: ReactNode }) {
+export function TopBar({
+	theme,
+	onToggleTheme,
+	current,
+	asking,
+	children,
+}: {
+	theme: Theme;
+	onToggleTheme(): void;
+	current?: Section | null;
+	asking?: number;
+	children?: ReactNode;
+}) {
 	const { auth, client } = useApp();
 	return (
 		<header className={`topbar${children ? " topbar-deep" : ""}`}>
-			<a className="topbar-home" {...linkProps(auth ? { name: "home" } : { name: "signin" })} aria-label="Windlass, home">
+			<a
+				className="topbar-home"
+				{...linkProps(auth ? { name: "home" } : { name: "signin" })}
+				aria-label="Windlass, home"
+			>
 				<Wordmark />
 			</a>
 			{client.kind === "mock" ? (

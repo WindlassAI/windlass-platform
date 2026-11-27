@@ -1,5 +1,24 @@
 import type { RawAccess } from "rivetkit/db";
-import type { ModelList, LiveDelta, ItemReview, FeedbackEntry, PendingQuestion, PullRequestInfo, RepositoryCheck, SandboxPlace, SandboxProfileId, SessionSnapshot, SessionStatus, SessionSummary, StartTimes, TimelineItem, TurnOutcome, Verified, WorkspaceFile, HostedSize } from "../../contract.js";
+import type {
+	ModelList,
+	LiveDelta,
+	ItemReview,
+	FeedbackEntry,
+	PendingQuestion,
+	PullRequestInfo,
+	RepositoryCheck,
+	SandboxPlace,
+	SandboxProfileId,
+	SessionSnapshot,
+	SessionStatus,
+	SessionSummary,
+	StartTimes,
+	TimelineItem,
+	TurnOutcome,
+	Verified,
+	WorkspaceFile,
+	HostedSize,
+} from "../../contract.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../../contract.js";
 import type { StoredRepository } from "../../github/publish.js";
 import type { OutOfMemory, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer } from "../../sandbox/api.js";
@@ -26,7 +45,11 @@ import type { InboxRow } from "../session-inbox.js";
 export type FeedbackPrompt = { text: string; entries: FeedbackEntry[] };
 
 export interface SessionMeta {
-	readiness?: NonNullable<SessionCreateInput["readiness"]> & { result?: Judgment; error?: string; diagnosis?: import("../../repo-setup/types.js").SetupDiagnosis };
+	readiness?: NonNullable<SessionCreateInput["readiness"]> & {
+		result?: Judgment;
+		error?: string;
+		diagnosis?: import("../../repo-setup/types.js").SetupDiagnosis;
+	};
 	githubFeedback?: { pending?: FeedbackPrompt; seen: { id: string; at: number }[] };
 	secretRequest?: SessionSnapshot["secretRequest"];
 	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
@@ -362,7 +385,10 @@ export interface Ctx {
 	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
 	client(): any;
 	keepAwake<T>(promise: Promise<T>): Promise<T>;
-	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
+	schedule: {
+		at(timestamp: number, action: string, ...args: unknown[]): Promise<string>;
+		cancel(id: string): Promise<boolean>;
+	};
 }
 
 export type NewItem =

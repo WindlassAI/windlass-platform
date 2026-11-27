@@ -3,7 +3,15 @@
  * what an hour of one is estimated to cost. The allowance and an item's hosted time stay in seconds whatever
  * the size: only the cost differs.
  */
-import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, hostedSizeWords, type HostedSize, type HostedSizeOption } from "@contract";
+import {
+	HOSTED_SIZE_NAMES,
+	HOSTED_SIZE_SPECS,
+	ITEM_HOSTED_SIZE,
+	SESSION_HOSTED_SIZE,
+	hostedSizeWords,
+	type HostedSize,
+	type HostedSizeOption,
+} from "@contract";
 
 /** "$0.17/h": an estimate. */
 export function perHour(usdPerHour: number | null | undefined): string | null {
@@ -29,8 +37,14 @@ export function sizeSpec(size: HostedSize): string {
 }
 
 /** What a new sandbox is made in where nothing is chosen: the saved size, else the default for agents or work items, clamped to the offered. */
-export function startingSize(offered: readonly HostedSizeOption[], saved: HostedSize | null | undefined, item: boolean): HostedSize {
+export function startingSize(
+	offered: readonly HostedSizeOption[],
+	saved: HostedSize | null | undefined,
+	item: boolean,
+): HostedSize {
 	const wanted = saved ?? (item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 	const order = ["small", "standard", "large"];
-	return [...offered].reverse().find((one) => order.indexOf(one.id) <= order.indexOf(wanted))?.id ?? offered[0]?.id ?? "small";
+	return (
+		[...offered].reverse().find(one => order.indexOf(one.id) <= order.indexOf(wanted))?.id ?? offered[0]?.id ?? "small"
+	);
 }

@@ -51,7 +51,9 @@ function mockQuestionTimeout(): number | undefined {
 async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
-		const { createMockClient, MOCK_BILLING_STATES, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
+		const { createMockClient, MOCK_BILLING_STATES, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import(
+			"./api/mock"
+		);
 		const { MOCK_ITEMS_STATES } = await import("./api/mock-items");
 		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
@@ -74,15 +76,15 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
 			// `?billing=exempt|free|free-low|free-used|pro|pro-capped|pro-past-due` a deployment with plans, the account in that state (`MockBillingState`).
-			billing: MOCK_BILLING_STATES.find((state) => state === params.get("billing")),
+			billing: MOCK_BILLING_STATES.find(state => state === params.get("billing")),
 			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
 			account: params.get("account") === "empty" ? "empty" : "seeded",
 			models: params.get("models") === "unavailable" ? "unavailable" : "account",
-			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
+			machine: MOCK_MACHINE_STATES.find(state => state === machine),
 			// `?keys=1` a checked Settings key for each model provider.
 			keys: params.get("keys") === "1",
-			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
-			items: MOCK_ITEMS_STATES.find((state) => state === items),
+			machineSession: MOCK_MACHINE_SESSIONS.find(state => state === machineSession),
+			items: MOCK_ITEMS_STATES.find(state => state === items),
 			long: params.get("long") === "1",
 			blocked: params.get("blocked") === "1",
 			resume: params.get("resume") === "1",
@@ -136,27 +138,28 @@ if (!docs && relayGithubReturn()) {
 			),
 		);
 	});
-} else createPlatformClient().then(
-	(client) => {
-		// Back and Forward bring back each page's scroll (lib/router.ts).
-		keepScroll();
-		root.render(
-			<StrictMode>
-				<AppProvider client={client}>
-					<App />
-				</AppProvider>
-			</StrictMode>,
-		);
-	},
-	(error: unknown) => {
-		root.render(
-			<main className="state state-page state-error" role="alert">
-				<h1 className="display display-small">Windlass could not start</h1>
-				<p>{error instanceof Error ? error.message : "The application failed to load."}</p>
-				<button type="button" className="button button-outline" onClick={() => location.reload()}>
-					Reload
-				</button>
-			</main>,
-		);
-	},
-);
+} else
+	createPlatformClient().then(
+		client => {
+			// Back and Forward bring back each page's scroll (lib/router.ts).
+			keepScroll();
+			root.render(
+				<StrictMode>
+					<AppProvider client={client}>
+						<App />
+					</AppProvider>
+				</StrictMode>,
+			);
+		},
+		(error: unknown) => {
+			root.render(
+				<main className="state state-page state-error" role="alert">
+					<h1 className="display display-small">Windlass could not start</h1>
+					<p>{error instanceof Error ? error.message : "The application failed to load."}</p>
+					<button type="button" className="button button-outline" onClick={() => location.reload()}>
+						Reload
+					</button>
+				</main>,
+			);
+		},
+	);

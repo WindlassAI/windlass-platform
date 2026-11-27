@@ -14,10 +14,20 @@ import type { RepositoryPaneView, Route } from "./router";
 export type Section = "agents" | "factory" | "machines" | "account";
 
 /** Each section's name, as its tab says it: the account's tab is Settings. */
-export const SECTION_NAME: Record<Section, string> = { agents: "Agents", factory: "Factory", machines: "Machines", account: "Settings" };
+export const SECTION_NAME: Record<Section, string> = {
+	agents: "Agents",
+	factory: "Factory",
+	machines: "Machines",
+	account: "Settings",
+};
 
 /** Each section's own page, the one its tab opens. */
-export const SECTION_ROUTE: Record<Section, Route> = { agents: { name: "home" }, factory: { name: "factory" }, machines: { name: "machines" }, account: { name: "settings" } };
+export const SECTION_ROUTE: Record<Section, Route> = {
+	agents: { name: "home" },
+	factory: { name: "factory" },
+	machines: { name: "machines" },
+	account: { name: "settings" },
+};
 
 /** The section a page belongs to. A session's is its item's when it works on one (`itemSession`). */
 export function sectionOfPage(route: Route, itemSession = false): Section | null {
@@ -49,7 +59,12 @@ export interface Crumb {
 	back?: string;
 }
 
-const VIEW_NAME: Record<RepositoryPaneView, string> = { agents: "Agents", items: "Work items", pulls: "Pull requests", settings: "Saved settings" };
+const VIEW_NAME: Record<RepositoryPaneView, string> = {
+	agents: "Agents",
+	items: "Work items",
+	pulls: "Pull requests",
+	settings: "Saved settings",
+};
 
 /** What a page is called where nothing more is known of it: the back control's words for it. */
 export function routeLabel(route: Route): string {
@@ -95,26 +110,54 @@ type Repo = Pick<SessionRepository, "id" | "name">;
 type ItemLike = { title: string; repository: Repo; parent?: { itemId: string; title: string } | null };
 
 function factoryCrumbs(repository: Repo | null | undefined): Crumb[] {
-	return [{ label: "Factory", route: { name: "factory" } }, ...(repository ? [{ label: repository.name, route: { name: "factory", repository: repository.id } as Route, back: factoryLabel(repository.name) }] : [])];
+	return [
+		{ label: "Factory", route: { name: "factory" } },
+		...(repository
+			? [
+					{
+						label: repository.name,
+						route: { name: "factory", repository: repository.id } as Route,
+						back: factoryLabel(repository.name),
+					},
+				]
+			: []),
+	];
 }
 
 /** A work item's trail: Factory › its repository (the Factory filtered to it) › its feature, for a subtask › the item. */
 export function itemTrail(view: ItemLike | null): Crumb[] {
-	return [...factoryCrumbs(view?.repository), ...(view?.parent ? [{ label: view.parent.title, route: { name: "item", id: view.parent.itemId } as Route }] : []), { label: view?.title ?? "Work item" }];
+	return [
+		...factoryCrumbs(view?.repository),
+		...(view?.parent ? [{ label: view.parent.title, route: { name: "item", id: view.parent.itemId } as Route }] : []),
+		{ label: view?.title ?? "Work item" },
+	];
 }
 
 /**
  * A session's trail. A work item's agent is the Factory's: the item's trail, the item linked, then the
  * role (Builder, Code review or Plan review). The user's own: Agents › its repository › its title.
  */
-export function sessionTrail(session: { title: string | null; repository?: Repo | null; item?: SessionSummary["item"] }, itemView: ItemLike | null): Crumb[] {
+export function sessionTrail(
+	session: { title: string | null; repository?: Repo | null; item?: SessionSummary["item"] },
+	itemView: ItemLike | null,
+): Crumb[] {
 	if (session.item) {
-		const item = itemTrail(itemView ?? (session.repository ? { title: "Work item", repository: session.repository } : null));
+		const item = itemTrail(
+			itemView ?? (session.repository ? { title: "Work item", repository: session.repository } : null),
+		);
 		const own = item.pop()!;
-		return [...item, { label: itemView?.title ?? session.title ?? own.label, route: { name: "item", id: session.item.id } }, { label: itemSessionRole(session.item) }];
+		return [
+			...item,
+			{ label: itemView?.title ?? session.title ?? own.label, route: { name: "item", id: session.item.id } },
+			{ label: itemSessionRole(session.item) },
+		];
 	}
 	const repository = session.repository ?? null;
-	return [{ label: "Agents", route: { name: "home" } }, ...(repository ? [{ label: repository.name, route: { name: "repository", id: repository.id } as Route }] : []), { label: session.title ?? "Agent" }];
+	return [
+		{ label: "Agents", route: { name: "home" } },
+		...(repository ? [{ label: repository.name, route: { name: "repository", id: repository.id } as Route }] : []),
+		{ label: session.title ?? "Agent" },
+	];
 }
 
 /** An account page's trail: Settings › Usage. */
