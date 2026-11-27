@@ -733,6 +733,17 @@ describe("a submission's key", () => {
 		}
 	});
 
+	it("keeps a turn's effort for the next prompt that names none, and forgets it for one that asks for the default", async () => {
+		const { api, record } = await freshSession();
+		const userEfforts = () => record.items.flatMap(item => (item.kind === "user" ? [item.effort] : []));
+		for (const effort of ["low", undefined, null]) {
+			await after(400, api.prompt({ text: "Explore the workspace", effort }));
+			await vi.advanceTimersByTimeAsync(30_000);
+		}
+		expect(userEfforts()).toEqual(["low", "low", null]);
+		expect(record.summaries.at(-1)?.effort).toBeNull();
+	});
+
 	it("leaves the key of a prompt that was refused unused", async () => {
 		const { api } = await freshSession();
 		const refused = await after(

@@ -370,8 +370,11 @@ export interface PromptInput {
 	text: string;
 	/** Switches to an offered account or harness model from this turn on. */
 	model?: string;
-	/** One of the efforts the turn's model accepts. */
-	effort?: string;
+	/**
+	 * One of the efforts the turn's model accepts, kept by the session for its later turns. Absent keeps the session's
+	 * effort (`SessionSummary.effort`), or the model's default where the turn's model does not take it; null or "" is the model's default.
+	 */
+	effort?: string | null;
 	/**
 	 * The key of this submission (`IdempotencyKey`). The same key again, with the same text, is
 	 * answered as the first attempt was and adds nothing: no second message in the running turn, no

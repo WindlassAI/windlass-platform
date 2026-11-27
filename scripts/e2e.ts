@@ -1518,6 +1518,9 @@ async function main(server: Server | null): Promise<void> {
 			second[0].kind === "user" && second.at(-1)?.kind === "turn.ended",
 			"turn 2 does not run from its user item to its turn.ended",
 		);
+		// A prompt that names no effort keeps the one turn 1 chose.
+		const [secondPrompt] = second;
+		assert(secondPrompt?.kind === "user" && secondPrompt.effort === "low", `turn 2's prompt is ${plain(secondPrompt)}`);
 		assert(
 			!second.some(item => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")),
 			"turn 2 created a sandbox again",
@@ -1532,6 +1535,7 @@ async function main(server: Server | null): Promise<void> {
 			snapshot.summary.turns === 2 && snapshot.summary.title === watch.summaries[0].title,
 			"turns or title are off",
 		);
+		assert(snapshot.summary.effort === "low", `the session's effort is ${plain(snapshot.summary.effort)}`);
 		const sessionIds = new Set(
 			second.flatMap(item =>
 				item.kind === "windlass" && typeof item.event.sessionId === "string" ? [item.event.sessionId] : [],
@@ -1549,7 +1553,8 @@ async function main(server: Server | null): Promise<void> {
 	// (A second prompt during a turn used to be refused here. It steers the turn now: see the steering checks.)
 	await check("a snapshot taken mid-turn carries what streamed; stop() ends the turn as interrupted", async () => {
 		const deltasBefore = watch.deltas.length;
-		const { turn, steered } = await watch.conn.prompt({ text: "Fix the failing test (slow)" });
+		// Null is the model's default, chosen: the session forgets turn 1's effort.
+		const { turn, steered } = await watch.conn.prompt({ text: "Fix the failing test (slow)", effort: null });
 		assert(turn === 3 && steered === false, `prompt() returned ${plain({ turn, steered })}`);
 
 		// A client that connects now must be able to catch up: what streamed so far is in `pending`.
@@ -1576,10 +1581,10 @@ async function main(server: Server | null): Promise<void> {
 			watch.summaries.some(summary => summary.status === "stopping"),
 			"status never became stopping",
 		);
-		assert(
-			watch.items.filter(item => item.turn === 3 && item.kind === "user").length === 1,
-			"turn 3 has more than its one user item",
-		);
+		const userItems = watch.items.filter(item => item.turn === 3 && item.kind === "user");
+		assert(userItems.length === 1, "turn 3 has more than its one user item");
+		const [thirdPrompt] = userItems;
+		assert(thirdPrompt?.kind === "user" && thirdPrompt.effort === null, "turn 3 did not run at the default effort");
 		const after = await sessionHandle.snapshot();
 		assert(
 			after.pending.length === 0 &&

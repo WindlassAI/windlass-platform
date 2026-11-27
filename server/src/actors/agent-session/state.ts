@@ -76,6 +76,8 @@ export interface SessionMeta {
 	place: SandboxPlace;
 	profile: SandboxProfileId;
 	model: string;
+	/** The effort its turns run at unless a prompt names another; null is the model's default. Absent on older sessions. */
+	effort?: string | null;
 	mode: string;
 	availableModes: SessionSummary["availableModes"];
 	/** The last few turns' start times (start-times.ts), oldest first. Absent on sessions that have had no turn since. */

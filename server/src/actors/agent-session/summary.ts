@@ -16,6 +16,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		profile: meta.profile,
 		...(meta.hostedSize && { hostedSize: meta.hostedSize }),
 		model: meta.model,
+		effort: meta.effort ?? null,
 		mode: meta.mode,
 		availableModes: meta.availableModes,
 		repoUrl: meta.repoUrl,

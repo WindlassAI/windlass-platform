@@ -3,7 +3,8 @@
  * it with the mode, model and effort pills and Send, Steer and Stop. While a turn runs (or waits on a question)
  * what is sent steers that turn, and Stop sits beside Send. While the sandbox starts or the turn stops
  * it cannot send and says why. The model and effort for the next turn sit beside it; they do not
- * apply to a steer, so they are off while a turn runs. The models are the user's own, the efforts
+ * apply to a steer, so they are off while a turn runs. Both start at the session's, which keeps what the last turn
+ * started with: a prompt names an effort only to change it. The models are the user's own, the efforts
  * are the chosen model's, and a few words beside them say whose list it is. A prompt that one of the user's limits refused
  * keeps its text and points to the usage page, and a quiet line above the field says beforehand when
  * little of the day's sandbox time is left.
@@ -51,6 +52,8 @@ export interface ComposerProps {
 	models: ModelList | null;
 	/** The model the session is on. */
 	model: string;
+	/** The effort the session's turns run at; null for the model's default. */
+	effort?: string | null;
 	modelProblem?: (model: string) => string | null;
 	/** Rejects with what the client threw: a `turn_running` or `steer_unavailable` refusal is shown briefly and the text kept. */
 	onSend(input: PromptInput): Promise<void>;
@@ -182,6 +185,7 @@ export function Composer({
 	online,
 	models,
 	model,
+	effort: sessionEffort = null,
 	modelProblem,
 	onSend,
 	onStop,
@@ -202,7 +206,8 @@ export function Composer({
 	/** A refusal that clears itself: the turn could not take the message just now. */
 	const [notice, setNotice] = useState<string | null>(null);
 	const [chosenModel, setChosenModel] = useState<string | null>(null);
-	const [effort, setEffort] = useState("");
+	/** The effort chosen here, "" for the default; null until one is, while the session's applies. */
+	const [chosenEffort, setChosenEffort] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
 	const [stopping, setStopping] = useState(false);
 	/** The mode chosen here, until the summary says it is the session's (or the choice was refused). */
@@ -229,7 +234,11 @@ export function Composer({
 	const offered = modelIds(models);
 	const efforts = effortsOf(models, currentModel);
 	// An effort the chosen model does not take is not sent: the picker is back at the default.
-	const currentEffort = efforts.includes(effort) ? effort : "";
+	const wantedEffort = chosenEffort ?? sessionEffort ?? "";
+	const currentEffort = efforts.includes(wantedEffort) ? wantedEffort : "";
+	// The session keeps its effort unless a prompt names another; null asks for the default. Without a picker nothing is said.
+	const effortInput =
+		efforts.length === 0 || currentEffort === (sessionEffort ?? "") ? undefined : currentEffort || null;
 	// An agent's own list draws its pickers only where it offers a choice.
 	const modelPicker = harness === null || offered.length > 1;
 	// A model by the name every picker gives it: an agent's own name where it gave one, the id in words otherwise.
@@ -327,7 +336,7 @@ export function Composer({
 							text: content,
 							idempotencyKey,
 							model: chosenModel !== null && chosenModel !== model ? chosenModel : undefined,
-							effort: currentEffort || undefined,
+							effort: effortInput,
 						},
 			);
 			untaken.current = null;
@@ -400,7 +409,7 @@ export function Composer({
 	const effortMenu: MenuSpec = {
 		label: "Effort",
 		width: 220,
-		groups: [effortGroup(efforts, currentEffort, harnessModelLabel(currentModel), setEffort)],
+		groups: [effortGroup(efforts, currentEffort, harnessModelLabel(currentModel), setChosenEffort)],
 		hints: false,
 	};
 	const effortPill =
