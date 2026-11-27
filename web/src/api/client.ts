@@ -16,6 +16,7 @@ import type {
 	ApiTokenScope,
 	AuthResult,
 	ChatgptStatus,
+	ContinueSessionInput,
 	CreateItemInput,
 	CreateSessionInput,
 	FactoryLimits,
@@ -194,6 +195,8 @@ export interface UserApi
 	listSessions(): Promise<SessionSummary[]>;
 	/** Makes an agent. With `idempotencyKey`, the same call again answers with the agent the first one made, while that agent exists. */
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
+	/** A new agent continuing this one in a new workspace, branch and pull request, with the same settings. With `stack`, from its pushed branch. */
+	continueSession(input: ContinueSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
 	deleteSession(id: string): Promise<void>;
 	/** The user's GitHub connection. Only asked where the deployment has a GitHub App (`PlatformInfo.github`). */

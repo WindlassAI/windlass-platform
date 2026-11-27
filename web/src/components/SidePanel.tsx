@@ -42,6 +42,7 @@ import {
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
+import { ContinuedRows } from "./ContinueSession";
 import { ChevronIcon, RefreshIcon, WarnIcon } from "./Icons";
 import { IsolationOutcomes, isolationOutcomes, Layers, ProfileFacts } from "./Layers";
 import { PullRequestSection } from "./PullRequest";
@@ -91,6 +92,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 						</dd>
 					</>
 				) : null}
+				<ContinuedRows summary={summary} />
 			</dl>
 			<details className="panel-more">
 				<summary>
