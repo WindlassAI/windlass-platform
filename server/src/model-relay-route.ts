@@ -8,7 +8,7 @@ import * as zlib from "node:zlib";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { randomBytes } from "node:crypto";
-import { openCredentialTransit } from "./credentials/transit.js";
+import { openSavedCredential } from "./credentials/transit.js";
 import { serverSealer } from "./signin/seal.js";
 import { isModelProvider, type CredentialRef } from "./contract.js";
 import { credentialWire, harnessMethod, proofHeader, type Wire } from "../../sandbox/relay/wires.cjs";
@@ -448,11 +448,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 					release();
 					return refusal(403, "This request is not allowed by the relay.");
 				}
-				const nonce = randomBytes(16).toString("hex");
-				const ref = { provider: token.provider, ...(token.plan && { plan: true as const }) };
-				const sealed = await deps.credential(placeholder.uid, ref, nonce);
-				const saved = sealed && openCredentialTransit(placeholder.uid, ref, nonce, sealed);
-				if (saved && saved.generation === token.generation) secret = saved.secret;
+				secret = await openSavedCredential(placeholder.uid, token, deps.credential);
 			} else if (token) secret = token.accessToken;
 		} catch {
 			release();

@@ -1,0 +1,159 @@
+// A Claude plan's relay inside an E2B or Daytona sandbox, run as another user than the agent's
+// (server/src/sandbox/plan-relay.ts, docs/model-relay.md "Plan requests from the sandbox").
+// Everything it is given comes on standard input, one JSON object per line, so nothing of it is in its
+// arguments, its environment or a file the agent could read:
+//   {token, placeholder, expiresAt}   first: the token, the bearer it accepts in its place, and when it stops
+//   {token}                           later: replaces the token; requests that start after it carry the new one
+//   {took, ok}                        the platform's answer to a request it was asked to count
+// It writes {listening: port} once it can take requests, {take: n} for each request to count, and
+// {handed: true} after a replaced token. Standard input closing ends it.
+const net = require("node:net");
+const http = require("node:http");
+const https = require("node:https");
+const { timingSafeEqual } = require("node:crypto");
+const { createRelay, scrubStream } = require("./server.cjs");
+const { harnessMethod } = require("./wires.cjs");
+const { wireTarget, errorBody, placeholderOf, LEASE_ENDED } = require("./windlass.cjs");
+
+const WIRE = "claude-plan";
+// The shared relay counts by a connection's nonce. This relay has one session, so every connection carries the same.
+const NONCE = "0".repeat(32);
+const TOKEN = /^[\x21-\x7e]{16,4096}$/;
+const PLACEHOLDER = /^wlp-plan\.[A-Za-z0-9_-]{43}$/;
+const COUNT_MS = 30_000;
+const FIRST_MESSAGE_MS = 10_000;
+
+function same(a, b) {
+	const x = Buffer.from(String(a)),
+		y = Buffer.from(String(b));
+	return x.length === y.length && timingSafeEqual(x, y);
+}
+
+/** The relay's provider (server.cjs `createRelay`): only Claude Code's plan routes, only with the turn's placeholder. */
+function planProvider(state, { upstream, take, now = Date.now }) {
+	const live = () => state.expiresAt > now();
+	return {
+		methodFor: url => (url === "/api/hello" ? "HEAD" : harnessMethod("claude", WIRE, url) || undefined),
+		bearer: placeholderOf,
+		unauthorizedCode: LEASE_ENDED,
+		authorize: bearer => live() && typeof bearer === "string" && same(bearer, state.placeholder),
+		answersLocally: (method, url) => method === "HEAD" && url === "/api/hello",
+		async target(url, headers) {
+			if (!live()) return;
+			// The token as it is now: one replaced while this request runs is not this request's.
+			const token = state.token;
+			const target = wireTarget(WIRE, url, headers, token);
+			if (!target) return { refused: true };
+			const counted = await take();
+			if (counted === "limit")
+				return { refused: true, status: 429, message: "This turn reached its model request limit." };
+			if (counted !== "ok") return { refused: true, status: 503, message: "The relay could not count the request." };
+			return { ...target, ...upstream, secrets: [...state.used, state.placeholder] };
+		},
+		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),
+		errorBody,
+	};
+}
+
+/** Runs the relay on the control stream: `rest` is what the loader read past its own line. */
+function main(input = process.stdin, output = process.stdout, rest = "") {
+	const fail = message => {
+		process.stderr.write("[wlp-plan-relay] " + message + "\n");
+		process.exit(2);
+	};
+	const say = fields => output.write(JSON.stringify(fields) + "\n");
+	let state = null,
+		buffer = rest,
+		counted = 0;
+	const waiting = new Map();
+	const first = setTimeout(() => fail("no token on standard input"), FIRST_MESSAGE_MS);
+	const take = () =>
+		new Promise(resolve => {
+			const id = ++counted;
+			const timer = setTimeout(() => {
+				waiting.delete(id);
+				resolve("timeout");
+			}, COUNT_MS);
+			waiting.set(id, ok => {
+				clearTimeout(timer);
+				resolve(ok ? "ok" : "limit");
+			});
+			say({ take: id });
+		});
+
+	function listen(config) {
+		const target = config.upstream ? new URL(config.upstream) : null;
+		const upstream = target
+			? { hostname: target.hostname, port: Number(target.port || (target.protocol === "http:" ? 80 : 443)) }
+			: undefined;
+		const provider = planProvider(state, { upstream, take });
+		let relay = null;
+		const server = net.createServer(socket => {
+			if (!relay) return socket.destroy();
+			socket.unshift(Buffer.from(NONCE, "latin1"));
+			relay.emit("connection", socket);
+		});
+		server.maxConnections = 64;
+		server.on("error", error => fail("cannot listen: " + (error.code ?? "error")));
+		server.listen(0, "127.0.0.1", () => {
+			const { port } = server.address();
+			relay = createRelay({
+				provider,
+				host: "127.0.0.1:" + port,
+				forward: target?.protocol === "http:" ? http.request : https.request,
+			});
+			say({ listening: port });
+		});
+		// A sandbox paused past the turn's end and resumed: the wall clock says so, not the timers.
+		setInterval(() => {
+			if (state.expiresAt <= Date.now()) process.exit(0);
+		}, 5000).unref();
+	}
+
+	function message(line) {
+		let value;
+		try {
+			value = JSON.parse(line);
+		} catch {
+			return fail("unreadable control message");
+		}
+		if (!value || typeof value !== "object") return fail("unreadable control message");
+		if (!state) {
+			const { token, placeholder, expiresAt } = value;
+			if (typeof token !== "string" || !TOKEN.test(token)) return fail("no token on standard input");
+			if (typeof placeholder !== "string" || !PLACEHOLDER.test(placeholder)) return fail("no placeholder");
+			if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return fail("no expiry");
+			clearTimeout(first);
+			state = { token, placeholder, expiresAt, used: new Set([token]) };
+			return listen(value);
+		}
+		if (typeof value.token === "string") {
+			if (!TOKEN.test(value.token)) return fail("unreadable token");
+			state.token = value.token;
+			state.used.add(value.token);
+			return say({ handed: true });
+		}
+		if (Number.isSafeInteger(value.took)) {
+			waiting.get(value.took)?.(value.ok === true);
+			waiting.delete(value.took);
+		}
+	}
+
+	function receive(text) {
+		buffer += text;
+		let end;
+		while ((end = buffer.indexOf("\n")) >= 0) {
+			const line = buffer.slice(0, end);
+			buffer = buffer.slice(end + 1);
+			if (line.trim()) message(line);
+		}
+		if (buffer.length > 65536) fail("control message too long");
+	}
+	input.setEncoding?.("utf8");
+	input.on("data", receive);
+	input.on("end", () => process.exit(0));
+	input.on("error", () => process.exit(0));
+	receive("");
+}
+
+module.exports = { main, planProvider, PLACEHOLDER };

@@ -5,6 +5,8 @@ import type { EgressMode } from "../../contract.js";
 import { MODEL_RELAY_WINDLASS, parseModelRelayUrl, readsModelRelay } from "../../model-relay-url.js";
 import { MAX_HOSTS, MODEL_HOSTS, PRESETS, isHostName } from "../hosted-network.js";
 import { hostedName, wholeNumber } from "../hosted-settings.js";
+import { machineHarness } from "../harnesses.js";
+import { credentialWire, wires } from "../../../../sandbox/relay/wires.cjs";
 
 const DEFAULT_ALLOW = "@npm,@pypi,@github";
 
@@ -161,6 +163,19 @@ export function withHosts(
 		else hosts.add(host);
 	}
 	return { network: { ...network, hosts: [...hosts].sort() }, dropped };
+}
+
+/**
+ * A plan agent's sandbox reaches its plan's API itself, in `restricted` and `none` too: the plan's relay runs
+ * inside it (plan-relay.ts). Nothing in the sandbox holds a credential that API would take; the relay does,
+ * as a user the agent cannot read.
+ */
+export function withPlanHosts(network: E2bNetwork, harness: string | undefined): E2bNetwork {
+	const plans = machineHarness(harness)?.planProviders ?? [];
+	if (network.mode === "open" || plans.length === 0) return network;
+	const hosts = new Set(network.hosts);
+	for (const provider of plans) hosts.add(wires[credentialWire({ provider, plan: true })].host);
+	return { ...network, hosts: [...hosts].sort() };
 }
 
 /** What E2B is asked for. Null in `open`: nothing is sent, as before network modes. */

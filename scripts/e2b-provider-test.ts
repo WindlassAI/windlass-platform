@@ -93,8 +93,17 @@ import {
 } from "../server/src/github/git.js";
 import { INIT_WORKSPACE } from "../server/src/github/git-flags.js";
 import { execFileSync } from "node:child_process";
-import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
-import { tokenFilePath } from "../server/src/sandbox/token-file.js";
+import {
+	BWRAP_PROBE,
+	DATA_DIR,
+	GIT_USER_ENV,
+	isTurnSandbox,
+	randomId,
+	shellQuote,
+} from "../server/src/sandbox/provider.js";
+import { openModelKeyRelay, tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { GUEST_NODE, planRelaySources } from "../server/src/sandbox/plan-relay.js";
+import { hostedKeyEnv, redactKeyLease } from "../server/src/sandbox/hosted-keys.js";
 import { sleep } from "./check-wait.js";
 import { Report } from "./check-report.js";
 import { matchesSection } from "./check-sections.js";
@@ -128,6 +137,16 @@ async function userError(body: () => Promise<unknown>): Promise<string | null> {
 			? error.message
 			: `not a SandboxUserError: ${error instanceof Error ? error.message : String(error)}`;
 	}
+}
+
+async function expectRejects(body: () => Promise<unknown>, pattern: RegExp, name: string): Promise<void> {
+	let message = "";
+	try {
+		await body();
+	} catch (error) {
+		message = error instanceof Error ? error.message : String(error);
+	}
+	expect(name, pattern.test(message), message || "it did not reject");
 }
 
 const MINUTE = 60_000;
@@ -1423,6 +1442,205 @@ await section("the handle", async () => {
 		"ask() of a sandbox that is not running answers null, as the turn code expects",
 		(await handle.ask(["true"])) === null,
 	);
+});
+
+/** A sandbox image whose plan relay (plan-relay.ts) runs: it listens once it has its sources and token, and ends when its input closes or it is killed. */
+class PlanRelayMachine extends ScriptedMachine {
+	readonly relays: Array<{ command: string; options: E2bCommandOptions; stdin: string; ended: boolean }> = [];
+	constructor(private readonly listens = true) {
+		super(
+			(command, stdin) =>
+				(/ wlp-network [a-z]+ /.test(command)
+					? { stdout: `network ${/ wlp-network ([a-z]+) /.exec(command)?.[1]}\n` }
+					: command.includes("windlass --version")
+						? { stdout: "Windlass 0.7.1+test (linux-x64)\n" }
+						: undefined) ?? (stdin(), undefined),
+		);
+	}
+	override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+		if (command.includes("git-stop")) for (const relay of this.relays) this.end(relay);
+		if (!command.includes(GUEST_NODE)) return super.start(command, options);
+		const relay = { command, options, stdin: "", ended: false };
+		this.relays.push(relay);
+		this.commands.push({ command, options, stdin: "" });
+		let finish: (result: { exitCode: number }) => void = () => {};
+		const done = new Promise<{ exitCode: number }>(resolve => (finish = resolve));
+		this.ends.set(relay, () => finish({ exitCode: 0 }));
+		return {
+			pid: 99,
+			sendStdin: async data => {
+				relay.stdin += data;
+				if (relay.stdin.split("\n").length === 3) {
+					if (this.listens) options.onStdout?.('{"listening":40123}\n');
+					else {
+						options.onStderr?.("[wlp-plan-relay] cannot listen: EACCES\n");
+						this.end(relay, 2);
+					}
+				}
+			},
+			closeStdin: async () => this.end(relay),
+			wait: () => done,
+			disconnect: async () => {},
+			kill: async () => this.end(relay),
+		};
+	}
+	private readonly ends = new Map<object, (code?: number) => void>();
+	private end(relay: { ended: boolean }, code = 0) {
+		if (relay.ended) return;
+		relay.ended = true;
+		this.ends.get(relay)?.(code);
+	}
+}
+
+await section("a plan's relay in the sandbox", async () => {
+	const PLAN_TOKEN = "sk-ant-oat01-FAKE-PLAN-TOKEN-not-real-" + "z".repeat(20);
+	const relayOrigin = "https://relay.example.com";
+	const machines: PlanRelayMachine[] = [];
+	const w = world(
+		{ openProfile: true, modelRelayOrigin: relayOrigin },
+		{
+			machine: () => {
+				const machine = new PlanRelayMachine();
+				machines.push(machine);
+				return machine;
+			},
+		},
+	);
+	const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b-open", harness: "claude" });
+	const handle = (await w.sandboxes.connect(id)) as E2bSandboxHandle;
+	const machine = machines.at(-1)!;
+	const before = machine.commands.length;
+	const relay = await handle.localPlanRelay(PLAN_TOKEN);
+	const started = machine.relays[0];
+	expect(
+		"it runs as the transport user (nobody), started from the image's Node, with a clean environment",
+		started !== undefined &&
+			started.options.gitUser === true &&
+			started.command.includes("git-run") &&
+			Object.entries(started.options.envs ?? {}).every(
+				([key, value]) =>
+					GIT_USER_ENV[key as keyof typeof GIT_USER_ENV] === value || ["LANG", "NO_COLOR"].includes(key),
+			),
+		JSON.stringify(started?.options.envs),
+	);
+	const lines = started?.stdin.split("\n") ?? [];
+	const handed = lines[1] ? JSON.parse(lines[1]) : {};
+	expect(
+		"its program and then the token and a fresh placeholder arrive on its standard input",
+		lines[0] === planRelaySources() && handed.token === PLAN_TOKEN && handed.placeholder === relay.placeholder,
+	);
+	const agentVisible = machine.commands.slice(before).filter(entry => !entry.command.includes(GUEST_NODE));
+	const everywhere = [
+		...machine.commands.map(entry => entry.command + JSON.stringify(entry.options.envs ?? {})),
+		...agentVisible.map(entry => entry.stdin),
+		...machine.files.values(),
+	].join("\n");
+	expect(
+		"the token is on no command line, in no environment, in no other command's input and in no file",
+		!everywhere.includes(PLAN_TOKEN) && !everywhere.includes("FAKE-PLAN-TOKEN"),
+	);
+	const env = hostedKeyEnv("claude", { provider: "anthropic", plan: true }, relay);
+	expect(
+		"Claude Code is pointed at the relay on loopback with the placeholder as its plan token",
+		env.ANTHROPIC_BASE_URL === "http://127.0.0.1:40123" &&
+			env.CLAUDE_CODE_OAUTH_TOKEN === relay.placeholder &&
+			/^wlp-plan\.[A-Za-z0-9_-]{43}$/.test(relay.placeholder) &&
+			env.ANTHROPIC_API_KEY === undefined,
+		JSON.stringify(env),
+	);
+	const redacted = redactKeyLease({ active: false, text: t => t, deep: v => v, held: () => 0 }, relay.placeholder).text(
+		`bearer ${relay.placeholder}`,
+	);
+	expect("the placeholder is redacted from the turn", !redacted.includes(relay.placeholder), redacted);
+	const fileCount = machine.files.size;
+	await relay.close();
+	expect(
+		"the turn's end stops it, and it left no file behind",
+		started?.ended === true && machine.files.size === fileCount,
+	);
+	await expectRejects(() => relay.hand("sk-ant-oat01-another-token-0000"), /ended/, "a closed relay takes no token");
+
+	const controller = new AbortController();
+	const second = await handle.localPlanRelay(PLAN_TOKEN, { signal: controller.signal });
+	controller.abort();
+	await sleep(20);
+	expect("the turn's abort stops it", machine.relays[1]?.ended === true);
+	await second.close();
+	const early = new AbortController();
+	early.abort();
+	await expectRejects(
+		() => handle.localPlanRelay(PLAN_TOKEN, { signal: early.signal }),
+		/abort/i,
+		"an aborted turn starts none",
+	);
+
+	const failing = new PlanRelayMachine(false);
+	const broken = world({ openProfile: true, modelRelayOrigin: relayOrigin }, { machine: () => failing });
+	const brokenId = await broken.sandboxes.create({
+		uid: "u1",
+		sessionId: "s1",
+		profile: "e2b-open",
+		harness: "claude",
+	});
+	const brokenHandle = (await broken.sandboxes.connect(brokenId)) as E2bSandboxHandle;
+	await expectRejects(
+		() => brokenHandle.localPlanRelay(PLAN_TOKEN),
+		/plan relay could not be started in the sandbox: \[wlp-plan-relay\] cannot listen/,
+		"a relay that cannot listen fails the turn, with nothing left running",
+	);
+	expect(
+		"and it was stopped",
+		failing.relays.every(one => one.ended),
+	);
+
+	const keyLease = await openModelKeyRelay(handle, "s1", {
+		provider: "anthropic",
+		generation: "g1",
+		harness: "claude",
+	});
+	expect(
+		"a Settings key still goes through the platform relay, with no relay in the sandbox",
+		keyLease.env.WINDLASS_MODEL_BASE_URL === `${relayOrigin}/model-relay` && machine.relays.length === 2,
+		keyLease.env.WINDLASS_MODEL_BASE_URL,
+	);
+	await keyLease.close();
+
+	// The plan's API is allowed in a Claude Code sandbox, out of `open`, so its relay can reach it; in no other.
+	for (const mode of ["restricted", "none"] as const) {
+		const network = readE2bNetwork({
+			WLP_E2B_NETWORK: mode,
+			WLP_MODEL_RELAY_URL: relayOrigin,
+			WLP_E2B_WINDLASS_VERSION: "0.7.1",
+		});
+		const n = world({ openProfile: true, modelRelayOrigin: relayOrigin, network, maxRunning: 10 });
+		const allowed = async (harness?: "claude" | "codex" | "opencode") => {
+			const made = await n.sandboxes.create({
+				uid: "u1",
+				sessionId: `s-${harness ?? "windlass"}`,
+				profile: harness ? "e2b-open" : "e2b",
+				...(harness && { harness }),
+			});
+			const made1 = n.fake.sandboxes.get(made)!.network?.allowOut ?? [];
+			await n.sandboxes.connect(made);
+			const made2 = n.fake.sandboxes.get(made)!.network?.allowOut ?? [];
+			return { made1, made2, meta: n.fake.sandboxes.get(made)!.metadata };
+		};
+		const claude = await allowed("claude");
+		expect(
+			`${mode}: a Claude Code sandbox may reach api.anthropic.com and the platform relay, at create and at each connect`,
+			claude.made1.includes("api.anthropic.com") &&
+				claude.made2.includes("api.anthropic.com") &&
+				claude.made1.includes("relay.example.com") &&
+				claude.meta[META.harness] === "claude",
+			claude.made2.join(","),
+		);
+		const others = [await allowed("codex"), await allowed("opencode"), await allowed()];
+		expect(
+			`${mode}: no other agent's sandbox may`,
+			others.every(o => !o.made1.includes("api.anthropic.com") && !o.made2.includes("api.anthropic.com")) &&
+				others[2]!.meta[META.harness] === undefined,
+		);
+	}
 });
 
 await section("a sign-in that is forgotten", async () => {

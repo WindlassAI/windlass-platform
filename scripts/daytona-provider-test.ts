@@ -17,6 +17,7 @@ import {
 import { META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { DATA_DIR, shellQuote } from "../server/src/sandbox/provider.js";
+import { GUEST_NODE } from "../server/src/sandbox/plan-relay.js";
 import { leaseToken, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
 import { TokenFile } from "../server/src/sandbox/token-file.js";
 
@@ -116,6 +117,7 @@ const openPty: OpenPty = async ({ onData }) => {
 					cwd: disk,
 					command: frame.command
 						.replaceAll("/tmp/wlp-transport-process-", disk + "/transport-")
+						.replaceAll(GUEST_NODE, process.execPath)
 						.replaceAll(DATA_DIR, disk)
 						.replaceAll("/workspace/", disk + "/"),
 				};
@@ -257,6 +259,27 @@ try {
 	assert.equal((await guest.run("sleep 10", { timeoutMs: 500 })).timedOut, true);
 	assert.equal((await guest.run("true", { gitUser: true })).exitCode, 0);
 	assert.ok(launchers.some(line => line.includes("-u nobody --")));
+	// A Claude plan's relay: as the transport user, its program and token on standard input, gone at the turn's end.
+	const planToken = "sk-ant-oat01-FAKE-DAYTONA-PLAN-" + "q".repeat(30);
+	const launched = launchers.length,
+		sent = inputs.length;
+	const relay = await guest.localPlanRelay!(planToken, {});
+	assert.equal(launchers.length, launched + 1);
+	assert.match(launchers.at(-1)!, /-u nobody --/);
+	const request = JSON.parse(inputs[sent]!);
+	assert.ok(!JSON.stringify(request).includes(planToken));
+	assert.ok(request.command.includes("git-run"));
+	assert.ok(!launchers.join("").includes(planToken));
+	const base = new URL(relay.env.WINDLASS_MODEL_BASE_URL!);
+	assert.equal(base.hostname, "127.0.0.1");
+	const hello = (bearer: string) =>
+		fetch(new URL("/api/hello", base), { method: "HEAD", headers: { authorization: `Bearer ${bearer}` } }).then(
+			r => r.status,
+		);
+	assert.equal(await hello(relay.placeholder), 200);
+	assert.equal(await hello(planToken), 401);
+	await relay.close();
+	await assert.rejects(hello(relay.placeholder));
 	await boxes.suspend(id);
 	assert.equal(await boxes.state(id), "paused");
 	assert.equal((await boxes.list("alice"))[0]?.state, "paused");

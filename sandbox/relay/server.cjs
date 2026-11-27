@@ -600,6 +600,11 @@ exports.createRelay = function createRelay({
 				const lease = nonce ? await provider.authorize(bearer, nonce, req.url) : false;
 				if (!lease) return unauthorized(res);
 				if (typeof lease === "object" && typeof lease.user === "string") user = lease.user;
+				// A reachability check the provider answers itself, once the bearer is known (Claude Code's HEAD /api/hello).
+				if (provider.answersLocally?.(req.method, req.url)) {
+					res.writeHead(200, { "cache-control": "no-store" });
+					return res.end();
+				}
 			} else {
 				const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? "");
 				if (
@@ -633,7 +638,8 @@ exports.createRelay = function createRelay({
 			if (provider) {
 				target = await provider.target(req.url, req.headers, nonce);
 				if (!target) return unauthorized(res);
-				if (target.refused) return reject(res, 403);
+				// A refusal may name its own status and sentence (a turn's request limit); otherwise not allowed.
+				if (target.refused) return reject(res, target.status ?? 403, target.message ? { message: target.message } : {});
 				({ secrets: own, ...target } = target);
 			} else {
 				const token = await readToken().catch(() => undefined);

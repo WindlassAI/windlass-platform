@@ -41,6 +41,7 @@ Run one command from the repository root. None of these needs an E2B account.
 - Write provider logic against `E2bClient`, not the SDK, so `FakeE2b` can test it. When adding a client method, implement it in `./sdk.ts` and `./fake.ts` together.
 - `HostedGuest` changes reach Daytona too; run `scripts/daytona-provider-test.ts` as well.
 - Turn credentials on E2B are relay leases owned by the process hosting the session actor (`server/src/sandbox/relay-leases.ts`).
+  A Claude plan is the exception: `localPlanRelay` of `HostedGuest` runs its relay inside the sandbox as `nobody` (`server/src/sandbox/plan-relay.ts`), and a Claude Code sandbox (`wlp_harness` metadata) may reach Anthropic's API out of `open` (`withPlanHosts`).
 
 ## See also
 

@@ -5,6 +5,7 @@ import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import type { CredentialRef, HarnessId } from "../contract.js";
 import type { KeyWire } from "../../../sandbox/relay/wires.cjs";
 import type { AccessToken, ExecResult, SandboxHandle } from "./api.js";
+import type { LocalModelRelay } from "./plan-relay.js";
 
 export const DATA_DIR = "/home/agent/.local/share/windlass";
 export const WORKSPACE = "/workspace";
@@ -133,6 +134,15 @@ export interface TurnSandbox extends SandboxHandle {
 		signal?: AbortSignal,
 		takeRequest?: TakeRelayRequest,
 	): Promise<KeyTurnRelay>;
+	/**
+	 * A Claude plan's relay inside the sandbox, as another user than the agent's, so the plan's requests leave from
+	 * the sandbox's own address (plan-relay.ts). Where a sandbox has it, a plan turn uses it instead of the platform
+	 * relay. Rejects, with the relay stopped and nothing written, when it cannot start.
+	 */
+	localPlanRelay?(
+		token: string,
+		options: { signal?: AbortSignal; takeRequest?: TakeRelayRequest },
+	): Promise<LocalModelRelay>;
 	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
 }

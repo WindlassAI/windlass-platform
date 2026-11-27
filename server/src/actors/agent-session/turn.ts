@@ -55,7 +55,8 @@ import { VerificationLog, groupReviewPaths } from "../../verified.js";
 import { turnTokens } from "../../factory/budget.js";
 import { reportedModelUsage, usesPlatformModel } from "../../usage.js";
 import { PlatformChecks } from "../../sandbox/platform-checks.js";
-import { itemActor, secretsActor, userActor } from "../internal.js";
+import { itemActor, modelKeyActor, secretsActor, userActor } from "../internal.js";
+import { openSavedCredential } from "../../credentials/transit.js";
 import { attachmentStore, uploadShots } from "../../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../../agent-publish.js";
 import { RULES } from "../../factory/blueprint.js";
@@ -875,7 +876,15 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 	const { sandbox, credential, takeRequest, caps, platformTool, summary } = opened;
 	const { model, key } = credential;
 	const common: RunTurnInput = {
-		...(key && { modelKey: { sessionId: meta.sessionId, key, takeRequest } }),
+		...(key && {
+			modelKey: {
+				sessionId: meta.sessionId,
+				key,
+				takeRequest,
+				openSecret: () =>
+					openSavedCredential(meta.uid, key, (uid, ref, nonce) => modelKeyActor(c, uid).internalCredential(ref, nonce)),
+			},
+		}),
 		prompt: t.text,
 		mode,
 		planMode: active.planMode,

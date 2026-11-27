@@ -7,6 +7,7 @@ Actors ask the sandbox layer to provision a workspace and run a turn on Docker, 
 Run one command from the repository root.
 
 - `cd server && npx tsx ../scripts/model-relay-route-check.ts` exercises the hosted relay route.
+- `cd server && npx tsx --test ../scripts/plan-relay-check.ts` runs the in-sandbox plan relay against a recording upstream.
 - `cd server && npx tsx ../scripts/harness-check.ts` checks the harness capability records and platform tool reach.
 - `cd server && npx tsx ../scripts/e2b-provider-test.ts` exercises E2B with an in-memory client; see the [E2B guide](./e2b/AGENTS.md).
 - `cd server && npx tsx ../scripts/daytona-provider-test.ts` exercises Daytona without credentials.
@@ -58,6 +59,7 @@ Credentials, network and data
 
 - `./token-file.ts` writes a turn's access-token file (`TokenFile`) and opens Settings-key relays.
 - `./relay-leases.ts` holds E2B and machine relay leases, signed placeholders and route limits (`RelayLimiter`).
+- `./plan-relay.ts` starts a Claude plan's relay inside an E2B or Daytona sandbox as the transport user, its source and token on stdin (`localPlanRelay` of `TurnSandbox`).
 - `./handoff.ts` describes the ChatGPT sign-in hand-off in words and numbers.
 - `./hosted-network.ts` holds the hosted allow-list rules (`MAX_HOSTS`, `isHostName`, presets).
 - `./hosted-settings.ts` reads the `WLP_HOSTED_` settings, falling back to the older `WLP_E2B_` names (`hostedName`).

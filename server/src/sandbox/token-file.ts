@@ -99,14 +99,26 @@ export class TokenFileError extends Error {
 	}
 }
 
-/** Settings-key turns get only a relay address and placeholder. */
+/**
+ * Settings-key turns get only a relay address and placeholder. A plan on a sandbox with an address of its own
+ * gets the relay inside it (`TurnSandbox.localPlanRelay`), so the plan's requests leave from there; the token,
+ * opened here for this turn, goes to that relay and nowhere the agent can read.
+ */
 export async function openModelKeyRelay(
 	sandbox: TurnSandbox,
 	sessionId: string,
 	key: KeyReference,
 	signal?: AbortSignal,
 	takeRequest?: TakeRelayRequest,
+	openSecret?: () => Promise<string | null>,
 ): Promise<KeyTurnRelay> {
+	if (key.plan && sandbox.localPlanRelay) {
+		if (!openSecret) throw new Error("A plan turn on this sandbox needs its secret opened for the turn.");
+		const token = await openSecret();
+		signal?.throwIfAborted();
+		if (!token) throw new SandboxUserError("The Claude plan for this turn changed or was removed. Start a new turn.");
+		return sandbox.localPlanRelay(token, { signal, takeRequest });
+	}
 	if (key.harness === "windlass" && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
 	if (!sandbox.modelKeyRelay) throw new TokenFileError("A saved provider key requires a model relay for this sandbox.");
 	if (key.harness === "windlass") {

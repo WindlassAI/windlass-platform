@@ -21,7 +21,7 @@ import { MODEL_PROVIDERS } from "../server/src/contract.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { modelProviderActions } from "../server/src/credentials/keys.js";
 import { CREDENTIAL_TABLES, credentialActions } from "../server/src/credentials/index.js";
-import { sealCredentialTransit } from "../server/src/credentials/transit.js";
+import { openSavedCredential, sealCredentialTransit } from "../server/src/credentials/transit.js";
 import { hostedKeyEnv } from "../server/src/sandbox/hosted-keys.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 import { serverSealer } from "../server/src/signin/seal.js";
@@ -1777,6 +1777,42 @@ async function planWireCheck() {
 		);
 	const betas = { "anthropic-beta": "oauth-2025-04-20,claude-code-20250219,unknown-beta-2099-01-01" };
 
+	// An E2B or Daytona sandbox runs the plan's relay itself (plan-relay.ts): the token is opened for the turn and
+	// handed to it, and no platform lease is made. A generation that changed meanwhile starts nothing.
+	const local: string[] = [];
+	e2b.localPlanRelay = async (secret: string) => {
+		local.push(secret);
+		return {
+			placeholder: "wlp-plan." + "p".repeat(43),
+			env: { WINDLASS_MODEL_BASE_URL: "http://127.0.0.1:1" },
+			hand: async () => {},
+			close: async () => {},
+		};
+	};
+	const ownRelay = e2b;
+	const opener = () => openSavedCredential(uid, ref, d.credential);
+	const inSandbox = await openModelKeyRelay(
+		ownRelay,
+		sessionId,
+		{ ...ref, harness: "claude" },
+		undefined,
+		undefined,
+		opener,
+	);
+	assert.equal(inSandbox.env.WINDLASS_MODEL_BASE_URL, "http://127.0.0.1:1");
+	assert.deepEqual(local, [token]);
+	await assert.rejects(openModelKeyRelay(ownRelay, sessionId, { ...ref, harness: "claude" }), /secret opened/);
+	await assert.rejects(
+		openModelKeyRelay(ownRelay, sessionId, { ...ref, generation: "old", harness: "claude" }, undefined, undefined, () =>
+			openSavedCredential(uid, { ...ref, generation: "old" }, d.credential),
+		),
+		/changed or was removed/,
+	);
+	assert.deepEqual(local, [token]);
+	console.log("ok    claude-plan on a sandbox with its own relay: the token opened for the turn, at its generation");
+
+	// A sandbox without one (hosted Docker forwards to this route the same way): the route's own plan lease.
+	(e2b as { localPlanRelay?: unknown }).localPlanRelay = undefined;
 	const claude = await openModelKeyRelay(e2b, sessionId, { ...ref, harness: "claude" });
 	assert.equal(claude.env.WINDLASS_MODEL_BASE_URL, origin + "/model-relay");
 	assert.deepEqual(hostedKeyEnv("claude", ref, claude), {

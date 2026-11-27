@@ -352,6 +352,8 @@ export interface RunTurnInput {
 		sessionId: string;
 		key: import("../contract.js").CredentialRef;
 		takeRequest?: import("./provider.js").TakeRelayRequest;
+		/** Opens the credential's secret at its pinned generation, null when it changed: for a plan whose relay runs in the sandbox (`TurnSandbox.localPlanRelay`). */
+		openSecret?: () => Promise<string | null>;
 	};
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;

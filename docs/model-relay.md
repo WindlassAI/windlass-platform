@@ -70,7 +70,8 @@ Gemini streaming accepts `?alt=sse`. Anthropic Messages accepts the `interleaved
 beta. A Claude plan lease uses its own wire, `claude-plan` (`credentialWire` in `sandbox/relay/wires.cjs`):
 Claude Code sends its placeholder from `CLAUDE_CODE_OAUTH_TOKEN` as a bearer, and the route sends the plan's
 token as a bearer with the `oauth-2025-04-20` beta allowed. Hosted Docker forwards it with `provider: "claude-plan"`.
-Machines refuse a plan for now. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
+On E2B and Daytona a plan's requests do not go through the route: they leave from the sandbox
+([Plan requests from the sandbox](#plan-requests-from-the-sandbox)). Machines refuse a plan for now. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
 attribution, credentials in query strings, and redirects are refused.
 
 Hosted Docker and paired machines forward key-backed requests to `WLP_MODEL_RELAY_URL`, which must
@@ -112,6 +113,46 @@ for the hostname before the final `http_status:404` rule, pointing at the same l
 app's hostname, and route the DNS name to the tunnel ([deploy/selfhost/README.md](../deploy/selfhost/README.md#the-model-relays-hostname)).
 Elsewhere, point a DNS name at whatever serves `WLP_PUBLIC_URL`, with a certificate for it, and keep the
 `Host` header as the client sent it.
+
+### Plan requests from the sandbox
+
+Through the route, every user's plan requests would reach Anthropic from the platform server's one address.
+E2B and Daytona sandboxes have addresses of their own, so there a plan turn runs the relay inside the
+sandbox (`server/src/sandbox/plan-relay.ts`, the program `sandbox/relay/plan.cjs` on the shared `createRelay`
+and the `claude-plan` wire). Hosted Docker sandboxes share the server's address and keep the route.
+
+- **Who runs it.** The transport user (`nobody`, the user Git transport and its GitHub tokens run as), never
+  `agent`. The agent has no sudo, so it cannot read that process's memory, standard input or `/proc` files, nor
+  signal it. Node is `/usr/local/bin/node` of the image; no template rebuild is needed.
+- **What it gets.** At the turn's start the session opens the plan's token through the user actor
+  (`internalCredential`, `openSavedCredential` in `server/src/credentials/transit.ts`) and checks the turn's pinned
+  generation. The relay's source and then `{token, placeholder, expiresAt}` go to its standard input, one JSON
+  line each. Nothing is written to the sandbox's disk and nothing secret is on a command line or in an
+  environment. Stdin stays open as the control channel: a later `{token}` replaces the token (requests that start
+  after it carry the new one, running ones keep theirs), and the relay asks the platform to count each request
+  against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
+- **What it accepts.** It listens on `127.0.0.1` on a port the kernel picks. It accepts only
+  `Authorization: Bearer <placeholder>`, a fresh `wlp-plan.` placeholder for each turn, and only Claude Code's
+  `claude-plan` routes with that wire's headers and betas. It sends them to `https://api.anthropic.com` with the
+  real bearer and removes the token from every answer. It answers `HEAD /api/hello` itself. An upstream error,
+  a 401 included, keeps its status with the provider's scrubbed error code, type and message. Claude Code gets
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>`; the placeholder is
+  redacted from the turn like a key lease's.
+- **Lifetime.** The relay starts with the turn and is stopped (stdin closed, then its process group killed) when
+  the turn ends or is aborted, so a paused or snapshotted sandbox keeps no token. If it cannot start or listen,
+  the turn fails; the token is never put in the sandbox instead. A relay whose server died mid-turn stops itself
+  at the turn's limit plus a minute, by the wall clock.
+- **Revocation is per turn.** The route checks the plan's generation at every request. This relay checks it once,
+  at the turn's start. A reconnected or removed plan, or `WLP_PLAN_USERS` turned off, takes effect at the next
+  turn, not mid-turn.
+- **E2B network.** Out of `open`, a Claude Code sandbox (its `wlp_harness` metadata) may also reach
+  `api.anthropic.com`, at create and at every connect (`withPlanHosts` in `server/src/sandbox/e2b/network.ts`). Other
+  agents' sandboxes may not. The relay's host stays allowed: Settings keys still use the route. Daytona runs open only.
+
+Anything that can run as the transport user can read the token while a turn runs, as it can a GitHub token
+during a push. On E2B that rests on the agent having no sudo and on envd's API not running commands for
+processes inside the sandbox; on Daytona, on the launcher's sudo rule and the toolbox not being reachable by
+the agent.
 
 ## The placeholder
 
@@ -267,6 +308,12 @@ To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish 
   replaced while a request streams, caps and waiting, the ceiling per user, error codes kept, the relay's
   own `relay_lease_ended`, a lease's end stopping its running requests, expired files deleted, tokens
   removed from responses, and only the two routes.
+- `scripts/plan-relay-check.ts` (CI heavy `rules`): the in-sandbox plan relay as a local process with a recording
+  upstream: bearer swapped, another placeholder, host or route refused, `HEAD /api/hello` answered locally, the
+  token scrubbed from streams and error bodies, a 401 kept, a replaced token used next, the turn's request limit,
+  close, abort and expiry, and no start without a token on stdin. `scripts/e2b-provider-test.ts` ("a plan's relay
+  in the sandbox") and `scripts/daytona-provider-test.ts` cover how each provider starts and stops it and the E2B
+  allow list.
 - `scripts/model-relay-route-check.ts` (CI heavy `rules`): the E2B route, with signed, expired, forged and
   ended leases, refresh, caps, a queued request whose turn ended, bodies sent whole and capped, the rate per
   user, ended leases remembered, `close` aborting running requests here and in another process, the
