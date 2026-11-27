@@ -4,6 +4,8 @@ export interface SlackChannel { id: string; name: string }
 export interface SlackMapping {
 	channel: SlackChannel;
 	repository: { id: GithubId; owner: string; name: string };
+	/** Post plan and question content, which every channel member can read. Off: links and choice buttons only. */
+	details: boolean;
 }
 export interface SlackIdentity { teamId: string; workspaceName: string }
 export type SlackStatus =
@@ -18,6 +20,7 @@ export interface SlackSettingsActions {
 	slackChannels(): Promise<SlackChannel[]>;
 	saveSlackMapping(input: { channelId: string; repositoryId: GithubId }): Promise<SlackStatus>;
 	removeSlackMapping(channelId: string): Promise<SlackStatus>;
+	setSlackDetails(input: { channelId: string; details: boolean }): Promise<SlackStatus>;
 	disconnectSlack(): Promise<SlackStatus>;
 	linkSlack(ticket: string): Promise<SlackStatus>;
 	unlinkSlack(teamId: string): Promise<SlackStatus>;

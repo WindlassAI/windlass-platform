@@ -33,7 +33,8 @@ function parseCommand(raw: string): SlackDelivery | null {
 
 let client: ReturnType<typeof createClient<Registry>> | undefined;
 const refusals = new AddressBudget(config.httpLimits.webhookRefusals);
-export async function slackWebhookRoute(request: Request): Promise<Response> {
+/** The request body after Slack's signature check, or the response that refuses it. */
+export async function readSigned(request: Request): Promise<Buffer | Response> {
 	if (!slackConfig()) return new Response(null, { status: 404 });
 	if (request.method !== "POST") return new Response(null, { status: 405 });
 	const refuse = () => {
@@ -57,6 +58,25 @@ export async function slackWebhookRoute(request: Request): Promise<Response> {
 	const bytes = Buffer.concat(chunks, length);
 	const mac = createHmac("sha256", process.env.WLP_SLACK_SIGNING_SECRET!).update(`v0:${stamp}:`).update(bytes).digest();
 	if (!timingSafeEqual(Buffer.from(signature.slice(3), "hex"), mac)) return refuse();
+	return bytes;
+}
+
+type Workspace = ReturnType<ReturnType<typeof createClient<Registry>>["slackWorkspace"]["get"]>;
+/** Only wait for durable admission. Slack can resend the same event if the engine is slow. */
+export async function admit(teamId: string, receive: (workspace: Workspace) => Promise<unknown>): Promise<Response> {
+	client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+	const workspace = client.slackWorkspace.get([teamId], { params: serviceParams() });
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([receive(workspace), new Promise<never>((_, reject) => { timer = setTimeout(reject, 2400); })]);
+	} catch (error) { if (!isActorGone(error)) return new Response(null, { status: 503 }); }
+	finally { clearTimeout(timer); }
+	return new Response(null, { status: 200 });
+}
+
+export async function slackWebhookRoute(request: Request): Promise<Response> {
+	const bytes = await readSigned(request);
+	if (bytes instanceof Response) return bytes;
 	let delivery;
 	try {
 		const raw = bytes.toString("utf8");
@@ -65,14 +85,8 @@ export async function slackWebhookRoute(request: Request): Promise<Response> {
 	if (delivery instanceof Response) return delivery;
 	if (delivery && /^T[A-Z0-9]+$/.test(delivery.teamId) && /^[CG][A-Z0-9]+$/.test(delivery.channelId) && /^[UW][A-Z0-9]+$/.test(delivery.userId)) {
 		delivery.text = delivery.text.slice(0, 4000);
-		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
-		const workspace = client.slackWorkspace.get([delivery.teamId], { params: serviceParams() });
-		// Only wait for durable admission. Slack can resend the same event if the engine is slow.
-		let timer: NodeJS.Timeout | undefined;
-		try {
-			await Promise.race([workspace.internalReceive(delivery), new Promise<never>((_, reject) => { timer = setTimeout(reject, 2400); })]);
-		} catch (error) { if (!isActorGone(error)) return new Response(null, { status: 503 }); }
-		finally { clearTimeout(timer); }
+		const admitted = delivery;
+		return admit(delivery.teamId, workspace => workspace.internalReceive(admitted));
 	}
 	return new Response(null, { status: 200 });
 }

@@ -3,7 +3,8 @@
 // Creation requires the user actor’s grant for this item.
 
 import { randomUUID } from "node:crypto";
-import { performSlackWrite, slackEffects, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import { performSlackWrite, slackEffects, SLACK_QUESTIONS, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import { slackChoices } from "../slack/blocks.js";
 import type { SlackBinding } from "../factory/intake.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
@@ -462,7 +463,7 @@ type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckE
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number } | { kind: "network_reported"; at: number }, { baseSha, nudged, issue, overflow, secret }: { secret?: RequestedSecretSave; overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number } | { kind: "network_reported"; at: number }, { baseSha, nudged, issue, overflow, secret, slackUser }: { secret?: RequestedSecretSave; overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said">; slackUser?: string } = {}): Promise<boolean> {
 	// Order outside facts (including cancellation and GitHub events) after a claimed answer.
 	if (fact.kind !== "claim_secret" && fact.kind !== "settle_secret" && c.vars.savingSecret) await c.vars.savingSecret.catch(() => {});
 	const stored = c.vars.stored;
@@ -530,7 +531,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
-	if (stored.meta.slack) effects.push(...slackEffects(before, next));
+	if (stored.meta.slack) effects.push(...slackEffects(before, next, fact, slackUser));
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -1688,8 +1689,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (effect.kind === "slack_write") {
 		const binding = meta.slack!;
 		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
-		await performSlackWrite(c.db, binding, item.id, effect, (message, thread) =>
-			workspace.internalPost(binding.channelId, binding.generation, message, thread));
+		await performSlackWrite(c.db, binding, item, effect, {
+			post: (message, thread) => workspace.internalPost(binding.channelId, binding.generation, message, thread, { uid: meta.uid, id: item.id }),
+			update: (ts, message) => workspace.internalUpdate(binding.channelId, binding.generation, ts, message),
+		});
 		return true;
 	}
 	if (effect.kind === "linear_write") {
@@ -2178,6 +2181,15 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 	}
 }
 
+/** A Slack button answers only the question it was posted for, with a choice Slack may offer. */
+function slackRefusal(item: FactoryItem, fact: Fact, question: string) {
+	const open = item.question;
+	if (open?.id !== question) throw new UserError("This question is no longer open.", { code: "item_conflict" });
+	const choice = fact.kind === "approve_plan" ? "approve" : fact.kind === "answer" ? fact.choice : null;
+	if (!slackChoices(open, item.featurePlan).some(offered => offered.id === choice))
+		throw new UserError("Answer this question in Windlass.", { code: "item_conflict" });
+}
+
 const CONFLICT: Record<ItemAction["kind"], string> = {
 	update_feature: "The feature cannot be updated at this step.",
 	cancel_subtask: "This subtask is no longer running.",
@@ -2202,6 +2214,7 @@ export const workItem = actor({
 			await db.execute(FEATURE_CI_CACHE);
 			await db.execute(CHECKS_TABLE);
 			await db.execute(SLACK_RECEIPTS);
+			await db.execute(SLACK_QUESTIONS);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
 			await db.execute(FEEDBACK_TABLE);
@@ -2444,12 +2457,13 @@ export const workItem = actor({
 		},
 
 		/** A person's action (`UserActions.actOnItem`), by `by` ("person:<uid>"). Refused with `item_conflict` when it changes nothing. */
-		internalAct: async (c, input: { action: ItemAction; by: string }): Promise<ItemView> => {
+		internalAct: async (c, input: { action: ItemAction; by: string; slack?: { user: string; question: string } }): Promise<ItemView> => {
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			if (c.vars.savingSecret) throw new UserError("The secret is being saved.", { code: "item_conflict" });
 			const fact = factOf(input?.action, String(input?.by), Date.now());
+			if (input.slack) slackRefusal(stored.item, fact, input.slack.question);
 			let changed: boolean;
 			try {
 				if (fact.kind === "update_feature" || (fact.kind === "answer" && fact.choice === "update_feature")) {
@@ -2480,7 +2494,7 @@ export const workItem = actor({
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
-				changed = await take(c, fact);
+				changed = await take(c, fact, { slackUser: input.slack?.user });
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
 				throw clientError(c.log, error, "The item could not be changed. Try again.");

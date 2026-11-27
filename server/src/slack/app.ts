@@ -1,6 +1,7 @@
 import { UserError } from "rivetkit";
 import { slackConfig } from "../config.js";
 import type { SlackChannel } from "../contract.js";
+import type { Block, SlackMessage } from "./blocks.js";
 
 export const SLACK_SCOPES = ["app_mentions:read", "commands", "chat:write", "channels:read", "groups:read"];
 export function settings() {
@@ -21,7 +22,7 @@ async function call(method: string, fields: Record<string, string>, token?: stri
 	const answer = await response.json().catch(() => { throw new Error(`Slack could not complete ${method}.`); });
 	if (!response.ok || !answer.ok) {
 		// Slack may echo submitted data. Only expose our own error messages.
-		if (["channel_not_found", "not_in_channel", "is_archived", "invalid_auth", "token_revoked", "account_inactive"].includes(answer.error))
+		if (["channel_not_found", "not_in_channel", "is_archived", "invalid_auth", "token_revoked", "account_inactive", "message_not_found", "cant_update_message"].includes(answer.error))
 			throw new UserError("The Slack channel or connection is no longer available.", { code: "slack_unavailable" });
 		throw new Error(`Slack could not complete ${method}.`);
 	}
@@ -55,8 +56,18 @@ export async function listChannels(token: string): Promise<SlackChannel[]> {
 }
 
 export const revoke = (token: string) => call("auth.revoke", {}, token);
-export const postPrivate = (token: string, channel: string, user: string, text: string) => call("chat.postEphemeral", { channel, user, text }, token);
-export async function postMessage(token: string, channel: string, text: string, threadTs: string | null): Promise<string> {
-	const result = await call("chat.postMessage", { channel, text, unfurl_links: "false", unfurl_media: "false", ...(threadTs && { thread_ts: threadTs }) }, token);
+export function postPrivate(token: string, channel: string, user: string, text: string, threadTs?: string | null) {
+	return call("chat.postEphemeral", { channel, user, text, ...(threadTs && { thread_ts: threadTs }) }, token);
+}
+const content = (message: SlackMessage) => ({ text: message.text, ...(message.blocks && { blocks: JSON.stringify(message.blocks) }) });
+export async function postMessage(token: string, channel: string, message: SlackMessage, threadTs: string | null): Promise<string> {
+	const result = await call("chat.postMessage", { channel, ...content(message), unfurl_links: "false", unfurl_media: "false", ...(threadTs && { thread_ts: threadTs }) }, token);
 	return result.ts;
+}
+export async function updateMessage(token: string, channel: string, ts: string, message: SlackMessage): Promise<void> {
+	await call("chat.update", { channel, ts, ...content(message), blocks: JSON.stringify(message.blocks ?? []) }, token);
+}
+/** `trigger` expires three seconds after the press. */
+export async function openView(token: string, trigger: string, view: Block): Promise<void> {
+	await call("views.open", { trigger_id: trigger, view: JSON.stringify(view) }, token);
 }

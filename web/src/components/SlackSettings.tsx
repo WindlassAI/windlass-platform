@@ -95,11 +95,14 @@ export function SlackSettings() {
 		{status && <h4 className="usage-title">Workspace</h4>}
 		{status?.state === "disconnected" && <p className="field-note">No workspace connected.</p>}
 		{status?.state === "connected" && <>
-			<p className="field-note">Connected to {status.workspaceName}. Invite Windlass to a channel, then choose its repository.</p>
+			<p className="field-note">Connected to {status.workspaceName}. Invite Windlass to a channel, then choose its repository. Every channel member can read posted plan and question details. Without them, Windlass posts links and choice buttons only.</p>
 			<ul className="settings-list" aria-label="Mapped channels">{status.mappings.map(mapping => {
 				const name = channels?.find(ch => ch.id === mapping.channel.id)?.name ?? mapping.channel.name;
 				return <li key={mapping.channel.id} className="usage-kept-row">
-				<div className="usage-kept-main"><span className="usage-kept-title">#{name}</span><p className="agent-meta">{mapping.repository.owner}/{mapping.repository.name}</p></div>
+				<div className="usage-kept-main"><span className="usage-kept-title">#{name}</span><p className="agent-meta">{mapping.repository.owner}/{mapping.repository.name}</p>
+					<label className="check"><input type="checkbox" role="switch" checked={mapping.details} disabled={busy}
+						onChange={event => { const details = event.target.checked; void run(async () => setStatus(await api.setSlackDetails({ channelId: mapping.channel.id, details }))); }} />Post plan and question details</label>
+				</div>
 				<button type="button" className="button button-outline button-small" disabled={busy} aria-label={`Change mapping for ${name}`} onClick={() => {
 					setChannel(mapping.channel.id);
 					setRepositoryId(String(mapping.repository.id));

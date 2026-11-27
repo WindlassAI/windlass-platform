@@ -1101,7 +1101,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const repository = GITHUB_REPOSITORIES.find(repo => repo.id === repositoryId);
 				if (!channel || !repository?.canPush) throw new Error("Choose a channel and a repository with write access.");
 				const { id, owner: login, name } = repository;
-				keep(slackKey("mappings"), JSON.stringify([...mappings().filter(m => m.channel.id !== channelId), { channel, repository: { id, owner: login, name } }]));
+				keep(slackKey("mappings"), JSON.stringify([...mappings().filter(m => m.channel.id !== channelId), { channel, repository: { id, owner: login, name }, details: !repository.private }]));
+				return status();
+			},
+			async setSlackDetails({ channelId, details }) {
+				owner();
+				keep(slackKey("mappings"), JSON.stringify(mappings().map(m => m.channel.id === channelId ? { ...m, details } : m)));
 				return status();
 			},
 			async removeSlackMapping(id) {
