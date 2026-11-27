@@ -134,7 +134,7 @@ try {
 	console.log("ok  merge request create/read/update, scoped notes and issue reactions");
 
 	const pipe = fixture.addPipeline(project, head, branch, "failed");
-	const job = fixture.addJob(project, pipe, "guide/test", "failed", `The guide check failed\n${token}\n`);
+	const job = fixture.addJob(project, pipe, "guide/test", "failed", `${"progress line\n".repeat(20_000)}The guide check failed\n${token}\n`);
 	const ciTarget = { ...target, head };
 	const restrictedUrl = new URL(app.authorizeUrl(state, challengeOf(verifier)));
 	restrictedUrl.searchParams.set("scope", "read_user");
@@ -150,7 +150,7 @@ try {
 	assert.ok(failed && failed.state === "failed" && failed.name === job.name);
 	assert.ok((await (await host.jobLog(token, owner, name, String(job.id))).text()).includes("guide check failed"));
 	const log = ci.logs.find(l => l.name === job.name);
-	assert.ok(log?.text?.includes("guide check failed") && log.untrusted && !log.text.includes(token));
+	assert.ok(log?.text?.includes("guide check failed") && log.untrusted && !log.text.includes(token) && log.truncated, "the end of a long trace is kept");
 	const stale = await host.rerunJobs({ ...ciTarget, head: mr.baseSha }, [{ name: job.name, jobId: String(job.id), retryRunId: String(pipe.id), failed: true }]);
 	assert.deepEqual(stale.accepted, []);
 	const retry = await host.rerunJobs(ciTarget, [{ name: job.name, jobId: String(job.id), retryRunId: String(pipe.id), failed: true }]);

@@ -113,6 +113,39 @@ export function logTail(raw: string, cut: boolean): { text: string; truncated: b
 	return { text: tail, truncated };
 }
 
+/**
+ * The end of a streamed log. Only the end is kept while it streams; a log larger than LOG_MAX_BYTES is
+ * not read to its end, and none of it is returned, since its end is what matters.
+ */
+export async function readLogTail(body: ReadableStream<Uint8Array>, clean: (text: string) => string = text => text): Promise<{ text: string; truncated: boolean } | { why: string }> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let kept = "";
+	let bytes = 0;
+	let cut = false;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			if (bytes > LOG_MAX_BYTES) {
+				await reader.cancel();
+				return { why: `the log is larger than ${LOG_MAX_BYTES / 1024 / 1024} MiB and was not read to its end` };
+			}
+			kept += decoder.decode(value, { stream: true });
+			// Keep twice the tail, so a line cut here is not the first one kept.
+			if (kept.length > LOG_TAIL_CHARS * 2) {
+				kept = kept.slice(-LOG_TAIL_CHARS * 2);
+				cut = true;
+			}
+		}
+		kept += decoder.decode();
+	} catch {
+		return { why: "the log could not be read to its end" };
+	}
+	return logTail(clean(kept), cut);
+}
+
 const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, cancelled: 2, pending: 3, not_run: 4, failed: 5 };
 
 /** Keep separate Actions workflows, even when they give their jobs the same name. */

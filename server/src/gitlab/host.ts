@@ -1,5 +1,5 @@
 import type { GithubId, GithubRepository } from "../contract.js";
-import { JOB_READS_PER_READING, LOG_MAX_BYTES, LOGS_PER_READING, logTail, type CiLog, type CiReading, type CiRun, type CiTarget } from "../codehost/ci.js";
+import { JOB_READS_PER_READING, LOGS_PER_READING, readLogTail, type CiLog, type CiReading, type CiRun, type CiTarget } from "../codehost/ci.js";
 import type { CodeHost, Pull } from "../codehost/types.js";
 import { redact } from "../github/redact.js";
 import { verifiedWords } from "../verified.js";
@@ -48,22 +48,13 @@ function state(status: unknown): CiRun["state"] {
 }
 
 async function failureLog(app: GitlabApp, token: string, target: CiTarget, run: CiRun): Promise<CiLog> {
-	const base = { name: run.name, untrusted: true as const };
-	try {
-		const reader = (await app.jobTrace(token, target.repositoryId, run.jobId!)).body?.getReader();
-		if (reader) {
-			const chunks: Uint8Array[] = [];
-			let size = 0;
-			for (;;) {
-				const { value, done } = await reader.read();
-				if (done) return { ...base, ...logTail(redact(Buffer.concat(chunks, size).toString("utf8"), [token]), false) };
-				size += value.byteLength;
-				if (size > LOG_MAX_BYTES) { await reader.cancel(); break; }
-				chunks.push(value);
-			}
-		}
-	} catch { /* Never return an upstream diagnostic or a credential. */ }
-	return { ...base, text: null, why: "The GitLab job trace could not be read." };
+	const none = (why: string): CiLog => ({ name: run.name, untrusted: true, text: null, why });
+	let body;
+	try { body = (await app.jobTrace(token, target.repositoryId, run.jobId!)).body; }
+	catch { return none("The GitLab job trace could not be read."); } // Never return an upstream diagnostic or a credential.
+	if (!body) return none("The GitLab job trace could not be read.");
+	const tail = await readLogTail(body, text => redact(text, [token]));
+	return "why" in tail ? none(tail.why) : { name: run.name, untrusted: true, ...tail };
 }
 
 /** The latest pipeline for this commit/ref. The pipeline verdict matters too (e.g. downstream jobs). */

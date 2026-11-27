@@ -1,6 +1,6 @@
 import {
-	CI_POLLING, JOB_READS_PER_READING, LOG_MAX_BYTES, LOG_TAIL_CHARS, LOGS_PER_READING,
-	ciState, distinctChecks, logTail, plain, type CiLog, type CiReading, type CiRun, type CiTarget, type RerunnableJob,
+	CI_POLLING, JOB_READS_PER_READING, LOGS_PER_READING,
+	ciState, distinctChecks, plain, readLogTail, type CiLog, type CiReading, type CiRun, type CiTarget, type RerunnableJob,
 } from "../codehost/ci.js";
 import { environmentFailure } from "../factory/check-environment.js";
 import { parse } from "yaml";
@@ -96,32 +96,8 @@ async function readLog(app: GithubApp, token: string, owner: string, name: strin
 		if (response.status === 404 || response.status === 410) return none("GitHub no longer has the log");
 		return none(`GitHub answered ${response.status} for the log`);
 	}
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let kept = "";
-	let bytes = 0;
-	let cut = false;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			bytes += value.byteLength;
-			if (bytes > LOG_MAX_BYTES) {
-				await reader.cancel();
-				return none(`the log is larger than ${LOG_MAX_BYTES / 1024 / 1024} MiB and was not read to its end`);
-			}
-			kept += decoder.decode(value, { stream: true });
-			// Keep twice the tail, so a line cut here is not the first one kept.
-			if (kept.length > LOG_TAIL_CHARS * 2) {
-				kept = kept.slice(-LOG_TAIL_CHARS * 2);
-				cut = true;
-			}
-		}
-		kept += decoder.decode();
-	} catch {
-		return none("the log could not be read to its end");
-	}
-	const tail = logTail(kept, cut);
+	const tail = await readLogTail(response.body);
+	if ("why" in tail) return none(tail.why);
 	return { name: run.name, untrusted: true, ...tail };
 }
 
