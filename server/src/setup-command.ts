@@ -46,6 +46,7 @@ export interface SetupProject {
 
 /** The key of a repository of a GitHub connection, by GitHub's id for it. Null for anything that is not such an id. */
 export function setupProjectKey(repositoryId: unknown): string | null {
+	if (typeof repositoryId === "string" && /^gitlab:[1-9][0-9]{0,18}$/.test(repositoryId)) return repositoryId;
 	return isGithubId(repositoryId) ? `github:${repositoryId}` : null;
 }
 
@@ -55,10 +56,10 @@ export function setupProjectKey(repositoryId: unknown): string | null {
  * session's files have no say in it.
  */
 export function setupProjectOf(session: {
-	repo?: { id: GithubId; owner: string; name: string } | null;
+	repo?: { provider?: "github" | "gitlab"; id: GithubId; owner: string; name: string } | null;
 }): SetupProject | null {
 	const repo = session.repo;
-	if (!repo) return null;
+	if (!repo || repo.provider === "gitlab") return null;
 	const key = setupProjectKey(repo.id);
 	return key === null ? null : { key, label: `${repo.owner}/${repo.name}` };
 }

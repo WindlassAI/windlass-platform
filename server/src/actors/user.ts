@@ -315,6 +315,7 @@ import {
 	createSessionActor,
 	isSessionGone,
 	isDuplicateKey,
+	isActorGone,
 	itemActor,
 	itemScreenshots,
 	modelKeyCaller,
@@ -565,6 +566,10 @@ function setupCommandOf(raw: unknown): string {
 	}
 }
 
+function sessionSetupKey(session: SessionSummary | undefined) {
+	return session?.repository?.provider === "gitlab" ? null : setupProjectKey(session?.repository?.id);
+}
+
 function setupKeyOf(repositoryId: unknown): string {
 	const key = setupProjectKey(repositoryId);
 	if (key === null) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
@@ -680,7 +685,11 @@ function secretInput<T>(clean: () => T): T {
 function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
 	let newest: SessionSummary | null = null;
 	for (const session of vars.sessions.values())
-		if (session.repository?.id === repositoryId && (newest === null || session.createdAt > newest.createdAt))
+		if (
+			session.repository?.provider !== "gitlab" &&
+			session.repository?.id === repositoryId &&
+			(newest === null || session.createdAt > newest.createdAt)
+		)
 			newest = session;
 	const known = newest?.repository;
 	return known ? `${known.owner}/${known.name}` : "";
@@ -1097,7 +1106,12 @@ async function makeSession(
 	}
 	// A repository of the user's GitHub connection: GitHub is asked now whether this user may read it.
 	let repo: StoredRepository | null = null;
-	if (input.repository !== undefined && input.repository !== null) {
+	if (item?.gitlab) {
+		const { project, iid } = item.gitlab;
+		const issue = Number(iid);
+		repo = { ...project, installationId: project.id, ...(Number.isSafeInteger(issue) && { closesIssue: issue }) };
+		repoUrl = project.url + ".git";
+	} else if (input.repository !== undefined && input.repository !== null) {
 		if (repoUrl !== null)
 			throw new UserError("Choose a repository from GitHub or paste an address, not both.", { code: "bad_input" });
 		const { id, branch } = input.repository;
@@ -1151,7 +1165,7 @@ async function makeSession(
 		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
 		const hostedSize =
 			place.kind === "hosted"
-				? await sessionHostedSize(c, input.hostedSize, repo ? setupKeyOf(repo.id) : null, item)
+				? await sessionHostedSize(c, input.hostedSize, repo?.provider === "github" ? setupKeyOf(repo.id) : null, item)
 				: undefined;
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find(candidate => candidate.id === input.profile);
@@ -1222,7 +1236,7 @@ async function makeSession(
 			modelInput(() => checkItemEffort(models, model, item.effort, caps.models === "harness"));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
-		if (repo && setupCommand !== null)
+		if (repo?.provider === "github" && setupCommand !== null)
 			await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
 
 		let title = givenTitle ?? DEFAULT_TITLE;
@@ -2224,17 +2238,68 @@ export const user = actor({
 			const { github, profile } = c.vars;
 			if (!github?.webhookLinked || !github.installations.some(i => i.id === installation)) return null;
 			for (const session of c.vars.sessions.values()) {
-				if (session.repository?.id !== repository || session.pullRequest?.number !== pr) continue;
+				if (
+					session.repository?.provider === "gitlab" ||
+					session.repository?.id !== repository ||
+					session.pullRequest?.number !== pr
+				)
+					continue;
 				const personal = !session.item && !session.environmentBuild && profile && mayUse(profile, config.access);
 				return { sessionId: personal ? session.id : null };
 			}
 			// A finished item's PR can still be linked after it leaves the live webhook directory.
 			for (const item of c.vars.items.items.values()) {
-				if (item.repository.id === repository && item.pullRequest?.number === pr) return { sessionId: null };
+				if (
+					item.repository.provider !== "gitlab" &&
+					item.repository.id === repository &&
+					item.pullRequest?.number === pr
+				)
+					return { sessionId: null };
 				if (item.repositories?.some(r => r.repositoryId === repository && r.pr?.number === pr))
 					return { sessionId: null };
 			}
 			return null;
+		},
+		internalGitlabIntake: (c, delivery: import("./issue-intake.js").GitlabTrigger) =>
+			itemActions.internalGitlabIntake(c, delivery, itemSession(c)),
+		internalGitlabWake: async (
+			c,
+			delivery: Extract<import("../gitlab/webhook.js").GitlabDelivery, { event: "pipeline" | "merge_request" }>,
+		) => {
+			requireServiceFor(c, "call");
+			const nudges = [...c.vars.items.items.values()].flatMap(item => {
+				const repo = item.repository;
+				if (
+					repo.provider !== "gitlab" ||
+					String(repo.id) !== delivery.projectId ||
+					!item.pullRequest ||
+					["done", "failed", "cancelled"].includes(item.state)
+				)
+					return [];
+				// A merge request's pipeline belongs to that MR only: its head may be a merged-results commit, so match it by MR.
+				if (delivery.iid !== undefined && String(item.pullRequest.number) !== String(delivery.iid)) return [];
+				const pr = item.pullRequest.number;
+				const subject =
+					delivery.event === "pipeline"
+						? { kind: "ci" as const, head: delivery.head, ...(delivery.iid !== undefined && { pr }) }
+						: { kind: "pr" as const, pr };
+				return [
+					{
+						id: item.id,
+						nudge: () =>
+							c
+								.client()
+								.workItem.get([c.key[0], item.id], { params: serviceParams() })
+								.internalGitlabNudge({ projectId: delivery.projectId, ...subject }),
+					},
+				];
+			});
+			// A nudge only brings a poll forward. One item failing must neither stop the others nor redeliver the event to all of them.
+			const results = await Promise.allSettled(nudges.map(n => n.nudge()));
+			results.forEach((result, i) => {
+				if (result.status === "rejected" && !isActorGone(result.reason))
+					console.warn(`[wlp] gitlab.nudge_failed item=${nudges[i]!.id}`);
+			});
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) =>
 			itemActions.internalGithubIntake(c, input, itemSession(c)),
@@ -2285,6 +2350,7 @@ export const user = actor({
 		},
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: itemActions.actOnItem,
+		mergeGitlabItem: itemActions.mergeGitlabItem,
 		factoryLimits: itemActions.factoryLimits,
 		apiTokens: itemActions.apiTokens,
 		createApiToken: itemActions.createApiToken,
@@ -2755,7 +2821,7 @@ export const user = actor({
 		): Promise<{ allowed: boolean; hosts: string[]; network: RepositoryNetwork }> => {
 			requireService(c);
 			const session = c.vars.sessions.get(boundedText(input?.sessionId, 200));
-			const project = setupProjectKey(session?.repository?.id);
+			const project = sessionSetupKey(session);
 			if (!session || project === null)
 				throw new UserError(
 					"This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox (WLP_E2B_NETWORK_ALLOW).",
@@ -2797,7 +2863,7 @@ export const user = actor({
 		): Promise<{ filed: string[]; full: string[] }> => {
 			requireService(c);
 			const session = c.vars.sessions.get(boundedText(input?.sessionId, 200));
-			const project = setupProjectKey(session?.repository?.id);
+			const project = sessionSetupKey(session);
 			if (!session || project === null || !Array.isArray(input?.hosts)) return { filed: [], full: [] };
 			return await fileRequests(
 				c.db,
@@ -2909,7 +2975,7 @@ export const user = actor({
 		): Promise<void> => {
 			requireService(c);
 			const session = c.vars.sessions.get(boundedText(sessionId, 200));
-			const project = setupProjectKey(session?.repository?.id);
+			const project = sessionSetupKey(session);
 			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
 			await changeEnvironments(c, host =>
 				environmentNudge(
@@ -2988,7 +3054,7 @@ export const user = actor({
 			const session = c.vars.sessions.get(sessionId);
 			if (!session || !validRequestedSecretName(name))
 				throw new UserError("That secret request is unavailable.", { code: "bad_secret" });
-			return requestedSecretConflict(c.db, setupProjectKey(session.repository?.id), name);
+			return requestedSecretConflict(c.db, sessionSetupKey(session), name);
 		},
 
 		internalSaveRequestedSecret: async (c, sessionId: string, input: RequestedSecretSave): Promise<void> => {
@@ -2997,7 +3063,7 @@ export const user = actor({
 			const session = c.vars.sessions.get(sessionId);
 			if (!session || !validRequestedSecretName(input.name))
 				throw new UserError("That secret request is unavailable.", { code: "bad_secret" });
-			const project = setupProjectKey(session.repository?.id) ?? ACCOUNT_SECRET_PROJECT;
+			const project = sessionSetupKey(session) ?? ACCOUNT_SECRET_PROJECT;
 			if (project !== input.project)
 				throw new UserError("The requested secret’s scope has changed.", { code: "bad_secret" });
 			if (session.place.kind === "machine" && !(await machineSecrets(c.db, session.place.machineId)))
@@ -3087,7 +3153,7 @@ export const user = actor({
 				})),
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 			};
-			const project = setupProjectKey(session.repository?.id);
+			const project = sessionSetupKey(session);
 			if (project === null)
 				return { project: null, secrets: [], checks: [], account, requestedNames, ...(redactOnly && { redactOnly }) };
 			// The hosts its repository's list allows, for a hosted sandbox. A cross-repo feature's own session reads every

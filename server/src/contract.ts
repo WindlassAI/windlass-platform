@@ -1,7 +1,7 @@
 /**
  * Shared wire types and runtime constants for the actors, runner and web app. Keep all runtime imports browser-safe.
  * This file holds sandboxes, platform info, login and session basics (HarnessId, SessionSummary) and re-exports:
- * contract/github.ts (GitHub, Linear, publishing), repository.ts (setup, checks, environments, network, secrets),
+ * contract/github.ts (GitHub, GitLab, Linear, publishing), repository.ts (setup, checks, environments, network, secrets),
  * account.ts (settings, model providers, API tokens), machines.ts, items.ts (work items), reviews.ts,
  * timeline.ts (Windlass/ACP events, timeline), questions.ts (questions, MCP servers), actors.ts (actor
  * actions/events, snapshot), limits.ts (endpoints, paths, size limits), usage.ts, hosted-sizes.ts, isolation.ts.

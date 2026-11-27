@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { StrictMode, act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockClient } from "../api/mock";
@@ -233,9 +233,13 @@ it("chooses the default place on Machines, its isolation and what happens when i
 	}
 });
 
-describe("Linear in Settings", () => {
-	async function open(client: ReturnType<typeof createMockClient>, hash = "") {
-		const { url, redirectPrefix } = await client.login.start();
+describe("Integrations in Settings", () => {
+	async function open(
+		client: ReturnType<typeof createMockClient>,
+		hash = "",
+		provider: "github" | "google" = "github",
+	) {
+		const { url, redirectPrefix } = await client.login.start(provider);
 		const auth = await client.login.finish(
 			redirectPrefix + "?code=linear&state=" + new URL(url).searchParams.get("state"),
 		);
@@ -243,7 +247,11 @@ describe("Linear in Settings", () => {
 		history.replaceState(null, "", "/settings" + hash);
 		const host = document.body.appendChild(document.createElement("div"));
 		const root = createRoot(host);
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		await act(async () =>
+			root.render(
+				createElement(AppProvider, { client, children: createElement(StrictMode, null, createElement(Settings)) }),
+			),
+		);
 		const settle = async () => {
 			for (let i = 0; i < 6; i++) await act(async () => void (await new Promise(r => setTimeout(r, 5))));
 		};
@@ -277,6 +285,76 @@ describe("Linear in Settings", () => {
 	afterEach(() => {
 		localStorage.clear();
 		history.replaceState(null, "", "/");
+	});
+
+	it("connects GitLab independently, saves a project by its full ID, and disconnects", async () => {
+		const mock = () => createMockClient({ pace: 0, github: false, items: "off" });
+		const firstClient = mock();
+		const first = await open(firstClient, "", "google");
+		const card = (host: HTMLElement) => host.querySelector<HTMLElement>("#settings-gitlab")!;
+		const assign = vi.fn();
+		vi.stubGlobal("location", {
+			assign,
+			origin: "http://localhost",
+			pathname: "/settings",
+			search: "?mock=1",
+			hash: "",
+		});
+		try {
+			await press(card(first.host), "Connect GitLab…");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		const landing = new URL(assign.mock.calls[0]![0]);
+		expect(landing.pathname + landing.search).toBe("/settings?mock=1");
+		expect(await firstClient.user(first.auth).gitlab()).toEqual({ state: "disconnected" });
+		first.close();
+
+		const secondClient = mock();
+		const second = await open(secondClient, landing.hash, "google");
+		expect(location.hash).toBe("");
+		expect(card(second.host).textContent).toContain("No project selected");
+		expect(card(second.host).textContent).toMatch(/webhook.*Maintainer/);
+		await expect(secondClient.user(second.auth).gitlabComplete(landing.hash.slice(8))).rejects.toThrow();
+		const id = "90071992547409931";
+		await choose(card(second.host).querySelector("select")!, id);
+		await press(card(second.host), "Save project");
+		expect(await secondClient.user(second.auth).gitlab()).toMatchObject({ project: { id, provider: "gitlab" } });
+		second.close();
+
+		const third = await open(mock(), "", "google");
+		try {
+			expect(card(third.host).querySelector('[role="status"]')?.textContent).toContain("acme/tools/harbor");
+			vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+			await press(card(third.host), "Disconnect…");
+			expect(card(third.host).textContent).toContain("Selected project");
+			await press(card(third.host), "Disconnect…");
+			expect(card(third.host).textContent).toContain("Connect GitLab…");
+		} finally {
+			vi.restoreAllMocks();
+			third.close();
+		}
+	});
+
+	it("clears GitLab callback errors and hides GitLab where it is off", async () => {
+		for (const [hash, message] of [
+			["#gitlab-error=denied", "not given access"],
+			["#gitlab=invalid", "Connect GitLab again"],
+		] as const) {
+			const view = await open(createMockClient({ pace: 0 }), hash);
+			try {
+				expect(location.hash).toBe("");
+				expect(view.host.querySelector('#settings-gitlab [role="alert"]')?.textContent).toContain(message);
+			} finally {
+				view.close();
+			}
+		}
+		const off = await open(createMockClient({ pace: 0, gitlab: false }));
+		try {
+			expect(off.host.querySelector("#settings-gitlab")).toBeNull();
+		} finally {
+			off.close();
+		}
 	});
 
 	it("offers Connect, then shows unmapped teams, a saved mapping, and keeps it on reload", async () => {

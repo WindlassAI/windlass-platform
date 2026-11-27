@@ -16,7 +16,7 @@ import { criticPrompt, mergeCandidate, smallPlanProblem } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { FeatureRepository, HarnessId, ItemAgent, Verified, VerifiedCheck } from "../contract.js";
-import { ciPollEvery } from "../github/ci.js";
+import { ciPollEvery } from "../codehost/ci.js";
 import { spellSeconds } from "../usage.js";
 import { contextAtPlace, partRun, resolveRun, runPlace } from "./resolve-run.js";
 import {

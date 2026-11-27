@@ -201,6 +201,8 @@ import {
 	publishBlocked,
 	publishSession,
 	testSessionBase,
+	fetchSessionBase,
+	openGitlabItemPull,
 } from "./agent-session/publish.js";
 import {
 	newTurnScope,
@@ -483,7 +485,7 @@ const TURN_HOOKS: TurnHooks = {
 async function describeAfterTurn(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle, turn: number): Promise<void> {
 	const app = githubApp();
 	const { repo, pull } = meta;
-	if (!app || !repo || !pull) return;
+	if (!app || !repo || repo.provider === "gitlab" || !pull) return;
 	try {
 		const described = await describePull({
 			app,
@@ -1571,28 +1573,22 @@ async function itemTurnStarted(
 ): Promise<void> {
 	if (item.started) return;
 	item.started = true;
-	const app = githubApp();
-	if (item.row.fetchBase !== null && meta.repo && app) {
+	if (item.row.fetchBase !== null && meta.repo) {
 		const base = item.row.fetchBase;
 		try {
-			await fetchBase(
-				app,
-				await githubConnection(c, meta),
-				base === meta.repo.branch ? meta.repo : { ...meta.repo, branch: base },
-				sandbox,
-			);
+			await fetchSessionBase(c, meta, base === meta.repo.branch ? meta.repo : { ...meta.repo, branch: base }, sandbox);
 			note(
 				c,
 				turn,
 				"info",
-				`Fetched ${base} from GitHub into the workspace as origin/${base}, for the agent to merge.`,
+				`Fetched ${base} from the remote into the workspace as origin/${base}, for the agent to merge.`,
 			);
 		} catch (error) {
 			note(
 				c,
 				turn,
 				"warn",
-				`${base} could not be fetched from GitHub for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`,
+				`${base} could not be fetched from the remote for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`,
 			);
 		}
 	}
@@ -2334,6 +2330,7 @@ export const agentSession = actor({
 			if (
 				meta.origin ||
 				meta.environmentBuild ||
+				meta.repo?.provider === "gitlab" ||
 				meta.repo?.id !== notice.repositoryId ||
 				meta.pull?.number !== notice.pr
 			)
@@ -2575,7 +2572,15 @@ export const agentSession = actor({
 			const app = githubApp();
 			const busyTurn = c.vars.turn !== null || c.vars.accepting || meta.status !== "idle";
 			const openPull = meta.pull && (meta.pull.state === "open" || meta.pull.state === "draft");
-			if (busyTurn && app && meta.pushedHead && meta.publishBranch && !openPull && !c.vars.publishing) {
+			if (
+				busyTurn &&
+				repo.provider !== "gitlab" &&
+				app &&
+				meta.pushedHead &&
+				meta.publishBranch &&
+				!openPull &&
+				!c.vars.publishing
+			) {
 				c.vars.publishing = true;
 				try {
 					const pull = await c.keepAwake(
@@ -3085,6 +3090,14 @@ export const agentSession = actor({
 					}),
 			);
 			return "pending";
+		},
+
+		internalOpenFromPushed: async (
+			c,
+			input: { title: string; body: string; head: string },
+		): Promise<PullRequestInfo> => {
+			requireServiceFor(c, "call");
+			return openGitlabItemPull(c, liveMeta(c), input);
 		},
 
 		internalPublish: async (

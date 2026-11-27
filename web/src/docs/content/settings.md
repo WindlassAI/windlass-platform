@@ -32,6 +32,19 @@ A change holds from each agent's next turn. An account can keep 20 servers. A se
 
 Account secrets go to MCP servers by default: your own, and a repository's once you approve it. You can also give one to the agent's commands. A repository's setup command never gets an account secret. An account can keep 50. See [Secrets](/docs/security#secrets) for where each one goes.
 
+### GitLab
+
+GitLab appears under **Settings → Integrations** only when the deployment operator has configured OAuth for one GitLab instance. On the server, set `WLP_GITLAB_BASE_URL` to `https://gitlab.com` or the self-managed instance’s base URL (including any path prefix), and set `WLP_GITLAB_CLIENT_ID` and `WLP_GITLAB_CLIENT_SECRET` for that instance’s OAuth application.
+
+1. Choose **Connect GitLab…** and approve access on GitLab. This connects your GitLab account for project work; it does not change how you sign in to Windlass.
+2. Back in Settings, search for a project, choose its namespace and name, then select **Save project**. You need Maintainer access or higher so Windlass can register the project webhook. Settings shows the selected project and its default branch.
+
+Windlass generates a secret for the project hook; you do not need to enter one. The hook delivers to `/gitlab/webhook` under the platform's public address (`WLP_PUBLIC_URL`), path prefix included. Deliveries with a missing or incorrect `X-Gitlab-Token` are refused and file nothing. To try the connection, [file an item from a GitLab issue](/docs/factory#from-a-gitlab-issue).
+
+If GitLab stops accepting the connection (you revoked it, or it expired), Windlass forgets it and Settings asks you to reconnect. Connect again and save the project.
+
+Choose **Disconnect…** and confirm to forget the connection and selected project. Windlass no longer accepts events for that connection. Your GitHub connection is unchanged.
+
 ### Linear
 
 Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. Label an issue `windlass` or assign it to the Windlass app. Use `windlass-quick` or `windlass:quick` for Quick mode. See [From a Linear issue](/docs/factory#from-a-linear-issue).

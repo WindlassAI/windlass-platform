@@ -379,6 +379,11 @@ export interface SessionInternal {
 		base: string;
 		tests: import("../factory/base-tests.js").NamedTests;
 	}): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
+	internalOpenFromPushed(input: {
+		title: string;
+		body: string;
+		head: string;
+	}): Promise<import("../contract.js").PullRequestInfo>;
 	internalPublish(input: {
 		key: string;
 		title: string;
@@ -454,6 +459,7 @@ export interface ItemInternal {
 	internalView(): Promise<ItemView>;
 	/** Each report and review that filed screenshots, the newest first: what its feature's page gathers. */
 	internalScreenshotSets(): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]>;
+	internalMergeGitlab(reviewedHead: string): Promise<ItemView>;
 	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;
 	/** A fact about the item's turn; resolves once it is stored. */
 	internalFact(fact: Fact): Promise<void>;
@@ -525,6 +531,14 @@ export function itemActor(c: HasClient, uid: string, itemId: string): ItemIntern
 
 export function sessionActor(c: HasClient, uid: string, sessionId: string): SessionInternal {
 	return c.client().agentSession.get([uid, sessionId], { params: serviceParams() }) as SessionInternal;
+}
+
+export function gitlabAccess(
+	c: HasClient,
+	uid: string,
+	projectId: string,
+): Promise<import("../gitlab/workspace.js").GitlabAccess> {
+	return c.client().userGitlab.get([uid], { params: serviceParams() }).internalGitlabAccess(projectId);
 }
 
 export function userActor(c: HasClient, uid: string): UserInternal {

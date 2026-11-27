@@ -60,7 +60,15 @@ import { itemHarnessProblem, knownHarness, subtaskHarnessProblem } from "../sand
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
-import { fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources } from "./issue-intake.js";
+import {
+	fileGitlabIssue,
+	type GitlabTrigger,
+	fileLinearIssue,
+	inIntakeQueue,
+	INTAKE_SOURCES,
+	intakeScope,
+	linearSources,
+} from "./issue-intake.js";
 import type { Intake, IntakeTrigger, LinearFiled, LinearFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
@@ -365,6 +373,7 @@ export interface ItemSessionInput {
 	owns?: string[];
 	childBranch?: { name: string; start: string };
 	issue?: { number: number; installationId: GithubId };
+	gitlab?: { project: SessionRepository; iid: string };
 	effort?: string;
 }
 export interface MakeSession {
@@ -623,6 +632,7 @@ export interface DefaultBuilder {
 	repository: CreateItemInput["repository"];
 	title: string;
 	issue?: { number: number; installationId: GithubId };
+	gitlab?: { project: SessionRepository; iid: string };
 }
 
 const availabilityErrors = new Set([
@@ -701,6 +711,7 @@ async function defaultBuilder(
 				role: "builder",
 				payer: run.payer,
 				issue: job.issue,
+				gitlab: job.gitlab,
 				effort: run.effort ?? undefined,
 				...(build && { afterPlanning: { model: build.model, effort: build.effort } }),
 				...child,
@@ -729,7 +740,7 @@ async function bindReviewer(
 }> {
 	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
 	if (child) return off("feature");
-	if (!config.factory.reviewer) return off("deployment");
+	if (!config.factory.reviewer || session.repository?.provider === "gitlab") return off("deployment");
 	const reviewerSessionId = `s_${hex16(`review\n${itemId}`)}`;
 	if (!c.vars.sessions.has(reviewerSessionId)) {
 		const { id, branch } = session.repository!;
@@ -750,6 +761,7 @@ async function bindReviewer(
 					itemId,
 					role: "reviewer",
 					issue: job.issue,
+					gitlab: job.gitlab,
 					effort: run.effort ?? undefined,
 					...(session.hostedSize && { hostedSize: session.hostedSize }),
 				},
@@ -794,11 +806,11 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
 async function savedContext(
 	c: ItemsCtx,
 	profile: UserProfile,
-	repositoryId: GithubId,
+	project: string,
 	makeSession: MakeSession,
 ): Promise<RunContext> {
 	const account = await readAccountDefaults(c.db);
-	const repository = await readDefaults(c.db, "github:" + repositoryId);
+	const repository = await readDefaults(c.db, project);
 	if (!makeSession.accountModels || !(namesModel(account) || namesModel(repository))) return { account, repository };
 	// Without a list (the plan is signed out), the defaults stay as saved and the item waits with the reason.
 	const list = await makeSession.accountModels(profile.demo).catch(() => null);
@@ -834,7 +846,7 @@ async function makeItem(
 	},
 ): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
-	const { github, linear } = intake ?? {};
+	const { github, linear, gitlab } = intake ?? {};
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (intake && input.repositories)
 		throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -852,7 +864,7 @@ async function makeItem(
 			: `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
-	const context: RunContext = child?.context ?? (await savedContext(c, profile, input.repository.id, makeSession));
+	const context: RunContext = child?.context ?? (await savedContext(c, profile, `${gitlab ? "gitlab" : "github"}:${input.repository.id}`, makeSession));
 	const role = child?.role ?? (input.mode === "orchestrate" ? "planner" : "builder");
 	if (!child) {
 		const offered = hostedSizesForPlan(
@@ -872,7 +884,14 @@ async function makeItem(
 		Object.assign(context.item, filedAgentSettings(context, input.model, input.effort));
 	}
 	const run = child?.resolved ?? resolveRun(context, role);
-	const job: DefaultBuilder = { context, role, repository: input.repository, title: input.title, issue };
+	const job: DefaultBuilder = {
+		context,
+		role,
+		repository: input.repository,
+		title: input.title,
+		issue,
+		...(gitlab && { gitlab: { project: gitlab.project, iid: gitlab.iid } }),
+	};
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;
@@ -929,7 +948,7 @@ async function makeItem(
 			run.profile ??= session.profile;
 			run.size = session.hostedSize ?? run.size;
 		}
-		const repository = session?.repository ?? (await waitingRepository(c, job));
+		const repository = session?.repository ?? job.gitlab?.project ?? (await waitingRepository(c, job));
 		if (!repository) throw new Error("the item's session has no repository");
 		const review = session && (await bindReviewer(c, profile, session, itemId, !!child, job, makeSession));
 		const now = Date.now();
@@ -987,6 +1006,7 @@ async function makeItem(
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
 		const outside = sources(
 			child?.untrusted,
+			gitlab?.sources,
 			github && !github.origin.issue.trusted
 				? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)]
 				: [],
@@ -1063,11 +1083,13 @@ async function fileItem(
 		// What a Linear item's key stands for is the issue's filing, not the text it had when the first attempt was made: an attempt that finishes an interrupted one is the same.
 		const submission = submissionOf(
 			idempotencyKey,
-			intake?.linear
-				? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
-				: intake
-					? { asked, github: intake.github }
-					: asked,
+			intake?.gitlab
+				? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
+				: intake?.linear
+					? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+					: intake
+						? { asked, github: intake.github }
+						: asked,
 		);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
@@ -1982,6 +2004,14 @@ export const itemActions = {
 			return view;
 		});
 	},
+	internalGitlabIntake(c: ItemsCtx, trigger: GitlabTrigger, makeSession: MakeSession) {
+		requireServiceFor(c, "call");
+		return inIntakeQueue(c, () =>
+			fileGitlabIssue(c, trigger, (profile, input, gitlab) =>
+				fileItem(c, profile, input, "gitlab", makeSession, { gitlab }),
+			),
+		);
+	},
 	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
 		// All installations share this user's budget, and so does Linear: one queue. The durable claim makes interruption replayable.
@@ -2136,6 +2166,15 @@ export const itemActions = {
 		const profile = requireUser(c);
 		enabled();
 		return fileItem(c, profile, input, "web", makeSession);
+	},
+
+	mergeGitlabItem: async (c: ItemsCtx, itemId: string, reviewedHead: string): Promise<ItemView> => {
+		const profile = requireUser(c);
+		enabled();
+		knownItem(c, itemId);
+		const view = await itemActor(c, profile.uid, itemId).internalMergeGitlab(reviewedHead);
+		await noteItem(c, view);
+		return attachmentStates(c, view);
 	},
 
 	actOnItem: async (c: ItemsCtx, input: { id: string; action: ItemAction }): Promise<ItemView> => {

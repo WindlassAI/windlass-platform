@@ -312,6 +312,7 @@ export interface UserActions {
 	 * cannot be taken. A machine must be paired to this user and have an available profile.
 	 */
 	createItem(input: CreateItemInput): Promise<ItemSummary>;
+	mergeGitlabItem(itemId: string, reviewedHead: string): Promise<ItemView>;
 	/** Throws a UserError with code `item_not_found`, or `item_conflict` when the item's state does not allow the action (it says why). */
 	actOnItem(input: { id: string; action: ItemAction }): Promise<ItemView>;
 	/** The factory's limits for this user. */

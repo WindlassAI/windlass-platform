@@ -1,12 +1,12 @@
 ## What a work item is
 
-A work item is a task on one of your GitHub repositories that an agent carries through on its own. You write what you want done. An agent works on it in a sandbox, runs your checks, pushes a branch, waits for CI and hands it to you as a pull request. When it needs a decision from you, it waits under **Needs you**. You merge by default. A repository can [auto-merge eligible single items](#automatic-approvals-and-merges).
+A work item is a task on a connected repository that an agent carries through on its own. You write what you want done. An agent works on it in a sandbox, runs your checks, pushes a branch, waits for CI and hands it to you as a pull request on GitHub or a merge request on GitLab. When it needs a decision from you, it waits under **Needs you**. You merge by default. A GitHub repository can [auto-merge eligible single items](#automatic-approvals-and-merges).
 
-Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
+GitHub is the default. For a connected GitLab project, file a single item [from a GitLab issue](#from-a-gitlab-issue). They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
 The Factory has the same repository rail as **Agents**, with its search, owners and foot. There, a repository's ring counts its work items in progress and the amber count what needs you; choosing one shows only its work items. A repository with no work item is dimmer; choose it to file one on it.
 
-Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub or Linear: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
+Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub, GitLab or Linear: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
 
 A work item runs in one of two ways:
 
@@ -97,6 +97,16 @@ When a label files an item, the App reacts 👀 on the issue. When a comment fil
 The App comments on the issue to say it took the item, and links to it. It also says when the pull request is opened and when the item ends.
 
 On GitHub, removing the label cancels a draft. Closing the issue cancels an item that has not reached review. Editing the issue later does not change the item: it keeps the text it was filed with.
+
+### From a GitLab issue
+
+After [connecting GitLab in Settings](/docs/settings#gitlab), use the connected account to add the `windlass` label to an open issue in the selected project, or write an issue note beginning with `/windlass`. Windlass re-reads the issue and any command note, then files a **Quick** item. It acknowledges the filing with a 👀 reaction on the issue for a label, or on the note for a command. Redelivering the event, or labelling the issue again while its item is open, does not file another item. Once that item is done, failed or cancelled, the next label or command files a new one.
+
+Your own issue starts immediately; an issue someone else wrote starts as a draft. In both cases the issue and note are quoted as untrusted input.
+
+The item opens a merge request against the project’s default branch and polls GitLab for pipeline and job results. It counts the newest pipeline that ran its commit: a branch pipeline, the merge request’s own pipeline, or a merged-results pipeline built from it. Pipeline and merge request events also prompt it to check again. Once it hands over a passing result, review the MR and select **Merge…** on the item. Windlass rechecks the reviewed commit, target branch and pipeline before merging.
+
+GitLab supports single items only. Plan-first features, cross-repository work, integration workflows, Linear team mappings and the `windlass/verified` check remain GitHub-only.
 
 ### From a Linear issue
 
@@ -594,7 +604,7 @@ The Factory page lists your items by what you must do:
 
 A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
-Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue or a Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
+Filter it with **repo** and **from**: filed from the web, the API, a GitHub, GitLab or Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
 
 ## Limits
 

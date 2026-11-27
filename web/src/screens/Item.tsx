@@ -226,6 +226,63 @@ function useActing(
 	return { busy, error, failed, act };
 }
 
+function GitlabMerge({ view, onDone }: { view: ItemView; onDone(view: ItemView): void }) {
+	const { client, explain } = useApp(),
+		auth = useAuth();
+	const [head, setHead] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false),
+		[error, setError] = useState<string | null>(null);
+	const merge = async () => {
+		setBusy(true);
+		try {
+			if (head) onDone(await client.user(auth).mergeGitlabItem(view.id, head));
+			setHead(null);
+		} catch (failure) {
+			setError(explain(failure));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<>
+			<button
+				type="button"
+				className="button button-outline button-small"
+				onClick={() => {
+					setHead(view.head);
+					setError(null);
+				}}
+			>
+				Merge…
+			</button>
+			{head && (
+				<Dialog
+					title={`Merge !${view.pullRequest?.number}?`}
+					size="small"
+					dismissable={!busy}
+					onClose={() => setHead(null)}
+					footer={
+						<>
+							<button className="button button-quiet" disabled={busy} onClick={() => setHead(null)}>
+								Cancel
+							</button>
+							<button className="button button-primary" disabled={busy} onClick={merge}>
+								{busy ? "Merging…" : "Merge request"}
+							</button>
+						</>
+					}
+				>
+					<p>
+						Merge commit <code>{head.slice(0, 8)}</code> into <strong>{view.task.base}</strong>. Windlass checks the
+						head, base and pipeline again before merging.
+					</p>
+					<Failure error={error} />
+				</Dialog>
+			)}
+		</>
+	);
+}
+
 function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Acting; onClose(): void }) {
 	const busy = acting.busy === "cancel";
 	return (
@@ -1416,7 +1473,8 @@ export function Item({ page }: { page: ItemPage }) {
 							target="_blank"
 							rel="noreferrer"
 						>
-							PR #{view.pullRequest.number} <ExternalIcon size={12} />
+							{repository.provider === "gitlab" ? "MR !" : "PR #"}
+							{view.pullRequest.number} <ExternalIcon size={12} />
 						</a>
 					) : null}
 					{!view.awaitingPlace ? (
@@ -1435,6 +1493,12 @@ export function Item({ page }: { page: ItemPage }) {
 						>
 							Code review
 						</a>
+					) : null}
+					{repository.provider === "gitlab" &&
+					view.state === "review" &&
+					view.verdict?.ci === "passed" &&
+					view.pullRequest ? (
+						<GitlabMerge view={view} onDone={page.replace} />
 					) : null}
 					{canSendBack ? (
 						<button
@@ -1495,7 +1559,11 @@ export function Item({ page }: { page: ItemPage }) {
 				</div>
 				<p className="item-meta">
 					<span>
-						<a {...linkProps({ name: "repository", id: repository.id })}>
+						<a
+							{...(repository.provider === "gitlab"
+								? { href: repository.url, target: "_blank", rel: "noreferrer" }
+								: linkProps({ name: "repository", id: repository.id }))}
+						>
 							{repository.owner}/{repository.name}
 						</a>{" "}
 						→ {view.task.base}
@@ -1509,9 +1577,11 @@ export function Item({ page }: { page: ItemPage }) {
 								? "the API"
 								: view.source === "github"
 									? "GitHub"
-									: view.source === "linear"
-										? "Linear"
-										: "the web"}
+									: view.source === "gitlab"
+										? "GitLab"
+										: view.source === "linear"
+											? "Linear"
+											: "the web"}
 						</span>
 					)}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>

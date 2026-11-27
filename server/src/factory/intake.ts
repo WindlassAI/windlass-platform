@@ -10,7 +10,6 @@ import {
 	type GithubId,
 } from "../contract.js";
 import { commentText } from "./review.js";
-import type { GithubUser } from "../github/app.js";
 
 const plain = (s: string) =>
 	s
@@ -41,7 +40,7 @@ interface IssueText {
 }
 
 /** A task from an issue's text, the same for both intakes: hidden text stripped, the task bounded, third-party text quoted. */
-function taskOfText(input: IssueText) {
+export function taskOfText(input: IssueText) {
 	const { trusted, by } = input;
 	const title = cut(plain(input.title).replace(/\s+/g, " "), MAX_TITLE_CHARS) || input.fallbackTitle;
 	const acceptance: string[] = [],
@@ -69,13 +68,15 @@ function taskOfText(input: IssueText) {
 	return { task: { title, body: body.trim(), acceptance }, trusted };
 }
 
+type IssuePerson = { id: GithubId; login: string };
+
 export function taskOfIssue(input: {
 	title: string;
 	body: string;
 	number: number;
 	url: string;
-	author: GithubUser;
-	sender: GithubUser;
+	author: IssuePerson;
+	sender: IssuePerson;
 	note: string;
 }) {
 	const { author, sender, number, url } = input;
@@ -188,7 +189,17 @@ export interface LinearBinding {
 }
 
 /** How an item was filed from an issue: one of the two intakes. The item's source is the tracker's name. */
-export type Intake = { github: IssueBinding; linear?: undefined } | { linear: LinearBinding; github?: undefined };
+export interface GitlabBinding {
+	project: import("../contract.js").SessionRepository;
+	iid: string;
+	/** The issue's nth filing: an ended item lets it be filed again. */
+	generation: number;
+	sources: string[];
+}
+export type Intake =
+	| { github: IssueBinding; linear?: undefined; gitlab?: undefined }
+	| { linear: LinearBinding; github?: undefined; gitlab?: undefined }
+	| { gitlab: GitlabBinding; github?: undefined; linear?: undefined };
 
 /**
  * A Linear issue the platform has validated (the webhook's signature checked, the issue read from Linear, its team mapped) and the

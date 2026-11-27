@@ -218,6 +218,14 @@
  *   WLP_GITHUB_URL             GitHub itself, where users authorize and git clones from (default
  *                              https://github.com)
  *
+ * GitLab (read by `gitlabConfig` below). Requires the instance URL and both OAuth credentials:
+ *   WLP_GITLAB_BASE_URL        GitLab instance, including its path prefix for a self-managed deployment
+ *   WLP_GITLAB_CLIENT_ID       OAuth application ID
+ *   WLP_GITLAB_CLIENT_SECRET   OAuth application secret; not included in public settings
+ *   WLP_GITLAB_REDIRECT_URL    registered callback URL (default <WLP_PUBLIC_URL>/gitlab/callback,
+ *                              or the server's localhost URL when WLP_PUBLIC_URL is unset)
+ *   Project hooks are registered at <WLP_PUBLIC_URL>/gitlab/webhook, keeping any path prefix.
+ *
  * Linear (read by `linearConfig` below). A Linear OAuth app of this deployment's own lets the owner connect
  * a Linear workspace, map a team to a repository, and have an issue that gains a Windlass filing label or
  * is assigned to the app's user filed as a work item.
@@ -626,6 +634,48 @@ export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string |
 	if (raw.includes("-----BEGIN")) return `${raw.replace(/\\n/g, "\n").trim()}\n`;
 	const decoded = Buffer.from(raw, "base64").toString("utf8");
 	return decoded.includes("-----BEGIN") ? `${decoded.trim()}\n` : raw;
+}
+
+export interface GitlabConfig {
+	app: { clientId: string; baseUrl: string; redirectUrl: string; webhookUrl: string } | null;
+	missing: string[];
+}
+
+/** One OAuth application and instance per deployment. Plain HTTP is only for loopback stand-ins. */
+export function gitlabConfig(env: NodeJS.ProcessEnv = process.env): GitlabConfig {
+	const required = ["WLP_GITLAB_BASE_URL", "WLP_GITLAB_CLIENT_ID", "WLP_GITLAB_CLIENT_SECRET"];
+	const missing = required.filter(key => !env[key]?.trim());
+	if (missing.length) return { app: null, missing: missing.length === required.length ? [] : missing };
+	const clientId = env.WLP_GITLAB_CLIENT_ID!.trim();
+	if (!/^[A-Za-z0-9._-]{1,128}$/.test(clientId)) throw new Error("WLP_GITLAB_CLIENT_ID is not a client id");
+	const address = (key: string, fallback: string, raw = env[key]?.trim() || fallback) => {
+		const url = URL.parse(raw);
+		if (
+			!url ||
+			url.username ||
+			url.password ||
+			/[?#]/.test(url.href) ||
+			(url.protocol !== "https:" &&
+				!(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+		) {
+			throw new Error(`${key} must be an HTTPS or loopback URL with no credentials, query or fragment`);
+		}
+		return url.href;
+	};
+	const publicUrl = (env.WLP_PUBLIC_URL?.trim() || `http://localhost:${config.httpPort}`).replace(/\/+$/, "");
+	return {
+		app: {
+			clientId,
+			baseUrl: address("WLP_GITLAB_BASE_URL", "").replace(/\/+$/, ""),
+			redirectUrl: address("WLP_GITLAB_REDIRECT_URL", `${publicUrl}/gitlab/callback`),
+			webhookUrl: address("WLP_PUBLIC_URL", "", `${publicUrl}/gitlab/webhook`),
+		},
+		missing: [],
+	};
+}
+
+export function gitlabClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
+	return env.WLP_GITLAB_CLIENT_SECRET?.trim() || null;
 }
 
 /** What `linearConfig` found: the Linear app's public settings when all of it is configured. */

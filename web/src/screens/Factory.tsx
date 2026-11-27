@@ -44,6 +44,7 @@ export const SOURCE_WORD: Record<ItemSource, string> = {
 	web: "web",
 	api: "API",
 	github: "GitHub issue",
+	gitlab: "GitLab issue",
 	linear: "Linear issue",
 };
 

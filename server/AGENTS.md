@@ -7,6 +7,8 @@ Start with the area guide below before editing its code. Paths are repository-ro
 - `server/src/actors/` owns durable users, sessions and work items; see `server/src/actors/AGENTS.md`.
 - `server/src/factory/` decides work-item transitions and feature plans; see `server/src/factory/AGENTS.md`.
 - `server/src/github/` handles App access, publishing and webhooks; see `server/src/github/AGENTS.md`.
+- `server/src/gitlab/` handles GitLab OAuth, project hooks, merge requests and pipelines; see `server/src/gitlab/AGENTS.md`.
+- `server/src/codehost/` is the interface work items use to reach their code host (GitHub or GitLab).
 - `server/src/repo-setup/` validates setup guides and prepares setup changes; see `server/src/repo-setup/AGENTS.md`.
 - `server/src/sandbox/` provisions workspaces and runs turns; see `server/src/sandbox/AGENTS.md`. The E2B provider has its own guide, `server/src/sandbox/e2b/AGENTS.md`.
 - `server/src/linear/` connects Linear workspaces and files issues as items; see `server/src/linear/AGENTS.md`.

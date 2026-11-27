@@ -35,6 +35,12 @@
         "server/src/factory/reviewer-task.ts",
         "server/src/factory/verified-check.ts",
         "server/src/github/**",
+        "server/src/codehost/**",
+        "server/src/gitlab/**",
+        "scripts/gitlab-standin.ts",
+        "scripts/gitlab-protocol-check.ts",
+        "scripts/gitlab-check.ts",
+        "server/src/actors/user-gitlab.ts",
         "server/src/runner/**",
         "server/src/sandbox/**",
         "server/src/signin/**",
@@ -52,7 +58,7 @@
         "scripts/e2b-network-standin.mjs",
         "server/src/billing/**",
         "scripts/dodo-fake.ts",
-        "scripts/{access,account,billing,attachments,backup,connection,harness,models,model-providers,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard}-check.ts",
+        "scripts/{access,account,billing,attachments,backup,connection,harness,models,model-providers,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,codehost,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard}-check.ts",
         "server/src/factory/untrusted.ts",
         "server/src/actors/session-inbox.ts",
         "sandbox/relay/**",
@@ -94,6 +100,9 @@
         "verified": "tsx ../scripts/verified-check.ts",
         "web-files": "tsx ../scripts/web-files-check.ts",
         "github": "tsx ../scripts/github-check.ts",
+        "codehost": "tsx ../scripts/codehost-check.ts",
+        "gitlab-protocol": "tsx ../scripts/gitlab-protocol-check.ts",
+        "gitlab-connect": "tsx ../scripts/gitlab-check.ts connect",
         "daytona-provider": "tsx ../scripts/daytona-provider-test.ts",
         "e2b-provider": "tsx ../scripts/e2b-provider-test.ts",
         "e2b-snapshot": "tsx ../scripts/e2b-snapshot-check.ts",
@@ -195,6 +204,7 @@
         "scripts/check-listeners.ts",
         "server/src/factory/**",
         "server/src/github/**",
+        "server/src/codehost/ci.ts",
         "server/src/item-pages.ts",
         "server/src/submissions.ts",
         "server/src/api-routes.ts",
@@ -248,6 +258,23 @@
       ],
       "checks": {
         "webhook": "tsx ../scripts/webhook-check.ts"
+      }
+    },
+    "gitlab": {
+      "timeout": 15,
+      "paths": [
+        "scripts/gitlab-{check,protocol-check,standin,workspace-fixture}.ts",
+        "scripts/{check-listeners,check-sections,issue-intake-fixture,login-http}.ts",
+        "server/src/gitlab/**",
+        "server/src/codehost/**",
+        "server/src/factory/{intake,untrusted}.ts",
+        "server/src/actors/{gitlab-*,user-gitlab,issue-intake,internal,user,user-items,work-item,agent-session}.ts",
+        "server/src/actors/agent-session/**",
+        "server/src/github/{git,publish}.ts",
+        "server/src/{index,registry,config,item-pages}.ts"
+      ],
+      "checks": {
+        "gitlab-intake": "tsx ../scripts/gitlab-check.ts intake refuse untrusted"
       }
     },
     "linear": {

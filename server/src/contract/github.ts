@@ -1,4 +1,4 @@
-/** GitHub and Linear connections, repositories, pull requests and publishing. */
+/** GitHub, GitLab and Linear connections, repositories, pull requests and publishing. */
 
 /** Account, installation and repository IDs are numbers through MAX_SAFE_INTEGER, then decimal strings. */
 export type GithubId = number | string;
@@ -24,6 +24,28 @@ export interface GithubConnection {
 export interface GithubStatus {
 	/** Null when GitHub is not connected. */
 	connection: GithubConnection | null;
+}
+
+/** Public state of the owner’s GitLab connection. Credentials and hook secrets stay server-side. */
+export type GitlabStatus =
+	| { state: "off" }
+	/** `reconnect`: GitLab refused the saved grant (revoked or expired), so it was forgotten. */
+	| { state: "disconnected"; reconnect?: true }
+	| { state: "connected"; baseUrl: string; project: SessionRepository | null };
+
+export interface GitlabProjectList {
+	projects: SessionRepository[];
+	more: boolean;
+}
+
+/** Settings actions on userGitlab[uid]. */
+export interface GitlabActions {
+	gitlab(): Promise<GitlabStatus>;
+	gitlabConnect(input: { origin: string }): Promise<{ url: string }>;
+	gitlabComplete(ticket: string): Promise<GitlabStatus>;
+	gitlabProjects(query: string): Promise<GitlabProjectList>;
+	gitlabPickProject(projectId: string): Promise<GitlabStatus>;
+	gitlabDisconnect(): Promise<GitlabStatus>;
 }
 
 /** Mapped teams file work on their repository through a qualifying label or app assignment. */
@@ -90,10 +112,10 @@ export interface GithubBranchList {
 	more: boolean;
 }
 
-/** What a session was launched on, when it was picked from the user's GitHub connection. */
+/** What a session was launched on, when it was picked from the user's code host connection. */
 export interface SessionRepository {
-	provider: "github";
-	/** GitHub's id for the repository. */
+	provider: "github" | "gitlab";
+	/** The provider's id for the repository. */
 	id: GithubId;
 	owner: string;
 	name: string;

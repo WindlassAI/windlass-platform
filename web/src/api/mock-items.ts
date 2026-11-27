@@ -5095,6 +5095,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		| "item"
 		| "itemAttachmentLinks"
 		| "createItem"
+		| "mergeGitlabItem"
 		| "actOnItem"
 		| "factoryLimits"
 		| "apiTokens"
@@ -5317,6 +5318,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					changed(auth);
 				}
 				return summaryOf(item);
+			},
+			async mergeGitlabItem() {
+				throw new PlatformError("user", "There is no GitLab merge request in this demo.", { reason: "item_conflict" });
 			},
 			async actOnItem(id, action) {
 				await answer(360);
