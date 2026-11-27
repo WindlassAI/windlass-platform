@@ -111,7 +111,7 @@ import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 
 
-import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, itemScreenshots, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
+import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, isActorGone, itemActor, itemScreenshots, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
 import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
 import { modelInput, modelsOf, signinActions, writeActorProfile, type ModelsCtx } from "./user/signin.js";
 import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
@@ -1455,13 +1455,18 @@ export const user = actor({
 		internalGitlabIntake: (c, delivery: import("./issue-intake.js").GitlabTrigger) => itemActions.internalGitlabIntake(c, delivery, itemSession(c)),
 		internalGitlabWake: async (c, delivery: Extract<import("../gitlab/webhook.js").GitlabDelivery, {event: "pipeline" | "merge_request"}>) => {
 			requireServiceFor(c, "call");
-			for (const item of c.vars.items.items.values()) {
+			const nudges = [...c.vars.items.items.values()].flatMap(item => {
 				const repo = item.repository;
-				if (repo.provider !== "gitlab" || String(repo.id) !== delivery.projectId || !item.pullRequest || ["done", "failed", "cancelled"].includes(item.state)) continue;
-				if (delivery.event === "merge_request" && String(item.pullRequest.number) !== String(delivery.iid)) continue;
+				if (repo.provider !== "gitlab" || String(repo.id) !== delivery.projectId || !item.pullRequest || ["done", "failed", "cancelled"].includes(item.state)) return [];
+				if (delivery.event === "merge_request" && String(item.pullRequest.number) !== String(delivery.iid)) return [];
 				const subject = delivery.event === "pipeline" ? {kind: "ci" as const, head: delivery.head} : {kind: "pr" as const, pr: item.pullRequest.number};
-				await c.client().workItem.get([c.key[0], item.id], {params: serviceParams()}).internalGitlabNudge({ projectId: delivery.projectId, ...subject });
-			}
+				return [{ id: item.id, nudge: () => c.client().workItem.get([c.key[0], item.id], {params: serviceParams()}).internalGitlabNudge({ projectId: delivery.projectId, ...subject }) }];
+			});
+			// A nudge only brings a poll forward. One item failing must neither stop the others nor redeliver the event to all of them.
+			const results = await Promise.allSettled(nudges.map(n => n.nudge()));
+			results.forEach((result, i) => {
+				if (result.status === "rejected" && !isActorGone(result.reason)) console.warn(`[wlp] gitlab.nudge_failed item=${nudges[i]!.id}`);
+			});
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 
