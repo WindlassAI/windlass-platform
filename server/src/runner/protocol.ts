@@ -18,7 +18,7 @@ import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
 import { MACHINE_HARNESS_IDS, MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
 import type { BackupOwner, CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
-import { PACK_PATH, SESSION } from "../sandbox/backup-scripts.js";
+import { PACK_PATH, SESSION } from "../sandbox/backup-names.js";
 import {
 	NAME,
 	RUN_TAG,

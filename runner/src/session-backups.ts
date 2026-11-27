@@ -28,7 +28,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Args, Value } from "../../server/src/runner/protocol.js";
-import { PACK_PATH, SESSION, validOwner } from "../../server/src/sandbox/backup-scripts.js";
+import { PACK_PATH, SESSION, validOwner } from "../../server/src/sandbox/backup-names.js";
 import { LABEL_ARG, NO_LOGS, docker, tmpName } from "../../server/src/sandbox/docker.js";
 import type { BackupOwner } from "../../server/src/sandbox/api.js";
 import { NAME } from "../../server/src/sandbox/provider.js";

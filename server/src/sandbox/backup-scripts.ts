@@ -6,16 +6,18 @@
  * runner/src/session-backups.ts). It imports no server configuration, so the runner can import it.
  */
 
-import type { BackupAgentSession, BackupOwner, SandboxHandle } from "./api.js";
-import { NAME, shellQuote } from "./provider.js";
+import type { BackupAgentSession, SandboxHandle } from "./api.js";
+import { shellQuote } from "./provider.js";
 import { type FileRule, type SessionFiles, sessionFilesOf } from "./session-files.js";
 import { errorText } from "../util.js";
+import { PACK_PATH, SESSION, validOwner } from "./backup-names.js";
+
+// Kept apart so the runner can use them without the agents' descriptions (session-files.ts) in its bundle.
+export { PACK_PATH, SESSION, validOwner };
 
 /** How long packing may take in the sandbox. */
 export const PACK_TIMEOUT_MS = 2 * 60 * 1000;
 
-/** The agent session's id becomes part of an object's key, and of the patterns the scripts use: no character a glob or a regex reads. */
-export const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const SHA256 = /^[0-9a-f]{64}$/;
 /** A folder a `FileRule` searches: plain names, none of them `.`, `..` or one that `find` would read as an option. */
 const FOLDER = /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
@@ -61,7 +63,8 @@ export function findCommand(rule: FileRule): string {
 	words.push("-type", "f");
 	if (rule.path !== undefined) words.push("-path", patternWord(rule.path));
 	const names = rule.names ?? [];
-	if (names.length === 1) words.push("-name", patternWord(names[0]));
+	const [only] = names;
+	if (names.length === 1 && only !== undefined) words.push("-name", patternWord(only));
 	if (names.length > 1) words.push("\\(", names.map(name => `-name ${patternWord(name)}`).join(" -o "), "\\)");
 	if (rule.noDotNames) words.push("!", "-name", "'.*'");
 	words.push("-print0");
@@ -193,19 +196,6 @@ export function sessionFilesEnv(
 			[BACKUP_ENV.proof]: withId(files.proof),
 		},
 	};
-}
-
-/** Where a sandbox packs a copy, and where a machine's runner puts one back: under /tmp, a name of the platform's. */
-export const PACK_PATH = /^\/tmp\/\.wlp-backup-[a-z0-9]{6,32}\.tgz$/;
-
-/** Whether a copy's owner is one a copy may be named by: a user id and a session id, each of the platform's form. */
-export function validOwner(owner: BackupOwner): boolean {
-	return (
-		typeof owner?.uid === "string" &&
-		NAME.test(owner.uid) &&
-		typeof owner.sessionId === "string" &&
-		SESSION.test(owner.sessionId)
-	);
 }
 
 /**
