@@ -34,12 +34,12 @@ Account secrets go to MCP servers by default: your own, and a repository's once 
 
 ### GitLab
 
-GitLab appears under **Settings → Integrations** only when the deployment operator has configured OAuth for one GitLab instance. On the server, set `WLP_GITLAB_BASE_URL` to `https://gitlab.com` or the self-managed instance’s base URL (including any path prefix), and set `WLP_GITLAB_CLIENT_ID` and `WLP_GITLAB_CLIENT_SECRET` for that instance’s OAuth application.
+GitLab appears under **Settings → Integrations** only when the deployment operator has [configured OAuth](https://github.com/WindlassAI/windlass-platform/blob/main/docs/configuration.md#gitlab) for one GitLab instance.
 
 1. Choose **Connect GitLab…** and approve access on GitLab. This connects your GitLab account for project work; it does not change how you sign in to Windlass.
 2. Back in Settings, search for a project, choose its namespace and name, then select **Save project**. You need Maintainer access or higher so Windlass can register the project webhook. Settings shows the selected project and its default branch.
 
-Windlass generates a secret for the project hook; you do not need to enter one. The hook delivers to `/gitlab/webhook` under the platform's public address (`WLP_PUBLIC_URL`), path prefix included. Deliveries with a missing or incorrect `X-Gitlab-Token` are refused and file nothing. To try the connection, [file an item from a GitLab issue](/docs/factory#from-a-gitlab-issue).
+Windlass generates a secret for the project hook; you do not need to enter one. Deliveries with a missing or incorrect `X-Gitlab-Token` are refused and file nothing. To try the connection, [file an item from a GitLab issue](/docs/factory#from-a-gitlab-issue).
 
 If GitLab stops accepting the connection (you revoked it, or it expired), Windlass forgets it and Settings asks you to reconnect. Connect again and save the project.
 
@@ -59,7 +59,7 @@ Choose **Connect Slack…**, approve the workspace, and invite Windlass to a pub
 
 **Post plan and question details** is set per channel. Every member of the channel can read what Windlass posts there. With it on, Windlass posts the plan's goal, parts, checks and budget, and a question's text. With it off, Windlass posts links and choice buttons only. A new mapping turns it on for a public repository and off for a private one.
 
-For deployment operators, set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET`. Under `WLP_PUBLIC_URL`, register `/slack/callback` for OAuth, `/slack/events` for the `app_mention` bot event, `/slack/commands` for the `/windlass` command, and `/slack/interactions` as the Interactivity Request URL. Buttons and the **Request changes** form need no extra scope. The bot scopes are `app_mentions:read`, `commands`, `chat:write`, `channels:read` and `groups:read`.
+Slack appears only when the deployment operator has [configured the Slack app](https://github.com/WindlassAI/windlass-platform/blob/main/docs/configuration.md#slack).
 
 ### API tokens
 
