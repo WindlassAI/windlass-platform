@@ -304,7 +304,7 @@ function PublishDialog({
 						<BranchName branch={state.branch} />
 						<span aria-hidden="true"> → </span>
 						<span className="visually-hidden"> into </span>
-						<code className="plain-code">{repository.branch}</code>
+						<BranchName branch={repository.branch} />
 					</span>
 				</span>
 			}
