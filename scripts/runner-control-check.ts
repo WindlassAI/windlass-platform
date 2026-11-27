@@ -1414,7 +1414,7 @@ try {
 					await until(() => ws.sent.some(f => f.kind === "removed"));
 					assert.deepEqual(removed, named ? ["s_gone"] : []);
 					assert.deepEqual(
-						ws.sent.filter(f => f.kind === "backup-forgotten").map(f => f.sessionId),
+						ws.sent.filter(f => f.kind === "backup-forgotten").map(f => (f as { sessionId?: string }).sessionId),
 						named ? ["s_gone"] : [],
 					);
 					assert.equal(ws.readyState, 1);

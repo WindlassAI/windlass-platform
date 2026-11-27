@@ -450,15 +450,18 @@ async function standIn(): Promise<void> {
 
 		// A sandbox that lies about what it packed.
 		const liar: SandboxHandle = {
-			...old,
 			id: "old",
+			cwd: old.cwd,
+			profile: old.profile,
+			readTextFile: () => old.readTextFile(),
+			writeTextFile: () => old.writeTextFile(),
 			run: async (command, options) => {
 				const result = await old.run(command, options);
 				return result.stdout.includes("packed ")
 					? { ...result, stdout: result.stdout.replace(/[0-9a-f]{64}/, "b".repeat(64)) }
 					: result;
 			},
-		} as SandboxHandle;
+		};
 		const lied = await backups.save(liar, owner, claude);
 		expect(
 			"an archive that is not what the sandbox printed is not kept, and the session's earlier copy stays",

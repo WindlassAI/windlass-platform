@@ -4,7 +4,9 @@
  *
  * What a copy holds is the agent's to say (session-files.ts, `SessionFiles`): its data directory, the
  * files of one session in it, the names a restore may unpack and the file that proves the session came
- * back. This file knows no agent's paths, only how a copy is made, moved and checked.
+ * back. This file knows no agent's paths, only how a copy is made, moved and checked. The scripts and the
+ * checks are in backup-scripts.ts, shared with a machine's copies (machine-backups.ts), which its runner
+ * keeps in a volume on that machine instead of the bucket, under the same security model.
  *
  * ## How
  *
