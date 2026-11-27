@@ -42,14 +42,22 @@
 		display: none;
 	}
 }
-/* Below a wide screen, its section's name stands for the tabs. */
-@media (max-width: 1100px) {
+/* Below a wide screen, its section's name stands for the tabs, and the title has their room. */
+@media (max-width: 1440px) {
 	.app-fixed > .topbar .topbar-tabs {
 		display: none;
 	}
 	.app-fixed > .topbar .topbar-section {
 		display: inline-flex;
 	}
+	/* The section's button names the section, so the trail does not. */
+	.app-fixed .trail-section {
+		display: none;
+	}
+}
+/* A step before the title keeps a few letters and an ellipsis, never just its first one. */
+.app-fixed .trail-step:not(.trail-section):not(.trail-here) {
+	min-width: 7ch;
 }
 .app-fixed > .topbar .topbar-middle {
 	gap: 12px;
@@ -190,10 +198,7 @@
 	.crumb-end {
 		flex: none;
 	}
-	/* The title takes the section's room (the open tab, or the section's button, names it), and all that is left. */
-	.app-fixed .trail-section {
-		display: none;
-	}
+	/* The title takes all that is left. */
 	.app-fixed .trail-here {
 		min-width: 0;
 	}
