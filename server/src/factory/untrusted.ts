@@ -27,6 +27,8 @@
 
 import type { HarnessId, SandboxProfileId } from "../contract.js";
 import { harnessName, machineHarness, takesUntrustedMarker } from "../sandbox/harnesses.js";
+import { sourceCaps } from "../sources/registry.js";
+import { SOURCE_IDS, type SourceId } from "../sources/types.js";
 
 /** The longest source Windlass takes (its docs/acp.md, `_meta["windlass/untrusted"]`). */
 export const UNTRUSTED_SOURCE_MAX = 200;
@@ -36,13 +38,12 @@ const short = (head: string) => (/^[0-9a-f]{40}$/.test(head) ? head.slice(0, 7) 
 
 /** Each source as the person reads it on the timeline and in Windlass's approval wording. */
 export const untrustedWords = {
-	slack: "a Slack request",
-	gitlabIssue: (iid: string) => `GitLab issue #${iid}`,
+	/**
+	 * Someone else's filing in a work source, by its record: `display` is the filing as the source shows it ("#12",
+	 * "ENG-12"), `author` as the source names them. A matching sender name does not make the text trusted.
+	 */
+	source: (id: SourceId, display = "", author = "") => sourceCaps(id).untrusted.words(display, author),
 	gitlabNote: (id: string) => `GitLab note ${id}`,
-	issue: (number: number, author: string) => `issue #${number} by @${author}`,
-	/** The tracker names the author; a matching sender name does not make the text trusted. */
-	jira: (identifier: string, author: string) => `Jira issue ${identifier} by ${author}`,
-	linear: (identifier: string, author: string) => `Linear issue ${identifier} by ${author}`,
 	ci: (head: string) => `CI logs of ${short(head)}`,
 	push: (head: string, pusher: string) => `commit ${short(head)} pushed by @${pusher}`,
 	feedback: (writers: string) => `GitHub feedback from ${writers}`,
@@ -62,15 +63,13 @@ export const untrustedWords = {
  * platform's own run made: no person outside put it there, though what it quotes is not vouched for.
  */
 export function thirdParty(list: readonly string[] | undefined | null): string[] {
-	return sources(list).filter(source => source === untrustedWords.slack || THIRD_PARTY.some(form => form.test(source)));
+	return sources(list).filter(source => THIRD_PARTY.some(form => form.test(source)));
 }
 
-/** Source prefixes produced by `untrustedWords` for third-party text. */
+/** Source prefixes produced by `untrustedWords` for third-party text: each work source's filings, then the rest. */
 const THIRD_PARTY = [
-	/^GitLab (?:issue #|note )\d+$/,
-	/^issue #\d+ by @/,
-	/^Linear issue [A-Za-z0-9]+-\d+ by /,
-	/^Jira issue [A-Za-z0-9_]+-\d+ by /,
+	...SOURCE_IDS.map(id => sourceCaps(id).untrusted.pattern),
+	/^GitLab note \d+$/,
 	/^GitHub feedback from /,
 	/^commit [a-f0-9]+ pushed by @/,
 ];

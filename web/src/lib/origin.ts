@@ -1,13 +1,10 @@
 import type { ItemOrigin, ItemSource } from "@contract";
+import { bySource } from "../../../server/src/sources/registry.js";
 
 export const filingSource: Record<ItemSource, string> = {
 	web: "the web",
 	api: "the API",
-	github: "GitHub",
-	gitlab: "GitLab",
-	linear: "Linear",
-	jira: "Jira",
-	slack: "Slack",
+	...bySource(caps => caps.displayName),
 };
 
 /** The issue an item was filed from, whichever tracker it is on: what a link and a note about its author need. */
