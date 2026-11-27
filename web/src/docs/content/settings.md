@@ -40,7 +40,9 @@ Where Linear is available, connect your workspace and map each team to a GitHub 
 
 Choose **Connect Slack…**, approve the workspace, and invite Windlass to a public or private channel. In Settings, choose **#channel** and a repository you can push to, then **Map channel**. Disconnecting removes the bot token, member links and mappings. Existing items stay. See [From Slack](/docs/factory#from-slack).
 
-For deployment operators, set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET`. Under `WLP_PUBLIC_URL`, register `/slack/callback` for OAuth, `/slack/events` for the `app_mention` bot event, and `/slack/commands` for the `/windlass` command. The bot scopes are `app_mentions:read`, `commands`, `chat:write`, `channels:read` and `groups:read`.
+**Post plan and question details** is set per channel. Every member of the channel can read what Windlass posts there. With it on, Windlass posts the plan's goal, parts, checks and budget, and a question's text. With it off, Windlass posts links and choice buttons only. A new mapping turns it on for a public repository and off for a private one.
+
+For deployment operators, set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET`. Under `WLP_PUBLIC_URL`, register `/slack/callback` for OAuth, `/slack/events` for the `app_mention` bot event, `/slack/commands` for the `/windlass` command, and `/slack/interactions` as the Interactivity Request URL. Buttons and the **Request changes** form need no extra scope. The bot scopes are `app_mentions:read`, `commands`, `chat:write`, `channels:read` and `groups:read`.
 
 ### API tokens
 

@@ -1,10 +1,10 @@
 import type { RawAccess } from "rivetkit/db";
 import { config } from "../config.js";
-import type { ItemQuestion } from "../contract.js";
+import type { ItemQuestion, ItemView } from "../contract.js";
 import { currentKey } from "../factory/blueprint.js";
 import type { SlackBinding } from "../factory/intake.js";
 import type { FactoryItem } from "../factory/types.js";
-import { planPost, questionPost, resolvedMessage, type SlackMessage, type SlackPost } from "./blocks.js";
+import { escapeText, planPost, questionPost, resolvedMessage, type SlackMessage, type SlackPost } from "./blocks.js";
 
 const messages = {
 	started: "Work item filed", plan: "Plan ready for approval", question: "Question ready",
@@ -13,11 +13,12 @@ const messages = {
 type Event = keyof typeof messages | "resolved";
 export type SlackEffect = { kind: "slack_write"; key: string; event: Event; question?: string; line?: string };
 
-/** How a question closed. A Slack press passes the presser's Slack user id. */
+/** How a question closed, as mrkdwn. A Slack press passes the presser's Slack user id, which the signature covers. */
 export function resolvedLine(question: ItemQuestion, fact: { kind: string }, slackUser?: string): string {
 	const f = fact as { kind: string; by?: unknown; choice?: unknown; question?: unknown };
 	const approved = f.kind === "approve_plan" || (f.kind === "answer" && f.choice === "approve");
-	const label = approved ? "Approve" : f.kind === "answer" && f.question === question.id ? question.choices.find(c => c.id === f.choice)?.label : undefined;
+	const choice = f.kind === "answer" && f.question === question.id ? question.choices.find(c => c.id === f.choice)?.label : undefined;
+	const label = approved ? "Approve" : choice && escapeText(choice);
 	if (!label || typeof f.by !== "string" || !f.by.startsWith("person:")) return "This question is no longer open.";
 	if (slackUser) return approved ? `Approved by <@${slackUser}> in Slack` : `Answered by <@${slackUser}> in Slack: ${label}`;
 	return approved ? "Approved on the web" : `Answered on the web: ${label}`;
@@ -47,22 +48,25 @@ export const SLACK_RECEIPTS = "CREATE TABLE IF NOT EXISTS slack_receipts (key TE
 /** The message posted for each question, so that closing it can replace its buttons. */
 export const SLACK_QUESTIONS = "CREATE TABLE IF NOT EXISTS slack_questions (question TEXT PRIMARY KEY, ts TEXT NOT NULL)";
 
+type Page = Pick<ItemView, "question" | "plan">;
 export interface SlackIo {
 	post(message: SlackPost, thread: string | null): Promise<string>;
 	update(ts: string, message: SlackMessage): Promise<void>;
+	/** The item's page: its question with the choices the web offers now. */
+	read(): Promise<Page>;
 }
 
 /** What to post for an event. A question that closed before its turn in the queue gets only the link line. */
-export function postFor(item: FactoryItem, effect: SlackEffect, url: string): SlackPost {
+export function postFor(itemId: string, page: Page | null, effect: SlackEffect, url: string): SlackPost {
 	const line = { brief: { text: `${messages[effect.event as keyof typeof messages]}: ${url}` } };
-	const question = item.question;
+	const question = page?.question;
 	if (!question || question.id !== effect.question) return line;
-	if (effect.event === "plan" && item.featurePlan) return planPost(item.id, question, item.featurePlan, url);
-	if (effect.event === "question") return questionPost(item.id, question, url);
+	if (effect.event === "plan" && page.plan) return planPost(itemId, question, page.plan, url);
+	if (effect.event === "question") return questionPost(itemId, question, url);
 	return line;
 }
 
-export async function performSlackWrite(db: Pick<RawAccess, "execute">, destination: SlackBinding, item: FactoryItem, effect: SlackEffect, io: SlackIo): Promise<void> {
+export async function performSlackWrite(db: Pick<RawAccess, "execute">, destination: SlackBinding, itemId: string, effect: SlackEffect, io: SlackIo): Promise<void> {
 	if ((await db.execute("SELECT 1 FROM slack_receipts WHERE key=?", effect.key)).length) return;
 	let threadTs = destination.threadTs;
 	if (effect.event !== "started") {
@@ -71,13 +75,13 @@ export async function performSlackWrite(db: Pick<RawAccess, "execute">, destinat
 		if (!receipt.thread_ts) return; // The original mapping was already unavailable at acknowledgement.
 		threadTs = receipt.thread_ts;
 	}
-	const url = `${config.origins[0]}/items/${item.id}`;
+	const url = `${config.origins[0]}/items/${itemId}`;
 	try {
 		if (effect.event === "resolved") {
 			const [posted] = await db.execute<{ ts: string }>("SELECT ts FROM slack_questions WHERE question=?", effect.question);
 			if (posted) await io.update(posted.ts, resolvedMessage(effect.line!, url));
 		} else {
-			const post = postFor(item, effect, url);
+			const post = postFor(itemId, effect.question ? await io.read() : null, effect, url);
 			const ts = await io.post(post, threadTs);
 			if (effect.question) await db.execute("INSERT OR IGNORE INTO slack_questions VALUES(?,?)", effect.question, ts);
 			threadTs ??= ts;

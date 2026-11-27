@@ -7,7 +7,7 @@ import { MAX_NOTE_CHARS, type SlackMapping } from "../contract.js";
 import { openSecret } from "../repo-secrets.js";
 import { serverSealer } from "../signin/seal.js";
 import { isJoinedChannel, listChannels, openView, postMessage, postPrivate, revoke, updateMessage } from "../slack/app.js";
-import { escape, revisionModal, type SlackMessage, type SlackPost } from "../slack/blocks.js";
+import { escapeText, revisionModal, type SlackMessage, type SlackPost } from "../slack/blocks.js";
 import type { SlackInteraction } from "../slack/interactions.js";
 import type { SlackDelivery } from "../slack/webhook.js";
 import { userActor } from "./internal.js";
@@ -46,7 +46,7 @@ async function reply(c: Ctx, bearer: string, d: SlackDelivery, thread: Thread, u
 		const answer = await userActor(c, uid).internalSlackReply({ id: thread.item, text: d.text, slackUser: d.userId });
 		if (answer.kind === "answered") return;
 		if (answer.kind === "choices")
-			return say(`Reply with one of: ${answer.labels.map(escape).join(", ")}. Or answer in Windlass: ${itemUrl(thread.item)}`);
+			return say(`Reply with one of: ${answer.labels.map(escapeText).join(", ")}. Or answer in Windlass: ${itemUrl(thread.item)}`);
 	}
 	await say(`Replies in this thread don't file new work. Open the item: ${itemUrl(thread.item)}`);
 }
@@ -70,8 +70,10 @@ async function deliver(c: Ctx, d: SlackDelivery, generation: string, uid: string
 	if (result.kind === "refused") await postPrivate(bearer, d.channelId, d.userId, result.reason);
 }
 
-/** Who may act on an item's buttons: the Slack member linked to the item's owner, while the mapping that filed it stands. */
-// Resolved from our own tables. The payload contributes only the signed Slack user id and the item it names.
+/**
+ * Who may act on an item's buttons: the Slack member linked to the item's owner, while the mapping that filed it stands.
+ * Resolved from our own tables. The payload contributes only the signed Slack user id and the item it names.
+ */
 async function authorize(c: Ctx, a: SlackInteraction): Promise<{ bearer: string; owner: string | null; refusal: string | null }> {
 	const bearer = token(c, await install(c));
 	const [thread] = await c.db.execute<Thread>(`SELECT t.uid, t.item, t.generation FROM thread t JOIN mapping m ON m.id=t.channel AND m.generation=t.generation

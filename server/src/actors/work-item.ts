@@ -4,7 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { performSlackWrite, slackEffects, SLACK_QUESTIONS, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
-import { slackChoices } from "../slack/blocks.js";
+import { slackMayAnswer } from "../slack/blocks.js";
 import type { SlackBinding } from "../factory/intake.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
@@ -1689,7 +1689,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (effect.kind === "slack_write") {
 		const binding = meta.slack!;
 		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
-		await performSlackWrite(c.db, binding, item, effect, {
+		await performSlackWrite(c.db, binding, item.id, effect, {
+			read: () => viewOf(c),
 			post: (message, thread) => workspace.internalPost(binding.channelId, binding.generation, message, thread, { uid: meta.uid, id: item.id }),
 			update: (ts, message) => workspace.internalUpdate(binding.channelId, binding.generation, ts, message),
 		});
@@ -2186,7 +2187,7 @@ function slackRefusal(item: FactoryItem, fact: Fact, question: string) {
 	const open = item.question;
 	if (open?.id !== question) throw new UserError("This question is no longer open.", { code: "item_conflict" });
 	const choice = fact.kind === "approve_plan" ? "approve" : fact.kind === "answer" ? fact.choice : null;
-	if (!slackChoices(open, item.featurePlan).some(offered => offered.id === choice))
+	if (!choice || !slackMayAnswer(open, choice))
 		throw new UserError("Answer this question in Windlass.", { code: "item_conflict" });
 }
 

@@ -97,7 +97,10 @@ test("resolution lines say who answered and where, without buttons", () => {
 	assert.equal(resolvedLine(q, { kind: "approve_plan", version: 1, by: "person:u" } as never), "Approved on the web");
 	assert.equal(resolvedLine(q, { kind: "cancel", by: "person:u" } as never), "This question is no longer open.");
 	assert.equal(resolvedLine(q, { kind: "turn_ended" } as never), "This question is no longer open.");
-	const message = resolvedMessage("Answered on the web: <b>", url);
-	assert.match(JSON.stringify(message.blocks), /&lt;b&gt;/);
+	const odd = question({ choices: [{ id: "give_up", label: "Stop <now> & drop" }] });
+	const line = resolvedLine(odd, { kind: "answer", question: "q1", choice: "give_up", by: "person:u" } as never, "U1");
+	assert.equal(line, "Answered by <@U1> in Slack: Stop &lt;now&gt; &amp; drop");
+	const message = resolvedMessage(line, url);
+	assert.match(JSON.stringify(message.blocks), /<@U1>.*&lt;now&gt;/);
 	assert.deepEqual(elements(message.blocks), []);
 });

@@ -287,6 +287,7 @@
         "scripts/{slack-*,github-standin,login-http,issue-intake-fixture,check-listeners}.ts"
       ],
       "checks": {
+        "slack-blocks": "tsx --test src/slack/blocks.test.ts",
         "slack": "tsx ../scripts/slack-check.ts"
       }
     },

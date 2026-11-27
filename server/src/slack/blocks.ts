@@ -21,11 +21,11 @@ export function cut(text: string, most: number): string {
 	return kept.trimEnd() + "…";
 }
 /** Escape our own mrkdwn. Untrusted text only goes into plain_text fields. */
-export const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export const escapeText = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const plain = (text: string, most = LIMITS.section) => ({ type: "plain_text", text: cut(text, most), emoji: false });
 const section = (text: string): Block => ({ type: "section", text: plain(text) });
 const mrkdwn = (text: string): Block => ({ type: "section", text: { type: "mrkdwn", text } });
-const link = (url: string, label: string) => `<${url}|${escape(label)}>`;
+const link = (url: string, label: string) => `<${url}|${escapeText(label)}>`;
 function list(lines: string[], most: number) {
 	const shown = lines.slice(0, most).map(line => "• " + cut(line.replace(/\s+/g, " ").trim(), 300));
 	if (lines.length > most) shown.push(`and ${lines.length - most} more`);
@@ -33,10 +33,13 @@ function list(lines: string[], most: number) {
 }
 
 /** Never offered in Slack: secret requests, questions whose meaning depends on builder text, and choices needing input. */
+export function slackMayAnswer(question: ItemQuestion, choice: ChoiceId): boolean {
+	return !question.secret && question.kind !== "secret_needed" && !question.asked && !NEEDS_INPUT.has(choice);
+}
+/** What Slack offers of the choices the web shows. Unattended parts are confirmed on the web. */
 export function slackChoices(question: ItemQuestion, plan?: FeaturePlan | null): ItemQuestion["choices"] {
-	if (question.secret || question.kind === "secret_needed" || question.asked) return [];
 	const confirmUnattended = !!plan && unattendedKeys(plan).length > 0;
-	return question.choices.filter(choice => !NEEDS_INPUT.has(choice.id) && !(choice.id === "approve" && confirmUnattended));
+	return question.choices.filter(choice => slackMayAnswer(question, choice.id) && !(choice.id === "approve" && confirmUnattended));
 }
 
 function button(label: string, value: ButtonValue, primary: boolean, id = "choice:" + value.c): Block {
@@ -57,7 +60,7 @@ function planButtons(itemId: string, question: ItemQuestion, plan: FeaturePlan, 
 export function planPost(itemId: string, question: ItemQuestion, plan: FeaturePlan, url: string): SlackPost {
 	const line = `Plan ready for approval: ${url}`;
 	const buttons = planButtons(itemId, question, plan, url);
-	const brief = { text: line, blocks: [mrkdwn(escape(line)), buttons] };
+	const brief = { text: line, blocks: [mrkdwn(escapeText(line)), buttons] };
 	const blocks: Block[] = [{ type: "header", text: plain(`Plan ready for approval (version ${plan.version})`, LIMITS.header) }];
 	blocks.push(section("Goal: " + plan.spec.goal));
 	blocks.push(section("Parts\n" + list(plan.subtasks.map(s => `${s.title} (${s.budget.tokens.toLocaleString("en-US")} tokens)`), PARTS)));
@@ -84,14 +87,14 @@ export function questionPost(itemId: string, question: ItemQuestion, url: string
 		openButton(url),
 	])] : [];
 	return {
-		brief: buttons.length ? { text: line, blocks: [mrkdwn(escape(line)), ...buttons] } : { text: line },
+		brief: buttons.length ? { text: line, blocks: [mrkdwn(escapeText(line)), ...buttons] } : { text: line },
 		full: { text: line, blocks: [section(question.text), mrkdwn(link(url, "Open in Windlass")), ...buttons] },
 	};
 }
 
-/** The line that replaces a question's message, with no buttons, once it is closed. */
+/** The line that replaces a question's message, with no buttons, once it is closed. `line` is our escaped mrkdwn. */
 export function resolvedMessage(line: string, url: string): SlackMessage {
-	return { text: line, blocks: [mrkdwn(`${escape(line)} · ${link(url, "Open in Windlass")}`)] };
+	return { text: line, blocks: [mrkdwn(`${line} · ${link(url, "Open in Windlass")}`)] };
 }
 
 export function revisionModal(value: ButtonValue & { ch: string }, most: number): Block {
