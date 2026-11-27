@@ -112,12 +112,6 @@
 	flex: none;
 	color: var(--ink-faint);
 }
-.gh-pull-branch > span {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
 .gh-pull-state {
 	display: inline-flex;
 	align-items: center;
@@ -186,4 +180,24 @@
 }
 .field-note.tone-bad {
 	color: var(--bad);
+}
+
+/* A branch said in words (BranchName.tsx): its exact name on hover, and a copy control that shows with it. */
+.branch-name {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	max-width: 100%;
+	vertical-align: middle;
+}
+.branch-name-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.branch-name:hover .copy-button,
+.branch-name:focus-within .copy-button {
+	opacity: 1;
 }
