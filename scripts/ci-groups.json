@@ -331,7 +331,7 @@
         "server/src/actors/{internal,user,slack-workspace,user-slack,user-items,issue-intake,work-item}.ts",
         "server/src/factory/**",
         "server/src/github/**",
-        "scripts/{slack-*,github-standin,login-http,issue-intake-fixture,check-listeners}.ts"
+        "scripts/{slack-*,github-standin,login-http,issue-intake-fixture,check-listeners,check-wait}.ts"
       ],
       "checks": {
         "slack-blocks": "tsx --test src/slack/blocks.test.ts",
