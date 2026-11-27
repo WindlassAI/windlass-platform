@@ -88,6 +88,7 @@ import {
 	outOfMemoryWords,
 } from "../../contract.js";
 import { errorText } from "../../util.js";
+import { GUEST_HARDENING_SCRIPT, HARDENED } from "./guest-hardening.js";
 
 /** The metadata keys of a sandbox of the platform. */
 export const META = {
@@ -136,6 +137,13 @@ const realSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolv
 const PROBE_MS = 10_000;
 /** How long the sandbox's name files may take (`guestNetwork`): its lock waits 25 s at most. */
 const GUEST_NETWORK_MS = 30_000;
+/** How long `GUEST_HARDENING_SCRIPT` may take (`harden`): a few systemctl calls the first time, file reads after. */
+const HARDENING_MS = 30_000;
+
+/** What the person reads when a sandbox could not be locked down (`E2bProvider.harden`): it is not used. */
+export function hardeningRefusal(reason: string): string {
+	return `The sandbox was not used: E2B's base system in it has an SSH server and accounts without a password, which would let any command in it become root, and switching them off failed (${reason}). Try again; if it keeps failing, the operator should rebuild the E2B template (sandbox/e2b/build.sh).`;
+}
 
 /** What the turn's timeline says when a sandbox that did not answer was started again from its disk (`E2bProvider.restart`). */
 export const RESTARTED_NOTICE =
@@ -184,6 +192,8 @@ export interface E2bProviderOptions {
 	probeMs?: number;
 	/** How long the sandbox's name files may take (`guestNetwork`). Default `GUEST_NETWORK_MS`. */
 	networkMs?: number;
+	/** How long the hardening script may take (`harden`). Default `HARDENING_MS`. */
+	hardeningMs?: number;
 }
 
 /** The profiles a sandbox on E2B can be made with. */
@@ -606,6 +616,8 @@ export class E2bProvider implements HostedSandboxProvider {
 	private readonly known = new Map<string, Known>();
 	/** The tail of each sandbox's queue of network changes (`serial`). */
 	private readonly networkChanges = new Map<string, Promise<void>>();
+	/** Sandboxes this process ran `GUEST_HARDENING_SCRIPT` in since they last started (`harden`): a connect to one that has run since needs no second run. */
+	private readonly hardened = new Set<string>();
 	/** How long a command outside a turn may run before the sandbox is vouched for as for a turn (`E2bSandboxHandle.exec`). */
 	readonly holdCommandsAfterMs: number;
 	private readonly log: (line: string) => void;
@@ -837,6 +849,54 @@ export class E2bProvider implements HostedSandboxProvider {
 	}
 
 	/**
+	 * Takes away what E2B's base system adds that lets any user of the guest become root (guest-hardening.ts):
+	 * as root, before anything of a session's runs, at every create, resume and restart. Throws a
+	 * `SandboxUserError` unless the script says the guest is as it must be; the caller then does not use the sandbox.
+	 */
+	private async harden(id: string, connection: E2bConnection): Promise<void> {
+		this.hardened.delete(id);
+		let stdout = "";
+		let stderr = "";
+		const failed = (reason: string) => {
+			this.log(`[wlp] e2b.sandbox.hardening_failed id=${id}: ${reason}`);
+			return new SandboxUserError(hardeningRefusal(reason));
+		};
+		let command: E2bCommand;
+		try {
+			command = await connection.start(["sh", "-c", GUEST_HARDENING_SCRIPT].map(shellQuote).join(" "), {
+				root: true,
+				cwd: "/",
+				stdin: false,
+				onStdout: text => (stdout += text),
+				onStderr: text => (stderr += text),
+			});
+		} catch (error) {
+			throw failed(`E2B did not start the script: ${messageOf(error)}`);
+		}
+		const limit = this.options.hardeningMs ?? HARDENING_MS;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const result = await Promise.race([
+			command.wait().catch((error: unknown) => ({ exitCode: -1, error: messageOf(error) })),
+			new Promise<null>(resolve => (timer = setTimeout(() => resolve(null), limit))),
+		]).finally(() => clearTimeout(timer));
+		if (result === null) {
+			await command.kill().catch(() => undefined);
+			throw failed(`the script did not end within ${limit / 1000} s`);
+		}
+		const last = stdout.trim().split("\n").pop()?.trim() ?? "";
+		if (result.exitCode !== 0 || last !== HARDENED) {
+			const said = last.startsWith("refused") ? last : stderr.trim().slice(-300) || last.slice(-300);
+			throw failed(
+				(
+					said ||
+					(result.exitCode === 0 ? "the script ended without saying the guest is hardened" : `exit ${result.exitCode}`)
+				).slice(0, 300),
+			);
+		}
+		this.hardened.add(id);
+	}
+
+	/**
 	 * Null when the sandbox runs a command to its end within `probeMs`; otherwise what went wrong, in words
 	 * for a log line and an error. As root, so that nothing of a session's (its process limit, its files) is in the way.
 	 */
@@ -1019,6 +1079,13 @@ export class E2bProvider implements HostedSandboxProvider {
 			);
 			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
+		// Before anything else runs in it, even the provider's own scripts: E2B's SSH server and empty passwords go.
+		try {
+			await this.harden(id, connection);
+		} catch (error) {
+			await discard();
+			throw error;
+		}
 		const handle = new E2bSandboxHandle(
 			this,
 			connection,
@@ -1128,6 +1195,17 @@ export class E2bProvider implements HostedSandboxProvider {
 			// A paused one has run only since this connect.
 			connection = await this.restart(paused ? { ...info, startedAt: connectedAt } : info, silent, memory);
 			restarted = true;
+		}
+		// Before anything of the session's: a resume or a start from the disk may bring E2B's SSH server back, and a
+		// sandbox this process has not seen since it started may have been made before the hardening existed.
+		if (paused || restarted || !this.hardened.has(id)) {
+			try {
+				await this.harden(id, connection);
+			} catch (error) {
+				// Nothing of the session's may go on in it: it is paused (its workspace kept) until a later connect hardens it.
+				if (this.settings.pause) await this.client.pause(id).catch(() => undefined);
+				throw error;
+			}
 		}
 		const now = this.now();
 		const known = this.remember(info);
@@ -1542,6 +1620,7 @@ export class E2bProvider implements HostedSandboxProvider {
 		const known = this.known.get(id);
 		if (known?.keepalive !== undefined) clearInterval(known.keepalive);
 		this.known.delete(id);
+		this.hardened.delete(id);
 	}
 
 	/** The sandbox stopped running through this server: one line with how long it ran and what that costs, by estimate. */
@@ -1580,6 +1659,11 @@ export class E2bProvider implements HostedSandboxProvider {
 		await this.client.pause(id);
 		const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
 		if (connection === undefined) throw new Error("the sandbox was gone after it was paused");
+		// A resume like any other: hardened again before the turn starts in it, or paused again and not used.
+		await this.harden(id, connection).catch(async (error: unknown) => {
+			await this.client.pause(id).catch(() => undefined);
+			throw error;
+		});
 		handle.connection = connection;
 		known.runningSince = this.now();
 	}

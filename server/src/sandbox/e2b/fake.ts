@@ -10,13 +10,15 @@
  * a create or a resume with `E2bLimitError`.
  *
  * What runs inside a sandbox is not E2B's business and is not modelled here: a `FakeMachine` runs the
- * commands. The default one knows no program and answers every command with exit code 0; a test gives
+ * commands. The default one knows no program and answers every command with exit code 0 (the provider's
+ * hardening script with `hardened`, as a guest it worked in would); a test gives
  * one that answers as it needs, or one that runs the commands in a real container of the sandbox image
  * (scripts/e2b-provider-test.ts, "a real turn"), which is how the provider's quoting, standard input and
  * signals are tried without E2B.
  */
 
 import type { E2bNetworkConfig } from "./network.js";
+import { HARDENED, HARDENING_MARK } from "./guest-hardening.js";
 import {
 	E2bBusyError,
 	type E2bClient,
@@ -68,7 +70,10 @@ export function finishedCommand(
 	};
 }
 
-/** A machine whose commands are answered by a function of the test's; without one, each ends with exit code 0 and no output. Files are kept in a map. */
+/**
+ * A machine whose commands are answered by a function of the test's; without one, or where it answers undefined,
+ * each ends with exit code 0 and no output, but the hardening script (guest-hardening.ts) prints `hardened`. Files are kept in a map.
+ */
 export class ScriptedMachine implements FakeMachine {
 	readonly commands: Array<{ command: string; options: E2bCommandOptions; stdin: string }> = [];
 	readonly files = new Map<string, string>();
@@ -95,7 +100,9 @@ export class ScriptedMachine implements FakeMachine {
 			// The answer is made once the input is complete, as a program that reads its input to the end would make it.
 			wait: async () => {
 				await stdinClosed;
-				const result = this.answer(command, () => entry.stdin) ?? {};
+				const result =
+					this.answer(command, () => entry.stdin) ??
+					(command.includes(HARDENING_MARK) ? { stdout: `${HARDENED}\n` } : {});
 				if (result.stdout) options.onStdout?.(result.stdout);
 				if (result.stderr) options.onStderr?.(result.stderr);
 				return { exitCode: result.exitCode ?? 0, error: result.error };

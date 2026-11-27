@@ -292,6 +292,33 @@ removes it; opening a session's changes in the browser resumes its sandbox for t
 and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
 timeout.
 
+### What E2B adds to the template, and why the platform takes it away
+
+E2B's template build provisions a base system of its own under `sandbox/Dockerfile`: systemd, an OpenSSH
+server on port 22 that lets root in with an empty password, rpcbind on port 111, and the accounts `root` and
+`user` with empty passwords. Left alone, any command of the agent's can `ssh root@127.0.0.1` or `su`, and so
+become root or any other user, such as `nobody`, which holds the GitHub token during Git transport. The platform
+does not need any of it: E2B's own agent (envd, port 49983) runs every command. The script in
+`server/src/sandbox/e2b/guest-hardening.ts` locks every account with an empty password (and `root` and `user`
+whatever theirs), tells sshd to refuse root and password logins, stops and masks the ssh and rpcbind units, kills
+every sshd process together with what it started, and then checks the result.
+
+- It runs as the last step of every template build (`template.ts`). A build fails when the check fails.
+- The provider runs it as root on every create, on every connect that resumes a paused sandbox or starts one
+  again from its disk, on the pause and resume before a turn near the plan's hour, and on the first connect of a
+  server process to a running sandbox. It always runs before anything of the session's. Templates built before
+  this change are covered too.
+- It fails closed. If port 22 still listens, an sshd still runs, or an account still has an empty password, the
+  sandbox is not used. A new sandbox is killed, and a resumed one is paused again. The person reads why, and the
+  log has `e2b.sandbox.hardening_failed`.
+
+`scripts/e2b-hardening-check.ts` checks this against the real service, in about two minutes with one sandbox:
+
+```sh
+cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-hardening-check.ts
+cd server && E2B_API_KEY=e2b_... WLP_E2B_TEMPLATE=windlass-platform-sandbox-claude npx tsx ../scripts/e2b-hardening-check.ts
+```
+
 ### The model relay
 
 With the relay, an E2B sandbox never holds the user's access token: Windlass sends its model requests to the
