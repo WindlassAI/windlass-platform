@@ -12,6 +12,10 @@
     "dev:web": "pnpm --filter @windlass-platform/web dev",
     "shots": "node scripts/readme-shots.mjs",
     "typecheck": "pnpm -r typecheck",
+    "typecheck:serial": "pnpm -r --workspace-concurrency=1 typecheck",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "lint:ci": "biome ci --formatter-enabled=false --assist-enabled=false --reporter=github .",
     "test": "pnpm test:factory && pnpm test:core && pnpm test:usage && pnpm test:resume",
     "test:factory": "pnpm check:release && pnpm --filter @windlass-platform/server exec tsx ../scripts/readiness-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/snapshot-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/container-logs-check.ts && pnpm --filter @windlass-platform/server exec tsx --test --test-concurrency=1 ../scripts/keyring-check.ts ../scripts/login-handover-check.ts ../scripts/revocation-check.ts && node --test --test-timeout=120000 scripts/claude-relay-check.mjs scripts/opencode-relay-check.mjs scripts/codex-relay-check.mjs scripts/windlass-relay-check.mjs scripts/runner-setup-check.mjs scripts/runner-setup-wizard-check.mjs && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-opencode-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-codex-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/runner-egress-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-check.ts && pnpm --filter @windlass-platform/server exec tsx ../scripts/orchestrator-check.ts && WEBHOOK_ONLY='G3 feature' pnpm --filter @windlass-platform/server exec tsx ../scripts/webhook-check.ts && FACTORY_ONLY=orchestrator pnpm --filter @windlass-platform/server exec tsx ../scripts/factory-e2e.ts",
     "test:core": "pnpm --filter @windlass-platform/server e2e --section=core",
@@ -20,6 +24,7 @@
     "check:release": "node scripts/workflow-lint.ts && node --test scripts/release-images-check.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.7",
     "typescript": "^5.6.0",
     "vite": "^8.3.8"
   }

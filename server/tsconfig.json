@@ -5,6 +5,8 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsc/server.tsbuildinfo",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,

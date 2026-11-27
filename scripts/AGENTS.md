@@ -25,4 +25,4 @@ Run one command from the repository root.
 
 ## See also
 
-[Testing](../docs/testing.md) lists prerequisites. [Light CI](../.github/workflows/ci.yml) runs the documentation check and typechecks.
+[Testing](../docs/testing.md) lists prerequisites. [Light CI](../.github/workflows/ci.yml) runs the documentation check, the Biome lint and typechecks.
