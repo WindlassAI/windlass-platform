@@ -28,6 +28,7 @@ import { Menu, PHONE_QUERY, Pill, useMediaQuery, type MenuSpec } from "../compon
 import { plural } from "../lib/format";
 import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, useHistoryState, type ItemSource, type Route } from "../lib/router";
+import { bySource, filterWord } from "../../../server/src/sources/registry.js";
 import { railOf, type Rail } from "../lib/workspace";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
@@ -40,15 +41,7 @@ import { ItemRow } from "../components/ItemRow";
 import { type ItemsState } from "../state/items";
 
 /** How an item was filed, in the filter's words. */
-export const SOURCE_WORD: Record<ItemSource, string> = {
-	web: "web",
-	api: "API",
-	github: "GitHub issue",
-	gitlab: "GitLab issue",
-	linear: "Linear issue",
-	jira: "Jira issue",
-	slack: "Slack",
-};
+export const SOURCE_WORD: Record<ItemSource, string> = { web: "web", api: "API", ...bySource(filterWord) };
 
 const IN_PROGRESS: ItemState[] = ["working", "queued", "waiting"];
 const ENDED: ItemState[] = ["done", "failed", "cancelled"];

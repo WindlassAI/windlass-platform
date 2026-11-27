@@ -5,6 +5,7 @@
  * the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
+import { SOURCE_IDS } from "../../../server/src/sources/types.js";
 import type { GithubId, ItemSummary } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { routeLabel } from "./nav";
@@ -45,7 +46,7 @@ export type Route =
 
 /** How a work item was filed, as the Factory page filters by it. */
 export type ItemSource = ItemSummary["source"];
-export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github", "gitlab", "linear", "jira", "slack"];
+export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", ...SOURCE_IDS];
 
 /** The views of a chosen repository beside its overview, each at its own address. */
 export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as const;

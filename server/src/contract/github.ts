@@ -149,9 +149,13 @@ export interface GithubBranchList {
 	more: boolean;
 }
 
+/** The code hosts a repository can be on. Their issues are work sources too (sources/types.ts). */
+export const HOST_IDS = ["github", "gitlab"] as const;
+export type HostId = (typeof HOST_IDS)[number];
+
 /** What a session was launched on, when it was picked from the user's code host connection. */
 export interface SessionRepository {
-	provider: "github" | "gitlab";
+	provider: HostId;
 	/** The provider's id for the repository. */
 	id: GithubId;
 	owner: string;

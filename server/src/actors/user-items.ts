@@ -1066,11 +1066,11 @@ async function makeItem(
 			child?.untrusted,
 			gitlab?.sources,
 			github && !github.origin.issue.trusted
-				? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)]
+				? [untrustedWords.source("github", `#${github.origin.issue.number}`, github.origin.issue.author)]
 				: [],
 			linear ? linearSources(linear.origin) : [],
-			jira ? [untrustedWords.jira(jira.origin.jira.identifier, jira.origin.jira.author)] : [],
-			slack ? [untrustedWords.slack] : [],
+			jira ? [untrustedWords.source("jira", jira.origin.jira.identifier, jira.origin.jira.author)] : [],
+			slack ? [untrustedWords.source("slack")] : [],
 		);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
@@ -2093,8 +2093,8 @@ export const itemActions = {
 	): Promise<TrackerFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () =>
-			fileTrackerIssue(c, filing, githubItemId, (profile, input, intake) =>
-				fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake),
+			fileTrackerIssue(c, filing, githubItemId, (profile, input, source, intake) =>
+				fileItem(c, profile, input, source, makeSession, intake),
 			),
 		);
 	},
