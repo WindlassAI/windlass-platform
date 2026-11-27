@@ -40,13 +40,11 @@ import { fetchGitlab, pushGitlab } from "../../gitlab/workspace.js";
 import { gitlabAccess } from "../internal.js";
 import { gitlabOf } from "../gitlab-item.js";
 import { hostFor } from "../../codehost/item.js";
+import { branchFor, freeBranchAt, wantedBranch } from "../../codehost/branch.js";
 import { actuallyPushed } from "../../github/git.js";
 import {
 	type StoredRepository,
 	hasUnpushedWork,
-	branchFor,
-	freeBranchAt,
-	wantedBranch,
 	refreshPull,
 	type PublishEvidence,
 	fetchBase,
@@ -294,27 +292,25 @@ export async function testSessionBase(
 /**
  * The branch the session pushes to, decided the first time a push or a request to publish needs it and kept
  * from then on: a work item's agent's is named as its item names it; any other is named for the title, as
- * GitHub does not have it yet. Where GitHub cannot say which names are free, the title with the end of the
- * session's id, as before.
+ * its code host does not have it yet. Where the host cannot say which names are free, the title with the end
+ * of the session's id, as before.
  */
-async function branchOf(
-	c: Ctx,
-	meta: SessionMeta,
-	app: ReturnType<typeof githubApp>,
-	repo: StoredRepository,
-): Promise<string> {
+async function branchOf(c: Ctx, meta: SessionMeta, repo: StoredRepository): Promise<string> {
 	if (meta.publishBranch) return meta.publishBranch;
 	const fallback = branchFor(meta.title, meta.sessionId);
-	const connection = !app || meta.origin?.kind === "item" ? null : await githubConnection(c, meta);
 	const picked =
-		app && connection ? await freeBranchAt(app, connection, repo, meta.title).catch(() => fallback) : fallback;
-	// A second request that asked GitHub at the same time keeps what the first one decided.
+		meta.origin?.kind === "item"
+			? fallback
+			: await hostFor(c, { uid: meta.uid, repository: repo })
+					.then(host => freeBranchAt(host, meta.title))
+					.catch(() => fallback);
+	// A second request that asked the host at the same time keeps what the first one decided.
 	meta.publishBranch ??= picked;
 	void persist(c);
 	return meta.publishBranch;
 }
 
-/** What the push dialog names before the first push: `branchOf` without asking GitHub. */
+/** What the push dialog names before the first push: `branchOf` without asking the host. */
 function shownBranch(meta: SessionMeta): string {
 	if (meta.publishBranch) return meta.publishBranch;
 	return meta.origin?.kind === "item" ? branchFor(meta.title, meta.sessionId) : wantedBranch(meta.title);
@@ -392,7 +388,7 @@ export async function publishSession(
 	noteSandbox(c, meta, "running");
 	// Pushing uses the sandbox: the idle times count from here, and again from when it is done.
 	markUsed(c, meta);
-	const branch = await branchOf(c, meta, app, repo);
+	const branch = await branchOf(c, meta, repo);
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
 		if (repo.provider === "gitlab" || branchOnly || updateFromBase) {
@@ -630,7 +626,7 @@ export async function agentPublish(
 	if (repo?.provider === "gitlab") return "Use push for this repository. The work item opens its GitLab merge request.";
 	if (!repo || !app)
 		return "Not published. This session has no repository of the user's GitHub connection to publish to.";
-	const branch = await branchOf(c, meta, app, repo);
+	const branch = await branchOf(c, meta, repo);
 	const checked = publishRequest(
 		request.arguments,
 		{ branch, base: repo.branch },
@@ -778,8 +774,8 @@ export async function agentPush(
 		return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
 	const ended = () => active.closed || c.vars.turn !== active;
 	if (ended()) return "Not pushed. The turn this call was made in has ended.";
-	const branch = await branchOf(c, meta, app, repo);
-	// Naming the branch may have asked GitHub: the turn can have ended meanwhile.
+	const branch = await branchOf(c, meta, repo);
+	// Naming the branch may have asked the code host: the turn can have ended meanwhile.
 	if (ended()) return "Not pushed. The turn this call was made in has ended.";
 	const checked = pushRequest(
 		request.arguments,

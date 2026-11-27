@@ -77,6 +77,8 @@ export interface CodeHost<Connection, StoredRepo, Delivery> {
 	): Promise<Pull>;
 	mergePull(token: string, owner: string, name: string, number: number, head: string, title: string): Promise<void>;
 	closePull(token: string, owner: string, name: string, number: number): Promise<void>;
+	/** Whether the repository has the branch now. Only "no such branch" is false; any other refusal is thrown. */
+	hasBranch(token: string, owner: string, name: string, branch: string): Promise<boolean>;
 
 	/** Aggregate the head's checks, statuses, workflow runs and bounded failure logs. */
 	/** `pull`: the pull or merge request whose pipelines may also have run the head (GitLab's merge request pipelines). */

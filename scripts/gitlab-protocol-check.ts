@@ -18,6 +18,7 @@ import { GitlabStandin } from "./gitlab-standin.js";
 import { GitlabApp, GitlabError, challengeOf, newVerifier } from "../server/src/gitlab/app.js";
 import { gitlabCi, gitlabOf, prepareGitlabMerge } from "../server/src/actors/gitlab-item.js";
 import { hostFor } from "../server/src/codehost/item.js";
+import { freeBranchAt } from "../server/src/codehost/branch.js";
 import { gitlabCodeHost } from "../server/src/gitlab/host.js";
 
 /** Exercise the same clone, fetch, scanned push and actor-held receipt as a live session. */
@@ -354,6 +355,15 @@ try {
 		}),
 	};
 	const hub = gitlabOf(await hostFor(ctx, { uid: "owner", repository: selected }));
+	// A standalone session's first push (agent-session/publish.ts `branchOf`): its title in words, numbered once the project has it.
+	const title = "Add the harbor guide";
+	const named = await freeBranchAt(hub, title);
+	assert.equal(named, "windlass/add-the-harbor-guide");
+	const namedHead = await pushBranch({ project: selected, viewer: String(fixture.user.id), token }, named);
+	assert.equal(fixture.branchHead(project, named), namedHead);
+	assert.equal(await freeBranchAt(hub, title), "windlass/add-the-harbor-guide-2");
+	await assert.rejects(hub.host.hasBranch("not-a-token", owner, name, named), GitlabError);
+	console.log("ok  a session's branch is its title in words, with -2 once GitLab has that branch");
 	await assert.rejects(hub.host.readPull(token, other.owner, other.name, mr.number));
 	await hub.acknowledge("issue_comment:1:42");
 	const observed = await gitlabCi(hub, head, mr.number, mr.base, true);

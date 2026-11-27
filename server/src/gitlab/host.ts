@@ -313,6 +313,14 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 		async closePull(token, owner, name, n) {
 			await app.updateMr(token, projectKey(owner, name), n, { state_event: "close" });
 		},
+		hasBranch: (token, owner, name, branch) =>
+			app.branchHead(token, projectKey(owner, name), branch).then(
+				() => true,
+				(error: unknown) => {
+					if (error instanceof GitlabError && error.status === 404) return false;
+					throw error;
+				},
+			),
 		async readCi(target, options) {
 			try {
 				return await withToken(target, "log:read", token =>

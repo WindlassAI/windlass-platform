@@ -104,6 +104,7 @@
         "github": "tsx ../scripts/github-check.ts",
         "codehost": "tsx ../scripts/codehost-check.ts",
         "codehost-ref": "tsx --test src/codehost/ref.test.ts",
+        "codehost-branch": "tsx --test src/codehost/branch.test.ts",
         "gitlab-protocol": "tsx ../scripts/gitlab-protocol-check.ts",
         "gitlab-connect": "tsx ../scripts/gitlab-check.ts connect",
         "daytona-provider": "tsx ../scripts/daytona-provider-test.ts",
