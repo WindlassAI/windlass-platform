@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { SessionRepository } from "../contract.js";
 import { itemFeed, itemPage, cleanItemPage } from "../item-pages.js";
 import { setupProjectKey } from "../setup-command.js";
+import { hostCaps } from "./capabilities.js";
 import { keyOf, readRepoAddress, readRepoKey, repoAddress, repoKey, repoRef } from "./ref.js";
 import type { ItemSummary } from "../contract.js";
 
@@ -84,4 +85,11 @@ test("pages and counts tell a GitLab project from a GitHub repository of the sam
 			[7101, 1],
 		],
 	);
+});
+
+test("each host has its capability record; a row with no provider is GitHub's", () => {
+	assert.equal(hostCaps(undefined), hostCaps("github"));
+	assert.equal(hostCaps("github").actsAs, "app-bot");
+	assert.equal(hostCaps("gitlab").actsAs, "user");
+	assert.equal(hostCaps("gitlab").verdict, "none");
 });
