@@ -486,7 +486,7 @@ async function standIn(): Promise<void> {
 			`${JSON.stringify(tooLarge)} ${JSON.stringify(full)}`,
 		);
 
-		// Continuing in a new session (#131): asked over the new session's socket.
+		// Continuing in a new session: asked over the new session's socket.
 		const forB = new MachineSessionBackups(100_000, standInRunner(store, sessionB));
 		const copied = await forB.copy(owner, { uid, sessionId: sessionB });
 		const none = await forB.copy({ uid, sessionId: "s_none" }, { uid, sessionId: sessionB });
