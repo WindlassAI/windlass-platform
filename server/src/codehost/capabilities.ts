@@ -6,6 +6,11 @@ import type { HostId } from "./ref.js";
  * agents). A `false` or "none" is often "not built yet" rather than "cannot". A flag nothing reads is removed.
  */
 export interface HostCapabilities {
+	/**
+	 * Who the platform acts as there: the App's bot, told apart by its login, or the connected person, told apart by
+	 * their account id (and by the marker on what the platform writes).
+	 */
+	identity: "app-bot" | "user";
 	/** Where an item's verdict (`windlass/verified`) goes: an App check run a person can ask to run again, or nowhere yet. */
 	verdict: "check-run" | "none";
 	/** Pushes by others to an item's branch are read, so the item notices them. */
@@ -17,8 +22,8 @@ export interface HostCapabilities {
 }
 
 const HOSTS: Record<HostId, HostCapabilities> = {
-	github: { verdict: "check-run", pushEvents: true, feedback: true, hooks: "app" },
-	gitlab: { verdict: "none", pushEvents: false, feedback: false, hooks: "project" },
+	github: { identity: "app-bot", verdict: "check-run", pushEvents: true, feedback: true, hooks: "app" },
+	gitlab: { identity: "user", verdict: "none", pushEvents: false, feedback: false, hooks: "project" },
 };
 
 /** A repository row written before GitLab has no provider: it is GitHub's. */

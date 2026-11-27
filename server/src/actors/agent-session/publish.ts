@@ -38,7 +38,8 @@ import { githubApp } from "../../github/app.js";
 import { gitlabApp } from "../../gitlab/connect.js";
 import { fetchGitlab, pushGitlab } from "../../gitlab/workspace.js";
 import { gitlabAccess } from "../internal.js";
-import { gitlabItemHost } from "../gitlab-item.js";
+import { gitlabOf } from "../gitlab-item.js";
+import { hostFor } from "../../codehost/item.js";
 import { actuallyPushed } from "../../github/git.js";
 import {
 	type StoredRepository,
@@ -308,13 +309,14 @@ export async function openGitlabItemPull(
 	)
 		throw new UserError("No confirmed GitLab branch for this item.", { code: "publish_blocked" });
 	const branch = meta.publishBranch;
-	const hub = await gitlabItemHost(c, meta.uid, repo);
-	if ((await hub.baseTip(branch)) !== input.head)
+	const hub = gitlabOf(await hostFor(c, { uid: meta.uid, repository: repo }));
+	if ((await hub.gitlab.baseTip(branch)) !== input.head)
 		throw new UserError("The item branch changed before its merge request could be opened.", {
 			code: "publish_blocked",
 		});
 	const evidence = await evidenceOf(c, meta, null);
-	const connection = { id: hub.viewer, accessToken: async () => hub.token, project: hub.project };
+	const { viewer, token, project } = hub.gitlab;
+	const connection = { id: viewer, accessToken: async () => token, project };
 	const pull = await hub.host.openFromPushed({
 		connection,
 		repository: repo,

@@ -16,7 +16,8 @@ import { GITLAB_WEBHOOK_PATH, MAX_WEBHOOK_BYTES, type GitlabDelivery } from "../
 
 import { GitlabStandin } from "./gitlab-standin.js";
 import { GitlabApp, GitlabError, challengeOf, newVerifier } from "../server/src/gitlab/app.js";
-import { gitlabCi, gitlabEyes, gitlabItemHost, prepareGitlabMerge } from "../server/src/actors/gitlab-item.js";
+import { gitlabCi, gitlabOf, prepareGitlabMerge } from "../server/src/actors/gitlab-item.js";
+import { hostFor } from "../server/src/codehost/item.js";
 import { gitlabCodeHost } from "../server/src/gitlab/host.js";
 
 /** Exercise the same clone, fetch, scanned push and actor-held receipt as a live session. */
@@ -352,9 +353,9 @@ try {
 			},
 		}),
 	};
-	const hub = await gitlabItemHost(ctx, "owner", selected);
+	const hub = gitlabOf(await hostFor(ctx, { uid: "owner", repository: selected }));
 	await assert.rejects(hub.host.readPull(token, other.owner, other.name, mr.number));
-	await gitlabEyes(hub, "issue_comment:1:42");
+	await hub.acknowledge("issue_comment:1:42");
 	const observed = await gitlabCi(hub, head, mr.number, mr.base, true);
 	assert.equal(observed.prHead, head);
 	assert.equal(observed.baseAhead, 0);
