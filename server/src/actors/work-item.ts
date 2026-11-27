@@ -156,7 +156,8 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect = { kind: "review_comment"; key: string; pr: number; parts?: { id: string; label: string }[] } | { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
-type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
+/** A CI nudge with `pr` came from that pull request's own pipeline, which may have run a merge commit rather than the head. */
+type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string; pr?: number } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
 
@@ -963,7 +964,8 @@ async function nudge(c: Ctx, input: GithubNudge, provider: SessionRepository["pr
 	const [row] = await c.db.execute<EffectRow>("SELECT * FROM effects WHERE id = ?", id);
 	if (!row || c.vars.performing.has(row.id)) return false;
 	const poll: Effect = JSON.parse(row.effect);
-	const matches = input.kind === "ci" ? poll.kind === "poll_ci" && poll.head === input.head : (poll.kind === "poll_pr" || poll.kind === "poll_repo_pr") && poll.pr === input.pr;
+	const matches = input.kind === "ci" ? poll.kind === "poll_ci" && (poll.head === input.head || (input.pr !== undefined && input.pr === (repo ?? item).pr?.number))
+		: (poll.kind === "poll_pr" || poll.kind === "poll_repo_pr") && poll.pr === input.pr;
 	if (!matches || !live(item, poll)) return false;
 	// Pre-webhook CI rows did not retain GitHub's retry floor. Honor their scheduled read once.
 	const legacyBackoff = item.run?.ci?.webhooks === undefined && item.wait?.sentence.includes("GitHub asked the platform to wait until");
@@ -2751,7 +2753,7 @@ export const workItem = actor({
 			return viewOf(c);
 		},
 
-		internalGitlabNudge: async (c, input: { projectId: string } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number })): Promise<boolean> => {
+		internalGitlabNudge: async (c, input: { projectId: string } & ({ kind: "ci"; head: string; pr?: number } | { kind: "pr"; pr: number })): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			const repositoryId = c.vars.stored?.meta.repository.id;
 			if (!repositoryId || String(repositoryId) !== input.projectId) return false;

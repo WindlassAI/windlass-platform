@@ -1458,8 +1458,10 @@ export const user = actor({
 			const nudges = [...c.vars.items.items.values()].flatMap(item => {
 				const repo = item.repository;
 				if (repo.provider !== "gitlab" || String(repo.id) !== delivery.projectId || !item.pullRequest || ["done", "failed", "cancelled"].includes(item.state)) return [];
-				if (delivery.event === "merge_request" && String(item.pullRequest.number) !== String(delivery.iid)) return [];
-				const subject = delivery.event === "pipeline" ? {kind: "ci" as const, head: delivery.head} : {kind: "pr" as const, pr: item.pullRequest.number};
+				// A merge request's pipeline belongs to that MR only: its head may be a merged-results commit, so match it by MR.
+				if (delivery.iid !== undefined && String(item.pullRequest.number) !== String(delivery.iid)) return [];
+				const pr = item.pullRequest.number;
+				const subject = delivery.event === "pipeline" ? {kind: "ci" as const, head: delivery.head, ...(delivery.iid !== undefined && { pr })} : {kind: "pr" as const, pr};
 				return [{ id: item.id, nudge: () => c.client().workItem.get([c.key[0], item.id], {params: serviceParams()}).internalGitlabNudge({ projectId: delivery.projectId, ...subject }) }];
 			});
 			// A nudge only brings a poll forward. One item failing must neither stop the others nor redeliver the event to all of them.

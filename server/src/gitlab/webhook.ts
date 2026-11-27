@@ -15,7 +15,8 @@ type IssueText = { title: string; description: string };
 /** Keep project, user and note database IDs as decimal strings; issue/MR IIDs are project-local. */
 export type GitlabDelivery = { guid: string; projectId: string } & (
 	| { event: "merge_request"; iid: number | string; action: string; head: string }
-	| { event: "pipeline"; pipelineId: string; head: string; status: string }
+	/** `iid`: the merge request of a detached or merged-results pipeline, whose `head` may be a merge commit. */
+	| { event: "pipeline"; pipelineId: string; head: string; status: string; iid?: number | string }
 	| (IssueText & { event: "issue"; iid: number | string; action: "open" | "update"; senderId: string; addedLabels: ["windlass"] })
 	| (IssueText & { event: "note"; target: "issue"; iid: number | string; noteId: string; senderId: string; body: string })
 );
@@ -87,8 +88,8 @@ export function parseGitlabWebhook(headers: Headers, bytes: Uint8Array, binding:
 		return number && action && head ? { ...base, event: "merge_request", iid: number, action, head } : null;
 	}
 	if (hook === "Pipeline Hook" && p.object_kind === "pipeline") {
-		const head = sha(attr.sha), status = word(attr.status), pipelineId = id(attr.id);
-		return head && status && pipelineId ? { ...base, event: "pipeline", pipelineId, head, status } : null;
+		const head = sha(attr.sha), status = word(attr.status), pipelineId = id(attr.id), mr = iid(record(p.merge_request).iid);
+		return head && status && pipelineId ? { ...base, event: "pipeline", pipelineId, head, status, ...(mr && { iid: mr }) } : null;
 	}
 	const senderId = id(record(p.user).id);
 	if (!senderId) return null;

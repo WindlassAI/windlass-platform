@@ -145,9 +145,11 @@ async function intakeChecks(sections: string[], fixture: GitlabStandin, client: 
 				assert.match(head, /^[0-9a-f]{40}$/);
 				assert.notEqual(head, fixture.branchHead(p, p.defaultBranch));
 				assert.equal(mr.target_branch, p.defaultBranch);
-				const pipeline = fixture.addPipeline(p, head, mr.source_branch, "success");
+				// The project runs CI only for merge request events, with merged results: the pipeline's commit is not the head.
+				const pipeline = fixture.addMergeRequestPipeline(p, mr, "success", true);
+				assert.notEqual(pipeline.sha, head);
 				fixture.addJob(p, pipeline, "guide/test", "success");
-				await dispatch("Pipeline Hook", { object_kind: "pipeline", project: { id: p.id }, object_attributes: pipeline });
+				await dispatch("Pipeline Hook", { object_kind: "pipeline", project: { id: p.id }, object_attributes: pipeline, merge_request: { iid: mr.iid } });
 				let progress = "";
 				const review = await until("green CI on the work item", async () => {
 					const item = await user.item(row.id);

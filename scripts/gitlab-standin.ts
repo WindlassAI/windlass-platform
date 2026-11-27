@@ -26,7 +26,7 @@ interface MergeRequest {
 	source_branch: string; target_branch: string; state: string; draft: boolean; merge_status: string; detailed_merge_status: string;
 	author: User; reviewers: User[]; merge_user: User | null; web_url: string; notes: Note[];
 }
-interface Pipeline { id: Id; sha: string; ref: string; status: string; web_url: string; created_at: string; updated_at: string }
+interface Pipeline { id: Id; sha: string; ref: string; status: string; source: string; web_url: string; created_at: string; updated_at: string }
 interface Job { id: Id; name: string; status: string; stage: string; allow_failure: boolean; failure_reason?: string; ref: string; commit: { id: string }; pipeline: Pipeline; web_url: string; created_at: string; retried: boolean }
 export interface StandinProject {
 	id: Id; owner: string; name: string; path: string; defaultBranch: string; visibility: string; archived: boolean; accessible: boolean;
@@ -141,11 +141,23 @@ export class GitlabStandin {
 		return { object_kind: "note", project: { id: issue.project_id }, user: note.author, issue: { ...attributes, author_id: issue.author.id },
 			object_attributes: { id: note.id, action: "create", author_id: note.author.id, noteable_type: "Issue", noteable_id: issue.id, note: note.body, system: note.system } };
 	}
-	addPipeline(p: StandinProject, sha: string, ref: string, status: string) {
+	addPipeline(p: StandinProject, sha: string, ref: string, status: string, source = "push") {
 		const id = ++this.nextId;
-		const pipe: Pipeline = { id, sha, ref, status, web_url: `${this.web(p)}/-/pipelines/${id}`, created_at: now(), updated_at: now() };
+		const pipe: Pipeline = { id, sha, ref, status, source, web_url: `${this.web(p)}/-/pipelines/${id}`, created_at: now(), updated_at: now() };
 		p.pipelines.unshift(pipe);
 		return pipe;
+	}
+	/** A merge request pipeline, as `rules: if $CI_PIPELINE_SOURCE == "merge_request_event"` makes. A merged-results
+	 * pipeline runs on a new merge commit of the source head onto the target branch (parents: target, source). */
+	addMergeRequestPipeline(p: StandinProject, mr: MergeRequest, status: string, mergedResults = false) {
+		const head = this.branchHead(p, mr.source_branch)!, base = this.branchHead(p, mr.target_branch)!;
+		if (!mergedResults) return this.addPipeline(p, head, `refs/merge-requests/${mr.iid}/head`, status, "merge_request_event");
+		const merge = git(["commit-tree", head + "^{tree}", "-p", base, "-p", head, "-m", `Merge branch '${mr.source_branch}' into '${mr.target_branch}'`], p.path);
+		git(["update-ref", `refs/merge-requests/${mr.iid}/merge`, merge], p.path);
+		return this.addPipeline(p, merge, `refs/merge-requests/${mr.iid}/merge`, status, "merge_request_event");
+	}
+	private mrPipelines(p: StandinProject, mr: MergeRequest) {
+		return p.pipelines.filter(x => x.ref === mr.source_branch || x.ref.startsWith(`refs/merge-requests/${mr.iid}/`));
 	}
 	addJob(p: StandinProject, pipeline: Pipeline, name: string, status: string, trace = "") {
 		const id = ++this.nextId;
@@ -301,6 +313,12 @@ export class GitlabStandin {
 		if (resource === "repository" && key === "branches" && method === "GET" && action) {
 			const id = this.branchHead(p, action); return id ? json(200, { name: action, commit: { id } }) : missing();
 		}
+		if (resource === "repository" && key === "commits" && method === "GET" && action && !subId) {
+			try {
+				const [id, ...parent_ids] = git(["rev-list", "--parents", "-n", "1", action], p.path).split(" ");
+				return json(200, { id, parent_ids });
+			} catch { return missing(); }
+		}
 		if (resource === "repository" && key === "compare" && method === "GET") {
 			let names: string;
 			try { names = git(["diff", "--name-status", "-M", `${q.get("from")}...${q.get("to")}`], p.path); } catch { return missing(); }
@@ -332,7 +350,9 @@ export class GitlabStandin {
 			const data = (mr: MergeRequest) => {
 				const { notes, ...fields } = mr;
 				const sha = this.branchHead(p, mr.source_branch), base = this.branchHead(p, mr.target_branch);
-				return { ...fields, sha, diff_refs: { head_sha: sha, base_sha: base, start_sha: base }, user_notes_count: notes.length };
+				const ran = (x: Pipeline) => x.sha === sha || (x.ref.endsWith("/merge") && git(["rev-list", "--parents", "-n", "1", x.sha], p.path).split(" ")[2] === sha);
+				const head_pipeline = this.mrPipelines(p, mr).find(ran) ?? null;
+				return { ...fields, sha, diff_refs: { head_sha: sha, base_sha: base, start_sha: base }, user_notes_count: notes.length, head_pipeline };
 			};
 			if (!key && method === "GET") return page(p.mergeRequests.filter(m => (!q.has("state") || m.state === q.get("state")) && (!q.has("source_branch") || m.source_branch === q.get("source_branch"))).map(data));
 			if (!key && method === "POST") {
@@ -365,6 +385,7 @@ export class GitlabStandin {
 				git(["update-ref", `refs/heads/${mr.target_branch}`, sha, base], p.path);
 				mr.state = "merged"; mr.merge_user = this.user; return json(200, data(mr));
 			}
+			if (action === "pipelines" && !subId && method === "GET") return page(this.mrPipelines(p, mr));
 			if (action === "notes") {
 				if (!subId && method === "GET") return page(mr.notes);
 				if (!subId && method === "POST" && fields.body) {

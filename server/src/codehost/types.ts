@@ -50,7 +50,8 @@ export interface CodeHost<Connection, StoredRepo, Delivery> {
 	closePull(token: string, owner: string, name: string, number: number): Promise<void>;
 
 	/** Aggregate the head's checks, statuses, workflow runs and bounded failure logs. */
-	readCi(target: CiTarget, options?: { baseResultsOnly?: boolean; since?: number; branch?: string }): Promise<CiReading>;
+	/** `pull`: the pull or merge request whose pipelines may also have run the head (GitLab's merge request pipelines). */
+	readCi(target: CiTarget, options?: { baseResultsOnly?: boolean; since?: number; branch?: string; pull?: number }): Promise<CiReading>;
 	jobLog(token: string, owner: string, name: string, jobId: string): Promise<Response>;
 	rerunJobs(target: CiTarget, jobs: RerunnableJob[]): Promise<{ accepted: string[]; said: string }>;
 

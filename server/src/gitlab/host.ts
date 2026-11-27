@@ -57,25 +57,69 @@ async function failureLog(app: GitlabApp, token: string, target: CiTarget, run: 
 	return "why" in tail ? none(tail.why) : { name: run.name, untrusted: true, ...tail };
 }
 
-/** The latest pipeline for this commit/ref. The pipeline verdict matters too (e.g. downstream jobs). */
-async function readPipeline(app: GitlabApp, token: string, target: CiTarget, branch?: string, skipLogs = false): Promise<CiReading> {
-	const list = await app.pipelines(token, target.repositoryId, target.head, branch);
-	if (!Array.isArray(list)) throw new Error("Invalid GitLab pipeline list.");
-	const runs: CiRun[] = [], logs: CiLog[] = [];
-	const reading = { kind: "read" as const, head: target.head, runs, logs, truncated: false };
-	if (!list.length) return reading;
-	const pipe = obj(list[0]), pipelineId = id(pipe.id);
-	if (pipe.sha !== target.head) throw new Error("GitLab pipeline head changed.");
+type Pipeline = Record<string, unknown>;
+
+const mergeResult = (pipe: Pipeline) => /^refs\/merge-requests\/\d+\/(?:merge|train)$/.test(text(pipe.ref)) && typeof pipe.sha === "string";
+
+/** A merged-results (or merge train) pipeline runs on a merge commit whose second parent is the MR's source head. */
+async function runsHead(app: GitlabApp, token: string, target: CiTarget, pipe: Pipeline): Promise<boolean> {
+	if (pipe.sha === target.head) return true;
+	if (!mergeResult(pipe)) return false;
+	const parents = await app.commitParents(token, target.repositoryId, text(pipe.sha));
+	return parents.length === 2 && parents[1] === target.head;
+}
+
+/**
+ * The newest pipeline that ran the head: a branch pipeline, the merge request's own pipeline, or a merged-results
+ * pipeline whose source is the head. Without a merge request, only pipelines of the commit itself.
+ */
+async function pipelineFor(app: GitlabApp, token: string, target: CiTarget, pull?: number): Promise<Pipeline | null> {
+	const own = await app.pipelines(token, target.repositoryId, target.head);
+	if (!Array.isArray(own)) throw new Error("Invalid GitLab pipeline list.");
+	const candidates = own.map(obj);
+	if (pull) {
+		const listed = await app.mrPipelines(token, target.repositoryId, pull);
+		if (!Array.isArray(listed)) throw new Error("Invalid GitLab pipeline list.");
+		candidates.push(obj(obj(await app.readMr(token, target.repositoryId, pull)).head_pipeline), ...listed.map(obj));
+	}
+	const newest = new Map<string, Pipeline>();
+	for (const pipe of candidates) { const key = decimalId(pipe.id); if (key) newest.set(key, pipe); }
+	const ordered = [...newest.entries()].sort(([a], [b]) => BigInt(b) > BigInt(a) ? 1 : -1).map(([, pipe]) => pipe);
+	let mergeReads = 0;
+	for (const pipe of ordered) {
+		if (pipe.sha === target.head) return pipe;
+		if (mergeReads < 3 && mergeResult(pipe)) {
+			mergeReads++;
+			if (await runsHead(app, token, target, pipe)) return pipe;
+		}
+	}
+	return null;
+}
+
+function jobRun(value: unknown, pipelineId: string): CiRun {
+	const job = obj(value), status = text(job.status), jobState = state(status);
+	const optional = job.allow_failure === true && ["failed", "manual", "canceled"].includes(status);
+	const run: CiRun = { app: "gitlab-ci", name: text(job.name), state: optional ? "neutral" : jobState, conclusion: status === "failed" ? "failure" : status,
+		url: text(job.web_url), summary: "", jobId: id(job.id), workflowId: pipelineId, retryRunId: pipelineId };
+	if (job.failure_reason === "runner_system_failure") run.environment = true;
+	return run;
+}
+
+async function pipelineJobs(app: GitlabApp, token: string, target: CiTarget, pipelineId: string) {
 	const jobs = await app.pipelineJobs(token, target.repositoryId, pipelineId, JOB_READS_PER_READING + 1);
 	if (!Array.isArray(jobs.body)) throw new Error("Invalid GitLab jobs list.");
-	reading.truncated = jobs.body.length > JOB_READS_PER_READING || !!jobs.headers.get("x-next-page");
-	for (const value of jobs.body.slice(0, JOB_READS_PER_READING)) {
-		const job = obj(value), status = text(job.status), jobState = state(status);
-		const optional = job.allow_failure === true && ["failed", "manual", "canceled"].includes(status);
-		const run: CiRun = { app: "gitlab-ci", name: text(job.name), state: optional ? "neutral" : jobState, conclusion: status === "failed" ? "failure" : status,
-			url: text(job.web_url), summary: "", jobId: id(job.id), workflowId: pipelineId, retryRunId: pipelineId };
-		if (job.failure_reason === "runner_system_failure") run.environment = true;
-		runs.push(run);
+	const truncated = jobs.body.length > JOB_READS_PER_READING || !!jobs.headers.get("x-next-page");
+	return { runs: jobs.body.slice(0, JOB_READS_PER_READING).map(job => jobRun(job, pipelineId)), truncated };
+}
+
+/** The pipeline verdict matters too (e.g. downstream jobs). */
+async function readPipeline(app: GitlabApp, token: string, target: CiTarget, pull?: number, skipLogs = false): Promise<CiReading> {
+	const logs: CiLog[] = [];
+	const pipe = await pipelineFor(app, token, target, pull);
+	if (!pipe) return { kind: "read", head: target.head, runs: [], logs, truncated: false };
+	const pipelineId = id(pipe.id);
+	const { runs, truncated } = await pipelineJobs(app, token, target, pipelineId);
+	for (const run of runs) {
 		if (!skipLogs && run.state === "failed" && logs.length < LOGS_PER_READING) logs.push(await failureLog(app, token, target, run));
 	}
 	const pipelineState = state(pipe.status);
@@ -83,7 +127,7 @@ async function readPipeline(app: GitlabApp, token: string, target: CiTarget, bra
 		runs.push({ name: "Pipeline", app: "gitlab-ci", state: pipelineState, conclusion: text(pipe.status), url: text(pipe.web_url), summary: "", jobId: null });
 	}
 	const since = Date.parse(text(pipe.created_at));
-	return { ...reading, ...(pipelineState === "pending" && Number.isFinite(since) && { inProgressSince: since }) };
+	return { kind: "read", head: target.head, runs, logs, truncated, ...(pipelineState === "pending" && Number.isFinite(since) && { inProgressSince: since }) };
 }
 
 /** GitLab's notes are addressed by their parent IID *and* note ID, unlike GitHub's. */
@@ -138,7 +182,7 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 		},
 		async closePull(token, owner, name, n) { await app.updateMr(token, projectKey(owner, name), n, { state_event: "close" }); },
 		async readCi(target, options) {
-			try { return await withToken(target, "log:read", token => readPipeline(app, token, target, options?.branch, options?.baseResultsOnly)); }
+			try { return await withToken(target, "log:read", token => readPipeline(app, token, target, options?.pull, options?.baseResultsOnly)); }
 			catch (error) {
 				if (error instanceof GitlabError && [401, 403].includes(error.status)) return { kind: "not_permitted", said: "GitLab did not allow reading CI." };
 				if (error instanceof GitlabError && error.status === 429) return { kind: "rate_limited", retryAt: error.retryAt || Date.now() + 60_000, said: "GitLab CI reads are rate limited." };
@@ -150,12 +194,14 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 			const accepted: string[] = [];
 			try {
 				await withToken(target, "pull:write", async token => {
-					const reading = await readPipeline(app, token, target, undefined, true);
-					if (reading.kind !== "read") return;
-					for (const run of reading.runs) {
-						if (!run.jobId || !["failed", "cancelled"].includes(run.state) || !jobs.some(j => j.jobId === run.jobId && j.retryRunId === run.workflowId)) continue;
-						await app.retryJob(token, target.repositoryId, run.jobId);
-						accepted.push(run.jobId);
+					// Each job's own pipeline, which must still be one that ran this head.
+					for (const pipelineId of new Set(jobs.flatMap(j => j.retryRunId ? [j.retryRunId] : []))) {
+						if (!await runsHead(app, token, target, obj(await app.pipeline(token, target.repositoryId, pipelineId)))) continue;
+						for (const run of (await pipelineJobs(app, token, target, pipelineId)).runs) {
+							if (!run.jobId || !["failed", "cancelled"].includes(run.state) || !jobs.some(j => j.jobId === run.jobId && j.retryRunId === pipelineId)) continue;
+							await app.retryJob(token, target.repositoryId, run.jobId);
+							accepted.push(run.jobId);
+						}
 					}
 				});
 			} catch { /* Return only the jobs GitLab accepted. */ }

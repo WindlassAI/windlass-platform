@@ -227,11 +227,25 @@ export class GitlabApp {
 		}).filter(Boolean);
 	}
 
-	/** GitLab returns a list: request only the newest pipeline for this head (and, optionally, ref). */
-	async pipelines(token: string, project: Project, head: string, branch?: string) {
+	/** GitLab returns a list: request only the newest pipeline for this commit, on any ref. */
+	async pipelines(token: string, project: Project, head: string) {
 		const params = new URLSearchParams({ sha: head, order_by: "id", sort: "desc", per_page: "1" });
-		if (branch) params.set("ref", branch);
 		return (await this.call({ token, path: `${projectRoot(project)}/pipelines?${params}` })).body;
+	}
+
+	/** The newest pipelines of a merge request: its source branch's, its own (detached) and merged results. */
+	async mrPipelines(token: string, project: Project, iid: number) {
+		return (await this.call({ token, path: `${subject(project, "merge_requests", iid)}/pipelines?per_page=20` })).body;
+	}
+
+	async pipeline(token: string, project: Project, pipelineId: string) {
+		return (await this.call({ token, path: `${projectRoot(project)}/pipelines/${requiredId(pipelineId)}` })).body;
+	}
+
+	async commitParents(token: string, project: Project, sha: string): Promise<string[]> {
+		if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new Error("Invalid GitLab commit");
+		const commit = record((await this.call({ token, path: `${projectRoot(project)}/repository/commits/${sha}` })).body);
+		return Array.isArray(commit.parent_ids) ? commit.parent_ids.map(text) : [];
 	}
 
 	pipelineJobs(token: string, project: Project, pipelineId: string, limit: number) {

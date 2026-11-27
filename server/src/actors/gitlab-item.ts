@@ -17,7 +17,7 @@ export async function gitlabItemHost(c: Parameters<typeof gitlabAccess>[0], uid:
 	if (!host) throw new Error("GitLab is unavailable.");
 	const target = (head: string) => ({ installationId: viewer, repositoryId: project.id, owner, name, head });
 	const pull = (number: number) => host.readPull(token, owner, name, number);
-	const pipeline = (head: string, branch?: string) => host.readCi(target(head), { branch });
+	const pipeline = (head: string, pull?: number) => host.readCi(target(head), { pull });
 	const baseTip = async (branch: string) => {
 		const response = await app.call({ token, path: `/projects/${project.id}/repository/branches/${encodeURIComponent(branch)}` });
 		const sha = text(record(record(response.body).commit).id);
@@ -37,7 +37,7 @@ export async function gitlabEyes(hub: GitlabItemHost, key: string) {
 
 export async function gitlabCi(hub: GitlabItemHost, head: string, number: number, base: string, mergeCheck: boolean) {
 	const mr = number ? await hub.pull(number) : null;
-	const reading = await hub.pipeline(head, mr?.head);
+	const reading = await hub.pipeline(head, number || undefined);
 	const baseSha = mr?.base === base && mr.baseSha || null;
 	const tip = mergeCheck && baseSha ? await hub.baseTip(base) : undefined;
 	return { reading, prHead: mr?.headSha || null, mergeable: mr?.mergeable ?? null, baseSha, baseTip: tip,
@@ -49,7 +49,7 @@ export async function gitlabMerge(hub: GitlabItemHost, number: number, head: str
 	const mr = await hub.pull(number);
 	if (!reviewedBase || mr.state !== "open" || !mr.mergeable || mr.headSha !== head || mr.base !== base || mr.baseSha !== reviewedBase || mr.mergeBaseSha !== reviewedBase || await hub.baseTip(base) !== reviewedBase)
 		throw new Error("The merge request is not mergeable at the reviewed head and base.");
-	const ci: CiReading = await hub.pipeline(head, mr.head);
+	const ci: CiReading = await hub.pipeline(head, number);
 	if (ci.kind !== "read" || ci.head !== head || ci.truncated || ciState(ci) !== "passed") throw new Error("CI no longer passes on the reviewed head.");
 	const notes = await hub.host.listComments(hub.token, hub.owner, hub.name, number, true);
 	if (notes.some(n => String(n.person?.id) !== hub.viewer || !(n.body.startsWith(`<!-- windlass-item:${itemId} -->\n`) || n.body.startsWith(`<!-- windlass-review:${itemId}:`)))) throw new Error("Merge request feedback requires handover.");

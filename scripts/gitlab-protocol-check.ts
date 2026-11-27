@@ -167,6 +167,29 @@ try {
 	assert.equal(ciState(await host.readCi(ciTarget)), "passed");
 	console.log("ok  CI results for the pushed SHA, job trace and retry to a green pipeline");
 
+	// Projects whose jobs run only for merge request events: merged-results and detached MR pipelines.
+	const request = project.mergeRequests.find(m => m.iid === mr.number)!;
+	const merged = fixture.addMergeRequestPipeline(project, request, "failed", true);
+	assert.notEqual(merged.sha, head);
+	const mergedJob = fixture.addJob(project, merged, "guide/merged", "failed", "merged results failed\n");
+	const withMr = await host.readCi(ciTarget, { pull: mr.number });
+	assert.ok(withMr.kind === "read" && withMr.head === head && withMr.runs.some(r => r.jobId === String(mergedJob.id) && r.state === "failed"), "the head's merged-results pipeline is read");
+	assert.equal(ciState(await host.readCi(ciTarget)), "passed", "without the MR only the commit's own pipelines count");
+	assert.deepEqual((await host.rerunJobs(ciTarget, [{ name: mergedJob.name, jobId: String(mergedJob.id), retryRunId: String(merged.id), failed: true }])).accepted, [String(mergedJob.id)]);
+	merged.status = project.jobs.find(j => j.pipeline === merged && !j.retried)!.status = "success";
+	const detached = fixture.addMergeRequestPipeline(project, request, "running");
+	const detachedJob = fixture.addJob(project, detached, "guide/mr", "running");
+	assert.equal(ciState(await host.readCi(ciTarget, { pull: mr.number })), "pending", "the MR's own pipeline on the head is read");
+	detached.status = detachedJob.status = "success";
+	assert.equal(ciState(await host.readCi(ciTarget, { pull: mr.number })), "passed");
+	const moved = fixture.commit(project, branch, { "guide.md": "changed" }, "Move the head");
+	const later = fixture.addMergeRequestPipeline(project, request, "failed", true);
+	fixture.addJob(project, later, "guide/merged", "failed");
+	assert.equal(ciState(await host.readCi({ ...ciTarget, head: moved }, { pull: mr.number })), "failed");
+	assert.equal(ciState(await host.readCi(ciTarget, { pull: mr.number })), "passed", "a newer merged-results pipeline of another head is not this head's");
+	execFileSync("git", ["update-ref", `refs/heads/${branch}`, head], { cwd: project.path });
+	console.log("ok  merge request and merged-results pipelines of the head, and their job retries");
+
 	await assert.rejects(host.mergePull(token, owner, name, mr.number, "1".repeat(40), mr.title));
 	// Exercise the work item's connection lookup, pinned CI/merge guards, and project-local note IDs.
 	Object.assign(process.env, { WLP_SECRET: randomUUID(), WLP_GITLAB_BASE_URL: fixture.url, WLP_GITLAB_CLIENT_ID: fixture.clientId,
@@ -187,9 +210,9 @@ try {
 	await assert.rejects(merge("1".repeat(40)), /reviewed head and base/);
 	await assert.rejects(merge(head), /feedback/); // The earlier unhandled human note.
 	await host.updateComment(token, owner, name, note, "<!-- windlass-item:i_protocol -->\nVerdict");
-	pipe.status = "failed";
+	detached.status = "failed";
 	await assert.rejects(merge(head), /CI no longer passes/);
-	pipe.status = "success";
+	detached.status = "success";
 	const changed = await app.changedPaths(token, projectId, observed.baseTip!, head);
 	assert.ok(changed?.length && changed.every(path => !path.endsWith("package.json")), "the pushed change is not a dependency bump");
 	await assert.rejects(gitlabMerge(hub, mr.number, head, mr.base, observed.baseTip, "i_protocol", undefined, ["dependency bumps"]), /kind of change/);
@@ -239,7 +262,9 @@ try {
 		assert.ok((await fixture.deliver(receiver.url, "Issue Hook", { ...issueEdit, object_attributes: { ...issue, action: "open" } })).ok);
 		assert.ok((await fixture.deliver(receiver.url, "Merge Request Hook", { ...base, object_kind: "merge_request", object_attributes: { iid: mr.number, action: "merge", last_commit: { id: head } } })).ok);
 		assert.ok((await fixture.deliver(receiver.url, "Pipeline Hook", { ...base, object_kind: "pipeline", object_attributes: { id: pipe.id, status: "failed", sha: head } })).ok);
-		assert.deepEqual(received.map(d => d.event), ["note", "issue", "issue", "merge_request", "pipeline"]);
+		assert.ok((await fixture.deliver(receiver.url, "Pipeline Hook", { ...base, object_kind: "pipeline", object_attributes: { id: merged.id, status: "success", sha: merged.sha }, merge_request: { iid: mr.number } })).ok);
+		assert.deepEqual(received.map(d => d.event), ["note", "issue", "issue", "merge_request", "pipeline", "pipeline"]);
+		assert.deepEqual(received.slice(-2).map(d => d.event === "pipeline" ? d.iid : null), [undefined, mr.number]);
 	} finally { await receiver.close(); }
 	console.log("ok  real HTTP hook delivery authenticates, filters projects and retains exact database IDs");
 	// Providers and reverse proxies can echo credentials in errors, or send non-JSON with a 200.
