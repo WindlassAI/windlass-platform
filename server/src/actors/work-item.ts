@@ -69,7 +69,9 @@ import {
 } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
 import { gitlabItemHost, gitlabCi, gitlabItem, prepareGitlabMerge } from "./gitlab-item.js";
+import { capabilitiesOf } from "../codehost/capabilities.js";
 import type { ItemHost } from "../codehost/item.js";
+import { keyOf } from "../codehost/ref.js";
 import { GitlabError } from "../gitlab/app.js";
 import {
 	observeIssue,
@@ -695,11 +697,12 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
+/** The key of the item's repository, or of a cross-repo feature's other repository on the same host. */
+const keyIn = (meta: ItemMeta, repositoryId = meta.repository.id) => keyOf({ ...meta.repository, id: repositoryId });
+
 async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id) {
 	try {
-		return await userActor(c, meta.uid).internalRepositoryAutonomy(
-			meta.repository.provider === "gitlab" ? `gitlab:${repositoryId}` : repositoryId,
-		);
+		return await userActor(c, meta.uid).internalRepositoryAutonomy(keyIn(meta, repositoryId));
 	} catch {
 		return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false, mergeKinds: undefined };
 	}
@@ -707,14 +710,16 @@ async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.re
 
 /** Whether a feature's parts wait for their own CI: fixed when the feature PR opens, so an unreadable setting fails the effect (it is tried again) rather than dropping the wait. */
 async function waitsForPartCi(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id): Promise<boolean> {
-	return (await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId)).waitForCiOnEachPart === true;
+	return (
+		(await userActor(c, meta.uid).internalRepositoryAutonomy(keyIn(meta, repositoryId))).waitForCiOnEachPart === true
+	);
 }
 
 async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
-	const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
+	const repositories = item.repos?.map(r => keyIn(meta, r.repositoryId)) ?? [keyIn(meta)];
 	try {
 		const user = userActor(c, meta.uid);
-		const settings = await Promise.all(repositories.map(id => user.internalRepositoryAutonomy(id)));
+		const settings = await Promise.all(repositories.map(key => user.internalRepositoryAutonomy(key)));
 		return settings.length > 0 && settings.every(s => s.autoApprovePlans);
 	} catch {
 		return null;
@@ -1468,7 +1473,7 @@ const reviewHeadSubject = (r: Pick<RequestedReview, "repositoryId" | "pr" | "hea
 async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 	const changed = await queued(c, async () => {
 		const stored = await load(c.db);
-		if (!stored || stored.meta.repository.provider === "gitlab") return false;
+		if (!stored || !capabilitiesOf(stored.meta.repository.provider).feedback) return false;
 		const primary =
 			stored.meta.repository.id === notice.repositoryId &&
 			stored.item.pr?.number === notice.pr &&
@@ -1762,7 +1767,8 @@ function githubItem(hub: Awaited<ReturnType<typeof github>>): ItemHost {
 			app.withToken(installationId, { repositoryId, permissions: { metadata: "read", ...permissions } }, step),
 		ownComment: comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]",
 		acknowledge: key => app.acknowledgeFeedback(installationId, { id: repositoryId, owner, name }, key),
-		capabilities: { checkRuns: true, webhooks: githubConfig().pollFallback },
+		caps: capabilitiesOf("github"),
+		webhooks: githubConfig().pollFallback,
 	};
 }
 
@@ -3073,7 +3079,7 @@ async function observePush(
 }
 
 async function readBranchPush(c: Ctx, item: FactoryItem, meta: ItemMeta, repo?: string) {
-	if (meta.repository.provider === "gitlab") return false;
+	if (!capabilitiesOf(meta.repository.provider).pushEvents) return false;
 	const hub = await github(c, meta, "read", repo ? repoOf(item, repo) : undefined);
 	const branch = itemBranch(item, meta);
 	const head = await hub.app
@@ -3538,7 +3544,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		}
 		case "verified_check":
-			if (meta.repository.provider === "gitlab") return true; // GitHub App check runs have no GitLab equivalent.
+			if (capabilitiesOf(meta.repository.provider).verdict !== "check-run") return true;
 			// A handoff or cancellation can replace a pending row after the due scan.
 			if (!(await c.db.execute("SELECT 1 FROM effects WHERE id=? AND effect=?", row.id, row.effect)).length)
 				return true;
@@ -3781,7 +3787,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			});
 		case "register":
 		case "forget":
-			if (meta.repository.provider === "gitlab") return true; // GitLab wakes items through the owner’s index.
+			if (capabilitiesOf(meta.repository.provider).hooks !== "app") return true; // The owner's index wakes these items.
 			return updateDirectory(c, meta, effect);
 		case "deliver": {
 			if (effect.to === "critic") {
@@ -3904,7 +3910,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				if (await autoApprovePlans(c, stored))
 					text +=
 						"\nThis repository auto-approves small plans. Ask only questions whose answers change the work and state the obvious defaults in the spec.";
-				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
+				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(keyIn(meta)));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
 				// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
 				const prefer =
@@ -4224,7 +4230,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				state: pull.state,
 				mergedByApp: pull.mergedByApp,
 				prHead: pull.headSha || null,
-				webhooks: hub.capabilities.webhooks,
+				webhooks: hub.webhooks,
 			});
 			if ((pull.state === "open" || pull.state === "draft") && item.state === "review" && hub.github)
 				await reconcileFeedback(c, meta, hub.github, effect.pr);
@@ -4977,7 +4983,7 @@ export const workItem = actor({
 		): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			if (
-				c.vars.stored?.meta.repository.provider === "gitlab" ||
+				capabilitiesOf(c.vars.stored?.meta.repository.provider).verdict !== "check-run" ||
 				input.repositoryId !== c.vars.stored?.meta.repository.id ||
 				input.installationId !== (await binding(c))
 			)

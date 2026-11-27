@@ -17,6 +17,7 @@ import type {
 	SavedRepository,
 	SessionSummary,
 } from "@contract";
+import { repoAddress } from "../../../server/src/codehost/ref.js";
 import { ownAgents } from "./repositories";
 import { HARNESS_DISPLAY_ORDER } from "./acp";
 
@@ -175,6 +176,7 @@ export function safeStorage(): Storage | null {
 
 /** One repository in the rail, with its live state under the filters. */
 export interface RailRepository {
+	/** Its address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
 	id: GithubId;
 	owner: string;
 	name: string;
@@ -255,7 +257,7 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 			if (status === "needs") sum.needs += 1;
 		}
 		if (!session.repository) continue;
-		const repository = entry(session.repository.id, session.repository.owner, session.repository.name);
+		const repository = entry(repoAddress(session.repository), session.repository.owner, session.repository.name);
 		repository.agents += 1;
 		if (isRunning(status)) repository.running += 1;
 		if (status === "needs") repository.needs += 1;
@@ -267,7 +269,7 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 		everything.count += 1;
 		if (isRunning(status)) everything.running += 1;
 		if (status === "needs") everything.needs += 1;
-		const repository = entry(item.repository.id, item.repository.owner, item.repository.name);
+		const repository = entry(repoAddress(item.repository), item.repository.owner, item.repository.name);
 		repository.items += 1;
 		if (isRunning(status)) repository.running += 1;
 		if (status === "needs") repository.needs += 1;
@@ -298,11 +300,11 @@ export function railOf({ sessions, items, feed = null, saved, filters = NO_FILTE
 	if (keep !== null && !found.has(String(keep))) {
 		const known = saved.find(one => String(one.id) === String(keep));
 		const fromSession = sessions?.find(
-			session => session.repository && String(session.repository.id) === String(keep),
+			session => session.repository && String(repoAddress(session.repository)) === String(keep),
 		)?.repository;
-		const fromItem = items?.find(item => String(item.repository.id) === String(keep))?.repository;
+		const fromItem = items?.find(item => String(repoAddress(item.repository)) === String(keep))?.repository;
 		const named = fromSession ?? fromItem;
-		if (named) entry(named.id, named.owner, named.name);
+		if (named) entry(repoAddress(named), named.owner, named.name);
 		else if (known) {
 			const [owner, name] = splitName(known.name, known.id);
 			entry(known.id, owner, name);

@@ -19,6 +19,7 @@
  * heading says so and no row says a word of it.
  */
 import { type GithubId, type ItemState, type ItemSummary } from "@contract";
+import { repoAddress } from "../../../server/src/codehost/ref";
 import { useId, useRef, type ReactNode } from "react";
 import { RailFrame, RepoRail, useRailFold, useSearchKey, type RailChoice } from "../components/Rail";
 import { RailFoot, useHostedUsage } from "../components/RailFoot";
@@ -90,7 +91,7 @@ export function filterItems(
 ): ItemSummary[] {
 	return list.filter(
 		item =>
-			(filters.repository === undefined || String(item.repository.id) === String(filters.repository)) &&
+			(filters.repository === undefined || String(repoAddress(item.repository)) === String(filters.repository)) &&
 			(filters.from === undefined || item.source === filters.from),
 	);
 }
@@ -101,13 +102,15 @@ function repositoriesOf(
 	counted: ReturnType<typeof feedRepositories>,
 ): Array<{ id: GithubId; name: string; items: number }> {
 	const found = new Map(counted.map(repository => [String(repository.id), repository]));
-	for (const item of list)
-		if (!found.has(String(item.repository.id)))
-			found.set(String(item.repository.id), {
-				id: item.repository.id,
+	for (const item of list) {
+		const id = repoAddress(item.repository);
+		if (!found.has(String(id)))
+			found.set(String(id), {
+				id,
 				name: repositoryName(item.repository),
-				items: list.filter(one => String(one.repository.id) === String(item.repository.id)).length,
+				items: list.filter(one => String(repoAddress(one.repository)) === String(id)).length,
 			});
+	}
 	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -606,7 +609,7 @@ export function railCounts(list: readonly ItemSummary[]): { needs: number; progr
 export function factoryRail(rail: Rail, items: readonly ItemSummary[]): Rail {
 	const by = new Map<string, ItemSummary[]>();
 	for (const item of items) {
-		const key = String(item.repository.id);
+		const key = String(repoAddress(item.repository));
 		by.set(key, [...(by.get(key) ?? []), item]);
 	}
 	const tally = (list: readonly ItemSummary[]) => {

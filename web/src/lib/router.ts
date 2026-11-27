@@ -4,6 +4,7 @@
  * a session by its ID, a work item by its ID, the Factory page with its filters, and the public docs. A reload stays on
  * the same screen; `?mock=1` is carried from one address to the next.
  */
+import { readRepoAddress } from "../../../server/src/codehost/ref.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import type { GithubId, ItemSummary } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -76,7 +77,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/") return { name: "home" };
 	if (path === "/factory") {
 		const query = new URLSearchParams(search);
-		const repository = githubId(query.get("repository") ?? "");
+		const repository = readRepoAddress(query.get("repository") ?? "");
 		const from = ITEM_SOURCES.find(source => source === query.get("from"));
 		return { name: "factory", ...(repository !== null ? { repository } : {}), ...(from ? { from } : {}) };
 	}

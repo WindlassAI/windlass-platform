@@ -5,6 +5,7 @@ import { GitlabError } from "../gitlab/app.js";
 import { gitlabApp } from "../gitlab/connect.js";
 import { mergeKindAllowed, taskKind, type TaskKind } from "../factory/readiness-track.js";
 import { resolveCodeHost } from "../codehost/index.js";
+import { capabilitiesOf } from "../codehost/capabilities.js";
 import type { ItemHost } from "../codehost/item.js";
 import type { Pull } from "../codehost/types.js";
 
@@ -46,7 +47,8 @@ export function gitlabItem(hub: GitlabItemHost): ItemHost {
 		withToken: (_permissions, step) => step(hub.token),
 		ownComment: comment => String(comment.person?.id) === hub.viewer,
 		acknowledge: key => gitlabEyes(hub, key),
-		capabilities: { checkRuns: false, webhooks: true },
+		caps: capabilitiesOf("gitlab"),
+		webhooks: true,
 	};
 }
 

@@ -161,6 +161,11 @@ export interface SessionRepository {
 	private: boolean;
 	/** The repository's page: "https://github.com/owner/name". */
 	url: string;
+	/**
+	 * The host's base URL, for a repository on another instance than the deployment's own for its host. Absent for
+	 * the deployment's own instance, which every repository is on today (codehost/ref.ts).
+	 */
+	instance?: string;
 }
 
 /** The pull request of a session, as GitHub last described it to the platform. */

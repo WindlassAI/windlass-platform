@@ -23,6 +23,7 @@ export interface ItemListPage {
 	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
 	limit?: number;
 	ended?: boolean;
+	/** The repository's address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
 	repository?: GithubId | null;
 	source?: ItemSource | null;
 }
@@ -32,6 +33,7 @@ export const ITEM_FEED_ENDED = 25;
 
 /** Per repository and filing source. Display names come from its newest filed item. */
 export interface ItemCount {
+	/** The repository's address (`repoAddress`): GitHub's id, or the key of a repository on another host. */
 	repository: GithubId;
 	owner: string;
 	name: string;

@@ -269,6 +269,7 @@ import {
 	unionHosts,
 } from "../repository-network.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
+import { keyOf } from "../codehost/ref.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { serverSealer } from "../signin/seal.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
@@ -775,9 +776,10 @@ function guideFilesFor(c: Pick<CreateCtx, "client">, id: GithubId) {
 	return c.client().githubRepository.getOrCreate([String(id)], { params: serviceParams() });
 }
 
-async function repoRecords(c: UserCtx & Pick<CreateCtx, "client">, id: GithubId) {
+/** The ended items on the repository `project` keys: by key, so a GitLab project never counts toward a GitHub repository of the same id. */
+async function repoRecords(c: UserCtx & Pick<CreateCtx, "client">, project: string) {
 	const rows = [...c.vars.items.items.values()].filter(
-		s => String(s.repository.id) === String(id) && !s.parent && ["done", "failed", "cancelled"].includes(s.state),
+		s => keyOf(s.repository) === project && !s.parent && ["done", "failed", "cancelled"].includes(s.state),
 	);
 	for (const row of rows)
 		if (row.record === undefined) {
@@ -789,13 +791,12 @@ async function repoRecords(c: UserCtx & Pick<CreateCtx, "client">, id: GithubId)
 
 async function repoPolicy(
 	c: UserCtx & Pick<CreateCtx, "client">,
-	id: GithubId,
 	project: string,
 	weekly = false,
 	scanError: string | null = null,
 	patch?: RepositoryDefaultsPatch,
 ) {
-	const records = await repoRecords(c, id);
+	const records = await repoRecords(c, project);
 	return c.db.transaction(async tx => {
 		const scan = await cachedScan(tx, project);
 		const inputs =
@@ -869,13 +870,7 @@ async function repositoryView(
 		}
 	}
 	const knowledge = await setupKnowledge(c.db, c.vars.profile!.uid, project);
-	const policy = await repoPolicy(
-		c,
-		repositoryId,
-		project,
-		!!(await c.cron.get(scheduleName(repositoryId))),
-		scanError,
-	);
+	const policy = await repoPolicy(c, project, !!(await c.cron.get(scheduleName(repositoryId))), scanError);
 	return {
 		id: repositoryId,
 		name: name === "" ? null : name,
@@ -2694,13 +2689,13 @@ export const user = actor({
 			);
 		},
 
-		internalRepositoryAutonomy: async (c, repositoryId: GithubId) => {
+		internalRepositoryAutonomy: async (c, key: string | GithubId) => {
 			requireService(c);
-			const project = setupKeyOf(repositoryId);
+			const project = setupKeyOf(key);
 			const hasOffers = (await c.db.execute("SELECT 1 FROM setup_offer WHERE project=? AND off=0 LIMIT 1", project))
 				.length;
 			const { autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, mergeKinds } = hasOffers
-				? (await repoPolicy(c, repositoryId, project)).defaults
+				? (await repoPolicy(c, project)).defaults
 				: await readDefaults(c.db, project);
 			return {
 				mergeKinds,
@@ -3436,9 +3431,9 @@ export const user = actor({
 			if (!keep) await removeSession(c, c.key[0], session);
 			await retireDrafters(c, c.key[0], setupKeyOf(current.repository.id));
 		},
-		internalReadinessLevel: async (c, id: GithubId) => {
+		internalReadinessLevel: async (c, key: string | GithubId) => {
 			requireServiceFor(c, "call");
-			return (await repoPolicy(c, id, setupKeyOf(id))).readiness.latest?.level ?? null;
+			return (await repoPolicy(c, setupKeyOf(key))).readiness.latest?.level ?? null;
 		},
 		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			requireUser(c);
@@ -3483,8 +3478,7 @@ export const user = actor({
 		): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			if (input.offer !== undefined)
-				return (await repoPolicy(c, input.repositoryId, project, false, null, input)).defaults;
+			if (input.offer !== undefined) return (await repoPolicy(c, project, false, null, input)).defaults;
 			let change: DefaultsChange;
 			try {
 				change = await cleanRunDefaults(c, input, profile);
@@ -3509,7 +3503,7 @@ export const user = actor({
 				});
 				console.log(repositoryDefaultsLog(profile.uid, project, change));
 				if ((await c.db.execute("SELECT 1 FROM setup_offer WHERE project=? AND off=0 LIMIT 1", project)).length)
-					return (await repoPolicy(c, input.repositoryId, project)).defaults;
+					return (await repoPolicy(c, project)).defaults;
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
