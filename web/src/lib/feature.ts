@@ -22,7 +22,7 @@ export function subtaskFloor(single: Pick<ItemBudget, "tokens">): SubtaskBudget 
 }
 
 /**
- * What the feature may spend with the subtasks' budgets as edited (server/src/factory/blueprint.ts, `featureTotal`):
+ * What the feature may spend with the subtasks' budgets as edited (server/src/factory/change.ts, `featureTotal`):
  * the plan's own figure, which counts its subtasks as filed, with the edits' difference.
  */
 export function featureTotal(plan: Pick<FeaturePlan, "budget" | "subtasks">, budgets: Record<string, SubtaskBudget>): SubtaskBudget {

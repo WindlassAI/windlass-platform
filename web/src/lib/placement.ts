@@ -69,7 +69,7 @@ export const placeChanged = (task: PlanSubtask, draft: PlaceDraft) => JSON.strin
 
 /**
  * The subtask a "placement_refused" question is about: the server prefixes its words with the subtask's
- * title (blueprint.ts, `askPlacement`). The longest title that matches, as one title may begin another.
+ * title (factory/change.ts, `askPlacement`). The longest title that matches, as one title may begin another.
  */
 export function refusedSubtask(plan: FeaturePlan | null, text: string): { task: PlanSubtask; reason: string } | null {
 	const task = [...(plan?.subtasks ?? [])].sort((a, b) => b.title.length - a.title.length).find((one) => text.startsWith(`${one.title}: `));
@@ -84,7 +84,7 @@ export function refusalFor(task: PlanSubtask, refusal: string | null): string | 
 
 /**
  * The subtask the feature takes up next, which a wait for a machine is about: the first, in order, with
- * no item yet whose dependencies are all done (blueprint.ts, `nextChild`).
+ * no item yet whose dependencies are all done (factory/feature-flow.ts, `nextChild`).
  */
 export function nextSubtask(plan: FeaturePlan, children: ItemSummary[]): PlanSubtask | null {
 	const byKey = new Map(children.filter((child) => child.parent).map((child) => [child.parent!.key, child]));
