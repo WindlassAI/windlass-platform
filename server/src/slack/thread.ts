@@ -2,7 +2,7 @@ import type { RawAccess } from "rivetkit/db";
 import { config } from "../config.js";
 import type { ItemQuestion, ItemView } from "../contract.js";
 import type { SlackBinding } from "../factory/intake.js";
-import { CONNECTORS } from "../sources/registry.js";
+import { sourceCaps } from "../sources/registry.js";
 import { resolution, type Resolution } from "../sources/updates.js";
 import { escapeText, planPost, questionPost, resolvedMessage, type SlackMessage, type SlackPost } from "./blocks.js";
 
@@ -23,7 +23,7 @@ export function resolvedText(how: Resolution): string {
 	if (how === "closed") return "This question is no longer open.";
 	const label = how.approved ? "Approve" : escapeText(how.choice ?? "");
 	if (how.by !== "web") {
-		const by = `<@${how.by.person}> in ${CONNECTORS[how.by.source].caps.displayName}`;
+		const by = `<@${how.by.person}> in ${sourceCaps(how.by.source).displayName}`;
 		return how.approved ? `Approved by ${by}` : `Answered by ${by}: ${label}`;
 	}
 	return how.approved ? "Approved on the web" : `Answered on the web: ${label}`;
