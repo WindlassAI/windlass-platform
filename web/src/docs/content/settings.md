@@ -17,12 +17,21 @@ An item's own choice comes first, then the repository's, then yours, then the de
 
 Choose **Connections** in the top bar (in the account menu on a phone). The grid has a row for each agent (Windlass, Claude Code, Codex, OpenCode) and a column for **Hosted** and for each paired machine. Each cell says what pays for that agent there now: a plan, one of your API keys, the machine's own sign-in, or **Not connected**. A cell that is not connected has one button that leads to the right connect: the plan's command, the key's entry, or the Machines page. Where a machine's agent is signed in there and one of your keys could also pay for it, its cell has the choice between the two; only the chosen one is used.
 
-Hosted uses a connected plan first, then a key. **Who pays** has, for Claude Code and Codex, two choices that are saved now and that hosted turns start following in an upcoming release:
+Hosted uses a connected plan first, then a key. **Who pays** has, for Claude Code and Codex, two choices that every hosted turn follows from its start:
 
 - **Pay with**: **Plan first, then key** (the default), **Plan only**, or **Key only**.
 - **When limited**: what a turn does when the plan hits its limit: **Wait for the reset**, **Use my key**, or **Ask me**. By default work items wait and your own sessions ask. Without a saved key a limited plan always waits.
 
-A plan pays only for your own work, never a teammate's.
+A plan pays only for your own work, never a teammate's, and only for the real Claude Code or Codex. An item filed from Slack, Linear or Jira by someone whose account there is not linked to yours never runs on your plan: it uses your key, or asks. A plan runs a few turns at once (three by default); more wait for one to finish, like a limit.
+
+A plan's cell shows how the platform last saw it:
+
+- **Limited until 14:00**: the plan reached its 5-hour or weekly limit, and the provider said when it resets. **Limited · trying again at 14:00**: the provider named no time, so the platform tries again then, and waits longer each time it is still limited.
+- **Stopped working**: the provider refused the plan's token twice in a row. Choose **Reconnect** and run the command again. Until then, turns use your key where Pay with allows, or say so.
+
+A work item waiting for a limited plan says so on its page, for example "Your Claude plan is limited until 14:00 UTC. This item starts by itself then." It starts by itself at that time. Where a saved key could pay, **Use my key now** runs its next turn on the key instead, once; **Change rule** leads to Who pays.
+
+In your own session, a prompt sent while the plan is limited asks first when your rule is **Ask me** (the default): **Use my key this time** sends it on your key, and **Wait** keeps it in the composer so you can send it after the reset. With **Wait for the reset** the composer says until when and keeps your message.
 
 When a hosted agent in the composer is not connected, it says so and links to its cell.
 

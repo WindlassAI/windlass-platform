@@ -94,6 +94,8 @@ import {
 	type GithubBranchList,
 	type PayWithChoice,
 	type PayWithPatch,
+	isPlanProvider,
+	type RelaySeen,
 	type StarterIssue,
 	type GithubRepository,
 	type GithubRepositoryList,
@@ -107,6 +109,7 @@ import {
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
 	type ModelProvider,
+	type ModelPlanStatus,
 	type PlanProvider,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
@@ -197,7 +200,9 @@ import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModel
 import { modelProviderActions } from "../credentials/keys.js";
 import { CREDENTIAL_TABLES, credentialActions, hostedCredentials } from "../credentials/index.js";
 import { PAY_WITH_TABLE, PayWithProblem, payWithPatchOf, readPayWith, savePayWith } from "../pay-with.js";
-import { MODEL_PLAN_COLUMNS, moveSignInToPlan } from "../credentials/plans.js";
+import { PAY_ONCE_TABLE, type PayerAnswer, turnPayer, useKeyOnce } from "./user-payer.js";
+import { planReading, relaySeenOf } from "../credentials/plan-health.js";
+import { MODEL_PLAN_COLUMNS, moveSignInToPlan, observePlan, planStatuses } from "../credentials/plans.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
@@ -1906,6 +1911,7 @@ export const user = actor({
 			await db.execute(ACCOUNT_SECRETS_TABLE);
 			for (const table of CREDENTIAL_TABLES) await db.execute(table);
 			await db.execute(PAY_WITH_TABLE);
+			await db.execute(PAY_ONCE_TABLE);
 			await db.execute(
 				"CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)",
 			);
@@ -2157,6 +2163,11 @@ export const user = actor({
 					await machinesChanged(c);
 				queueChanged(c);
 			}
+		},
+		/** A connected plan's status and window snapshot (a turn's share of the plan is the snapshots' difference). */
+		internalPlanStatus: async (c, provider: PlanProvider): Promise<ModelPlanStatus | null> => {
+			requireServiceFor(c, "call");
+			return (await planStatuses(c.db)).find(plan => plan.provider === provider) ?? null;
 		},
 		internalPlacementInventory: async (c, repositories: Record<string, GithubId>, snapshot?: GithubId) => {
 			requireService(c);
@@ -3631,10 +3642,38 @@ export const user = actor({
 				console.log(
 					`[wlp] paywith.saved uid=${profile.uid} harness=${patch.harness} pay=${patch.payWith} limited=${patch.whenLimited ?? "default"}`,
 				);
+				// Items waiting for a plan may run on the key now, or the other way round.
+				queueChanged(c);
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "Your choice could not be saved. Try again.");
 			}
+		},
+
+		useKeyNow: async (c, itemId: string): Promise<void> => {
+			requireUser(c);
+			const item = typeof itemId === "string" ? c.vars.items.items.get(itemId) : undefined;
+			if (!item?.wait?.plan?.keyNow || !(await useKeyOnce(c, item.sessionId)))
+				throw new UserError("No saved key can pay for this item's turn now.", { code: "bad_input" });
+			console.log(`[wlp] paywith.key_now uid=${c.key[0]} item=${itemId}`);
+			queueChanged(c);
+		},
+		/** Pay with at a hosted turn's start (user-payer.ts); null for a turn the rule does not decide. */
+		internalTurnPayer: async (
+			c,
+			input: { sessionId: string; model: string; keyOnce?: boolean },
+		): Promise<PayerAnswer | null> => {
+			requireServiceFor(c, "call");
+			return turnPayer(c, input.sessionId, input.model, input.keyOnce === true);
+		},
+		/** What a plan's relay saw the provider say of it (credentials/plan-health.ts), while it is at `generation`. */
+		internalObservePlan: async (c, provider: PlanProvider, generation: string, seen: RelaySeen): Promise<void> => {
+			requireServiceFor(c, modelKeyCaller(c.key[0]!));
+			const seenOf = relaySeenOf(seen);
+			if (!isPlanProvider(provider) || typeof generation !== "string" || !seenOf) return;
+			const before = (await planStatuses(c.db)).find(plan => plan.provider === provider);
+			const after = await observePlan(c.db, provider, generation, planReading(provider, seenOf, Date.now()));
+			if (after && (after.health !== before?.health || after.limitedUntil !== before?.limitedUntil)) queueChanged(c);
 		},
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {

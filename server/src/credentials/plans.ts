@@ -20,12 +20,13 @@ import type { DefaultsDb } from "../repository-defaults.js";
 import { serverSealer } from "../signin/seal.js";
 import { safeModelId } from "./keys.js";
 import { accountLabel, claudePlanLabel } from "./plan-labels.js";
+import { HEALTHY, healthAt, nextHealth, type PlanHealthState, type PlanReading } from "./plan-health.js";
 
 export const MODEL_PLAN_TABLES = [
 	`CREATE TABLE IF NOT EXISTS model_plan (
 		provider TEXT PRIMARY KEY, sealed TEXT NOT NULL, generation TEXT NOT NULL, account TEXT,
 		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0,
-		models TEXT, short_noted INTEGER NOT NULL DEFAULT 0
+		models TEXT, short_noted INTEGER NOT NULL DEFAULT 0, health TEXT
 	)`,
 ];
 
@@ -33,6 +34,7 @@ export const MODEL_PLAN_TABLES = [
 export const MODEL_PLAN_COLUMNS = [
 	["model_plan", "models", "TEXT"],
 	["model_plan", "short_noted", "INTEGER NOT NULL DEFAULT 0"],
+	["model_plan", "health", "TEXT"],
 ] as const;
 
 type PlanRow = {
@@ -42,17 +44,37 @@ type PlanRow = {
 	checked_at: number | null;
 	check_ok: number;
 	models: string | null;
+	health: string | null;
 };
-const STATUS_COLUMNS = "provider, account, added_at, checked_at, check_ok, models";
+const STATUS_COLUMNS = "provider, account, added_at, checked_at, check_ok, models, health";
 
-const status = (row: PlanRow): ModelPlanStatus => ({
-	provider: row.provider,
-	account: row.account,
-	addedAt: row.added_at,
-	checkedAt: row.checked_at,
-	ok: !!row.check_ok,
-	...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
-});
+/** The plan's health as stored (`health`, a JSON `PlanHealthState`); a row without one is healthy. */
+function storedHealth(raw: string | null): PlanHealthState {
+	if (raw === null) return HEALTHY;
+	try {
+		return { ...HEALTHY, ...(JSON.parse(raw) as Partial<PlanHealthState>) };
+	} catch {
+		return HEALTHY;
+	}
+}
+
+const status = (row: PlanRow, now = Date.now()): ModelPlanStatus => {
+	const health = storedHealth(row.health);
+	const current = healthAt(health, now);
+	return {
+		provider: row.provider,
+		account: row.account,
+		addedAt: row.added_at,
+		checkedAt: row.checked_at,
+		ok: !!row.check_ok,
+		...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
+		health: current,
+		limitedUntil: current === "limited" ? health.limitedUntil : null,
+		resetKnown: current === "limited" && health.resetKnown,
+		windows: health.windows,
+		healthAt: health.healthAt,
+	};
+};
 
 const subject = (uid: string, provider: PlanProvider) => JSON.stringify([uid, provider]);
 
@@ -132,7 +154,7 @@ export async function connectPlan(
 		`INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok, models)
 		VALUES (?, ?, ?, ?, ?, ?, 1, NULL)
 		ON CONFLICT(provider) DO UPDATE SET sealed=excluded.sealed, generation=excluded.generation, account=excluded.account,
-		added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1, models=NULL RETURNING ${STATUS_COLUMNS}`,
+		added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1, models=NULL, health=NULL RETURNING ${STATUS_COLUMNS}`,
 		provider,
 		serverSealer().seal("model-plan", subject(uid, provider), token),
 		randomUUID(),
@@ -163,6 +185,53 @@ export async function claudePlanCheck(db: DefaultsDb, uid: string): Promise<void
 
 export async function planStatuses(db: DefaultsDb): Promise<ModelPlanStatus[]> {
 	return (await db.execute<PlanRow>(`SELECT ${STATUS_COLUMNS} FROM model_plan ORDER BY provider`)).map(status);
+}
+
+/**
+ * Applies what a relay or a turn saw of the plan (plan-health.ts) while it is still at `generation`: a reading of an
+ * older connection is not this one's. Answers the plan's status after it, or null when nothing was kept.
+ */
+export async function observePlan(
+	db: DefaultsDb,
+	provider: PlanProvider,
+	generation: string,
+	reading: PlanReading,
+): Promise<ModelPlanStatus | null> {
+	const [row] = await db.execute<PlanRow>(
+		`SELECT ${STATUS_COLUMNS} FROM model_plan WHERE provider = ? AND generation = ?`,
+		provider,
+		generation,
+	);
+	if (!row) return null;
+	const before = storedHealth(row.health);
+	const after = nextHealth(before, reading);
+	const health = JSON.stringify(after);
+	if (health === row.health) return status(row);
+	await db.execute(
+		"UPDATE model_plan SET health = ? WHERE provider = ? AND generation = ?",
+		health,
+		provider,
+		generation,
+	);
+	if (before.health !== after.health)
+		console.info(
+			`[wlp] plan.health provider=${provider} ${before.health}->${after.health}${after.limitedUntil ? ` until=${new Date(after.limitedUntil).toISOString()}${after.resetKnown ? "" : " (probe)"}` : ""}`,
+		);
+	return status({ ...row, health });
+}
+
+/** The usable plan's status with its generation, for Pay with at a turn's start; null when none is usable or plans are off. */
+export async function usablePlan(
+	db: DefaultsDb,
+	uid: string,
+	provider: PlanProvider,
+): Promise<(ModelPlanStatus & { generation: string }) | null> {
+	if (!plansAllowed(uid)) return null;
+	const [row] = await db.execute<PlanRow & { generation: string }>(
+		`SELECT ${STATUS_COLUMNS}, generation FROM model_plan WHERE provider = ? AND check_ok = 1`,
+		provider,
+	);
+	return row ? { ...status(row), generation: row.generation } : null;
 }
 
 /** Removes a token plan. A ChatGPT plan is removed by forgetting the sign-in (`SignInHolder.logout`). */
@@ -332,6 +401,7 @@ export async function writeChatgptSignIn(
 		generation = excluded.generation, check_ok = 1,
 		account = CASE WHEN ${same} THEN model_plan.account END,
 		models = CASE WHEN ${same} THEN model_plan.models END,
+		health = CASE WHEN ${same} THEN model_plan.health END,
 		added_at = CASE WHEN ${same} THEN model_plan.added_at ELSE excluded.added_at END,
 		checked_at = CASE WHEN ${same} THEN model_plan.checked_at ELSE excluded.checked_at END`,
 		row.sealed,

@@ -816,3 +816,165 @@ test("plan names come from the account, and an unknown one is shown as it came",
 	assert.equal(accountOf(auth("not-a-jwt"))?.planType, null);
 	assert.equal(accountOf(auth(undefined))?.sub, "s");
 });
+
+// Plan health (credentials/plan-health.ts): what the relays see of a plan's answers, kept on its row.
+const health = await import("../server/src/credentials/plan-health.js");
+const plans = await import("../server/src/credentials/plans.js");
+const accounts = await import("../server/src/actors/provider-accounts.js");
+
+function connectedPlan(sql: DatabaseSync, provider: "anthropic" | "openai", generation: string) {
+	sql
+		.prepare(
+			"INSERT OR REPLACE INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok) VALUES (?, 'x', ?, NULL, 1, 1, 1)",
+		)
+		.run(provider, generation);
+}
+
+test("plan health: Anthropic's unified limit headers give the windows, a rejection with its reset, a 200 lifts it", () => {
+	const at = Date.UTC(2026, 10, 27, 12);
+	const reset5h = Math.floor(at / 1000) + 2 * 3600;
+	const reset7d = Math.floor(at / 1000) + 3 * 86400;
+	const headers = {
+		"anthropic-ratelimit-unified-status": "allowed_warning",
+		"anthropic-ratelimit-unified-5h-utilization": "0.42",
+		"anthropic-ratelimit-unified-5h-reset": String(reset5h),
+		"anthropic-ratelimit-unified-5h-status": "allowed",
+		"anthropic-ratelimit-unified-7d-utilization": "0.9",
+		"anthropic-ratelimit-unified-7d-reset": String(reset7d),
+		"anthropic-ratelimit-unified-7d-status": "allowed_warning",
+	};
+	const ok = health.planReading("anthropic", { status: 200, headers }, at);
+	assert.equal(ok.status, "ok");
+	assert.deepEqual(
+		ok.windows.map(w => [w.kind, Math.round(w.usedPct!), w.resetsAt]),
+		[
+			["5h", 42, reset5h * 1000],
+			["7d", 90, reset7d * 1000],
+		],
+	);
+	const limited = health.planReading(
+		"anthropic",
+		{
+			status: 429,
+			headers: {
+				...headers,
+				"anthropic-ratelimit-unified-status": "rejected",
+				"anthropic-ratelimit-unified-5h-status": "rejected",
+				"anthropic-ratelimit-unified-5h-utilization": "1",
+			},
+		},
+		at,
+	);
+	assert.deepEqual([limited.status, limited.resetsAt], ["limited", reset5h * 1000]);
+	const state = health.nextHealth(health.HEALTHY, limited);
+	assert.deepEqual([state.health, state.limitedUntil, state.resetKnown], ["limited", reset5h * 1000, true]);
+	assert.equal(health.healthAt(state, at + 60_000), "limited");
+	assert.equal(health.healthAt(state, reset5h * 1000), "ok", "past its reset it is tried again");
+	assert.equal(health.nextHealth(state, { ...ok, at: at + 1000 }).health, "ok", "the provider took a request");
+	// A burst the agent retries itself is not the plan's limit.
+	const burst = health.planReading("anthropic", { status: 429, headers: { "retry-after": "5" } }, at);
+	assert.equal(burst.status, "other");
+	assert.equal(health.nextHealth(health.HEALTHY, burst).health, "ok");
+});
+
+test("plan health: ChatGPT's sharing limit names no reset, so the plan is probed after a growing backoff", () => {
+	const at = Date.UTC(2026, 10, 27, 12);
+	const seen = { status: 429, headers: {}, code: "subscription_sharing_usage_limit_exceeded", resetsAt: null };
+	const first = health.nextHealth(health.HEALTHY, health.planReading("openai", seen, at));
+	assert.deepEqual([first.health, first.resetKnown, first.limitedUntil], ["limited", false, at + 15 * 60_000]);
+	// Another refusal while it waits is the same limit; one after the probe time doubles the wait.
+	const again = health.nextHealth(first, health.planReading("openai", seen, at + 60_000));
+	assert.equal(again.limitedUntil, first.limitedUntil);
+	const probed = health.nextHealth(again, health.planReading("openai", seen, at + 16 * 60_000));
+	assert.equal(probed.limitedUntil, at + 16 * 60_000 + 30 * 60_000);
+	// The usage limit's own reset, and Codex's window headers.
+	const reset = at + 3600_000;
+	const named = health.planReading(
+		"openai",
+		{ status: 429, headers: {}, code: "usage_limit_reached", resetsAt: reset },
+		at,
+	);
+	assert.deepEqual([named.status, named.resetsAt], ["limited", reset]);
+	const windows = health.planReading(
+		"openai",
+		{
+			status: 200,
+			headers: {
+				"x-codex-primary-used-percent": "37",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-at": String(Math.floor(reset / 1000)),
+				"x-codex-secondary-used-percent": "12",
+				"x-codex-secondary-window-minutes": "10080",
+			},
+		},
+		at,
+	).windows;
+	assert.deepEqual(
+		windows.map(w => [w.kind, w.usedPct]),
+		[
+			["5h", 37],
+			["7d", 12],
+		],
+	);
+});
+
+test("plan health: two provider 401s in a row make a plan invalid; one, then a success, does not", () => {
+	const at = 1_000_000;
+	const unauthorized = (when: number) => health.planReading("anthropic", { status: 401, headers: {} }, when);
+	const once = health.nextHealth(health.HEALTHY, unauthorized(at));
+	assert.deepEqual([once.health, once.authFailures], ["ok", 1]);
+	const recovered = health.nextHealth(once, health.planReading("anthropic", { status: 200, headers: {} }, at + 1));
+	assert.equal(health.nextHealth(recovered, unauthorized(at + 2)).health, "ok");
+	assert.equal(health.nextHealth(once, unauthorized(at + 1)).health, "invalid");
+	assert.equal(health.relaySeenOf({ status: 401, headers: { "x-a": "b" }, code: "x".repeat(200) })?.code, null);
+	assert.equal(health.relaySeenOf({ status: "401", headers: {} }), null);
+});
+
+test("plan health is kept on the plan's row per generation, and a plan's limit is its own account apart from the key's", async () => {
+	const { sql, context } = account("plan-check-a");
+	sql.exec(accounts.PROVIDER_TABLE);
+	connectedPlan(sql, "anthropic", "g1");
+	const at = Date.now();
+	const reset = at + 3600_000;
+	const rejected = {
+		status: 429,
+		headers: {
+			"anthropic-ratelimit-unified-status": "rejected",
+			"anthropic-ratelimit-unified-reset": String(Math.floor(reset / 1000)),
+		},
+	};
+	assert.equal(
+		await plans.observePlan(context.db, "anthropic", "g0", health.planReading("anthropic", rejected, at)),
+		null,
+		"an older connection's answer is not this one's",
+	);
+	const status = await plans.observePlan(context.db, "anthropic", "g1", health.planReading("anthropic", rejected, at));
+	assert.equal(status?.health, "limited");
+	assert.equal(status?.limitedUntil, Math.floor(reset / 1000) * 1000);
+	const listed = await accounts.providerAccounts(context.db, at);
+	const plan = listed.get("plan/anthropic")?.[0];
+	assert.equal(plan?.state, "limited");
+	assert.equal(plan?.key, "plan/anthropic/g1");
+	assert.equal(listed.get("settings/anthropic"), undefined, "the key of the same provider is not limited by it");
+	assert.equal(
+		accounts.accountFor(listed, { place: "hosted", harness: "claude", provider: "anthropic" }),
+		undefined,
+		"a key-paid turn does not wait on the plan",
+	);
+	assert.equal(
+		accounts.accountFor(listed, { place: "hosted", harness: "claude", provider: "anthropic", plan: true })?.state,
+		"limited",
+	);
+	// A turn's own refusal of a plan-paid request lands on the plan, not in the keys' usage table.
+	await accounts.recordProviderUsage(
+		context.db as never,
+		{ place: "hosted", harness: "claude", provider: "anthropic", plan: true },
+		"g1",
+		{ kind: "success", at: at + 1000, startedAt: at + 500 },
+	);
+	assert.equal((await plans.planStatuses(context.db))[0]?.health, "ok");
+	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM provider_usage").get()?.n, 0);
+	// Connecting the plan again starts it healthy.
+	await plans.writeChatgptSignIn(context.db, { sealed: "s", generation: "o1", shortNoted: false });
+	assert.equal((await plans.planStatuses(context.db)).find(p => p.provider === "openai")?.health, "ok");
+});

@@ -141,7 +141,16 @@ import {
 	releaseAt,
 	releaseDueSandboxes,
 } from "./user/kept-sandboxes.js";
-import { admit, retryAt } from "../factory/budget.js";
+import { type Admission, admit, retryAt } from "../factory/budget.js";
+import {
+	holdPlanTurn,
+	type PayerAnswer,
+	type PayerContext,
+	payerContext,
+	payerOf,
+	paysWithRule,
+	sessionModel,
+} from "./user-payer.js";
 import { getLayer } from "../layer.js";
 import { REVIEW_OFF_REASON } from "../factory/review.js";
 import { readAccountDefaults, readDefaults } from "../repository-defaults.js";
@@ -1201,6 +1210,25 @@ function sessionProvider(
 	);
 }
 
+/** The wait of a turn its plan holds back (Pay with), with what the item's banner offers; null when it may go on. */
+function planHold(payer: PayerAnswer, context: PayerContext, attempt: number, now: number): Admission | null {
+	if (!("wait" in payer.decision) || !payer.plan) return null;
+	const { sentence, retryAt: reset, limited, keyNow } = payer.decision.wait;
+	const generation = context.plans.get(payer.plan)?.generation;
+	return {
+		ok: false,
+		wait: {
+			reason: "provider",
+			sentence,
+			retryAt: reset ?? retryAt(now, attempt),
+			...(generation && {
+				accountKey: accountKey({ place: "hosted", harness: "claude", provider: payer.plan, plan: true }, generation),
+			}),
+			plan: { provider: payer.plan, limited, keyNow },
+		},
+	};
+}
+
 /**
  * Admits what can run now, oldest first, and gives each its slot; every other request gets the wait
  * that holds it. The counts and the grants are one synchronous step; what was decided is then
@@ -1209,9 +1237,15 @@ function sessionProvider(
  * not be told is taken back and tried again later.
  */
 async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
-	const [accounts, hosted] = await Promise.all([
+	// Pay with is read only when a hosted turn of a plan agent waits here.
+	const paying = [...c.vars.items.requests.values()].some(request => {
+		const session = c.vars.sessions.get(request.session);
+		return session !== undefined && paysWithRule(session);
+	});
+	const [accounts, hosted, payers] = await Promise.all([
 		providerAccounts(c.db, Date.now()),
 		hostedCredentials(c.db, c.key[0]!),
+		paying ? payerContext(c) : null,
 	]);
 	const state = c.vars.items;
 	const now = Date.now();
@@ -1275,40 +1309,46 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		}
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
-		const answer = admit({
-			provider: accountFor(accounts, {
-				place: placeKey(session.place),
-				harness: session.harness ?? "windlass",
-				provider: sessionProvider(session, machine, hosted),
-			}),
-			at: now,
-			limits,
-			dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
-			// The session's own sandbox, running already, is not one more for its turn.
-			place: machine
-				? {
-						kind: "machine",
-						name: machineLabel(machine),
-						online: machine.status === "online",
-						...(capacity &&
-							capacity.max !== null &&
-							placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
-						attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
-						running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
-						max: machine.maxRunning ?? Infinity,
-						keptFull: keptFull(c, session),
-					}
-				: {
-						kind: "hosted",
-						usage,
-						running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0),
-						needsSandbox:
-							session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id),
-						holders,
-						deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null,
-					},
-			attempt: request.attempt,
-		});
+		// Pay with (user-payer.ts): a hosted turn of a plan agent waits for its plan's reset or room under its cap, and
+		// counts against the limits of what pays for it, the plan's or the key's.
+		const payer = payers && paysWithRule(session) ? payerOf(c, payers, session, sessionModel(session)) : null;
+		const answer: Admission =
+			(payer && payers && planHold(payer, payers, request.attempt, now)) ||
+			admit({
+				provider: accountFor(accounts, {
+					place: placeKey(session.place),
+					harness: session.harness ?? "windlass",
+					provider: payer?.ref?.provider ?? sessionProvider(session, machine, hosted),
+					...(payer?.ref?.plan && { plan: true as const }),
+				}),
+				at: now,
+				limits,
+				dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
+				// The session's own sandbox, running already, is not one more for its turn.
+				place: machine
+					? {
+							kind: "machine",
+							name: machineLabel(machine),
+							online: machine.status === "online",
+							...(capacity &&
+								capacity.max !== null &&
+								placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
+							attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
+							running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
+							max: machine.maxRunning ?? Infinity,
+							keptFull: keptFull(c, session),
+						}
+					: {
+							kind: "hosted",
+							usage,
+							running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0),
+							needsSandbox:
+								session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id),
+							holders,
+							deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null,
+						},
+				attempt: request.attempt,
+			});
 		if (answer.ok) {
 			// The one asking now is told in its answer; any other is told below, and until it answers the grant stays recorded.
 			const slot: Slot = {
@@ -1324,6 +1364,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			state.requests.delete(request.key);
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
+			// Its plan's place under the cap is taken with the slot: the next request in this pass counts it.
+			if (payer?.ref?.plan && payer.plan) holdPlanTurn(c, payer.plan, session.id, now);
 			if (hostedLimitsApply(session.place)) hostedRunning.add(session.id);
 			continue;
 		}

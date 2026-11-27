@@ -86,6 +86,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			machine: fresh ? "none" : MOCK_MACHINE_STATES.find(state => state === machine),
 			// `?keys=1` a checked Settings key for each model provider.
 			keys: params.get("keys") === "1",
+			// `?plans=limited|invalid` the connected plans at their limit, or refused twice.
+			plans: params.get("plans") === "limited" ? "limited" : params.get("plans") === "invalid" ? "invalid" : "ok",
 			machineSession: MOCK_MACHINE_SESSIONS.find(state => state === machineSession),
 			items: fresh ? "none" : MOCK_ITEMS_STATES.find(state => state === items),
 			long: params.get("long") === "1",

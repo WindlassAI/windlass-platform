@@ -187,6 +187,7 @@ export interface UserApi
 		| "recheckModelPlan"
 		| "payWith"
 		| "savePayWith"
+		| "useKeyNow"
 		| "githubStarterIssues"
 		| "addSetupNotes"
 		| "deleteSetupNote"

@@ -29,11 +29,14 @@ Run one command from the repository root.
 - `./index.ts` holds `CREDENTIAL_TABLES` and `credentialActions`: plan actions for the web and the internal lookups the relay and turns use (`internalCredential`, `internalCredentialGeneration`, `internalPlanModels`). The ChatGPT plan comes in as a `ChatgptPlan` from `server/src/actors/user/signin.ts`.
 - `./keys.ts` stores Settings keys (`model_provider`), checks them by listing the provider's models, and serves their status.
 - `./plans.ts` stores connected plans (`model_plan`): a Claude plan checked against Anthropic's profile endpoint, the ChatGPT plan's row as the holder writes it (`writeChatgptSignIn`), each plan's models (ChatGPT's catalog, or what Claude Code reported at a plan-paid session's start), and the one-time copy of the old `signin` table (`moveSignInToPlan`).
+- `./plan-health.ts` reads what the relays and turns saw of a plan (Anthropic's unified limit headers, Codex's headers, ChatGPT's 429 codes, provider 401s) into its health: `ok`, `limited` until a reset or a backoff probe, or `invalid` after two 401s in a row, with its 5-hour and weekly windows. `observePlan` in `./plans.ts` keeps it on the plan's row at the generation it was for (docs/model-relay.md, "Plan health").
 - `./plan-labels.ts` turns a provider's tier name into the plan's label ("a@b.com · Max"); an unknown one is shown title-cased.
 - `./connect-code.ts` makes a connect request's two secrets: the user code the terminal shows and the page approves, and the request secret only the terminal holds. `server/src/actors/connect-codes.ts` keeps their digests and each request's state; `server/src/connect-route.ts` serves the command (`cli/`).
 - `./transit.ts` seals a secret for one relay request, bound to user, credential and request nonce, for a minute; `openSavedCredential` opens it at a pinned generation.
 
-Which of a plan and a key pays (Connections → Pay with) is kept outside this folder, in `server/src/pay-with.ts`.
+Which of a plan and a key pays (Connections → Pay with) is kept outside this folder, in `server/src/pay-with.ts`
+(`decidePayer`, the rule with the plan's health, the parallel-turn cap and the filer guardrail) and applied at a turn's
+start by `server/src/actors/user-payer.ts`.
 
 ## Invariants and pitfalls
 
@@ -44,4 +47,5 @@ Which of a plan and a key pays (Connections → Pay with) is kept outside this f
 - Approving names the plan (`approvePlanConnect(code, provider)`, from the page's `plan`): a code for another plan approves nothing. An upload that is not a finished sign-in (`uploadedSignIn`) is refused before the request is taken.
 - A plan's models are never hard-coded: without a report a plan offers only the agent's default.
 - A connect request is taken once, and only after its user approved it (`approvePlanConnect`). A wrong code counts against the user who typed it, so a signed-in stranger cannot guess a live code and receive someone else's token.
+- A plan's limits are its own account, never the key's of the same provider; its health is reset when it is connected again.
 - Answers from the provider can echo the token. Read only the fields you need, and never log a body.

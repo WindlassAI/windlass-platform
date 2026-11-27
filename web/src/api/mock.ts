@@ -76,6 +76,8 @@ import {
 	MODEL_CHECKS_PER_MINUTE,
 	isModelProvider,
 	MODEL_PROVIDERS,
+	PLAN_ASK,
+	PLAN_LIMITED,
 	validModelKey,
 	type ModelProvider,
 	type ModelProviderStatus,
@@ -238,6 +240,11 @@ export interface MockOptions {
 	machine?: MockMachineState;
 	/** True starts the user with a checked Settings key for each model provider (`?keys=1`). */
 	keys?: boolean;
+	/**
+	 * How the relays last saw the user's connected plans (`?plans=limited|invalid`): "limited" at their limit for the
+	 * next hour, "invalid" refused twice. Default "ok".
+	 */
+	plans?: "ok" | "limited" | "invalid";
 	/** How the agent on the user's machine finds that machine when its page opens (`MockMachineSession`). Default "answering". */
 	machineSession?: MockMachineSession;
 	/** How the user's work items and API tokens stand when the page loads (mock-items.ts, `MockItemsState`). Default "all". */
@@ -1344,9 +1351,27 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		);
 	}
 
+	/** A plan's health as the relays saw it, by `options.plans`: usable, at its limit for the next hour, or refused twice. */
+	function planHealth(): Pick<ModelPlanStatus, "health" | "limitedUntil" | "resetKnown" | "windows" | "healthAt"> {
+		const at = realNow();
+		if (options.plans === "invalid")
+			return { health: "invalid", limitedUntil: null, resetKnown: false, windows: [], healthAt: at - MINUTE };
+		if (options.plans === "limited") {
+			const reset = at + 60 * MINUTE;
+			return {
+				health: "limited",
+				limitedUntil: reset,
+				resetKnown: true,
+				windows: [{ kind: "5h", usedPct: 100, resetsAt: reset, observedAt: at - MINUTE, source: "header" }],
+				healthAt: at - MINUTE,
+			};
+		}
+		return { health: "ok", limitedUntil: null, resetKnown: false, windows: [], healthAt: null };
+	}
+
 	/** The account's plans: those connected by code, and its ChatGPT sign-in as the ChatGPT plan. */
 	function plansOf(world: World): ModelPlanStatus[] {
-		const plans = [...world.account.plans.values()];
+		const plans = [...world.account.plans.values()].map(plan => ({ ...plan, ...planHealth() }));
 		if (!world.planConnected || world.profile.demo) return plans;
 		return [
 			...plans,
@@ -1357,6 +1382,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				checkedAt: realNow() - 5 * MINUTE,
 				ok: true,
 				models: ["gpt-5.5-codex", "gpt-5.5-codex-mini"],
+				...planHealth(),
 			},
 		];
 	}
@@ -6129,6 +6155,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 							addedAt: at,
 							checkedAt: at,
 							ok: true,
+							health: "ok",
+							limitedUntil: null,
+							resetKnown: false,
+							windows: [],
+							healthAt: null,
 						});
 					}
 					machinesChanged(auth);
@@ -6557,6 +6588,26 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					session.run.steers.push(messageId);
 					setSummary(world, session, { updatedAt: now() });
 					return take({ turn, steered: true });
+				}
+				// As the server's Pay with (`?plans=limited`): hosted Claude Code on a limited plan asks, where a key could pay instead.
+				if (
+					session.summary.place.kind === "hosted" &&
+					session.summary.harness === "claude" &&
+					options.plans === "limited" &&
+					input.payWith !== "key" &&
+					world.account.plans.has("anthropic")
+				) {
+					const until = planHealth().limitedUntil!;
+					const time = new Date(until).toISOString().slice(11, 16);
+					if (world.account.providers.get("anthropic")?.ok)
+						throw new PlatformError(
+							"user",
+							`Your Claude plan is limited until ${time} UTC. Wait for it, or pay for this turn with your Anthropic key.`,
+							{ reason: PLAN_ASK },
+						);
+					throw new PlatformError("user", `Your Claude plan is limited until ${time} UTC. Send this again then.`, {
+						reason: PLAN_LIMITED,
+					});
 				}
 				// The ceiling is on hosted sandboxes (`FactoryLimits.hostedRunning`): the person's own and their items' on the platform's sandboxes; nothing on the user's machines is counted or refused.
 				const hosted = session.summary.place.kind === "hosted";

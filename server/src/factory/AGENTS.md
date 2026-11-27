@@ -39,7 +39,7 @@ Types and inputs:
 
 Limits and judgement:
 
-- `./budget.ts` tracks an item's budget and returns a `Wait` when a turn may not start yet. It never refuses.
+- `./budget.ts` tracks an item's budget and returns a `Wait` when a turn may not start yet. It never refuses. The budget is in the units of the turns' payer (`budgetUnits`): dollars (`usd`, a key turn priced at its end, `turnUsd`), points of the plan's 5-hour window (`planPct`, the window snapshots' difference, `windowShare`), tokens only where neither is measured. A part's dollars and share follow its planned tokens (`partShare`). `budgetLeft` and `overBudgetNow` are the seam for stopping a turn at its budget while it runs (#100a): nothing calls them during a turn yet.
 - `./cost.ts` records what each turn used (model, payer, tokens, hosted size and seconds) in the item's spend (`usage`) and prices it in dollars with `CostRates` (`server/src/model-prices.ts`). Plans' turns get no dollars; an unpriced part is unknown, never guessed.
 - `./usage-summary.ts` holds the Usage summary: an item's type from its changed paths (`workType`, stored by the work item when a turn with changes ends), its size from its parts, the ended items of a period (`finishedItems`), and their median and p90 cost and time, priced in the browser (`summarize`). Retry spend is what `chargeTurn` puts in the spend's `retryUsage`: turns of a run begun by `retryRun` and of a `ci_fix` step.
 - `./autonomy.ts` holds required CI branches, the small-plan limit, the plan critic and the merge decision.

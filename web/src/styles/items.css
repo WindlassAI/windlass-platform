@@ -432,6 +432,15 @@
 .item-now-when {
 	margin-top: 4px;
 }
+/* An item waiting for its plan: its next turn on the key, or the rule. */
+.plan-wait {
+	margin-top: 10px;
+}
+.plan-wait-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
 
 /* The facts under it, and in a verdict: the usage page's rows, with room for words. */
 .item-facts {

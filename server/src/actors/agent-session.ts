@@ -43,6 +43,8 @@ import {
 	type HostedSize,
 	isHostedSize,
 	SESSION_HOSTED_SIZE,
+	PLAN_ASK,
+	PLAN_LIMITED,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
@@ -73,7 +75,8 @@ import { setupProjectOf } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { agentTurn } from "../factory/budget.js";
+import { agentTurn, turnUsd, windowShare } from "../factory/budget.js";
+import { modelPrices } from "../model-prices.js";
 import { turnMeter } from "../factory/cost.js";
 import { cutTurnUsage, cutTurnUsageNote, usesPlatformModel, freedNote, hostedLimitsApply } from "../usage.js";
 import { type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
@@ -169,7 +172,10 @@ import {
 	takeSandbox,
 	sandboxChanged,
 	busy,
+	PlanWaitError,
 } from "./agent-session/common.js";
+import { PAY_WITH_HARNESSES } from "../pay-with.js";
+import type { PayerAnswer } from "./user-payer.js";
 import { readSecrets, sessionRedactor } from "./agent-session/secrets.js";
 import { childSetupSeed } from "./agent-session/setup.js";
 import {
@@ -224,6 +230,7 @@ import {
 	endSegment,
 	closeTurn,
 	settleAfterTurn,
+	planWindows,
 	type ItemTurnEnd,
 	type OfferedHarness,
 	type TurnHooks,
@@ -327,6 +334,23 @@ async function chatgptPlanCredential(c: Ctx, meta: SessionMeta, model: string): 
 	return { model, key: { ...ref, generation } };
 }
 
+/**
+ * Pay with's answer as the turn's credential (user-payer.ts): what pays, or the refusal a person's prompt or an item's
+ * turn shows: `PLAN_ASK` (wait, or the key this time), `PLAN_LIMITED` (wait), or nothing can pay.
+ */
+function payerCredential(meta: SessionMeta, answer: PayerAnswer, model: string): TurnCredential {
+	const { decision } = answer;
+	if ("pay" in decision && answer.ref) return { model, key: answer.ref };
+	if ("ask" in decision) throw new UserError(decision.ask.sentence, { code: PLAN_ASK });
+	if ("wait" in decision) {
+		if (meta.origin?.kind !== "item") throw new UserError(decision.wait.sentence, { code: PLAN_LIMITED });
+		throw new PlanWaitError(decision.wait.sentence, decision.wait.retryAt, answer.plan ?? undefined);
+	}
+	throw new UserError("refuse" in decision ? decision.refuse : "Nothing can pay for this turn.", {
+		code: "harness_signed_out",
+	});
+}
+
 export async function turnCredential(
 	c: Ctx,
 	meta: SessionMeta,
@@ -334,6 +358,7 @@ export async function turnCredential(
 	model: string,
 	signal?: AbortSignal,
 	pinned?: TurnCredential,
+	keyOnce?: boolean,
 ): Promise<TurnCredential> {
 	const hosted = meta.place.kind === "hosted";
 	const harness = meta.harness ?? "windlass";
@@ -364,6 +389,11 @@ export async function turnCredential(
 		return { model, key: { provider, generation } };
 	}
 	const keyActor = modelKeyActor(c, meta.uid);
+	if (hosted && PAY_WITH_HARNESSES.includes(harness)) {
+		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
+		const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
+		if (answer) return payerCredential(meta, answer, model);
+	}
 	if (hosted) {
 		const credentials = await keyActor.internalHostedCredentials();
 		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
@@ -1205,7 +1235,7 @@ async function startPrompt(
 					});
 			}
 		} else if (meta.place.kind === "hosted" && caps.events === "acp") {
-			credential = await turnCredential(c, meta, undefined, model);
+			credential = await turnCredential(c, meta, undefined, model, undefined, undefined, input.payWith === "key");
 		} else if (!credential?.key && !meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
@@ -1763,6 +1793,21 @@ async function itemTurnEnded(
 			cost: ended.acp?.usage?.cost,
 			size: meta.place.kind === "hosted" ? (meta.hostedSize ?? SESSION_HOSTED_SIZE) : null,
 		});
+	// The item's budget in real units (factory/budget.ts): a key's dollars at today's prices, a plan's share of its windows.
+	if (fact.spend.meter) {
+		const models = await modelPrices()
+			.then(rates => rates.models)
+			.catch(() => null);
+		const usd = turnUsd(fact.spend.meter, models);
+		if (usd !== undefined) fact.spend.usd = usd;
+	}
+	const key = ended.credential?.key;
+	if (key?.plan && item.planAtStart !== undefined) {
+		const end = await planWindows(c, meta.uid, key.provider);
+		const fiveHour = windowShare(item.planAtStart, end, "5h");
+		const week = windowShare(item.planAtStart, end, "7d");
+		if (fiveHour !== null || week !== null) fact.spend.plan = { fiveHour, week };
+	}
 	if (
 		fact.kind === "turn_ended" &&
 		meta.origin?.subtaskScreenshots &&

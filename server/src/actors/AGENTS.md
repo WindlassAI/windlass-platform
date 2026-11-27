@@ -49,7 +49,8 @@ Helpers inside the `user` actor:
 - `./user-linear.ts` stores the Linear connection and team mappings and decides each verified delivery.
 - `./issue-intake.ts` is what GitHub and Linear intake share: owner queue, daily cap and filing (`fileLinearIssue`). `./github-intake.ts` is GitHub's side.
 - `./github-item.ts` applies issue edits and closes to filed items.
-- `./provider-accounts.ts` tracks model-provider usage and refusals per account location.
+- `./provider-accounts.ts` tracks model-provider usage and refusals per account location; a plan's go to its own row, keyed as the plan.
+- `./user-payer.ts` applies Pay with at a hosted turn's start, for the turn queue and `internalTurnPayer`: plan or key, an item's wait for its plan, the plan's parallel-turn cap and "Use my key now" (`pay_once`).
 
 Helpers inside `agentSession` (`./agent-session/`):
 

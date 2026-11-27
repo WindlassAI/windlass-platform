@@ -563,6 +563,7 @@ class Turn {
 						input.signal,
 						ref.takeRequest,
 						ref.openSecret,
+						ref.onSeen,
 					);
 					input.signal?.throwIfAborted();
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);

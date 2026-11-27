@@ -59,7 +59,7 @@ const DEFAULT_LIMITED = "default";
 
 /** What a cell's action button says. */
 function actionWords(action: CellAction, state: ConnectionCell["state"]): string {
-	if (action.kind === "plan") return `Connect ${PLAN_NAMES[action.provider]}`;
+	if (action.kind === "plan") return action.reconnect ? "Reconnect" : `Connect ${PLAN_NAMES[action.provider]}`;
 	if (action.kind === "key") return `${state === "bad" ? "Replace" : "Add"} ${SOURCE_NAMES[action.provider]} key`;
 	return state === "absent" ? "Add on Machines" : "Open Machines";
 }
@@ -97,6 +97,9 @@ function Cell({
 			aria-current={target || undefined}
 		>
 			<span className={`conn-state conn-state-${TONES[cell.state]}`}>{cell.label}</span>
+			{cell.badge ? (
+				<span className={`conn-state conn-badge conn-state-${cell.badge.tone}`}>{cell.badge.text}</span>
+			) : null}
 			{cell.detail ? <span className="conn-detail">{cell.detail}</span> : null}
 			{action?.kind === "machines" ? (
 				<a className="button button-outline button-small conn-action" {...linkProps({ name: "machines" })}>
@@ -341,7 +344,7 @@ export function Connections() {
 				<SettingsGroup
 					id="connections-pay"
 					title="Who pays"
-					lede="For agents a plan can pay for: whether hosted turns use the plan, the key or both, and what happens when the plan hits its limit. Saved now; hosted turns start following it in an upcoming release, and until then a connected plan pays first."
+					lede="For agents a plan can pay for: whether hosted turns use the plan, the key or both, and what happens when the plan hits its limit."
 				>
 					{payWith.choices === null || inputs === null ? (
 						payWith.error ? (

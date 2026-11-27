@@ -8,7 +8,7 @@ import * as zlib from "node:zlib";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { openSavedCredential } from "./credentials/transit.js";
-import { isModelProvider, type CredentialRef } from "./contract.js";
+import { isModelProvider, isPlanProvider, type CredentialRef, type RelaySeen } from "./contract.js";
 import { credentialWire, harnessMethod, proofHeader, type Wire } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
 import { serviceParams } from "./auth.js";
@@ -39,9 +39,10 @@ const { scrubStream, limitHeaders } = require("../../sandbox/relay/server.cjs") 
 	scrubStream: (secrets: Iterable<string>, type: string, responses?: boolean) => NodeJS.ReadWriteStream;
 	limitHeaders: (headers: Record<string, string>, secrets?: Iterable<string>) => Record<string, string>;
 };
-const { errorBody, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } =
+const { errorBody, limitFacts, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } =
 	require("../../sandbox/relay/windlass.cjs") as {
 		errorBody: (status: number, text: string, secrets: string[]) => string;
+		limitFacts: (text: string, secrets?: string[]) => { code: string | null; resetsAt: number | null };
 		LEASE_ENDED: string;
 		wireTarget(
 			wire: Wire,
@@ -92,6 +93,8 @@ export interface RelayRouteDeps {
 	paired(uid: string, machine: string): Promise<boolean>;
 	/** Returns the sealed secret behind `ref` (a Settings key or a plan), bound to this request nonce. */
 	credential(uid: string, ref: Omit<CredentialRef, "generation">, request: string): Promise<string | null>;
+	/** What the provider said of a plan's health (credentials/plan-health.ts); a key's answers are not told. */
+	observe?(uid: string, ref: CredentialRef, seen: RelaySeen): Promise<void>;
 	/** The session actor answers its lease's credential reference. */
 	remote(uid: string, sessionId: string, nonce: string, consume?: boolean): Promise<RemoteLease | null>;
 	fetch: typeof fetch;
@@ -115,6 +118,10 @@ const defaults: RelayRouteDeps = {
 		}
 	},
 	credential: (uid, ref, request) => modelKeyActor({ client: engine }, uid).internalCredential(ref, request),
+	observe: async (uid, ref, seen) => {
+		if (isPlanProvider(ref.provider))
+			await modelKeyActor({ client: engine }, uid).internalObservePlan(ref.provider, ref.generation, seen);
+	},
 	remote: async (uid, sessionId, nonce, consume) => {
 		try {
 			return await engine()
@@ -166,6 +173,33 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 		req.on("error", reject);
 		req.end(body);
 	});
+}
+
+/** A plan's successes are told at most this often per user and plan; every error is told. */
+const SEEN_OK_MS = 15_000;
+const seenOk = new Map<string, number>();
+
+/** Tells the user's actor what the provider said of a plan's answer, without holding up the answer. */
+function observePlanAnswer(
+	deps: RelayRouteDeps,
+	uid: string,
+	token: KeyReference,
+	status: number,
+	headers: Record<string, string>,
+	text?: string,
+	secrets: string[] = [],
+): void {
+	if (!token.plan) return;
+	const key = `${uid}/${token.provider}`;
+	const now = deps.now();
+	if (status >= 200 && status < 300) {
+		if (now - (seenOk.get(key) ?? -Infinity) < SEEN_OK_MS) return;
+		seenOk.set(key, now);
+		if (seenOk.size > 10_000) seenOk.clear();
+	} else seenOk.delete(key);
+	const facts = text === undefined ? {} : limitFacts(text, secrets);
+	const ref = { provider: token.provider, generation: token.generation, plan: true as const };
+	void deps.observe?.(uid, ref, { status, headers, ...facts }).catch(() => undefined);
 }
 
 /** Revoked nonces stay invalid until their placeholders expire. */
@@ -418,7 +452,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			release();
 			return refusal(503, "The relay could not resolve the credential. Try again.", { "retry-after": "1" });
 		}
-		if (!secret || !wire || ended.signal.aborted) {
+		if (!token || !secret || !wire || ended.signal.aborted) {
 			release();
 			return leaseEnded();
 		}
@@ -458,6 +492,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			const status = reply.status >= 400 && reply.status < 600 ? reply.status : 502;
 			const text = status === 502 ? "" : await errorText(reply).catch(() => "");
 			if (status === 502) await reply.body?.cancel().catch(() => undefined);
+			observePlanAnswer(deps, placeholder.uid, token, reply.status, limitHeaders(replyHeaders, secrets), text, secrets);
 			release();
 			return new Response(errorBody(status, text, secrets), {
 				status,
@@ -468,6 +503,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 				},
 			});
 		}
+		observePlanAnswer(deps, placeholder.uid, token, 200, limitHeaders(replyHeaders, secrets));
 		const given = (reply.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
 		// Windlass reads a Responses answer as an event stream whatever its type says: one with no type, or a
 		// plain-text one, is passed on as the event stream it is. Anything else (a page, a download) is not a model's answer.

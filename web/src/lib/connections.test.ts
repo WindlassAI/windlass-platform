@@ -9,7 +9,9 @@ import {
 	type ConnectionInputs,
 	hostedCell,
 	machineCell,
+	planBadge,
 } from "./connections";
+import { clockTime } from "./format";
 
 const key = (provider: ModelProviderStatus["provider"], ok = true): ModelProviderStatus => ({
 	provider,
@@ -19,12 +21,18 @@ const key = (provider: ModelProviderStatus["provider"], ok = true): ModelProvide
 	ok,
 	models: ["m"],
 });
-const plan = (provider: ModelPlanStatus["provider"]): ModelPlanStatus => ({
+const plan = (provider: ModelPlanStatus["provider"], over: Partial<ModelPlanStatus> = {}): ModelPlanStatus => ({
 	provider,
 	account: "a@b.com · Max",
 	addedAt: 1,
 	checkedAt: 1,
 	ok: true,
+	health: "ok",
+	limitedUntil: null,
+	resetKnown: false,
+	windows: [],
+	healthAt: null,
+	...over,
 });
 const inputs = (over: Partial<ConnectionInputs> = {}): ConnectionInputs => ({
 	keys: [],
@@ -153,4 +161,38 @@ it("counts any plan, key, ChatGPT sign-in or signed-in machine agent as an agent
 		true,
 	);
 	expect(cellId("codex", "hosted")).toBe("codex-hosted");
+});
+
+describe("a plan's health in its cell", () => {
+	const now = new Date(2026, 10, 27, 13, 12).getTime();
+	const at = new Date(2026, 10, 27, 14, 0).getTime();
+
+	it("says until when a plan is limited, and whether that is the provider's reset or a try", () => {
+		const limited = plan("anthropic", { health: "limited", limitedUntil: at, resetKnown: true });
+		expect(planBadge(limited, now)).toEqual({ tone: "warn", text: `Limited until ${clockTime(at, now)}` });
+		expect(clockTime(at, now)).toBe("14:00");
+		const probe = { ...limited, resetKnown: false };
+		expect(planBadge(probe, now)).toEqual({ tone: "warn", text: "Limited · trying again at 14:00" });
+		// Past its time it is usable again as far as the page can tell.
+		expect(planBadge(limited, at + 1)).toBeNull();
+		expect(planBadge(plan("anthropic"), now)).toBeNull();
+		const cell = hostedCell("claude", inputs({ plans: { allowed: true, plans: [limited] } }), now);
+		expect(cell).toMatchObject({ state: "plan", badge: { tone: "warn", text: "Limited until 14:00" }, action: null });
+	});
+
+	it("asks to reconnect a plan its provider refused twice", () => {
+		const invalid = plan("anthropic", { health: "invalid" });
+		const cell = hostedCell("claude", inputs({ plans: { allowed: true, plans: [invalid] } }), now);
+		expect(cell).toMatchObject({
+			state: "plan",
+			badge: { tone: "bad", text: "Stopped working" },
+			action: { kind: "plan", provider: "anthropic", reconnect: true },
+		});
+		const chatgpt = hostedCell(
+			"windlass",
+			inputs({ chatgpt: true, plans: { allowed: true, plans: [plan("openai", { health: "invalid" })] } }),
+			now,
+		);
+		expect(chatgpt.action).toEqual({ kind: "plan", provider: "openai", reconnect: true });
+	});
 });

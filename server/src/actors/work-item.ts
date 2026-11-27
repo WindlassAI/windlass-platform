@@ -4060,7 +4060,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	}
 }
 
-const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400 } as const;
+const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400, usd: 100_000, planPct: 1000 } as const;
 
 /** The fact of a person's action, checked; throws a UserError for one that cannot be taken. */
 function factOf(action: ItemAction, by: string, at: number): Fact {

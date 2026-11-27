@@ -272,6 +272,8 @@ export interface ActiveTurn {
 		refused?: string | null;
 		untrustedRefusal?: UntrustedRefusal;
 		providerRefusal?: ItemProviderRefusal;
+		/** A plan-paid turn's plan windows when it started: its share of the plan is the difference at its end (budget.ts `windowShare`). */
+		planAtStart?: import("../../contract.js").UsageWindow[] | null;
 		escaped?: string;
 		sandboxFailed?: string;
 		outOfMemory?: OutOfMemory;

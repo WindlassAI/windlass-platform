@@ -182,6 +182,15 @@ The provider had an error, or the relay could not reach it. Try again later. Che
 **"The provider rejected the request."**\
 The provider refused it for another reason, and the relay does not pass that reason on. Try another model, or check your account with the provider.
 
+**"Your Claude plan is limited until … UTC. Wait for it, or pay for this turn with your Anthropic key."**\
+Your plan reached its limit, and your rule for a limited plan is **Ask me**. Choose **Use my key this time** to send the prompt on your key, or **Wait** to keep it and send it after the reset. Change the rule under **Connections → Who pays**.
+
+**"Your Claude plan is limited until … UTC. Send this again then."**\
+Your plan reached its limit and your rule is to wait, or no saved key could pay instead. Your message stays in the composer.
+
+**A plan's cell says "Stopped working"**\
+The provider refused the plan's token twice in a row: it was revoked, expired, or replaced elsewhere. Choose **Reconnect** in that cell and run the command again.
+
 **"ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more."**\
 Reconnect your ChatGPT plan in Settings → Model providers, then send the prompt again.
 
@@ -195,6 +204,12 @@ GitHub and Linear filings share the daily issue limit. Wait for the next UTC day
 
 **"Waiting for one of your … hosted sandboxes that run at once: … running now. Your machines don't count toward this."**\
 Not an error. The item waits for a free place on this platform and starts by itself. Items on your machines never wait for it.
+
+**"Your Claude plan is limited until … UTC. This item starts by itself then."**\
+Not an error. The item waits for your plan's reset, as your rule for a limited plan says. Choose **Use my key now** to run its next turn on your key instead (shown only where a saved key can pay), or **Change rule**.
+
+**"Waiting for your Claude plan: … turns already run on it at once, the most it runs together."**\
+Not an error. A plan runs a few turns at once; this one starts when one of them finishes.
 
 **"This item has used … of its … tokens (cost-weighted, …)."**\
 The item paused at its budget. Its work is kept. Choose **Give it … more tokens** to go on in the same sandbox, **Hand it over as it is**, or **Give up**. See [When the budget is used](/docs/factory#when-the-budget-is-used).

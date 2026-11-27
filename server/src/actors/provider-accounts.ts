@@ -1,5 +1,17 @@
 import type { RawAccess } from "rivetkit/db";
-import { isModelProvider, type HarnessId, type ModelProvider, type ProviderAccount } from "../contract.js";
+import {
+	isModelProvider,
+	isPlanProvider,
+	MACHINE_HARNESS_IDS,
+	type HarnessId,
+	type ModelPlanStatus,
+	type ModelProvider,
+	type PlanProvider,
+	type ProviderAccount,
+} from "../contract.js";
+import { observationReading } from "../credentials/plan-health.js";
+import { observePlan, planStatuses } from "../credentials/plans.js";
+import { machineHarness } from "../sandbox/harnesses.js";
 import {
 	WINDLASS_ACCOUNT,
 	accountState,
@@ -13,13 +25,19 @@ export const PROVIDER_TABLE = `CREATE TABLE IF NOT EXISTS provider_usage (
 	PRIMARY KEY(place,harness))`;
 
 type Db = Pick<RawAccess, "execute">;
+/**
+ * Whose usage limit a turn counts against: a sign-in at a place, a Settings key (`provider`), or with `plan` the
+ * user's connected plan of `provider`, which has its own limits apart from the key's (credentials/plan-health.ts).
+ */
 export interface AccountLocation {
 	place: string;
 	harness: HarnessId;
 	provider?: ModelProvider;
+	plan?: true;
 }
 
-function accountPlace({ provider, place, harness }: AccountLocation) {
+function accountPlace({ provider, place, harness, plan }: AccountLocation) {
+	if (provider && plan) return "plan/" + provider;
 	return provider ? "settings/" + provider : harness === "windlass" ? WINDLASS_ACCOUNT : place;
 }
 
@@ -27,7 +45,38 @@ export function accountKey(location: AccountLocation, generation: string) {
 	return [accountPlace(location), ...(location.provider ? [] : [location.harness]), generation].join("/");
 }
 
-export async function loginGeneration(db: Db, { place, harness, provider }: AccountLocation): Promise<string | null> {
+/** The agent a plan pays for (its harness record's `planProviders`): the one its limits are told against. */
+function planHarness(provider: PlanProvider): HarnessId {
+	return MACHINE_HARNESS_IDS.find(id => machineHarness(id)?.planProviders.includes(provider)) ?? "windlass";
+}
+
+/** A plan's health as an account the turn queue waits on, keyed apart from the key of the same provider. */
+function planAccount(plan: ModelPlanStatus & { generation: string }): ProviderAccount {
+	const warning = plan.windows.some(w => (w.usedPct ?? 0) >= 90 && (w.resetsAt === null || w.resetsAt > Date.now()));
+	return {
+		key: accountKey(
+			{ place: "hosted", harness: planHarness(plan.provider), provider: plan.provider, plan: true },
+			plan.generation,
+		),
+		provider: plan.provider,
+		harness: planHarness(plan.provider),
+		state: plan.health === "limited" ? "limited" : warning ? "warning" : "ok",
+		limitedUntil: plan.health === "limited" ? plan.limitedUntil : null,
+		windows: plan.windows,
+	};
+}
+
+export async function loginGeneration(
+	db: Db,
+	{ place, harness, provider, plan }: AccountLocation,
+): Promise<string | null> {
+	if (provider && plan) {
+		const [row] = await db.execute<{ generation: string }>(
+			"SELECT generation FROM model_plan WHERE provider=?",
+			provider,
+		);
+		return row?.generation ?? null;
+	}
 	if (provider) {
 		const [row] = await db.execute<{ generation: string }>(
 			"SELECT generation FROM model_provider WHERE provider=?",
@@ -57,6 +106,9 @@ export async function recordProviderUsage(
 	generation: string,
 	observation: UsageObservation,
 ) {
+	// A plan keeps its limits on its own row (credentials/plans.ts), where Pay with reads them.
+	if (location.plan && location.provider && isPlanProvider(location.provider))
+		return (await observePlan(db, location.provider, generation, observationReading(observation))) !== null;
 	return db.transaction(
 		async tx => {
 			if ((await loginGeneration(tx, location)) !== generation) return false;
@@ -102,6 +154,13 @@ export async function recordProviderUsage(
 
 export async function providerAccounts(db: Db, now: number) {
 	const byPlace = new Map<string, ProviderAccount[]>();
+	const generations = await db.execute<{ provider: PlanProvider; generation: string }>(
+		"SELECT provider, generation FROM model_plan WHERE check_ok = 1",
+	);
+	for (const plan of await planStatuses(db)) {
+		const generation = generations.find(row => row.provider === plan.provider)?.generation;
+		if (plan.ok && generation) byPlace.set("plan/" + plan.provider, [planAccount({ ...plan, generation })]);
+	}
 	const rows = await db.execute<{
 		place: string;
 		harness: HarnessId | ModelProvider;

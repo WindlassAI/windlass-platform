@@ -197,6 +197,38 @@ during a push. On E2B that rests on the agent having no sudo and on envd's API n
 processes inside the sandbox; on Daytona, on the launcher's sudo rule and the toolbox not being reachable by
 the agent.
 
+### Plan health
+
+Both relays tell the user's actor what the provider said of a plan's answers, so that Pay with and the
+Connections page know whether the plan is usable, at its limit, or no longer accepted (`server/src/credentials/plan-health.ts`).
+
+- **What is told.** The upstream status, the rate-limit headers as `limitHeaders` passes them on (numbers and
+  status words: `anthropic-ratelimit-*`, `x-codex-*`, `retry-after`), and from an error body only its `error.code`
+  (or `error.type`) and, for ChatGPT's `usage_limit_reached`, its reset. Every error is told; a success at most every
+  15 seconds per user and plan. Nothing that names an account or a request, and never a token: a code holding one is
+  dropped.
+- **Who tells.** The route calls `internalObservePlan` for a plan lease (`observePlanAnswer` in
+  `server/src/model-relay-route.ts`). The relay in a sandbox writes `{seen: {...}}` on its control channel
+  (`provider.observe` in `sandbox/relay/server.cjs`, `plan.cjs`); the session passes it to the same action
+  (`onSeen` of the turn's `modelKey`). A turn's own reports count too: Claude Code's rate-limit events, a usage-limit
+  refusal and a success, which reach the plan through `internalObserveUsage` with the plan's account location.
+- **What it means.** A 200 makes the plan `ok`. A 429 with a rejected unified status, or ChatGPT's usage-limit
+  codes, makes it `limited` until the reset the headers or body name; `subscription_sharing_usage_limit_exceeded`
+  names none, and none is inferred: the plan is probed again after 15 minutes, doubling up to 5 hours. A 429 that asks
+  for a retry in under a minute is a burst the agent retries itself. Two provider 401s in a row make it `invalid`
+  (the relay's own `relay_lease_ended` 401 does not count) until it is connected again. The 5-hour and weekly windows
+  (% used, reset) are kept as last seen, for budgets in shares of the plan.
+- **Where it is kept.** On the plan's `model_plan` row (`health`, JSON), only while the plan is at the generation the
+  answer was for; a new connection starts healthy. A plan's limit is its own account (`plan/<provider>/<generation>`
+  in `server/src/actors/provider-accounts.ts`), apart from the key of the same provider: a limited key does not
+  hold plan-paid turns, nor the other way round.
+- **What uses it.** Pay with at a turn's start (`server/src/pay-with.ts` `decidePayer`, `server/src/actors/user-payer.ts`):
+  a limited plan waits, pays with the key, or asks, by the rule; an invalid one falls back to the key where the rule
+  allows, or asks the user to reconnect. At most `WLP_PLAN_PARALLEL_TURNS` (3) turns run on one plan at once; past it
+  a turn waits as at a limit. An item filed by an unlinked account from another surface (`ItemFiler.verified`) never
+  pays with the owner's plan. A Claude Code refusal names no reset, so an item's wait takes the plan's reset as the
+  relay read it.
+
 ## The placeholder
 
 Each turn gets a lease of its own when it starts, and the lease ends when the turn ends.
@@ -381,6 +413,11 @@ To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish 
   and in another process, the relay's own hostname, the version gates, the E2B network with the relay's host and a
   Windlass sandbox's plan host, an E2B sandbox with no session, a microVM refusing a token file, and the mapping of
   the relay's refusals. A machine's token file on a relayed sandbox is checked there too.
+- `scripts/model-plans-check.ts` ("plan health"): Anthropic's and Codex's headers, ChatGPT's 429 codes with their
+  backoff, two 401s making a plan invalid, health kept per generation and a plan's account apart from its key's.
+  `scripts/pay-with-check.ts`: Pay with applied for each rule, health, origin and key, the parallel-turn cap, the
+  unverified filer, and the user actor's count of a plan's turns. `scripts/plan-relay-check.ts` and the route check's
+  `--plan-wire` cover what each relay tells.
 - `scripts/model-plans-check.ts`: hosted Windlass pins the ChatGPT plan, `WLP_PLAN_USERS` refuses it with its
   sentence, a prefixed `openai/…` model still takes the key, and a turn paused before pins the plan on resume.
 - `scripts/model-relay-e2b-check.ts` (by hand: it needs an E2B key and a real access token): one real

@@ -36,6 +36,7 @@ import type {
 	ItemState,
 	Outcome,
 	TurnPlan,
+	TurnSpend,
 	Verdict,
 	WaitReason,
 } from "../server/src/factory/types.js";
@@ -51,7 +52,7 @@ mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
 const { advance, createItem, currentKey, plannerCapacityText, RULES, singlePlanAlternative, upgradeSubtaskQuestion } =
 	await import("../server/src/factory/blueprint.js");
-const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
+const { admit, budgetStop, FACTORY_DEFAULTS, partShare, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
 const { CI_POLLING, readCi, rerunJobs, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import(
 	"../server/src/github/ci.js"
@@ -173,7 +174,13 @@ const ended =
 	(
 		outcome: Extract<Fact, { kind: "turn_ended" }>["outcome"],
 		evidence: Verified | null,
-		more: { stepLimit?: number; changes?: boolean; report?: AgentReport | string; tokens?: number } = {},
+		more: {
+			stepLimit?: number;
+			changes?: boolean;
+			report?: AgentReport | string;
+			tokens?: number;
+			spend?: Partial<TurnSpend>;
+		} = {},
 	): Row["fact"] =>
 	k => ({
 		kind: "turn_ended",
@@ -184,7 +191,7 @@ const ended =
 		flags: [],
 		changes: more.changes ?? true,
 		report: more.report ?? null,
-		spend: { tokens: more.tokens ?? 100_000, hostedSeconds: 0 },
+		spend: { tokens: more.tokens ?? 100_000, hostedSeconds: 0, ...more.spend },
 	});
 const published =
 	(
@@ -3918,6 +3925,132 @@ expect(
 		budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "hosted" })?.cause === "hostedSeconds",
 );
 
+{
+	const { budgetLeft, budgetUnits, overBudgetNow, turnUsd, windowShare } = await import(
+		"../server/src/factory/budget.js"
+	);
+	const spent = { tokens: 3_000_000, rawTokens: 9_000_000, turns: 2, activeSeconds: 60, hostedSeconds: 10 };
+	expect(
+		"budget units: dollars hold once a key turn is priced, and tokens no longer",
+		budgetStop(FACTORY_DEFAULTS.item, { ...spent, usd: 2 }, { kind: "hosted" }) === null &&
+			budgetStop(FACTORY_DEFAULTS.item, { ...spent, usd: 5 }, { kind: "hosted" })?.sentence ===
+				"Used $5 of its $5 budget.",
+	);
+	expect(
+		"budget units: a plan's 5-hour share holds once a plan turn saw its window",
+		budgetStop(FACTORY_DEFAULTS.item, { ...spent, planPct: 20.5 }, { kind: "hosted" })?.sentence ===
+			"Used its 20% of your 5-hour window." &&
+			budgetStop(FACTORY_DEFAULTS.item, { ...spent, planPct: 3 }, { kind: "hosted" }) === null,
+	);
+	expect(
+		"budget units: a key turn that could not be priced leaves tokens holding too",
+		budgetStop(FACTORY_DEFAULTS.item, { ...spent, usd: 1, usdUnknown: true }, { kind: "hosted" })?.cause === "tokens" &&
+			budgetUnits(FACTORY_DEFAULTS.item, { usd: 1, usdUnknown: true }).usd,
+	);
+	expect(
+		"budget units: an item filed with tokens only holds to tokens whatever it spent",
+		budgetStop({ tokens: 2_000_000, hostedSeconds: 7200 }, { ...spent, usd: 99 }, { kind: "hosted" })?.cause ===
+			"tokens",
+	);
+	const w = (kind: "5h" | "7d", usedPct: number, resetsAt: number) => ({
+		kind,
+		usedPct,
+		resetsAt,
+		observedAt: 0,
+		source: "header" as const,
+	});
+	expect(
+		"a plan share is the rise of the window, or the new window's use after a reset",
+		windowShare([w("5h", 30, 1e9)], [w("5h", 34.5, 1e9)], "5h") === 4.5 &&
+			windowShare([w("5h", 90, 1e9)], [w("5h", 3, 1e9 + 5 * 3600_000)], "5h") === 3 &&
+			windowShare([w("5h", 30, 1e9)], [], "5h") === null &&
+			windowShare([w("7d", 10, 1e9)], [w("7d", 11, 1e9)], "7d") === 1,
+	);
+	expect(
+		"a part's dollars and plan share follow its planned tokens",
+		JSON.stringify(partShare(FACTORY_DEFAULTS.item, 500_000)) === JSON.stringify({ usd: 1.25, planPct: 5 }) &&
+			JSON.stringify(partShare({ tokens: 2_000_000, hostedSeconds: 1 }, 500_000)) === "{}",
+	);
+	const meter = {
+		harness: "claude" as const,
+		model: "claude-sonnet-4-5",
+		provider: "anthropic" as const,
+		payer: "key" as const,
+		usage: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 100_000, reasoningTokens: 0 },
+		agentUsd: null,
+		size: null,
+	};
+	const models = { "anthropic/claude-sonnet-4-5": { input: 3, output: 15 } };
+	expect(
+		"a key turn is priced in dollars; a plan turn has none; an unknown price is null",
+		Math.abs((turnUsd(meter, models) ?? 0) - 4.5) < 1e-9 &&
+			turnUsd({ ...meter, payer: "plan" }, models) === undefined &&
+			turnUsd(meter, {}) === null &&
+			turnUsd(meter, null) === null,
+		String(turnUsd(meter, models)),
+	);
+	expect(
+		"during a turn: the threshold of what was left decides the stop (#100a seam)",
+		JSON.stringify(budgetLeft(FACTORY_DEFAULTS.item, { ...spent, usd: 3.5 })) ===
+			JSON.stringify({ figure: "usd", left: 1.5 }) &&
+			overBudgetNow(1.5, 1.6) &&
+			!overBudgetNow(1.5, 1.2) &&
+			overBudgetNow(1.5, 1.2, 0.7) &&
+			!overBudgetNow(undefined, 99),
+	);
+}
+drive("an item on a key asks in dollars when its budget is used", newItem({ budget: { usd: 4 } }), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", FAILING, { spend: { usd: 3 } }), state: "working", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{
+		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")]), {
+			tokens: 10,
+			spend: { usd: 1.2 },
+		}),
+		state: "waiting",
+		wait: "budget",
+		effects: ["ask"],
+		also: o =>
+			holds(
+				o.item.wait?.sentence === "Its checks failed, and it used $4.20 of its $4 budget. Give it more to continue." &&
+					o.item.question?.choices[0]?.label === "Give it $1 more",
+				`asked in dollars: ${o.item.wait?.sentence} ${o.item.question?.choices[0]?.label}`,
+			),
+	},
+	{
+		fact: answer("raise"),
+		state: "working",
+		effects: ["deliver", "check_turn"],
+		also: o => holds(o.item.budget.usd === 5.2, `one more start's worth on top: ${o.item.budget.usd}`),
+	},
+]);
+drive("an item on a plan asks in its share of the 5-hour window", newItem({ budget: { planPct: 5 } }), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{
+		fact: ended("unresolved", FAILING, { tokens: 10, spend: { plan: { fiveHour: 6, week: 1 } } }),
+		state: "waiting",
+		wait: "budget",
+		effects: ["ask"],
+		also: o =>
+			holds(
+				o.item.wait?.sentence ===
+					"Its checks failed, and it used its 5% of your 5-hour window. Give it more to continue." &&
+					o.item.question?.choices[0]?.label === "Give it 5% more" &&
+					o.item.spent.planWeekPct === 1,
+				`asked in plan share: ${o.item.wait?.sentence} ${o.item.question?.choices[0]?.label}`,
+			),
+	},
+	{
+		fact: answer("raise"),
+		state: "working",
+		effects: ["deliver", "check_turn"],
+		also: o => holds(o.item.budget.planPct === 11, `5% more on what was used: ${o.item.budget.planPct}`),
+	},
+]);
+
 const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId: "m1" } };
 drive("a machine out of memory asks how to continue in its slot", machineItem, [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
@@ -5709,7 +5842,12 @@ const pushedRun = (head: string) => [
 	assert.equal(hosted.budget.hostedSeconds, seconds * 3);
 	assert.deepEqual(
 		hosted.jobs!.map(j => j.budget),
-		hostedTasks.map(t => ({ ...t.budget, hostedSeconds: seconds })),
+		// Each part also gets an item's dollars and plan share in proportion to its tokens (budget.ts `partShare`).
+		hostedTasks.map(t => ({
+			...t.budget,
+			hostedSeconds: seconds,
+			...partShare(hosted.singleBudget!, t.budget.tokens),
+		})),
 	);
 	const limited = start(hostedTasks, undefined, seconds);
 	assert.deepEqual(keys(limited), ["first", "second"]);

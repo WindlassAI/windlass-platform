@@ -58,7 +58,7 @@ import {
 import { errorText } from "../util.js";
 import { credentialWire } from "../../../sandbox/relay/wires.cjs";
 import type { PlanSecret } from "../credentials/transit.js";
-import type { LocalModelRelay } from "./plan-relay.js";
+import type { LocalModelRelay, LocalPlanRelayOptions } from "./plan-relay.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -124,6 +124,7 @@ export async function openModelKeyRelay(
 	signal?: AbortSignal,
 	takeRequest?: TakeRelayRequest,
 	openSecret?: () => Promise<PlanSecret | null>,
+	onSeen?: LocalPlanRelayOptions["onSeen"],
 ): Promise<KeyTurnRelay> {
 	if (key.harness === "windlass") {
 		if (!key.plan && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
@@ -149,6 +150,7 @@ export async function openModelKeyRelay(
 			takeRequest,
 			wire: credentialWire(key),
 			harness: key.harness,
+			onSeen,
 		});
 		return opened.expiresAt === undefined ? relay : rotatePlanToken(relay, opened.expiresAt, openSecret);
 	}

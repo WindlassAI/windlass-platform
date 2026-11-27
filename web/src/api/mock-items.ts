@@ -5257,6 +5257,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		| "itemAttachmentLinks"
 		| "createItem"
 		| "actOnItem"
+		| "useKeyNow"
 		| "factoryLimits"
 		| "apiTokens"
 		| "createApiToken"
@@ -5497,6 +5498,16 @@ export function createMockItems(deps: MockItemsDeps) {
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
 				return withPartScreenshots(auth, pageOf(auth, item));
+			},
+			// As the user actor's: an item waiting for its plan, where a key can pay, takes its next turn on the key.
+			async useKeyNow(id) {
+				await answer(240);
+				const item = itemOf(auth, id);
+				if (item.state !== "waiting" || !item.wait?.plan?.keyNow)
+					throw new PlatformError("user", "This item is not waiting for a plan that a saved key could stand in for.", {
+						reason: "bad_input",
+					});
+				change(auth, item, { state: "working", wait: null }, ["Paid with your key this time."], "person");
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {

@@ -93,7 +93,7 @@ Repositories and secrets:
 - `server/src/repo-secrets.ts` validates, seals, scopes and redacts repository secrets; `server/src/account-secrets.ts` builds account secrets on it.
 - `server/src/repository-checks.ts` stores the saved verification checks; `server/src/verified.ts` reads what a turn's checks came to and how a pull request reports it.
 - `server/src/repository-defaults.ts` stores account and repository run choices (bundled by web too).
-- `server/src/pay-with.ts` stores each plan agent's Pay-with choice (`pay_with`) and holds `payWithFor`, the rule a hosted turn will follow (bundled by web too).
+- `server/src/pay-with.ts` stores each plan agent's Pay-with choice (`pay_with`) and holds `payWithFor` and `decidePayer`, the rule a hosted turn follows at its start (bundled by web too).
 - `server/src/repository-network.ts` stores a repository's network allow list and blocked-host requests; `server/src/blocked-network.ts` merges and caps blocked-host reports.
 - `server/src/setup-command.ts` validates the setup command and keeps its output tail.
 - `server/src/environments.ts` builds and promotes a repository's prepared environments.

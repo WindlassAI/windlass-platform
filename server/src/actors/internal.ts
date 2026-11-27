@@ -203,6 +203,15 @@ export interface UserInternal {
 		generation: string,
 		observation: import("../provider-usage.js").UsageObservation,
 	): Promise<void>;
+	internalPlanStatus(
+		provider: import("../contract.js").PlanProvider,
+	): Promise<import("../contract.js").ModelPlanStatus | null>;
+	/** Pay with at a hosted turn's start (user-payer.ts): what pays, or why the turn waits; null where the rule does not decide. */
+	internalTurnPayer(input: {
+		sessionId: string;
+		model: string;
+		keyOnce?: boolean;
+	}): Promise<import("./user-payer.js").PayerAnswer | null>;
 
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
@@ -552,6 +561,12 @@ export function modelKeyActor(
 	): Promise<string | null>;
 	/** The models the agent of a turn paid by the plan `ref` reported, kept for that plan while it is at that generation. */
 	internalPlanModels(ref: import("../contract.js").CredentialRef, ids: string[]): Promise<boolean>;
+	/** What a relay saw the provider say of a plan's health, kept while the plan is at `generation` (credentials/plan-health.ts). */
+	internalObservePlan(
+		provider: import("../contract.js").PlanProvider,
+		generation: string,
+		seen: import("../contract.js").RelaySeen,
+	): Promise<void>;
 } {
 	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
 }

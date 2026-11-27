@@ -3,6 +3,7 @@
 import type { HarnessId, SandboxProfileId } from "../contract.js";
 import type { PlanProvider } from "./connect.js";
 import type { RepositoryAutonomy, RepositoryDefaults, SecretReach, SecretScope } from "./repository.js";
+import type { UsageWindow } from "./timeline.js";
 
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots">;
@@ -110,6 +111,31 @@ export interface ModelPlanStatus {
 	ok: boolean;
 	/** The models the plan offers, as its provider or agent reported them: none until one did. */
 	models?: string[];
+	/** What the relays last saw of it (credentials/plan-health.ts): usable, at its limit, or refused twice in a row. */
+	health: PlanHealth;
+	/** While `limited`: when it is tried again, the provider's reset or, where it named none, a backoff probe. */
+	limitedUntil: number | null;
+	/** Whether `limitedUntil` is the provider's own reset time rather than a probe. */
+	resetKnown: boolean;
+	/** The plan's usage windows as last seen (5-hour and weekly: % used and reset), one per kind. */
+	windows: UsageWindow[];
+	/** When the relays last saw a request of it; null before any. */
+	healthAt: number | null;
+}
+
+/** A plan as the relays see it: `invalid` after two refusals of its token in a row, until it is connected again. */
+export type PlanHealth = "ok" | "limited" | "invalid";
+
+/**
+ * What a relay saw of one answer from a plan's provider, for its health: the upstream status, the rate-limit headers
+ * (`limitHeaders`: numbers and status words only), and from an error body only its code and, for a limit that names
+ * one, its reset (unix ms).
+ */
+export interface RelaySeen {
+	status: number;
+	headers: Record<string, string>;
+	code?: string | null;
+	resetsAt?: number | null;
 }
 
 export interface ModelPlans {
@@ -156,6 +182,14 @@ export interface PayWithChoice {
 }
 
 export type PayWithPatch = Pick<PayWithChoice, "harness" | "payWith" | "whenLimited">;
+
+/**
+ * UserError codes of a hosted turn Pay with held back (pay-with.ts `decidePayer`): `plan_ask`, the plan is limited or
+ * at its parallel-turn cap and the person may wait or pay with the key this time (send again with `payWith: "key"`);
+ * `plan_limited`, it is and the rule is to wait. The message says until when.
+ */
+export const PLAN_ASK = "plan_ask";
+export const PLAN_LIMITED = "plan_limited";
 
 export interface AccountSecrets {
 	secrets: AccountSecret[];

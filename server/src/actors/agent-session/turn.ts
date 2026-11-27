@@ -27,6 +27,9 @@ import {
 	outOfMemoryWords,
 	type CredentialRef,
 	type ModelList,
+	isPlanProvider,
+	type PlanProvider,
+	type RelaySeen,
 } from "../../contract.js";
 import { billing } from "../../billing/config.js";
 import { GithubError, githubApp, type InstallationToken } from "../../github/app.js";
@@ -114,7 +117,7 @@ import { runnerLink, layerOf, machineOf } from "./runner.js";
 import { publish } from "./summary.js";
 import { platformNotes, saveBackup, dropWorkspace } from "./workspace.js";
 import { shellQuote } from "../../util.js";
-import { tail, TurnProblem, githubConnection, ReviewRefused, itemPrompt, within } from "./common.js";
+import { tail, TurnProblem, githubConnection, ReviewRefused, itemPrompt, within, PlanWaitError } from "./common.js";
 import { readSecrets } from "./secrets.js";
 import { usesScreenshotImage } from "./setup.js";
 import { metered, takeHold, removeSandbox, noteSandbox, closeMeter, useOf, meterAfterTurn, armIdle } from "./meter.js";
@@ -406,6 +409,15 @@ function prompted(c: Ctx, t: TurnScope) {
 	void persist(c);
 }
 
+/** A plan's window snapshot (5-hour, weekly), null where it could not be read. */
+export async function planWindows(c: Ctx, uid: string, provider: import("../../contract.js").ModelProvider) {
+	if (provider !== "anthropic" && provider !== "openai") return null;
+	return userActor(c, uid)
+		.internalPlanStatus(provider)
+		.then(plan => plan?.windows ?? null)
+		.catch(() => null);
+}
+
 async function observe(c: Ctx, t: TurnScope, observation: UsageObservation) {
 	if (t.generation !== null)
 		await userActor(c, t.meta.uid)
@@ -533,6 +545,24 @@ export async function noteTurnMemory(
 	} catch (error) {
 		c.log.warn({ msg: "could not read the sandbox's memory at the turn's end", error: String(error) });
 	}
+}
+
+/**
+ * Pay with held an item's turn for its plan after the queue had let it start (the plan was limited meanwhile): the item
+ * waits for the plan's reset as after a usage-limit refusal (blueprint.ts `askProviderRefusal`), and asks where none is known.
+ */
+function planWait(item: ActiveTurn["item"], wait: PlanWaitError): never {
+	if (item) {
+		const { text, fetchBase, untrusted } = item.row;
+		item.providerRefusal = {
+			kind: "usage_limit",
+			message: wait.message,
+			...(wait.retryAt !== null && { resetsAt: wait.retryAt }),
+			placeName: "hosted",
+			retry: { text, fetchBase, ...(untrusted.length && { untrusted }) },
+		};
+	}
+	throw new TurnProblem(wait.message);
 }
 
 function refuseItemPolicy(item: ActiveTurn["item"], reason: string): never {
@@ -688,6 +718,7 @@ export async function takeCredential(
 	const credential =
 		active.credential ??
 		(await t.hooks.turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
+			if (error instanceof PlanWaitError) return planWait(active.item, error);
 			if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
 				throw error;
 			return refuseItemPolicy(active.item, error.message);
@@ -695,6 +726,9 @@ export async function takeCredential(
 	const { key } = credential;
 	t.itemSignIn = credential.itemSignIn ?? meta.origin?.signIn;
 	t.credential = credential;
+	// An item's budget on a plan is its share of the plan's windows: the snapshot it starts from (best effort).
+	if (active.item && key?.plan && active.item.planAtStart === undefined)
+		active.item.planAtStart = await planWindows(c, meta.uid, key.provider);
 	if (run) {
 		run.credential = credential;
 		if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
@@ -766,6 +800,8 @@ export async function checkHarness(
 	// What the turn is handed goes by what the session's harness can do, asked of this sandbox's. Windlass's ChatGPT
 	// models are the platform's on the plan too: limited and counted as the ChatGPT sign-in, whose generation the plan's is.
 	account.provider = usesPlatformModel(meta.harness, credential.model) ? undefined : key?.provider;
+	// A plan's limits are its own, apart from the key of the same provider (provider-accounts.ts).
+	if (account.provider && key?.plan) account.plan = true;
 	t.generation =
 		key?.generation ??
 		(await userActor(c, meta.uid)
@@ -892,6 +928,14 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 				takeRequest,
 				openSecret: () =>
 					openSavedCredential(meta.uid, key, (uid, ref, nonce) => modelKeyActor(c, uid).internalCredential(ref, nonce)),
+				// A plan's relay in the sandbox tells what the provider said of the plan's health (credentials/plan-health.ts).
+				...(key.plan &&
+					isPlanProvider(key.provider) && {
+						onSeen: (seen: RelaySeen) =>
+							void modelKeyActor(c, meta.uid)
+								.internalObservePlan(key.provider as PlanProvider, key.generation, seen)
+								.catch(() => c.log.warn({ msg: "Could not record the plan's health" })),
+					}),
 			},
 		}),
 		prompt: t.text,
@@ -1997,6 +2041,14 @@ async function noteProviderOutcome(
 	const limitReading = limitObservation(refusal, Date.now());
 	if (limitReading) await observe(c, t, limitReading);
 	else if (outcome === "succeeded") await observe(c, t, { kind: "success", at: Date.now(), startedAt });
+	// Claude Code's refusal names no reset; the plan's relay read it from the provider's headers (checklist L2).
+	if (refusal && limitReading && refusal.resetsAt === undefined && account.plan && isPlanProvider(account.provider)) {
+		const plan = await userActor(c, meta.uid)
+			.internalPlanStatus(account.provider)
+			.catch(() => null);
+		if (plan?.health === "limited" && plan.resetKnown && plan.limitedUntil !== null)
+			refusal.resetsAt = plan.limitedUntil;
+	}
 	if (refusal) {
 		// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
 		if (!result?.acp && result?.failure?.reason === "auth_required" && message) {

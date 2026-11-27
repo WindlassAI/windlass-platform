@@ -11,6 +11,8 @@
  *   WLP_PLAN_USERS             who may connect a subscription plan (a Claude plan) and run hosted turns on it:
  *                              user ids (`u_...`), comma-separated, or `*` for everyone. Unset: nobody, and
  *                              turns stop using connected plans at once (the kill switch)
+ *   WLP_PLAN_PARALLEL_TURNS    the most hosted turns one connected plan pays for at once (default 3, 1–20); past
+ *                              it an item waits and a prompt is asked about, as at the plan's limit (pay-with.ts)
  *   WLP_ALLOW_DOCKER_HOSTED=1 explicitly allow the Docker sandbox layer with a remote engine
  *   WLP_SANDBOX=docker|e2b|daytona|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
@@ -88,9 +90,11 @@
  *   WLP_FACTORY_GITHUB_ITEMS_PER_DAY
  *                              items a user may file from GitHub issues a UTC day, drafts among them
  *                              (default 20)
- *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_HOSTED_SECONDS
- *                              a new work item's budget (default 2,000,000 cost-weighted tokens, cached
- *                              input at a tenth, and 2 hours of hosted sandbox); used up, the item asks
+ *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_HOSTED_SECONDS, WLP_FACTORY_ITEM_USD (dollars, where a key pays),
+ *   WLP_FACTORY_ITEM_PLAN_PCT (points of the plan's 5-hour window, where a plan pays)
+ *                              a new work item's budget (default $5, 20% of the 5-hour window, 2,000,000
+ *                              cost-weighted tokens where neither can be measured, cached input at a
+ *                              tenth, and 2 hours of hosted sandbox); used up, the item asks
  *                              its person for more. The same on every server, like all of these
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
@@ -374,6 +378,8 @@ export interface Config {
 	modelRelay: { on: boolean; requests: number; turnRequests: number; url: ModelRelayUrl | null };
 	/** Who may connect and use subscription plans (WLP_PLAN_USERS): everyone, these user ids, or nobody. */
 	plans: "all" | ReadonlySet<string>;
+	/** The most hosted turns one plan pays for at once (WLP_PLAN_PARALLEL_TURNS): ordinary use. */
+	planParallelTurns: number;
 	/** Where items' model prices are read from (WLP_MODEL_PRICES_URL); null: nowhere. */
 	modelPricesUrl: string | null;
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
@@ -905,6 +911,8 @@ function readFactory(): FactoryLimits & { reviewer: boolean; screenshots: boolea
 		item: {
 			tokens: count("WLP_FACTORY_ITEM_TOKENS", d.item.tokens, 1_000_000_000),
 			hostedSeconds: count("WLP_FACTORY_ITEM_HOSTED_SECONDS", d.item.hostedSeconds, 7 * 86_400),
+			usd: count("WLP_FACTORY_ITEM_USD", d.item.usd ?? 5, 100_000),
+			planPct: count("WLP_FACTORY_ITEM_PLAN_PCT", d.item.planPct ?? 20, 1000),
 		},
 	};
 }
@@ -1036,6 +1044,7 @@ export const config: Config = {
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
 	plans: readPlanUsers(process.env.WLP_PLAN_USERS),
+	planParallelTurns: readCount("WLP_PLAN_PARALLEL_TURNS", 3, 1, 20, false) ?? 3,
 	modelPricesUrl: readModelPricesUrl(process.env.WLP_MODEL_PRICES_URL),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
 	hosted: sandbox === "e2b" ? readE2bSettings() : sandbox === "daytona" ? readDaytonaSettings() : null,

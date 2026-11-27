@@ -247,6 +247,8 @@ export interface UserActions {
 	payWith(): Promise<PayWithChoice[]>;
 	/** Saves one agent's choice; answers with every agent's. Throws with reason `bad_input` for an agent or choice there is none of. */
 	savePayWith(input: PayWithPatch): Promise<PayWithChoice[]>;
+	/** An item waiting for its plan (`Wait.plan.keyNow`) pays its next turn with the saved key instead, once. Throws `bad_input` when no key can. */
+	useKeyNow(itemId: string): Promise<void>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**
@@ -401,6 +403,8 @@ export interface PromptInput {
 	 * effort (`SessionSummary.effort`), or the model's default where the turn's model does not take it; null or "" is the model's default.
 	 */
 	effort?: string | null;
+	/** "key": this turn pays with the saved key although Pay with would have it wait for the plan (the answer to `plan_ask`). */
+	payWith?: "key";
 	/**
 	 * The key of this submission (`IdempotencyKey`). The same key again, with the same text, is
 	 * answered as the first attempt was and adds nothing: no second message in the running turn, no

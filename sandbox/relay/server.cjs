@@ -661,10 +661,17 @@ exports.createRelay = function createRelay({
 					contentType: diagnostic(reply.headers["content-type"]?.split(";")[0].trim().toLowerCase(), mediaTypes),
 					contentEncoding: diagnostic(reply.headers["content-encoding"]?.toLowerCase(), encodings),
 				};
+				// What the provider said of the credential's health (a plan's: plan.cjs), from its status and limit headers only.
+				const observe = text => {
+					try {
+						provider?.observe?.(reply.statusCode, limitHeaders(reply.headers, secrets()), text);
+					} catch {}
+				};
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
 					note({ event: "upstream_error", ...described, answered: status });
+					if (!provider?.errorBody || status === 502) observe();
 					if (provider?.errorBody && status !== 502) {
 						// The provider's own error, cut down to what the client classifies it by: read whole, bounded, then rewritten.
 						const parts = [];
@@ -685,6 +692,7 @@ exports.createRelay = function createRelay({
 							try {
 								text = decodeError(Buffer.concat(parts), reply.headers["content-encoding"]);
 							} catch {}
+							observe(text);
 							res.writeHead(status, {
 								...([429, 503, 529].includes(status) ? limitHeaders(reply.headers, secrets()) : {}),
 								"content-type": "application/json",
@@ -701,6 +709,7 @@ exports.createRelay = function createRelay({
 					reply.destroy();
 					return;
 				}
+				observe();
 				let type = reply.headers["content-type"]?.split(";")[0].trim().toLowerCase();
 				// A provider may name the type of an answer that comes without one (or as text/plain) on its streaming route.
 				const given = type;

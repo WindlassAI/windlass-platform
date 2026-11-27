@@ -135,3 +135,200 @@ test("payWithFor: what pays, and what a limited plan does", () => {
 	for (const [name, choices, harness, origin, hasKey, expected] of cases)
 		assert.deepEqual(payWithFor(choices, harness, origin, hasKey), expected, name);
 });
+
+// Pay with applied at a turn's start (`decidePayer`), and the user actor's side of it (actors/user-payer.ts).
+const { decidePayer } = await import("../server/src/pay-with.js");
+type PayerInput = import("../server/src/pay-with.js").PayerInput;
+
+const AT = Date.UTC(2026, 10, 27, 13);
+const planNow = (health: "ok" | "limited" | "invalid", running = 0) => ({
+	provider: "anthropic" as const,
+	health,
+	limitedUntil: health === "limited" ? AT + 3600_000 : null,
+	resetKnown: true,
+	running,
+});
+const input = (patch: Partial<PayerInput>): PayerInput => ({
+	rule: { payWith: "plan-then-key", whenLimited: "wait" },
+	origin: "item",
+	plan: planNow("ok"),
+	hasKey: true,
+	cap: 3,
+	keyMessage: "Add an Anthropic key on the Connections page to run Claude Code here.",
+	at: AT,
+	...patch,
+});
+const kind = (decision: ReturnType<typeof decidePayer>) =>
+	"pay" in decision ? decision.pay : Object.keys(decision)[0];
+
+test("only the real Claude Code takes a Claude plan, and only Codex the ChatGPT plan among the agents a plan pays for", async () => {
+	const { planProviders } = await import("../server/src/sandbox/harnesses.js");
+	const { HARNESS_IDS } = await import("../server/src/contract.js");
+	assert.deepEqual(
+		HARNESS_IDS.filter(id => planProviders(id).includes("anthropic")),
+		["claude"],
+		"no SDK harness or Windlass ever runs on a Claude plan token",
+	);
+	assert.deepEqual(
+		[...PAY_WITH_HARNESSES].map(id => planProviders(id)),
+		[["anthropic"], ["openai"]],
+	);
+});
+
+test("Pay with applied: each rule against a usable or limited plan, for an item and a session, with and without a key", () => {
+	type Case = [
+		PayWithChoice["payWith"],
+		"wait" | "key" | "ask",
+		"ok" | "limited",
+		"item" | "interactive",
+		boolean,
+		string,
+	];
+	const cases: Case[] = [
+		// plan first, then the key
+		["plan-then-key", "wait", "ok", "item", true, "plan"],
+		["plan-then-key", "wait", "ok", "interactive", false, "plan"],
+		["plan-then-key", "wait", "limited", "item", true, "wait"],
+		["plan-then-key", "key", "limited", "item", true, "key"],
+		["plan-then-key", "key", "limited", "interactive", true, "key"],
+		["plan-then-key", "ask", "limited", "interactive", true, "ask"],
+		["plan-then-key", "ask", "limited", "item", true, "wait"],
+		["plan-then-key", "wait", "limited", "interactive", true, "wait"],
+		// plan only: never the key
+		["plan", "wait", "ok", "item", true, "plan"],
+		["plan", "wait", "limited", "item", true, "wait"],
+		["plan", "wait", "limited", "interactive", true, "wait"],
+		// key only: never the plan
+		["key", "wait", "ok", "item", true, "key"],
+		["key", "wait", "limited", "interactive", true, "key"],
+		["key", "wait", "ok", "item", false, "refuse"],
+	];
+	for (const [payWith, whenLimited, health, origin, hasKey, expected] of cases) {
+		// As payWithFor gives it: without a key, or but the plan, a limited plan only waits.
+		const rule = { payWith, whenLimited: payWith !== "plan-then-key" || !hasKey ? ("wait" as const) : whenLimited };
+		const decision = decidePayer(input({ rule, origin, hasKey, plan: planNow(health) }));
+		assert.equal(kind(decision), expected, `${payWith}/${whenLimited} ${health} ${origin} key=${hasKey}`);
+	}
+	// No key saved: always wait, whatever the origin.
+	const noKey = decidePayer(input({ origin: "interactive", hasKey: false, plan: planNow("limited") }));
+	assert.equal(kind(noKey), "wait");
+	const wait = decidePayer(input({ plan: planNow("limited") }));
+	assert.ok("wait" in wait);
+	assert.equal(wait.wait.sentence, "Your Claude plan is limited until 14:00 UTC. This item starts by itself then.");
+	assert.deepEqual([wait.wait.retryAt, wait.wait.limited, wait.wait.keyNow], [AT + 3600_000, true, true]);
+	const ask = decidePayer(
+		input({ origin: "interactive", rule: { payWith: "plan-then-key", whenLimited: "ask" }, plan: planNow("limited") }),
+	);
+	assert.ok("ask" in ask && /Wait, or use your key for this turn\?$/.test(ask.ask.sentence));
+	// The person chose the key for this turn.
+	assert.equal(kind(decidePayer(input({ plan: planNow("limited"), keyOnce: true }))), "key");
+	assert.equal(kind(decidePayer(input({ plan: planNow("limited"), keyOnce: true, hasKey: false }))), "wait");
+});
+
+test("Pay with: a broken or missing plan falls back to the key only where the rule allows", () => {
+	assert.equal(kind(decidePayer(input({ plan: planNow("invalid") }))), "key");
+	const reconnect = decidePayer(input({ plan: planNow("invalid"), hasKey: false }));
+	assert.ok("refuse" in reconnect && /Reconnect it on the Connections page/.test(reconnect.refuse));
+	assert.equal(
+		kind(decidePayer(input({ plan: planNow("invalid"), rule: { payWith: "plan", whenLimited: "wait" } }))),
+		"refuse",
+	);
+	assert.equal(kind(decidePayer(input({ plan: null }))), "key");
+	assert.equal(kind(decidePayer(input({ plan: null, hasKey: false }))), "refuse");
+	assert.equal(kind(decidePayer(input({ plan: null, rule: { payWith: "plan", whenLimited: "wait" } }))), "refuse");
+	// A limit whose time has passed is tried again.
+	assert.equal(kind(decidePayer(input({ plan: planNow("limited"), at: AT + 3600_000 }))), "plan");
+});
+
+test("Pay with: past the plan's parallel-turn cap a turn waits like at a limit, with its reason", () => {
+	assert.equal(kind(decidePayer(input({ plan: planNow("ok", 2) }))), "plan");
+	const busy = decidePayer(input({ plan: planNow("ok", 3), rule: { payWith: "plan", whenLimited: "wait" } }));
+	assert.ok("wait" in busy);
+	assert.equal(busy.wait.retryAt, null, "tried again soon, not at a reset");
+	assert.equal(busy.wait.limited, false);
+	assert.match(busy.wait.sentence, /already paying for 3 turns at once/);
+	assert.equal(
+		kind(decidePayer(input({ plan: planNow("ok", 3), rule: { payWith: "plan-then-key", whenLimited: "key" } }))),
+		"key",
+	);
+	assert.equal(
+		kind(
+			decidePayer(
+				input({
+					plan: planNow("ok", 5),
+					origin: "interactive",
+					rule: { payWith: "plan-then-key", whenLimited: "ask" },
+				}),
+			),
+		),
+		"ask",
+	);
+});
+
+test("Pay with: an item filed by an unverified account never pays with the owner's plan", () => {
+	const stranger = { surface: "Slack", externalUserId: "U123", verified: false };
+	assert.equal(kind(decidePayer(input({ filer: stranger }))), "key");
+	const refused = decidePayer(input({ filer: stranger, hasKey: false }));
+	assert.ok("refuse" in refused && /filed from Slack by an account not linked to yours/.test(refused.refuse));
+	assert.equal(
+		kind(decidePayer(input({ filer: stranger, rule: { payWith: "plan", whenLimited: "wait" }, hasKey: false }))),
+		"refuse",
+	);
+	assert.equal(kind(decidePayer(input({ filer: { ...stranger, verified: true } }))), "plan");
+	assert.equal(kind(decidePayer(input({}))), "plan", "no filer: the owner's own item");
+});
+
+test("the user actor counts a plan's turns by session for its cap, and a key chosen once pays the item's next turn", async () => {
+	process.env.WLP_PLAN_USERS = "*";
+	process.env.WLP_PLAN_PARALLEL_TURNS = "2";
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
+	const payer = await import("../server/src/actors/user-payer.js");
+	const { sql, db } = account();
+	for (const table of [...CREDENTIAL_TABLES, payer.PAY_ONCE_TABLE]) sql.exec(table);
+	sql.exec(
+		"INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok) VALUES ('anthropic', 'x', 'p1', NULL, 1, 1, 1)",
+	);
+	sql.exec(
+		"INSERT INTO model_provider (provider, sealed, generation, last4, added_at, checked_at, check_ok) VALUES ('anthropic', 'x', 'k1', 'abcd', 1, 1, 1)",
+	);
+	const session = (id: string, item?: string) => ({
+		id,
+		harness: "claude" as const,
+		model: "sonnet",
+		place: { kind: "hosted" as const },
+		status: "idle",
+		...(item && { item: { id: item } }),
+	});
+	const sessions = new Map(["s1", "s2", "s3", "s4"].map(id => [id, session(id, id === "s4" ? "i4" : undefined)]));
+	const c = {
+		key: ["u_payer"],
+		db,
+		vars: {
+			sessions,
+			items: { items: new Map([["i4", { origin: null, sessionId: "s4" }]]) },
+		},
+	} as unknown as Parameters<typeof payer.payerOf>[0];
+	const now = Date.now();
+	payer.holdPlanTurn(c, "anthropic", "s1", now);
+	payer.holdPlanTurn(c, "anthropic", "s2", now);
+	assert.equal(payer.planRunning(c, "anthropic", "s3", now), 2);
+	const context = await payer.payerContext(c);
+	const third = payer.payerOf(c, context, sessions.get("s3") as never, "sonnet");
+	assert.equal(kind(third.decision), "ask", "a person's third turn on the plan is asked about (the key may pay)");
+	assert.equal(kind(payer.payerOf(c, context, sessions.get("s4") as never, "sonnet").decision), "wait");
+	assert.deepEqual(payer.payerOf(c, context, sessions.get("s1") as never, "sonnet").ref, {
+		provider: "anthropic",
+		generation: "p1",
+		plan: true,
+	});
+	// An idle session past the grace gives its place back.
+	assert.equal(payer.planRunning(c, "anthropic", "s3", now + 3 * 60_000), 0);
+	// "Use my key now" for the item: its next turn pays with the key, once.
+	assert.ok(await payer.useKeyOnce(c, "s4"));
+	payer.holdPlanTurn(c, "anthropic", "s1");
+	payer.holdPlanTurn(c, "anthropic", "s2");
+	const once = await payer.turnPayer(c, "s4", "sonnet", false);
+	assert.deepEqual({ ...once?.ref }, { provider: "anthropic", generation: "k1" });
+	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM pay_once").get()?.n, 0, "used up");
+	assert.equal(kind((await payer.turnPayer(c, "s4", "sonnet", false))!.decision), "wait");
+});

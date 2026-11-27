@@ -6,7 +6,11 @@
 
 import {
 	type HarnessId,
+	type ItemFiler,
 	MACHINE_HARNESS_IDS,
+	type PlanHealth,
+	PLAN_NAMES,
+	type PlanProvider,
 	PAY_WITH,
 	type PayWith,
 	type PayWithChoice,
@@ -76,8 +80,8 @@ export async function savePayWith(db: DefaultsDb, patch: PayWithPatch, now = Dat
 }
 
 /**
- * The rule a hosted turn of `harness` follows (applied at turn start in Phase 6): what pays, and what a limited plan
- * does. `hasKey`: whether the user has a saved key this agent can use.
+ * The rule a hosted turn of `harness` follows at its start (`decidePayer`): what pays, and what a limited plan does.
+ * `hasKey`: whether the user has a saved key this agent can use.
  */
 export function payWithFor(
 	choices: readonly PayWithChoice[],
@@ -92,4 +96,93 @@ export function payWithFor(
 	// Without a saved key there is nothing to switch to or ask about.
 	if (choice.payWith !== "plan-then-key" || !hasKey) return { payWith: choice.payWith, whenLimited: "wait" };
 	return { payWith: choice.payWith, whenLimited: choice.whenLimited ?? WHEN_LIMITED_DEFAULTS[origin] };
+}
+
+/** What a hosted turn's start knows of the plan that could pay for it. Null: none connected, usable, or allowed. */
+export interface PlanNow {
+	provider: PlanProvider;
+	health: PlanHealth;
+	limitedUntil: number | null;
+	resetKnown: boolean;
+	/** The turns it pays for now, this one not among them. */
+	running: number;
+}
+
+export interface PayerInput {
+	rule: { payWith: PayWith; whenLimited: WhenLimited };
+	origin: TurnOrigin;
+	plan: PlanNow | null;
+	hasKey: boolean;
+	/** The most turns a plan pays for at once. */
+	cap: number;
+	/** Who filed the item from another surface; absent for the owner's own (web, API, GitHub). */
+	filer?: ItemFiler;
+	/** The person chose the key for this turn (`useKeyNow`, or `payWith: "key"` on a prompt). */
+	keyOnce?: boolean;
+	/** The sentence when no key can pay (`hostedKeyMessage`). */
+	keyMessage: string;
+	at: number;
+}
+
+/**
+ * What pays for a hosted turn, or why it does not start: `plan` or `key`; `wait` until the plan can pay again (an item
+ * waits in the turn queue, `retryAt` null: it is tried again soon; a person's prompt is refused with `PLAN_LIMITED`);
+ * `ask`, the person chooses between waiting and the key this time (`PLAN_ASK`); `refuse`, nothing can pay.
+ */
+export type PayerDecision =
+	| { pay: "plan" }
+	| { pay: "key" }
+	| { wait: { sentence: string; retryAt: number | null; limited: boolean; keyNow: boolean } }
+	| { ask: { sentence: string; retryAt: number | null } }
+	| { refuse: string };
+
+const clock = (at: number) => new Date(at).toISOString().slice(11, 16) + " UTC";
+
+/** The rule applied: guardrails first (an unverified filer never pays with the owner's plan), then health and the cap. */
+export function decidePayer(input: PayerInput): PayerDecision {
+	const { rule, origin, plan, hasKey, filer, at } = input;
+	if (input.keyOnce && hasKey) return { pay: "key" };
+	const viaKey = (refusal: string): PayerDecision => (hasKey ? { pay: "key" } : { refuse: refusal });
+	if (rule.payWith === "key") return viaKey(input.keyMessage);
+	const name = plan ? PLAN_NAMES[plan.provider] : "plan";
+	if (filer && filer.verified !== true)
+		return viaKey(
+			`This item was filed from ${filer.surface} by an account not linked to yours, so it can't run on your ${name}. Link the account, or add a key on the Connections page.`,
+		);
+	const orKey = rule.payWith === "plan-then-key";
+	if (!plan)
+		return orKey
+			? viaKey(input.keyMessage)
+			: { refuse: "Connect your plan on the Connections page to run this agent here." };
+	if (plan.health === "invalid") {
+		if (orKey && hasKey) return { pay: "key" };
+		return {
+			refuse: `Your ${name} stopped working: the provider refused it twice in a row. Reconnect it on the Connections page.`,
+		};
+	}
+	const limited = plan.health === "limited" && (plan.limitedUntil ?? 0) > at;
+	const busy = !limited && plan.running >= input.cap;
+	if (!limited && !busy) return { pay: "plan" };
+	if (rule.whenLimited === "key" && hasKey && orKey) return { pay: "key" };
+	const retryAt = limited ? plan.limitedUntil : null;
+	const sentence = limited
+		? plan.resetKnown
+			? `Your ${name} is limited until ${clock(plan.limitedUntil!)}.`
+			: `Your ${name} reached its limit; it is tried again at ${clock(plan.limitedUntil!)}.`
+		: `Your ${name} is already paying for ${plan.running} turns at once, the most it runs together.`;
+	const keyNow = hasKey && orKey;
+	if (origin === "interactive") {
+		if (rule.whenLimited === "ask" && keyNow)
+			return { ask: { sentence: `${sentence} Wait, or use your key for this turn?`, retryAt } };
+		const again = limited ? "Send the prompt again then." : "Send the prompt again when one of them finishes.";
+		return { wait: { sentence: `${sentence} ${again}`, retryAt, limited, keyNow: false } };
+	}
+	return {
+		wait: {
+			sentence: `${sentence} This item starts by itself ${limited ? "then" : "when one of them finishes"}.`,
+			retryAt,
+			limited,
+			keyNow,
+		},
+	};
 }

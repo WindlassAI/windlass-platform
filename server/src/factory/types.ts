@@ -486,6 +486,10 @@ export interface TurnSpend {
 	agent?: AgentTurn;
 	/** The turn's model, payer, tokens and sandbox size, for its cost (cost.ts). Absent from the platform's own spend facts. */
 	meter?: import("./cost.js").TurnMeter;
+	/** A key-paid turn's model dollars, priced when it ended (budget.ts `turnUsd`); null where they could not be priced. */
+	usd?: number | null;
+	/** A plan-paid turn's share of the plan's windows, in percentage points (budget.ts `windowShare`); null where unseen. */
+	plan?: { fiveHour: number | null; week: number | null };
 }
 
 /** What a machine harness (Claude Code, OpenCode) reported of one turn. */

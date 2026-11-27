@@ -7,15 +7,16 @@
 //                                     plan's wire (claude-plan, chatgpt-plan) and the agent whose routes it allows
 //   {token}                           later: replaces the token; requests that start after it carry the new one
 //   {took, ok}                        the platform's answer to a request it was asked to count
-// It writes {listening: port} once it can take requests, {take: n} for each request to count, and
-// {handed: true} after a replaced token. Standard input closing ends it.
+// It writes {listening: port} once it can take requests, {take: n} for each request to count,
+// {handed: true} after a replaced token, and {seen: {status, headers, code, resetsAt}} for what the provider said of
+// the plan's health (every error, a success at most every SEEN_OK_MS). Standard input closing ends it.
 const net = require("node:net");
 const http = require("node:http");
 const https = require("node:https");
 const { timingSafeEqual } = require("node:crypto");
 const { createRelay, scrubStream } = require("./server.cjs");
 const { harnessMethod } = require("./wires.cjs");
-const { wireTarget, errorBody, placeholderOf, LEASE_ENDED } = require("./windlass.cjs");
+const { wireTarget, errorBody, placeholderOf, limitFacts, LEASE_ENDED } = require("./windlass.cjs");
 
 const WIRES = ["claude-plan", "chatgpt-plan"];
 // The shared relay counts by a connection's nonce. This relay has one session, so every connection carries the same.
@@ -24,6 +25,7 @@ const TOKEN = /^[\x21-\x7e]{16,4096}$/;
 const PLACEHOLDER = /^wlp-plan\.[A-Za-z0-9_-]{43}$/;
 const COUNT_MS = 30_000;
 const FIRST_MESSAGE_MS = 10_000;
+const SEEN_OK_MS = 15_000;
 
 function same(a, b) {
 	const x = Buffer.from(String(a)),
@@ -32,7 +34,7 @@ function same(a, b) {
 }
 
 /** The relay's provider (server.cjs `createRelay`): only the agent's routes on the plan's wire, only with the turn's placeholder. */
-function planProvider(state, { upstream, take, now = Date.now }) {
+function planProvider(state, { upstream, take, now = Date.now, seen = () => {} }) {
 	const live = () => state.expiresAt > now();
 	const { wire, harness } = state;
 	// Claude Code asks whether its API is there before it starts.
@@ -57,6 +59,14 @@ function planProvider(state, { upstream, take, now = Date.now }) {
 		},
 		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),
 		errorBody,
+		// The headers come through `limitHeaders`; of an error body only its code and a named reset go on.
+		observe(status, headers, text) {
+			const at = now();
+			if (status >= 200 && status < 300 && state.lastOk !== undefined && at - state.lastOk < SEEN_OK_MS) return;
+			if (status >= 200 && status < 300) state.lastOk = at;
+			else state.lastOk = undefined;
+			seen({ status, headers, ...(typeof text === "string" && limitFacts(text, [...state.used])) });
+		},
 	};
 }
 
@@ -91,7 +101,7 @@ function main(input = process.stdin, output = process.stdout, rest = "") {
 		const upstream = target
 			? { hostname: target.hostname, port: Number(target.port || (target.protocol === "http:" ? 80 : 443)) }
 			: undefined;
-		const provider = planProvider(state, { upstream, take });
+		const provider = planProvider(state, { upstream, take, seen: fields => say({ seen: fields }) });
 		let relay = null;
 		const server = net.createServer(socket => {
 			if (!relay) return socket.destroy();

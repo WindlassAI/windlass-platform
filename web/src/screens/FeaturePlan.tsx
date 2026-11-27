@@ -67,6 +67,7 @@ import {
 	type Catalogs,
 } from "../lib/subtask-agents";
 import { subtaskFloor, sumBudgets } from "../lib/feature";
+import { figureWords, moneyFields, partBudget, spendWords } from "../lib/budget";
 import type { PlanActing, PlanReview } from "./usePlanReview";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack } from "../components/ItemRow";
@@ -457,16 +458,18 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const [opened, setOpened] = useState(false);
 	if (!plan || !pool) return null;
 	const singleSpend =
-		view.mode === "single" || plan.subtasks.length === 0 ? (
-			<>
-				<p className="plan-single">Runs as one item after this plan</p>
-				<ItemSpend
-					spent={view.spent}
-					budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent)}
-					fields={[{ key: "tokens", label: "Tokens", spelled: compact }]}
-				/>
-			</>
-		) : null;
+		view.mode === "single" || plan.subtasks.length === 0
+			? (() => {
+					const budget =
+						view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent);
+					return (
+						<>
+							<p className="plan-single">Runs as one item after this plan</p>
+							<ItemSpend spent={view.spent} budget={budget} fields={moneyFields(budget, view.spent)} />
+						</>
+					);
+				})()
+			: null;
 	if (plan.status === "superseded") {
 		return (
 			<section
@@ -711,7 +714,7 @@ function PlanBody({
 						))}
 					</ol>
 
-					<PlanTotal view={view} pool={pool} single={single.tokens} total={review.allotted.tokens} />
+					<PlanTotal view={view} pool={pool} single={single} total={review.allotted.tokens} />
 				</div>
 			) : null}
 		</>
@@ -726,10 +729,16 @@ function PlanTotal({
 }: {
 	view: ItemView;
 	pool: SubtaskBudget;
-	single: number;
+	single: ItemBudget;
 	total: number;
 }) {
 	const share = Math.min(100, (total / Math.max(1, pool.tokens)) * 100);
+	// The parts' tokens in the units they are held to: an item's dollars and plan share, in proportion.
+	const ratio = total / Math.max(1, single.tokens);
+	const expected = [
+		single.usd !== undefined ? figureWords("usd", Math.round(single.usd * ratio * 100) / 100) : null,
+		single.planPct !== undefined ? figureWords("planPct", Math.round(single.planPct * ratio * 10) / 10) : null,
+	].filter((words): words is string => words !== null);
 	const spent = view.children?.length
 		? {
 				...sumBudgets(view.children.map(child => child.spent)),
@@ -753,8 +762,14 @@ function PlanTotal({
 					{spent && <dd className="tone-dim">Spent by subtasks: {compact(spent.tokens)}</dd>}
 				</div>
 			</dl>
+			{expected.length > 0 ? (
+				<p className="usage-note plan-total-note">
+					The parts together are expected to use {expected.join(" or ")}: dollars where an API key pays, the share where
+					a plan pays.
+				</p>
+			) : null}
 			<p className="usage-note plan-total-note">
-				{compact(pool.tokens)} tokens total, up to {compact(single)} per subtask.
+				{compact(pool.tokens)} tokens total, up to {compact(single.tokens)} per subtask.
 			</p>
 			<details className="usage-note">
 				<summary>Details</summary>
@@ -845,7 +860,7 @@ function SubtaskRow({
 	draft: string | undefined;
 	invalid: boolean;
 	floor: SubtaskBudget;
-	single: Pick<ItemBudget, "tokens">;
+	single: ItemBudget;
 	disabled: boolean;
 	onChange(text: string): void;
 }) {
@@ -908,19 +923,15 @@ function SubtaskRow({
 						</div>
 					</div>
 				) : (
-					<p className="plan-budget-read">
-						{child?.agent?.tokens === "subscription" ? (
+					<p className="plan-budget-read" title={`Planned as ${compact(task.budget.tokens)} tokens`}>
+						{child?.agent?.tokens === "subscription" && child.spent.planPct === undefined ? (
 							<span>
 								{subscriptionSpend(child.spent)} <span className="tone-faint">not counted: your subscription</span>
 							</span>
 						) : (
 							<span>
-								{child ? (
-									<>
-										{compact(child.spent.tokens)} <span className="tone-faint">of</span>{" "}
-									</>
-								) : null}
-								{compact(task.budget.tokens)} <span className="tone-faint">tokens</span>
+								{spendWords(child?.budget ?? partBudget(single, task.budget.tokens), child?.spent ?? null)}
+								{child ? null : <span className="tone-faint"> expected</span>}
 							</span>
 						)}
 					</p>

@@ -505,6 +505,7 @@ export function createRivetClient(
 			recheckModelPlan: provider => act("recheckModelPlan", provider),
 			payWith: () => act("payWith"),
 			savePayWith: input => act("savePayWith", input),
+			useKeyNow: itemId => act("useKeyNow", itemId),
 			githubStarterIssues: repositoryId => act("githubStarterIssues", repositoryId),
 			accountSecrets: profile => act("accountSecrets", { profile }),
 			saveAccountSecret: (profile, secret) => act("saveAccountSecret", { profile, ...secret }),

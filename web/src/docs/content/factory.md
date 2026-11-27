@@ -149,7 +149,7 @@ What changes with Claude Code or OpenCode:
 - **Step limit.** A builder turn may make 400 tool calls (40 for a reviewer). When the agent starts one more, the platform records the limit on the timeline and the item can continue in a new turn within its budget.
 - **Review.** The second reviewer runs in its own sandbox on the builder’s machine with the same agent, model and profile. Its setup receives the same setup-scope secrets as the builder’s setup. Its commands have the same network access as the builder’s commands.
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
-- **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. Its turns are bounded only by the factory's backstop on an item's turns. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
+- **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. Where it reports the window, its turns count against the item's plan share (see **When the budget is used**); otherwise they are bounded only by the factory's backstop on an item's turns. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
 From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issue filings use the saved work-item placement and agent. The planner always runs Windlass.
 
@@ -307,15 +307,23 @@ The choices depend on the item. Only the item that owns the pull request can han
 
 ### When the budget is used
 
-An item's budget is one token figure, 2,000,000 by default, and on this platform 2 hours of hosted sandbox time. Tokens count cost-weighted: an input token read from the prompt cache counts as a tenth, as providers bill it, so an agent that rereads a long context is not counted as if it read it afresh. The item's page shows both the weighted tokens and the tokens as the agent reported them.
+An item's budget is in the units of what pays for its turns, and on this platform 2 hours of hosted sandbox time:
 
-When the budget is used, the item pauses and asks, for example "This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are."
+- **An API key pays**: dollars, $5 by default, priced as **What an item cost** prices them, when each turn ends.
+- **A plan pays** (your Claude or ChatGPT plan, or a machine's Claude Code subscription): a share of the plan's 5-hour window, 20% by default. A turn's share is how far the plan's use rose while it ran, as the plan reported it. Turns running at the same time on the same plan each see the whole rise, so a share is an upper bound. The weekly window's share is shown beside it.
+- **Neither can be measured** (a model the price catalog does not list, an agent that reports no window): tokens, 2,000,000 by default, counted cost-weighted (an input token read from the prompt cache counts as a tenth). Tokens are otherwise shown only under **How this is counted**.
 
-- **Give it 2M more tokens** goes on in the same session and sandbox, with the work as it is. The amount is what the item started with. **Another amount…** sets a figure of your own.
+Before a turn has said what pays, the page shows both the dollars and the plan share the item may use.
+
+When the budget is used, the item pauses and asks, for example "Used $4.20 of its $4 budget. Give it more to continue." or "Used its 5% of your 5-hour window. Give it more to continue."
+
+- **Give it $1 more** (a quarter of the dollar budget, at least $1) or **Give it 5% more** (the plan share again) goes on in the same session and sandbox, with the work as it is. Where tokens hold, **Give it 2M more tokens** gives what the item started with. **Another amount…** sets a figure of your own.
 - **Hand it over as it is** pushes what the sandbox holds, when nothing of the run is pushed yet, and hands it over once CI has been read.
 - **Give up** ends the item.
 
-A subtask asks the same way, without **Hand it over as it is**. What you give it adds to its feature's budget.
+A subtask asks the same way, without **Hand it over as it is**. A subtask's dollars and plan share are an item's in proportion to the tokens its plan gives it; the plan card shows each part's expected share, and the parts' together. What you give a subtask in tokens adds to its feature's budget.
+
+The budget is checked between turns: a single long turn can still go past it before the item asks. A feature's page shows one cost figure, the same under **Cost so far** and in the **Subtasks** box.
 
 **When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item waits and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
 

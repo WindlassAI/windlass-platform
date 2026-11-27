@@ -8,7 +8,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { HarnessId } from "../contract.js";
+import type { HarnessId, RelaySeen } from "../contract.js";
+import { relaySeenOf } from "../credentials/plan-health.js";
 import { type KeyWire, wires } from "../../../sandbox/relay/wires.cjs";
 import type { KeyTurnRelay, SandboxProcess, StartOptions, TakeRelayRequest } from "./provider.js";
 
@@ -50,6 +51,8 @@ export interface LocalPlanRelayOptions {
 	harness: HarnessId;
 	signal?: AbortSignal;
 	takeRequest?: TakeRelayRequest;
+	/** What the provider said of the plan's health, as the relay saw it (credentials/plan-health.ts). */
+	onSeen?: (seen: RelaySeen) => void;
 }
 
 export interface PlanRelayOptions extends LocalPlanRelayOptions {
@@ -113,6 +116,10 @@ export async function startPlanRelay(
 		if (Number.isSafeInteger(fields.listening)) ready(fields.listening as number);
 		else if (Number.isSafeInteger(fields.take)) void answerCount(fields.take as number);
 		else if (fields.handed === true) handed.shift()?.resolve();
+		else if (fields.seen !== undefined) {
+			const seen = relaySeenOf(fields.seen);
+			if (seen) options.onSeen?.(seen);
+		}
 	};
 	proc = start(PLAN_RELAY_ARGV, {
 		gitUser: true,

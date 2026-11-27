@@ -18,7 +18,7 @@ import { validArgs } from "../server/src/runner/protocol.js";
 import { carriesSecret } from "../server/src/runner/channel.js";
 import type { ForwardedKeyLease } from "../server/src/sandbox/provider.js";
 import { createRequire } from "node:module";
-import { MODEL_PROVIDERS } from "../server/src/contract.js";
+import { MODEL_PROVIDERS, type CredentialRef, type RelaySeen } from "../server/src/contract.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { modelProviderActions } from "../server/src/credentials/keys.js";
 import { CREDENTIAL_TABLES, credentialActions } from "../server/src/credentials/index.js";
@@ -1755,13 +1755,28 @@ async function planWireCheck() {
 	const origin = "https://relay.example.com";
 	const e2b = await relayGuest(uid, sessionId);
 	e2b.ask = async () => ({ code: 0, stdout: "Windlass 0.7.1", stderr: "" });
-	const up = upstream(() => Response.json({ type: "message" }));
+	// The plan's health (credentials/plan-health.ts): what the provider said of each answer goes to the user's actor.
+	let limited = false;
+	const reset = String(Math.floor(Date.now() / 1000) + 3600);
+	const up = upstream(() =>
+		limited
+			? Response.json(
+					{ type: "error", error: { type: "rate_limit_error", message: "limited" } },
+					{
+						status: 429,
+						headers: { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": reset },
+					},
+				)
+			: Response.json({ type: "message" }, { headers: { "anthropic-ratelimit-unified-5h-utilization": "0.3" } }),
+	);
+	const reports: Array<{ uid: string; ref: CredentialRef; seen: RelaySeen }> = [];
 	const d = deps(up.fetch, {
 		credential: async (user, saved, nonce) => {
 			assert.equal(user, uid);
 			assert.deepEqual(saved, { provider: "anthropic", plan: true });
 			return sealCredentialTransit(user, saved, nonce, { secret: token, generation: current });
 		},
+		observe: async (user, saved, seen) => void reports.push({ uid: user, ref: saved, seen }),
 	});
 	const send = (placeholder: string, path: string, headers: Record<string, string> = {}, method = "POST") =>
 		modelRelayResponse(
@@ -1832,6 +1847,19 @@ async function planWireCheck() {
 		assert.equal(seen.headers.get("anthropic-version"), "2023-06-01");
 		assert.equal(seen.headers.get("anthropic-beta"), "oauth-2025-04-20,claude-code-20250219");
 	}
+	assert.equal(reports.length, 1, "successes are told at most every 15 seconds");
+	assert.deepEqual(reports[0]!.ref, ref);
+	assert.equal(reports[0]!.seen.status, 200);
+	assert.equal(reports[0]!.seen.headers["anthropic-ratelimit-unified-5h-utilization"], "0.3");
+	limited = true;
+	const refused = await send(claude.placeholder, "/v1/messages?beta=true", betas);
+	assert.equal(refused.status, 429);
+	await refused.text();
+	limited = false;
+	assert.equal(reports.at(-1)!.seen.status, 429);
+	assert.equal(reports.at(-1)!.seen.headers["anthropic-ratelimit-unified-reset"], reset);
+	assert.equal(reports.at(-1)!.seen.code, "rate_limit_error");
+	console.log("ok    claude-plan answers tell the plan's health: a success, then a limit with its reset");
 	const models = await send(claude.placeholder, "/v1/models", {}, "GET");
 	assert.equal(models.status, 200);
 	await models.text();

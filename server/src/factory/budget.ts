@@ -13,15 +13,27 @@
  *   machine    the user's own computer: bounded only by what its runner reports it can run (its slots), which
  *              nothing here can raise; the runner queues turns past them
  *
- * An item's own budget is one cost-weighted token figure (and, hosted, its sandbox time). When it is used
- * up the item asks its person for more; it never throws away work.
+ * An item's own budget is in the units of what pays for its turns: dollars where an API key pays, percentage
+ * points of the plan's 5-hour window where a plan pays, and a cost-weighted token figure only where neither can be
+ * measured (and, hosted, its sandbox time). When it is used up the item asks its person for more; it never throws
+ * away work.
  *
  * The numbers are `FACTORY_DEFAULTS`, the defaults of the WLP_FACTORY_* settings config.ts reads. The day's
  * allowance and the kept sandboxes are usage.ts's own settings.
  */
 
 import { MINUTE, providerWait } from "../provider-usage.js";
-import type { HarnessId, ItemAgent, ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
+import type {
+	CostRates,
+	HarnessId,
+	ItemAgent,
+	ProviderAccount,
+	SandboxPlace,
+	TurnUsage,
+	UsageNumbers,
+	UsageWindow,
+} from "../contract.js";
+import { addTurn, itemCost, noUsage, PAID_BY_TOKEN, type TurnMeter } from "./cost.js";
 import { itemTokensOf, machineHarness, type SignInMethod } from "../sandbox/harnesses.js";
 import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
 import type {
@@ -40,7 +52,7 @@ export const FACTORY_DEFAULTS: FactoryLimits = {
 	githubItemsPerDay: 20,
 	attachments: { bytes: 2 * 1024 * 1024, perItem: 40, accountBytes: 1_073_741_824, days: 180 },
 	hostedRunning: 3,
-	item: { tokens: 2_000_000, hostedSeconds: 2 * 3600 },
+	item: { tokens: 2_000_000, hostedSeconds: 2 * 3600, usd: 5, planPct: 20 },
 };
 
 /**
@@ -201,14 +213,43 @@ export function spellTokens(tokens: number): string {
 	return String(Math.round(tokens));
 }
 
+/** "$1.23", "$4". */
+export function spellUsd(amount: number): string {
+	const cents = Math.round(amount * 100);
+	return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`;
+}
+
+/** "5%", "2.5%". */
+export function spellPct(points: number): string {
+	return `${Number(points.toFixed(points < 10 ? 1 : 0))}%`;
+}
+
 const BUDGET_WORDS: Record<keyof ItemBudget, (spent: ItemSpend, budget: number) => string> = {
 	tokens: (_spent, budget) => `Used its ${spellTokens(budget)}-token budget.`,
 	hostedSeconds: (spent, budget) =>
 		`This item's hosted sandbox has run for ${spellSeconds(spent.hostedSeconds)} of its ${spellSeconds(budget)}.`,
+	usd: (spent, budget) => `Used ${spellUsd(spent.usd ?? 0)} of its ${spellUsd(budget)} budget.`,
+	planPct: (_spent, budget) => `Used its ${spellPct(budget)} of your 5-hour window.`,
 };
 
-/** The figures of a budget: tokens everywhere, hosted sandbox time only where the sandbox is hosted. */
-export const BUDGET_FIGURES = ["tokens", "hostedSeconds"] as const satisfies ReadonlyArray<keyof ItemBudget>;
+/** The figures of a budget, in the order a stop names them. */
+export const BUDGET_FIGURES = ["usd", "planPct", "tokens", "hostedSeconds"] as const satisfies ReadonlyArray<
+	keyof ItemBudget
+>;
+
+/**
+ * Which figures hold an item now, by what paid for its turns: dollars once a key-paid turn was priced, the plan's
+ * 5-hour share once a plan-paid turn saw its window, tokens where neither did (or a key turn could not be priced).
+ * An item without a dollar or plan budget (filed before they were kept, a feature's own allowance) holds to tokens.
+ */
+export function budgetUnits(
+	budget: Pick<ItemBudget, "usd" | "planPct">,
+	spent: Pick<ItemSpend, "usd" | "planPct" | "usdUnknown">,
+): Record<keyof ItemBudget, boolean> {
+	const usd = budget.usd !== undefined && spent.usd !== undefined;
+	const planPct = budget.planPct !== undefined && spent.planPct !== undefined;
+	return { usd, planPct, tokens: (!usd && !planPct) || !!spent.usdUnknown, hostedSeconds: true };
+}
 
 /**
  * The first of an item's budgets it has used up, with the sentence a person reads; null while every
@@ -219,11 +260,79 @@ export function budgetStop(
 	spent: ItemSpend,
 	place: SandboxPlace,
 ): { cause: StopCause & keyof ItemBudget; sentence: string } | null {
+	const units = budgetUnits(budget, spent);
 	for (const cause of BUDGET_FIGURES) {
-		if (cause === "hostedSeconds" && place.kind !== "hosted") continue;
-		if (spent[cause] >= budget[cause]) return { cause, sentence: BUDGET_WORDS[cause](spent, budget[cause]) };
+		if (!units[cause] || (cause === "hostedSeconds" && place.kind !== "hosted")) continue;
+		const cap = budget[cause];
+		if (cap !== undefined && (spent[cause] ?? 0) >= cap) return { cause, sentence: BUDGET_WORDS[cause](spent, cap) };
 	}
 	return null;
+}
+
+/**
+ * What a part of a feature is given in dollars and plan share: the item's, in the proportion of its planned tokens to
+ * an item's (the planner budgets in tokens only). None where the item's budget has none.
+ */
+export function partShare(single: ItemBudget, tokens: number): Pick<ItemBudget, "usd" | "planPct"> {
+	const ratio = single.tokens > 0 ? Math.min(1, tokens / single.tokens) : 1;
+	return {
+		...(single.usd !== undefined && { usd: Math.max(0.01, Math.round(single.usd * ratio * 100) / 100) }),
+		...(single.planPct !== undefined && { planPct: Math.max(0.1, Math.round(single.planPct * ratio * 10) / 10) }),
+	};
+}
+
+/**
+ * A key-paid turn's model dollars at `models`' prices: null where they could not be priced (no catalog, an
+ * unknown model, a turn that reported nothing), undefined where no key paid.
+ */
+export function turnUsd(meter: TurnMeter | undefined, models: CostRates["models"]): number | null | undefined {
+	if (!meter || !PAID_BY_TOKEN.has(meter.payer)) return undefined;
+	const usage = noUsage();
+	addTurn(usage, meter);
+	const cost = itemCost(usage, { models, source: null, sandbox: null });
+	return cost.models.unknown ? null : cost.models.usd;
+}
+
+/**
+ * The percentage points of a plan's window of `kind` used between two snapshots: the rise in its % used, or, where
+ * the window was renewed meanwhile (a later reset), what the new window used. Null where either side did not see it.
+ * Concurrent turns on the same plan each see the whole plan move: a share is an upper bound.
+ */
+export function windowShare(
+	start: readonly UsageWindow[] | null | undefined,
+	end: readonly UsageWindow[] | null | undefined,
+	kind: "5h" | "7d",
+): number | null {
+	const before = start?.find(w => w.kind === kind && w.usedPct !== null);
+	const after = end?.find(w => w.kind === kind && w.usedPct !== null);
+	if (!before || !after) return null;
+	const renewed = before.resetsAt !== null && after.resetsAt !== null && after.resetsAt > before.resetsAt + 60_000;
+	return Math.max(0, renewed ? after.usedPct! : after.usedPct! - before.usedPct!);
+}
+
+/**
+ * What an item has left of the figure that holds it, for a turn about to start: the seam for stopping a turn at its
+ * budget while it runs (#100a, `overBudgetNow`). Undefined where nothing measurable holds it.
+ */
+export function budgetLeft(
+	budget: ItemBudget,
+	spent: ItemSpend,
+): { figure: "usd" | "planPct" | "tokens"; left: number } | undefined {
+	const units = budgetUnits(budget, spent);
+	for (const figure of ["usd", "planPct", "tokens"] as const) {
+		const cap = budget[figure];
+		if (units[figure] && cap !== undefined) return { figure, left: Math.max(0, cap - (spent[figure] ?? 0)) };
+	}
+	return undefined;
+}
+
+/**
+ * During a turn: whether what it used so far (`running`, in the figure's unit) takes the item past `threshold` of
+ * what it had left when the turn started (`left`). The session that sees the running spend asks this and, on true,
+ * stops the turn as a person's Stop would; the item then asks its budget question.
+ */
+export function overBudgetNow(left: number | undefined, running: number, threshold = 1): boolean {
+	return left !== undefined && left >= 0 && running >= left * threshold;
 }
 
 // ---------------------------------------------------------------------------------------------

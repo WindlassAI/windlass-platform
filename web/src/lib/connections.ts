@@ -7,6 +7,7 @@
 import {
 	type HarnessId,
 	type MachineSummary,
+	type ModelPlanStatus,
 	type ModelPlans,
 	type ModelProvider,
 	type ModelProviderStatus,
@@ -21,6 +22,7 @@ import {
 	WINDLASS_KEY_PROVIDERS,
 } from "../../../server/src/sandbox/harnesses.js";
 import type { ReportedHarness } from "./acp";
+import { clockTime } from "./format";
 import { SOURCE_NAMES } from "./models";
 
 /** What the page reads once and every cell is decided from. */
@@ -41,7 +43,7 @@ export type CellState = "plan" | "key" | "machine" | "bad" | "none" | "absent" |
 
 /** Where a cell's one action leads: a plan's connect command, a key's entry, or the Machines page. */
 export type CellAction =
-	| { kind: "plan"; provider: PlanProvider }
+	| { kind: "plan"; provider: PlanProvider; reconnect?: true }
 	| { kind: "key"; provider: ModelProvider }
 	| { kind: "machines" };
 
@@ -52,6 +54,34 @@ export interface ConnectionCell {
 	label: string;
 	detail: string | null;
 	action: CellAction | null;
+	/** What the relays last saw of the plan that pays here, where it is not simply usable (`planBadge`). */
+	badge?: CellBadge;
+}
+
+/** A plan's health in a few words: at its limit (until when), or refused twice and to be connected again. */
+export interface CellBadge {
+	tone: "warn" | "bad";
+	text: string;
+}
+
+/** The badge a plan's cell shows: none while it is usable, or once a limit's time has passed. */
+export function planBadge(plan: ModelPlanStatus | undefined, now: number): CellBadge | null {
+	if (!plan) return null;
+	if (plan.health === "invalid") return { tone: "bad", text: "Stopped working" };
+	if (plan.health !== "limited" || plan.limitedUntil === null || plan.limitedUntil <= now) return null;
+	const at = clockTime(plan.limitedUntil, now);
+	return { tone: "warn", text: plan.resetKnown ? `Limited until ${at}` : `Limited · trying again at ${at}` };
+}
+
+/** A plan cell's badge and, for a plan that stopped working, its reconnect. */
+function withHealth(cell: ConnectionCell, plan: ModelPlanStatus | undefined, now: number): ConnectionCell {
+	const badge = planBadge(plan, now);
+	if (!badge || !plan) return cell;
+	return {
+		...cell,
+		badge,
+		...(plan.health === "invalid" && { action: { kind: "plan", provider: plan.provider, reconnect: true } }),
+	};
 }
 
 /** A place in the grid: Hosted, or a paired machine by its id. */
@@ -91,7 +121,7 @@ export function connectAction(harness: HarnessId, inputs: ConnectionInputs): Cel
 const keyNames = (providers: readonly ModelProvider[]) => providers.map(provider => SOURCE_NAMES[provider]).join(", ");
 
 /** An agent on Hosted: the plan or key `hostedPayer` would pick for its default model, or what to connect. */
-export function hostedCell(harness: HarnessId, inputs: ConnectionInputs): ConnectionCell {
+export function hostedCell(harness: HarnessId, inputs: ConnectionInputs, now = Date.now()): ConnectionCell {
 	const id = cellId(harness, "hosted");
 	const ownKeys = (harness === "windlass" ? WINDLASS_KEY_PROVIDERS : keyProviders(harness)).filter(provider =>
 		inputs.keys.some(key => key.provider === provider),
@@ -99,13 +129,17 @@ export function hostedCell(harness: HarnessId, inputs: ConnectionInputs): Connec
 	const okKeys = inputs.keys.filter(key => key.ok && ownKeys.includes(key.provider));
 	if (harness === "windlass") {
 		if (inputs.chatgpt)
-			return {
-				id,
-				state: "plan",
-				label: PLAN_NAMES.openai,
-				detail: okKeys.length ? `Keys too: ${keyNames(okKeys.map(key => key.provider))}` : null,
-				action: null,
-			};
+			return withHealth(
+				{
+					id,
+					state: "plan",
+					label: PLAN_NAMES.openai,
+					detail: okKeys.length ? `Keys too: ${keyNames(okKeys.map(key => key.provider))}` : null,
+					action: null,
+				},
+				inputs.plans.plans.find(one => one.provider === "openai"),
+				now,
+			);
 		if (okKeys.length)
 			return { id, state: "key", label: "Your keys", detail: keyNames(okKeys.map(key => key.provider)), action: null };
 	} else {
@@ -113,13 +147,17 @@ export function hostedCell(harness: HarnessId, inputs: ConnectionInputs): Connec
 		if (payer?.plan) {
 			const plan = inputs.plans.plans.find(one => one.provider === payer.provider);
 			const backup = okKeys[0];
-			return {
-				id,
-				state: "plan",
-				label: PLAN_NAMES[payer.provider as PlanProvider],
-				detail: backup ? `Key …${backup.last4} as backup` : (plan?.account ?? null),
-				action: null,
-			};
+			return withHealth(
+				{
+					id,
+					state: "plan",
+					label: PLAN_NAMES[payer.provider as PlanProvider],
+					detail: backup ? `Key …${backup.last4} as backup` : (plan?.account ?? null),
+					action: null,
+				},
+				plan,
+				now,
+			);
 		}
 		if (payer) {
 			const key = okKeys.find(one => one.provider === payer.provider);

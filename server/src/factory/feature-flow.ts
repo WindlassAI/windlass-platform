@@ -23,7 +23,7 @@ import {
 	repoOf,
 	type Flow,
 } from "./cross-repo.js";
-import { noSpend } from "./budget.js";
+import { noSpend, partShare } from "./budget.js";
 import type { CiProgress, Fact, FeatureJob, FactoryItem, ItemBudget } from "./types.js";
 import { untrustedWords } from "./untrusted.js";
 import { harnessName } from "../sandbox/harnesses.js";
@@ -477,6 +477,7 @@ export function nextChild(c: Change) {
 				fix?.conflictFix && hosted
 					? Math.min(perChildSeconds, Math.max(1, Math.floor(free.hostedSeconds)))
 					: perChildSeconds,
+			...partShare(item.singleBudget ?? item.budget, task.budget.tokens),
 		};
 		if (budget.tokens > free.tokens || (hosted && budget.hostedSeconds > free.hostedSeconds)) {
 			short = budget.tokens > free.tokens ? "tokens" : "hostedSeconds";

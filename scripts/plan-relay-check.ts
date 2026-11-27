@@ -206,6 +206,43 @@ test("the token is taken out of streamed answers and error bodies; a 401 stays a
 	assert.equal(JSON.parse(refused.body).error.type, "authentication_error");
 });
 
+test("it tells the platform what the provider said of the plan: limit headers, a 429's code, never the token", async t => {
+	let status = 200;
+	const reports: import("../server/src/contract.js").RelaySeen[] = [];
+	const reset = String(Math.floor(Date.now() / 1000) + 3600);
+	const { claude } = await stack(
+		t,
+		(entry, res) => {
+			const token = entry.headers.authorization!.slice(7);
+			const limits = {
+				"anthropic-ratelimit-unified-status": status === 429 ? "rejected" : "allowed",
+				"anthropic-ratelimit-unified-5h-utilization": status === 429 ? "1" : "0.25",
+				"anthropic-ratelimit-unified-5h-reset": reset,
+				"request-id": "req_123",
+			};
+			res.writeHead(status, { "content-type": "application/json", ...limits });
+			res.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", code: token, message: token } }));
+		},
+		{ onSeen: seen => reports.push(seen) },
+	);
+	assert.equal((await claude()).status, 200);
+	assert.equal((await claude()).status, 200, "a second success soon after is not told again");
+	status = 429;
+	assert.equal((await claude()).status, 429);
+	status = 401;
+	assert.equal((await claude()).status, 401);
+	for (let i = 0; i < 50 && reports.length < 3; i++) await new Promise(r => setTimeout(r, 20));
+	assert.deepEqual(
+		reports.map(r => r.status),
+		[200, 429, 401],
+	);
+	assert.equal(reports[0]!.headers["anthropic-ratelimit-unified-5h-utilization"], "0.25");
+	assert.equal(reports[0]!.headers["request-id"], undefined, "nothing that names a request or account");
+	assert.equal(reports[1]!.headers["anthropic-ratelimit-unified-5h-reset"], reset);
+	assert.equal(reports[1]!.code, "rate_limit_error", "the type where the code would hold the token");
+	assert.ok(!JSON.stringify(reports).includes(TOKEN));
+});
+
 test("a replaced token is the one the next request carries", async t => {
 	const { seen, relay, claude } = await stack(t);
 	await claude();

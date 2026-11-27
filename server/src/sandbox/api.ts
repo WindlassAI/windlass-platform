@@ -357,6 +357,8 @@ export interface RunTurnInput {
 		 * the sandbox (`TurnSandbox.localPlanRelay`). A token that expires (a ChatGPT plan's) comes with its expiry.
 		 */
 		openSecret?: () => Promise<{ secret: string; expiresAt?: number } | null>;
+		/** What a plan's relay inside the sandbox saw the provider say of the plan's health (credentials/plan-health.ts). */
+		onSeen?: (seen: import("../contract.js").RelaySeen) => void;
 	};
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;

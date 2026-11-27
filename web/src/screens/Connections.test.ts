@@ -184,3 +184,30 @@ it("leaves only the model defaults in Settings, with the way to Connections", as
 	expect(moved?.textContent).toContain("moved to Connections");
 	expect(moved?.querySelector('a[href="/connections"]')).not.toBeNull();
 });
+
+it("badges a limited plan with its reset, and offers to reconnect one that stopped working", async () => {
+	localStorage.setItem("wlp.mock.plan.u_conn", "1");
+	client = createMockClient({ pace: 0, machine: "none", plans: "limited" });
+	render("/connections");
+	await settle();
+	const limited = cell("codex-hosted")?.querySelector(".conn-badge");
+	expect(limited?.textContent).toMatch(/^Limited until \d\d:\d\d$/);
+	expect(limited?.className).toContain("conn-state-warn");
+	expect(cell("windlass-hosted")?.querySelector(".conn-badge")?.textContent).toMatch(/^Limited until/);
+	// The intro no longer says Pay with waits for a release.
+	expect(host.querySelector("#connections-pay")?.textContent).not.toContain("upcoming release");
+
+	act(() => root.unmount());
+	client.dispose();
+	client = createMockClient({ pace: 0, machine: "none", plans: "invalid" });
+	render("/connections");
+	await settle();
+	expect(cell("codex-hosted")?.querySelector(".conn-badge")?.textContent).toBe("Stopped working");
+	const reconnect = [...(cell("codex-hosted")?.querySelectorAll("button") ?? [])].find(
+		b => b.textContent === "Reconnect",
+	);
+	expect(reconnect).toBeDefined();
+	await act(async () => reconnect!.click());
+	await settle();
+	expect(document.querySelector("dialog")?.textContent).toContain("ChatGPT plan");
+});
