@@ -1,5 +1,6 @@
 /** The user and agentSession actors' actions, events and snapshot shapes. */
 
+import type { SlackSettingsActions } from "./slack.js";
 import type {
 	ChatgptStatus,
 	CreateSessionInput,
@@ -73,7 +74,7 @@ import type {
 import type { LiveDelta, NetworkBlockedItem, TimelineItem } from "./timeline.js";
 import type { BillingPeriod, BillingView, UsageNumbers, UsageView } from "./usage.js";
 
-export interface UserActions {
+export interface UserActions extends SlackSettingsActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;

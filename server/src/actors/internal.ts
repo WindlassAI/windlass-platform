@@ -195,6 +195,9 @@ export interface UserInternal {
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	/** Service call: true when posted (including a replay), false for a permanent decline. Throw to retry. */
 	internalJiraWrite(input: JiraItemWrite): Promise<boolean>;
+	internalSlackIntake(
+		filing: import("../factory/intake.js").SlackFiling,
+	): Promise<import("../factory/intake.js").TrackerFiled>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: {

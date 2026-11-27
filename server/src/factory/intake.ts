@@ -10,6 +10,7 @@ import {
 	type CreateItemInput,
 	type GithubId,
 } from "../contract.js";
+import type { SlackDelivery } from "../slack/webhook.js";
 import { commentText } from "./review.js";
 
 const plain = (s: string) =>
@@ -123,13 +124,15 @@ export const refusals = {
 	other: "Windlass couldn't start this issue because this issue already has a work item of another Windlass user.",
 };
 
+const quickToken = /^quick(?:\s|$)/i;
+
 export function issueMode(
 	note: string,
 	labels: unknown[],
 	enabled = true,
 	quickLabels: readonly string[] = ["windlass:quick"],
 ) {
-	const quick = /^quick(?:\s|$)/i.test(note) || quickLabels.some(label => labels.includes(label));
+	const quick = quickToken.test(note) || quickLabels.some(label => labels.includes(label));
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");
 	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
 	if (bug || quick || !enabled)
@@ -182,6 +185,36 @@ export interface LinearBinding {
 	modeReason?: string | null;
 }
 
+export interface SlackFiling {
+	delivery: SlackDelivery;
+	repository: { id: GithubId };
+	generation: string;
+}
+
+export interface SlackBinding {
+	teamId: string;
+	channelId: string;
+	threadTs: string | null;
+	generation: string;
+}
+
+export function taskOfSlack(raw: string) {
+	const text = plain(raw).replace(/\r\n?|[\u2028\u2029]/g, "\n");
+	const description = text.replace(quickToken, "").trim();
+	if (!description) return null;
+	const { task } = taskOfText({
+		title: description.split("\n")[0],
+		fallbackTitle: "Slack request",
+		body: description,
+		from: "Filed from a Slack message.",
+		by: "a Slack member",
+		tracker: "Slack",
+		trusted: false,
+		note: "",
+	});
+	return { quick: quickToken.test(text), task };
+}
+
 /** How GitLab filed an item from an issue. */
 export interface GitlabBinding {
 	project: import("../contract.js").SessionRepository;
@@ -197,10 +230,11 @@ export interface JiraBinding extends Omit<LinearBinding, "origin" | "teamId" | "
 }
 /** How an item was filed from an issue: one of the intakes. The item's source is the tracker's name. */
 export type Intake =
-	| { github: IssueBinding; linear?: undefined; gitlab?: undefined; jira?: undefined }
-	| { linear: LinearBinding; github?: undefined; gitlab?: undefined; jira?: undefined }
-	| { gitlab: GitlabBinding; github?: undefined; linear?: undefined; jira?: undefined }
-	| { jira: JiraBinding; github?: undefined; linear?: undefined; gitlab?: undefined };
+	| { github: IssueBinding; linear?: undefined; gitlab?: undefined; jira?: undefined; slack?: undefined }
+	| { linear: LinearBinding; github?: undefined; gitlab?: undefined; jira?: undefined; slack?: undefined }
+	| { gitlab: GitlabBinding; github?: undefined; linear?: undefined; jira?: undefined; slack?: undefined }
+	| { jira: JiraBinding; github?: undefined; linear?: undefined; gitlab?: undefined; slack?: undefined }
+	| { slack: SlackBinding; github?: undefined; linear?: undefined; gitlab?: undefined; jira?: undefined };
 
 /** Verified Linear trigger, issue snapshot and repository mapping. */
 export interface LinearFiling {
@@ -231,7 +265,7 @@ export interface LinearFiling {
 	trigger: { via: "label" | "assignment"; at: number; sender: { id: string; name: string }; lapsed?: true };
 }
 
-/** Outcome of filing a verified tracker issue. */
+/** Outcome of filing a verified tracker issue or Slack request. */
 export type TrackerFiled =
 	| { kind: "filed"; itemId: string; state: ItemState }
 	| { kind: "exists"; itemId: string }

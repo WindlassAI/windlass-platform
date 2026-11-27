@@ -10,10 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserApi } from "../api/client";
 import { createMockClient, type MockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
+import { href, parseRoute } from "../lib/router";
+import { filterItems } from "./Factory";
 import { AppProvider } from "../state/app";
 import { Item, useItem } from "./Item";
 import { RepositoryPane, useRepository } from "./Repository";
 import { useItems } from "../state/items";
+import { ItemRow } from "../components/ItemRow";
 import { NO_FILTERS } from "../lib/workspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -251,5 +254,37 @@ describe.each([
 		expect(link.getAttribute("href")).toBe(url);
 		expect(link.getAttribute("aria-label")).toBe(`Issue ${key} on ${tracker}`);
 		expect(link.closest("li")?.textContent).toContain("from an outside author");
+	});
+});
+
+describe("an item filed from Slack", () => {
+	it("names Slack in the header without attributing the task to an issue author", async () => {
+		await render(
+			itemPage(() => fromIssue(false)),
+			view => ({ ...view, source: "slack", origin: null }),
+		);
+		expect(host.querySelector(".item-meta")?.textContent).toContain("from Slack");
+		expect(host.querySelector(".item-origin")).toBeNull();
+		expect(host.querySelector(".item-snapshot")).toBeNull();
+		expect(buttons(host.querySelector(".item-actions") as HTMLElement, "Start")).toHaveLength(1);
+	});
+
+	it("filters Slack rows from the Factory address and names the source without an issue link", async () => {
+		const url = new URL(href({ name: "factory", from: "slack" }), location.origin);
+		const route = parseRoute(url.pathname, url.search);
+		expect(route).toEqual({ name: "factory", from: "slack" });
+		if (route.name !== "factory") throw new Error("Expected the Factory route");
+		await render(() => {
+			const slack: ItemSummary = { ...fromIssue(false), source: "slack", origin: null };
+			const matches = filterItems([fromIssue(true), slack], route);
+			return createElement(
+				"ul",
+				null,
+				matches.map(item => createElement(ItemRow, { key: item.id, item, now: Date.now() })),
+			);
+		});
+		expect(host.querySelectorAll(".item-row")).toHaveLength(1);
+		expect(host.querySelector(".agent-meta")?.textContent).toContain("from Slack");
+		expect(host.querySelector(".agent-meta a[aria-label^='Issue']")).toBeNull();
 	});
 });

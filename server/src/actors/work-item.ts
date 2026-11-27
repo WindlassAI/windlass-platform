@@ -3,6 +3,8 @@
 // Creation requires the user actor’s grant for this item.
 
 import { randomUUID } from "node:crypto";
+import { performSlackWrite, slackEffects, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import type { SlackBinding } from "../factory/intake.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, mergeKindAllowed, type TaskKind } from "../factory/readiness-track.js";
 import { environmentFailure } from "../factory/check-environment.js";
@@ -189,6 +191,8 @@ export interface ItemMeta {
 	/** The Linear issue it was filed from: the destination for its progress updates. */
 	linear?: LinearBinding;
 	jira?: JiraBinding;
+	/** Only a generation captured at admission authorizes posting; never resolve a new mapping on retry. */
+	slack?: SlackBinding;
 	criticSessionId?: string;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
@@ -282,6 +286,7 @@ type JiraEffect = { kind: "jira_comment" } & JiraCommentAction;
 type Effect =
 	| { kind: "review_comment"; key: string; pr: number; parts?: { id: string; label: string }[] }
 	| JiraEffect
+	| SlackEffect
 	| { kind: "poll_branch"; key: string; at: number; repo?: string }
 	| ({ kind: "linear_write" } & LinearWrite)
 	| BlueprintEffect
@@ -813,6 +818,7 @@ function filingNote(meta: ItemMeta) {
 	if (meta.github) return filedFromIssue(meta.github.origin);
 	if (meta.linear) return filedFromLinear(meta.linear.origin);
 	if (meta.jira) return filedFromJira(meta.jira.origin);
+	if (meta.slack) return "Filed from Slack.";
 	return `Filed from ${meta.source === "api" ? "the API" : "the web app"}.`;
 }
 
@@ -978,6 +984,7 @@ async function take(
 		if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled"))
 			effects.push({ kind: "jira_comment", key: next.state, itemUrl: url, pr });
 	}
+	if (stored.meta.slack) effects.push(...slackEffects(before, next));
 	const sibling =
 		fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0]
 			? fact.repo
@@ -1111,7 +1118,7 @@ async function take(
 						if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
 							await prepareCompletedCheck(tx, next, effect, handoff);
 						await tx.execute(
-							`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" || effect.kind === "jira_comment" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`,
+							`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" || effect.kind === "jira_comment" || effect.kind === "slack_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`,
 							rowId(effect),
 							JSON.stringify(effect),
 							"at" in effect && effect.at !== undefined ? effect.at : 0,
@@ -1334,6 +1341,10 @@ async function loadOnWake(c: Pick<Ctx, "db" | "client">) {
 	return stored;
 }
 
+// Only the oldest Slack write competes for the timer. A rate-limited acknowledgement
+// holds later replies in commit order, without holding up any non-Slack effect.
+const RUNNABLE_EFFECT = `(id NOT GLOB 'slack_write:*' OR rowid = (SELECT MIN(rowid) FROM effects WHERE id GLOB 'slack_write:*'))`;
+
 /**
  * Performs every effect that is due and not being performed, in the order they were stored, then sets
  * the schedule for the next one. An effect is removed once performed; one that failed is tried again
@@ -1344,7 +1355,7 @@ async function performDue(c: Ctx): Promise<void> {
 		const now = Date.now();
 		const rows = (
 			await c.db.execute<EffectRow>(
-				"SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY rowid",
+				`SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? AND ${RUNNABLE_EFFECT} ORDER BY rowid`,
 				now,
 			)
 		).filter(row => !c.vars.performing.has(row.id));
@@ -1379,8 +1390,10 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 			msg: "an effect of the item could not be performed; it is tried again",
 			effect: row.id,
 			inSeconds: wait / 1000,
-			error: row.id.startsWith("jira_comment:")
-				? "jira_comment_retry"
+			error: row.id.startsWith("slack_write:")
+				? "slack_write_retry"
+				: row.id.startsWith("jira_comment:")
+					? "jira_comment_retry"
 				: row.id.startsWith("linear_write:")
 					? "linear_write_retry"
 					: describeError(error),
@@ -1410,7 +1423,9 @@ async function armDueInQueue(c: Ctx): Promise<void> {
 	// An effect being performed now counts as due EFFECT_RETRY_FIRST_MS from now, not at its own time: armed "now" for it, the
 	// schedule would fire again and again while a slow push goes on; left out, a server that stops under the push would
 	// leave nothing to wake the item.
-	const rows = await c.db.execute<{ id: string; due_at: number }>("SELECT id, due_at FROM effects");
+	const rows = await c.db.execute<{ id: string; due_at: number }>(
+		`SELECT id, due_at FROM effects WHERE ${RUNNABLE_EFFECT}`,
+	);
 	const now = Date.now();
 	const times = rows.map(row => (c.vars.performing.has(row.id) ? now + EFFECT_RETRY_FIRST_MS : row.due_at));
 	const at = times.length === 0 ? null : Math.min(...times);
@@ -2440,7 +2455,8 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 		effect.kind === "review_comment" ||
 		effect.kind === "issue_comment" ||
 		effect.kind === "linear_write" ||
-		effect.kind === "jira_comment"
+		effect.kind === "jira_comment" ||
+		effect.kind === "slack_write"
 	)
 		return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
@@ -3288,6 +3304,14 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
+	if (effect.kind === "slack_write") {
+		const binding = meta.slack!;
+		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
+		await performSlackWrite(c.db, binding, item.id, effect, (message, thread) =>
+			workspace.internalPost(binding.channelId, binding.generation, message, thread),
+		);
+		return true;
+	}
 	if (effect.kind === "jira_comment" || effect.kind === "linear_write") {
 		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", row.id)).length) return true;
 		const owner = userActor(c, meta.uid);
@@ -4379,6 +4403,7 @@ export const workItem = actor({
 			);
 			await db.execute(FEATURE_CI_CACHE);
 			await db.execute(CHECKS_TABLE);
+			await db.execute(SLACK_RECEIPTS);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
 			await db.execute(FEEDBACK_TABLE);
@@ -4460,6 +4485,7 @@ export const workItem = actor({
 				await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
 				effects.push({ kind: "jira_comment", key: "filed", itemUrl: itemUrl(item.id) });
 			}
+			if (input.meta.slack) effects.push(...slackEffects(null, item));
 			await c.db.transaction(
 				async tx => {
 					if (input.meta.github) {

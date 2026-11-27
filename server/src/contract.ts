@@ -4,7 +4,8 @@
  * contract/github.ts (GitHub, GitLab, Linear, publishing), repository.ts (setup, checks, environments, network, secrets),
  * account.ts (settings, model providers, API tokens), machines.ts, items.ts (work items), reviews.ts,
  * timeline.ts (Windlass/ACP events, timeline), questions.ts (questions, MCP servers), actors.ts (actor
- * actions/events, snapshot), limits.ts (endpoints, paths, size limits), usage.ts, hosted-sizes.ts, isolation.ts.
+ * actions/events, snapshot), limits.ts (endpoints, paths, size limits), slack.ts (Slack settings), usage.ts,
+ * hosted-sizes.ts, isolation.ts.
  */
 
 import type { GithubId, PullRequestInfo, SessionRepository } from "./contract/github.js";
@@ -48,6 +49,7 @@ export * from "./contract/timeline.js";
 export * from "./contract/questions.js";
 export * from "./contract/actors.js";
 export * from "./contract/limits.js";
+export * from "./contract/slack.js";
 
 // Sandboxes
 

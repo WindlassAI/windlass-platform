@@ -153,6 +153,9 @@ import {
 	type LinearConnection,
 	type LinearStatus,
 	type GitlabStatus,
+	type SlackSettingsActions,
+	type SlackStatus,
+	type SlackMapping,
 	type LinearTeamList,
 } from "@contract";
 import {
@@ -223,6 +226,7 @@ export interface MockOptions {
 	linear?: boolean;
 	/** False plays a deployment with Jira disabled. */
 	jira?: boolean;
+	slack?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
 	sandbox?: "docker" | "e2b";
 	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
@@ -492,6 +496,8 @@ export interface MockClient extends PlatformClient {
 	mockNextAnswer(kind: "elsewhere" | "error"): void;
 	/** Makes the next call about GitHub of that kind fail (`__wlpMock.mockNextGithub("protected")`, then push). */
 	mockNextGithub(kind: MockGithubFailure): void;
+	/** A single-use proof like the one Slack sends privately to a member. */
+	mockSlackLinkTicket(): string;
 	/**
 	 * Makes the next call about a project's MCP servers fail, for looking at the panel's errors by hand:
 	 * "list" the reading of the list, "approve" and "forget" the action (`__wlpMock.mockNextServers("forget")`,
@@ -1486,6 +1492,96 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		mappings: Record<string, JiraMapping>;
 	}
 	const jiraMemory = new Map<string, string>();
+
+	// ---- Slack ----------------------------------------------------------------------------------
+
+	const slackWorkspace = { id: "T08ACME01", name: "Acme Engineering" };
+	const slackChannels = [
+		{ id: "C08HARB01", name: "harbor-engineering" },
+		{ id: "C08DOCS01", name: "docs-triage" },
+	];
+	const slackMember = { teamId: slackWorkspace.id, workspaceName: slackWorkspace.name };
+	const slackKey = (key: string) => "wlp.mock.slack." + key;
+	function slackTicket(key: string) {
+		const ticket = crypto.randomUUID();
+		keep(slackKey(key), ticket);
+		return ticket;
+	}
+	function claimSlack(key: string, ticket: string) {
+		if (!ticket || recall(slackKey(key)) !== ticket) throw new Error("This Slack link is invalid or expired.");
+		keep(slackKey(key), "");
+	}
+	function slackActions(world: () => World): SlackSettingsActions {
+		const uid = () => world().profile.uid;
+		const mappings = (): SlackMapping[] => JSON.parse(recall(slackKey("mappings")) || "[]");
+		const status = (): SlackStatus => {
+			if (options.slack === false) return { state: "off" };
+			const links = recall(slackKey("member")) === uid() ? [slackMember] : [];
+			return recall(slackKey("owner")) === uid()
+				? { state: "connected", workspaceName: slackWorkspace.name, mappings: mappings(), links }
+				: { state: "disconnected", links };
+		};
+		const owner = () => {
+			if (status().state !== "connected") throw new Error("Connect a Slack workspace first.");
+		};
+		return {
+			async slack() {
+				return status();
+			},
+			async slackConnect({ origin }) {
+				return { url: `${origin}/settings${location.search}#slack=${slackTicket(uid())}` };
+			},
+			async slackComplete(ticket) {
+				claimSlack(uid(), ticket);
+				if (recall(slackKey("owner")) && recall(slackKey("owner")) !== uid())
+					throw new Error("This workspace already has an owner.");
+				keep(slackKey("owner"), uid());
+				return status();
+			},
+			async slackChannels() {
+				owner();
+				return slackChannels;
+			},
+			async saveSlackMapping({ channelId, repositoryId }) {
+				owner();
+				requireGithub(world());
+				const channel = slackChannels.find(ch => ch.id === channelId);
+				const repository = GITHUB_REPOSITORIES.find(repo => repo.id === repositoryId);
+				if (!channel || !repository?.canPush) throw new Error("Choose a channel and a repository with write access.");
+				const { id, owner: login, name } = repository;
+				keep(
+					slackKey("mappings"),
+					JSON.stringify([
+						...mappings().filter(m => m.channel.id !== channelId),
+						{ channel, repository: { id, owner: login, name } },
+					]),
+				);
+				return status();
+			},
+			async removeSlackMapping(id) {
+				owner();
+				keep(slackKey("mappings"), JSON.stringify(mappings().filter(m => m.channel.id !== id)));
+				return status();
+			},
+			async disconnectSlack() {
+				owner();
+				for (const key of ["owner", "member", "member-ticket", "mappings", uid()]) keep(slackKey(key), "");
+				return status();
+			},
+			async linkSlack(ticket) {
+				claimSlack("member-ticket", ticket);
+				if (recall(slackKey("member")) && recall(slackKey("member")) !== uid())
+					throw new Error("This Slack account is already linked.");
+				keep(slackKey("member"), uid());
+				return status();
+			},
+			async unlinkSlack(team) {
+				if (team === slackMember.teamId && recall(slackKey("member")) === uid()) keep(slackKey("member"), "");
+				return status();
+			},
+		};
+	}
+
 	function connectionFor(profile: UserProfile): GithubConnection {
 		const login = profile.email?.split("@")[0] || "ada";
 		return {
@@ -5826,6 +5922,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				storeJira(null, ".ticket");
 				return { state: "disconnected" };
 			},
+			...slackActions(world),
 			async linear(): Promise<LinearStatus> {
 				await latency(200);
 				if (options.linear === false) return { state: "off" };
@@ -7189,6 +7286,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		mockNextAnswer(kind) {
 			nextAnswer = kind;
 		},
+		mockSlackLinkTicket: () => slackTicket("member-ticket"),
 		mockNextGithub(kind) {
 			nextGithub = kind;
 		},

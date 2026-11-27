@@ -1,4 +1,4 @@
-import { originIssue } from "../lib/origin";
+import { filingSource, originIssue } from "../lib/origin";
 import {
 	MAX_NOTE_CHARS,
 	type ChoiceId,
@@ -1568,18 +1568,7 @@ export function Item({ page }: { page: ItemPage }) {
 						</a>{" "}
 						→ {view.task.base}
 					</span>
-					{view.origin ? (
-						<IssueOrigin origin={view.origin} />
-					) : (
-						<span>
-							from{" "}
-							{
-								{ api: "the API", github: "GitHub", gitlab: "GitLab", linear: "Linear", jira: "Jira", web: "the web" }[
-									view.source
-								]
-							}
-						</span>
-					)}
+					{view.origin ? <IssueOrigin origin={view.origin} /> : <span>from {filingSource[view.source]}</span>}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>
 						filed {relativeTime(view.createdAt, now)}
 					</time>

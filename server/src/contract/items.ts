@@ -391,7 +391,7 @@ export interface ItemAgent {
 }
 
 /** How a work item was filed. The tracker sources file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear" | "jira";
+export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear" | "jira" | "slack";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {

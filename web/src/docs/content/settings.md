@@ -53,6 +53,12 @@ Where Linear is available, connect your workspace and map each team to a GitHub 
 
 Connect Jira, approve access in Atlassian, then choose a site. Under **Jira Cloud**, map a project to a writable GitHub repository. Remove a mapping or choose **Disconnect Jira** to stop filing. Existing items stay. See [From a Jira issue](/docs/factory#from-a-jira-issue).
 
+### Slack
+
+Choose **Connect Slack…**, approve the workspace, and invite Windlass to a public or private channel. In Settings, choose **#channel** and a repository you can push to, then **Map channel**. Disconnecting removes the bot token, member links and mappings. Existing items stay. See [From Slack](/docs/factory#from-slack).
+
+For deployment operators, set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET`. Under `WLP_PUBLIC_URL`, register `/slack/callback` for OAuth, `/slack/events` for the `app_mention` bot event, and `/slack/commands` for the `/windlass` command. The bot scopes are `app_mentions:read`, `commands`, `chat:write`, `channels:read` and `groups:read`.
+
 ### API tokens
 
 Where the platform offers work items, you can make up to 20 API tokens for scripts that file and read your work items. To file an item, send `POST /api/items` with the header `Authorization: Bearer <token>`. See [From the API](/docs/factory#from-the-api).
@@ -73,7 +79,7 @@ A **hosted minute** is one minute of a Medium sandbox on the platform (2 vCPU, 4
 | Hosted at once | 1 | 5 |
 | Sandbox sizes | Small, Medium | Small, Medium, Large |
 | Features over two repositories | No | Yes |
-| Items filed from GitHub, Linear and Jira together | 20 a day | 100 a day |
+| Items filed from GitHub, Linear, Jira and Slack together | 20 a day | 100 a day |
 | Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
 
 - **Reset dates.** Free resets at 00:00 UTC on the first of the month. Pro starts when your subscription starts. Monthly Pro resets at the end of your billing period. Yearly Pro resets on each monthly anniversary, on the last day of a shorter month. Settings shows your next reset.
@@ -261,4 +267,4 @@ These are the deployment defaults without plans or account overrides. Your runne
 
 A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. In a hosted sandbox an unanswered approval ends the turn after 5 minutes instead, and the sandbox pauses until you send a prompt. A work item never asks this way: its questions end the turn and wait for days if need be.
 
-Work items have their own budgets and one shared limit on items filed from GitHub, Linear and Jira. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
+Work items have their own budgets and one shared limit on items filed from GitHub, Linear, Jira and Slack. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

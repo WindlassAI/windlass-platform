@@ -64,13 +64,14 @@ import {
 	fileGitlabIssue,
 	type GitlabTrigger,
 	fileTrackerIssue,
+	fileSlackRequest,
 	inIntakeQueue,
 	INTAKE_SOURCES,
 	intakeScope,
 	linearSources,
 	type SiteJiraFiling,
 } from "./issue-intake.js";
-import type { Intake, IntakeTrigger, TrackerFiled, LinearFiling } from "../factory/intake.js";
+import type { Intake, IntakeTrigger, TrackerFiled, LinearFiling, SlackFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
@@ -847,7 +848,7 @@ async function makeItem(
 	},
 ): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
-	const { github, linear, gitlab, jira } = intake ?? {};
+	const { github, linear, gitlab, jira, slack } = intake ?? {};
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (intake && input.repositories)
 		throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -967,6 +968,7 @@ async function makeItem(
 			github,
 			...(linear && { linear }),
 			...(jira && { jira }),
+			...(slack && { slack }),
 			createdAt: now,
 			activityAt: now,
 			verdict: null,
@@ -1016,6 +1018,7 @@ async function makeItem(
 				: [],
 			linear ? linearSources(linear.origin) : [],
 			jira ? [untrustedWords.jira(jira.origin.jira.identifier, jira.origin.jira.author)] : [],
+			slack ? [untrustedWords.slack] : [],
 		);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
@@ -1086,15 +1089,17 @@ async function fileItem(
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
 		// Retrying a tracker reservation finishes the same generation even after the issue text changes.
-		const identity = intake?.gitlab
-			? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
-			: intake?.linear
-				? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
-				: intake?.jira
-					? { jira: intake.jira.origin.jira.id, siteId: intake.jira.siteId, generation: intake.jira.generation }
-					: intake
-						? { asked, github: intake.github }
-						: asked;
+		const identity = intake?.slack
+			? { slack: idempotencyKey }
+			: intake?.gitlab
+				? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
+				: intake?.linear
+					? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+					: intake?.jira
+						? { jira: intake.jira.origin.jira.id, siteId: intake.jira.siteId, generation: intake.jira.generation }
+						: intake
+							? { asked, github: intake.github }
+							: asked;
 		const submission = submissionOf(idempotencyKey, identity);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
@@ -2038,6 +2043,14 @@ export const itemActions = {
 		return inIntakeQueue(c, () =>
 			fileTrackerIssue(c, filing, githubItemId, (profile, input, intake) =>
 				fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake),
+			),
+		);
+	},
+	internalSlackIntake(c: ItemsCtx, filing: SlackFiling, makeSession: MakeSession) {
+		requireServiceFor(c, "call");
+		return inIntakeQueue(c, () =>
+			fileSlackRequest(c, filing, (profile, made) =>
+				fileItem(c, profile, made.input, "slack", makeSession, { slack: made.binding }),
 			),
 		);
 	},

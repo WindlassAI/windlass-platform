@@ -1,5 +1,9 @@
-/** The owner queue, reservations and daily cap shared by issue intakes. */
+/**
+ * GitHub, GitLab, Linear, Jira and Slack share one user queue, daily cap and reservation table.
+ * Each intake keeps its permission checks, delivery identity and item binding separate.
+ */
 
+import { createHash } from "node:crypto";
 import { gitlabApp } from "../gitlab/connect.js";
 import { GitlabError, record, text } from "../gitlab/app.js";
 import { gitlabCodeHost } from "../gitlab/host.js";
@@ -18,25 +22,28 @@ import {
 	refusals,
 	taskOfText,
 	taskOfTracker,
+	taskOfSlack,
 	type GitlabBinding,
 	type Intake,
 	type JiraFiling,
+	type SlackFiling,
+	type SlackBinding,
 	type LinearFiling,
 	type TrackerFiled,
 } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
-import { GithubProblem, resolveRepository } from "../github/repos.js";
+import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { QUICK_LABELS } from "../linear/webhook.js";
 import { accountLimits } from "../user-limits.js";
 import { gitlabAccess, isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
 /** The sources of an item filed from an issue: the ones that share the queue, the cap and the reservations. */
-export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "gitlab", "linear", "jira"]);
+export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "gitlab", "linear", "jira", "slack"]);
 
-/** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for all trackers (their keys differ in form). */
+/** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for external intake (their keys differ in form). */
 export const intakeScope = (key: string) => "intake:" + key;
 
 const queues = new WeakMap<ItemsState, Promise<unknown>>();
@@ -63,7 +70,7 @@ export async function existingItem(c: Pick<ItemsCtx, "client">, uid: string, id:
 }
 
 /**
- * The one cap on items filed from an issue: how many a day, all trackers together, drafts among them. A flood of
+ * The one cap on items filed from an issue: how many a day, all external intakes together, drafts among them. A flood of
  * labelled issues stops here. A filing interrupted after its key was reserved counts as filed (`github_item_keys` rows the
  * index does not have yet), and `resuming` is the id of one that is being finished, which the cap does not refuse again.
  */
@@ -338,4 +345,42 @@ export async function fileGitlabIssue(
 		)
 		.catch(() => undefined);
 	return item.id;
+}
+
+/** A signed request is one filing forever, even after the item ends. Called in the linked user's intake queue. */
+export async function fileSlackRequest(
+	c: ItemsCtx,
+	f: SlackFiling,
+	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: SlackBinding }) => Promise<ItemSummary>,
+): Promise<TrackerFiled> {
+	const { profile, github: connection } = c.vars;
+	if (!profile || !mayUse(profile, config.access))
+		return { kind: "refused", reason: "This account cannot file work items here." };
+	if (!config.items) return { kind: "refused", reason: refusals.off };
+	const d = f.delivery;
+	const parsed = taskOfSlack(d.text);
+	if (!parsed) return { kind: "refused", reason: "Include a description of the work to file." };
+	const app = githubApp();
+	if (!app || !connection) return { kind: "refused", reason: "Connect GitHub in Windlass Settings to file here." };
+	let repository;
+	try {
+		const { installation } = await resolveRepository(app, connection, f.repository.id, "read");
+		// Discovery may be cached. Verify current access to the mapped repository before starting work.
+		repository = (await resolveBoundRepository(app, connection, f.repository.id, installation.id, "write")).repository;
+	} catch (error) {
+		const failure = problemOf(error, connection.user.login);
+		if (failure.code === "github_failed" || failure.code === "github_unreachable") throw failure;
+		return { kind: "refused", reason: "Your GitHub account needs write access to the mapped repository." };
+	}
+	const key = "slack:" + createHash("sha256").update(`${d.teamId}:${d.deliveryId}`).digest("hex");
+	const held = c.vars.items.created.get(intakeScope(key));
+	if (held && c.vars.items.items.has(held.id)) return { kind: "exists", itemId: held.id };
+	const resumed = held && (await existingItem(c, profile.uid, held.id));
+	const cap = !resumed && (await quotaRefusal(c, held?.id, "Slack"));
+	if (cap) return { kind: "refused", reason: cap, dailyCap: true };
+	const mode = issueMode(parsed.quick ? "quick" : "", [], process.env.WLP_FACTORY_ORCHESTRATE !== "0");
+	const input = intakeInput(parsed.task, mode.mode, { id: repository.id, branch: repository.defaultBranch }, true, key);
+	const binding = { teamId: d.teamId, channelId: d.channelId, threadTs: d.threadTs, generation: f.generation };
+	const item = await file(profile, { input, binding });
+	return { kind: "filed", itemId: item.id, state: item.state };
 }

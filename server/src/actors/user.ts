@@ -127,6 +127,7 @@ import {
 import * as jira from "./user-jira.js";
 import type { JiraItemWrite } from "./internal.js";
 import type { JiraDelivery } from "../jira/webhook.js";
+import { SLACK_TABLES, slackSettingsActions } from "./user-slack.js";
 import {
 	LINEAR_TABLES,
 	type LinearItemWrite,
@@ -1874,6 +1875,7 @@ export const user = actor({
 				)
 			`);
 			for (const table of jira.JIRA_TABLES) await db.execute(table);
+			for (const table of SLACK_TABLES) await db.execute(table);
 			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
 			await db.execute(GITHUB_SYNC_TABLE);
@@ -2333,6 +2335,9 @@ export const user = actor({
 				itemActions.internalTrackerIntake(c, filing, itemSession(c)),
 			);
 		},
+		...slackSettingsActions,
+		internalSlackIntake: (c, filing: import("../factory/intake.js").SlackFiling) =>
+			itemActions.internalSlackIntake(c, filing, itemSession(c)),
 
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);

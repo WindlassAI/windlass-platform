@@ -242,6 +242,11 @@
  *   WLP_LINEAR_API_URL         Linear's API (default https://api.linear.app); the checks point it at a stand-in
  *   WLP_LINEAR_URL             Linear itself, where the owner authorizes (default https://linear.app)
  *
+ * Slack (read by `slackConfig` only on the server). All three credentials are required:
+ *   WLP_SLACK_CLIENT_ID, WLP_SLACK_CLIENT_SECRET   workspace bot OAuth v2 client
+ *   WLP_SLACK_SIGNING_SECRET   key for the exact event/command request bytes
+ *   WLP_SLACK_URL              Slack origin (the checks point it at a local stand-in)
+ *
  * Machines of the users' own (Plans/2026-11-19 "bring your own computer"). A user pairs a Linux
  * machine with Docker, and the runner on it dials out to the platform and runs the sandboxes of the
  * sessions launched there. The same on every server.
@@ -780,6 +785,25 @@ export function jiraConfig(env: NodeJS.ProcessEnv = process.env) {
 		},
 		missing: [],
 	};
+}
+
+export function slackConfig() {
+	const {
+		WLP_SLACK_CLIENT_ID: clientId,
+		WLP_SLACK_CLIENT_SECRET: clientSecret,
+		WLP_SLACK_SIGNING_SECRET: signingSecret,
+	} = process.env;
+	if (!clientId || !clientSecret || !signingSecret) return null;
+	const url = URL.parse(process.env.WLP_SLACK_URL || "https://slack.com");
+	if (
+		!url ||
+		url.username ||
+		url.password ||
+		!(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname)))
+	)
+		throw new Error("WLP_SLACK_URL needs HTTPS or loopback HTTP.");
+	const publicUrl = process.env.WLP_PUBLIC_URL || `http://localhost:${config.httpPort}`;
+	return { clientId, url: url.origin, redirectUrl: `${publicUrl.replace(/\/+$/, "")}/slack/callback` };
 }
 
 /** A day: the longest a Rivet Cloud cluster issues a token for. */

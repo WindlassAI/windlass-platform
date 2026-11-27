@@ -1,4 +1,14 @@
-import type { ItemOrigin } from "@contract";
+import type { ItemOrigin, ItemSource } from "@contract";
+
+export const filingSource: Record<ItemSource, string> = {
+	web: "the web",
+	api: "the API",
+	github: "GitHub",
+	gitlab: "GitLab",
+	linear: "Linear",
+	jira: "Jira",
+	slack: "Slack",
+};
 
 /** The issue an item was filed from, whichever tracker it is on: what a link and a note about its author need. */
 export interface OriginIssue {
