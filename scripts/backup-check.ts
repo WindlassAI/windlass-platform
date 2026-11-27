@@ -11,6 +11,20 @@
  *                                                                 of the sandbox image, with a real
  *                                                                 Windlass, through that bucket
  *
+ *   cd server && npx tsx ../scripts/backup-check.ts --agents-docker[=claude,codex,opencode]
+ *                                                                 and Claude Code's, Codex's and OpenCode's
+ *                                                                 copies in real containers of their local
+ *                                                                 harness images, one at a time
+ *
+ * `--agents-docker` needs no bucket and no sign-in. For each agent, in its newest local harness image
+ * (ghcr.io/windlassai/windlass-platform-<agent>, or WLP_CHECK_<AGENT>_IMAGE): a real ACP turn in a
+ * container with no network (`session/new`, then a prompt to a model URL nothing answers, which the
+ * agent records before it gives up), the real pack script, a second container where `session/resume`
+ * of that id must first fail, the real restore script there (the transfer is a stand-in curl handing
+ * over the archive the first packed: the bucket's part is `--docker`'s), and then `session/resume` of
+ * the same id, which must succeed. The containers carry the label dev.windlass-platform=1 and are
+ * removed at the end.
+ *
  * `--bucket` needs the bucket's settings in the environment: the server's own (WLP_BUCKET_ENDPOINT,
  * WLP_BUCKET_NAME, WLP_BUCKET_ACCESS_KEY_ID, WLP_BUCKET_SECRET_ACCESS_KEY; config.ts), or, when those
  * are not set, R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY. Everything it writes
@@ -58,6 +72,7 @@ import { Report } from "./check-report.js";
 
 const withBucket = process.argv.includes("--bucket");
 const withDocker = process.argv.includes("--docker");
+const withAgentsDocker = process.argv.some(arg => arg === "--agents-docker" || arg.startsWith("--agents-docker="));
 const run = randomId(4);
 const tally = new Report({ print: say });
 const { expect } = tally;
@@ -1339,6 +1354,296 @@ async function agentCopies(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Real containers of each agent's harness image: a real turn, a copy, a new container, a resume
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Drives one ACP agent over stdio inside a container: argv[2] the command, argv[3] a JSON list of
+ * [method, params, timeoutMs?] sent in order, each waiting for its answer. "$SESSION" in params is the id
+ * the last `session/new` answered. Prints one JSON line per answer, `{method, result: {sessionId}}` or
+ * `{method, error}`. The agent's own requests are refused; a timeout is an answer too, and the next step
+ * is sent anyway.
+ */
+const ACP_DRIVE = `
+import { spawn } from "node:child_process";
+const [command, steps] = [process.argv[2], JSON.parse(process.argv[3])];
+const child = spawn(command, [], { stdio: ["pipe", "pipe", "ignore"] });
+let buffer = "";
+const waiting = new Map();
+child.stdout.on("data", chunk => {
+	buffer += chunk;
+	for (let at = buffer.indexOf("\\n"); at >= 0; at = buffer.indexOf("\\n")) {
+		const line = buffer.slice(0, at);
+		buffer = buffer.slice(at + 1);
+		let msg;
+		try { msg = JSON.parse(line); } catch { continue; }
+		if (msg.method && msg.id !== undefined) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "no" } }) + "\\n");
+		else if (msg.id !== undefined && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+	}
+});
+let session = "";
+let id = 0;
+for (const [method, raw, timeoutMs] of steps) {
+	const params = JSON.parse(JSON.stringify(raw).replaceAll("$SESSION", session));
+	const n = ++id;
+	const answer = await new Promise(resolve => {
+		waiting.set(n, resolve);
+		setTimeout(() => resolve({ error: { code: "timeout" } }), timeoutMs ?? 60000);
+		child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\\n");
+	});
+	if (method === "session/new" && answer.result?.sessionId) session = answer.result.sessionId;
+	console.log(JSON.stringify({ method, ...(answer.error ? { error: { code: answer.error.code } } : { result: { sessionId: answer.result?.sessionId } }) }));
+}
+child.kill("SIGINT");
+setTimeout(() => { child.kill("SIGKILL"); process.exit(0); }, 3000);
+`;
+
+/**
+ * A model URL that lists one model and fails every other request, for an agent that lists the provider's
+ * models before it makes a session (codex-acp's `providers/set`). Not port 9: Node's fetch refuses it.
+ */
+const MODEL_STUB_PORT = 17999;
+const MODEL_STUB = `require("http").createServer((q, r) => { if (q.method === "GET" && /\\/models$/.test(q.url.split("?")[0])) { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ object: "list", data: [{ id: "gpt-5.1-codex", object: "model", created: 0, owned_by: "openai" }] })); } else { r.statusCode = 500; r.end("{}"); } }).listen(${MODEL_STUB_PORT}, "127.0.0.1");`;
+
+/** What a turn of each agent is given in a container with no network: a model URL nothing answers, and a placeholder key. */
+const PLACEHOLDER = `wlp-check-placeholder-${randomBytes(6).toString("hex")}`;
+const AGENT_TURNS: Record<
+	"claude" | "codex" | "opencode",
+	{
+		command: string;
+		env: Record<string, string>;
+		setup?: [string, unknown];
+		clientCapabilities?: Record<string, unknown>;
+		modelList?: boolean;
+	}
+> = {
+	claude: {
+		command: "wlp-claude-acp",
+		env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: PLACEHOLDER },
+	},
+	codex: {
+		clientCapabilities: { auth: { _meta: { gateway: true } } },
+		command: "wlp-codex-acp",
+		env: { WLP_CODEX_BASE_URL: `http://127.0.0.1:${MODEL_STUB_PORT}/v1`, WLP_SESSION_BEARER: PLACEHOLDER },
+		modelList: true,
+		setup: [
+			"providers/set",
+			{ providerId: "openai", apiType: "openai", baseUrl: "http://127.0.0.1:17892/codex/v1", headers: {} },
+		],
+	},
+	opencode: {
+		command: "wlp-opencode-acp",
+		env: {
+			OPENCODE_AUTH_CONTENT: JSON.stringify({ anthropic: { type: "api", key: PLACEHOLDER } }),
+			OPENCODE_CONFIG_CONTENT: JSON.stringify({
+				enabled_providers: ["anthropic"],
+				provider: { anthropic: { options: { baseURL: "http://127.0.0.1:9/v1" } } },
+			}),
+		},
+	},
+};
+
+/** `docker exec` as the container's user (the agent's), as a provider runs a step: stdin given, the last line and the status back. */
+function inContainer(
+	container: string,
+	argv: string[],
+	options: { env?: Record<string, string>; stdin?: string | Buffer; cwd?: string; timeoutMs?: number } = {},
+) {
+	const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
+	const result = spawnSync("docker", ["exec", "-i", "-w", options.cwd ?? "/", ...env, container, ...argv], {
+		input: options.stdin ?? "",
+		maxBuffer: 64 * 1024 * 1024,
+		timeout: options.timeoutMs ?? 240_000,
+	});
+	return { status: result.status, stdout: result.stdout ?? Buffer.alloc(0), stderr: result.stderr?.toString() ?? "" };
+}
+
+/** The newest local image of an agent's harness, or the one `WLP_CHECK_<AGENT>_IMAGE` names. */
+function harnessImage(harness: string): string | null {
+	const named = process.env[`WLP_CHECK_${harness.toUpperCase()}_IMAGE`];
+	if (named) return named;
+	const listed = spawnSync(
+		"docker",
+		["images", "--format", "{{.ID}}", `ghcr.io/windlassai/windlass-platform-${harness}`],
+		{ encoding: "utf8" },
+	);
+	return listed.stdout.trim().split("\n")[0] || null;
+}
+
+async function realAgentSandboxes(): Promise<void> {
+	const only = process.argv
+		.find(arg => arg.startsWith("--agents-docker="))
+		?.split("=")[1]
+		?.split(",");
+	for (const harness of ["claude", "codex", "opencode"] as const) {
+		if (only && !only.includes(harness)) continue;
+		const image = harnessImage(harness);
+		if (image === null) {
+			expect(
+				`${harness}: a local harness image to run`,
+				false,
+				`no ghcr.io/windlassai/windlass-platform-${harness} image`,
+			);
+			continue;
+		}
+		info(`${harness}: image ${image}`);
+		const turn = AGENT_TURNS[harness];
+		const files = sessionFilesOf(harness)!;
+		const names = [`wlp-check-${run}-${harness}-old`, `wlp-check-${run}-${harness}-new`];
+		const start = (name: string) =>
+			spawnSync("docker", [
+				"run",
+				"-d",
+				"--name",
+				name,
+				"--network",
+				"none",
+				"--label",
+				"dev.windlass-platform=1",
+				image,
+				"sleep",
+				"1200",
+			]).status === 0;
+		const drive = (container: string, steps: unknown[]) => {
+			inContainer(container, ["sh", "-c", "cat > /tmp/wlp-acp-drive.mjs"], { stdin: ACP_DRIVE });
+			const answered = inContainer(container, ["node", "/tmp/wlp-acp-drive.mjs", turn.command, JSON.stringify(steps)], {
+				env: turn.env,
+				cwd: "/workspace",
+				timeoutMs: 300_000,
+			});
+			return answered.stdout
+				.toString()
+				.trim()
+				.split("\n")
+				.flatMap(line => {
+					try {
+						return [JSON.parse(line) as { method: string; result?: { sessionId?: string }; error?: { code: unknown } }];
+					} catch {
+						return [];
+					}
+				});
+		};
+		const init: unknown[] = [
+			[
+				"initialize",
+				{
+					protocolVersion: 1,
+					clientCapabilities: {
+						...turn.clientCapabilities,
+						fs: { readTextFile: false, writeTextFile: false },
+						terminal: false,
+					},
+				},
+			],
+			...(turn.setup ? [turn.setup] : []),
+		];
+		try {
+			if (!start(names[0]) || !start(names[1])) throw new Error("the containers could not be started");
+			// The workspace is a repository with one commit, as a cloned one is (OpenCode keys its project by the root commit).
+			for (const name of names)
+				inContainer(name, [
+					"sh",
+					"-c",
+					"cd /workspace && git init -q && git -c user.email=c@example.invalid -c user.name=check commit -q --allow-empty -m init",
+				]);
+
+			if (turn.modelList) {
+				for (const name of names) spawnSync("docker", ["exec", "-d", name, "node", "-e", MODEL_STUB]);
+				await sleep(1000);
+			}
+			// A real turn in the old sandbox: the session is made and the prompt sent; the model URL answers nothing.
+			const made = drive(names[0], [
+				...init,
+				["session/new", { cwd: "/workspace", mcpServers: [] }],
+				["session/prompt", { sessionId: "$SESSION", prompt: [{ type: "text", text: "Say hi." }] }, 45_000],
+			]);
+			const session = made.find(answer => answer.method === "session/new")?.result?.sessionId ?? "";
+			expect(
+				`${harness}: a real turn in the old sandbox makes a session whose id is of the agent's own pattern`,
+				new RegExp(files.id).test(session),
+				`${session || JSON.stringify(made)}`,
+			);
+			if (!new RegExp(files.id).test(session)) continue;
+			const described = sessionFilesEnv({ harness, sessionId: session })!;
+
+			// Packed with the real script, as the server runs it: the step's environment, the container's user, cwd /.
+			const pack = `/tmp/.wlp-backup-${randomId(6)}.tgz`;
+			const packed = inContainer(names[0], ["bash", "-c", packScript(files)], {
+				env: { ...described.env, [BACKUP_ENV.pack]: pack, [BACKUP_ENV.max]: String(backupConfig().maxBytes) },
+			});
+			const answerLine = packed.stdout.toString().trim().split("\n").pop() ?? "";
+			const archive = inContainer(names[0], ["cat", pack]).stdout;
+			const listed = spawnSync("tar", ["-tzf", "-"], { input: archive, encoding: "utf8" })
+				.stdout.trim()
+				.split("\n")
+				.filter(Boolean);
+			const contents = spawnSync("tar", ["-xzOf", "-"], { input: archive }).stdout ?? Buffer.alloc(0);
+			expect(
+				`${harness}: the real pack script copies the session, only names the agent's description holds`,
+				/^packed \d+ [0-9a-f]{64}$/.test(answerLine) &&
+					listed.length > 0 &&
+					listed.every(name => new RegExp(described.env[BACKUP_ENV.held]).test(name)),
+				`${answerLine} ${listed.join(",")}`,
+			);
+			expect(
+				`${harness}: the copy holds neither the turn's key nor anything named for a sign-in`,
+				!contents.includes(PLACEHOLDER) &&
+					!listed.some(name => /credential|auth|\.claude\.json|sqlite|opencode\.db|shell|session-env/.test(name)),
+			);
+			info(`${harness}: ${answerLine.split(" ").slice(0, 2).join(" ")} bytes, ${listed.join(", ")}`);
+
+			// The new sandbox, which has never seen the session: the agent cannot resume it there yet.
+			const resume = ["session/resume", { sessionId: session, cwd: "/workspace", mcpServers: [] }];
+			const before = drive(names[1], [...init, resume]).find(answer => answer.method === "session/resume");
+			expect(
+				`${harness}: a new sandbox without the copy cannot resume the session (the check below means something)`,
+				before?.error !== undefined,
+				JSON.stringify(before),
+			);
+
+			// Restored with the real script. The transfer is a stand-in curl that hands over the archive the old sandbox packed.
+			inContainer(
+				names[1],
+				["sh", "-c", "mkdir -p /tmp/wlp-check-bin && cat > /tmp/wlp-check-archive && cat > /dev/null"],
+				{ stdin: archive },
+			);
+			inContainer(names[1], ["sh", "-c", "cat > /tmp/wlp-check-bin/curl && chmod 755 /tmp/wlp-check-bin/curl"], {
+				stdin: FAKE_CURL,
+			});
+			const path = inContainer(names[1], ["sh", "-c", 'printf %s "$PATH"']).stdout.toString();
+			const restored = inContainer(names[1], ["bash", "-c", restoreScript(files)], {
+				env: {
+					...described.env,
+					PATH: `/tmp/wlp-check-bin:${path}`,
+					WLP_CHECK_ARCHIVE: "/tmp/wlp-check-archive",
+					[BACKUP_ENV.pack]: `/tmp/.wlp-backup-${randomId(6)}.tgz`,
+					[BACKUP_ENV.size]: String(archive.length),
+					[BACKUP_ENV.sha256]: sha256(archive),
+					[BACKUP_ENV.seconds]: "30",
+				},
+				stdin: 'url = "https://example.invalid/x"\n',
+			});
+			const restoredLine = restored.stdout.toString().trim().split("\n").pop() ?? "";
+			expect(
+				`${harness}: the real restore script restores the copy into the new sandbox`,
+				restoredLine === "restored",
+				restoredLine,
+			);
+
+			// What the platform does next (acp-harness.ts): `session/resume` with the same id, in the new sandbox.
+			const after = drive(names[1], [...init, resume]).find(answer => answer.method === "session/resume");
+			expect(
+				`${harness}: after the restore, the agent resumes the same session in the new sandbox`,
+				after?.result !== undefined && after.error === undefined,
+				JSON.stringify(after),
+			);
+		} finally {
+			spawnSync("docker", ["rm", "-f", ...names]);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
 // A real bucket
 // ---------------------------------------------------------------------------------------------
 
@@ -1774,6 +2079,12 @@ async function main(): Promise<number> {
 	await section("the backups, on a scripted sandbox", scripted);
 	await section("the agents' session files, and Windlass's copy as before", sessionFiles);
 	await section("Claude Code's, Codex's and OpenCode's copies, on realistic directories", agentCopies);
+	if (withAgentsDocker)
+		await section(
+			"real containers of Claude Code, Codex and OpenCode: a turn, a copy, a new container, a resume",
+			realAgentSandboxes,
+		);
+	else say("\n== real containers of Claude Code, Codex and OpenCode\n      skipped: run with --agents-docker");
 
 	const settings = withBucket ? bucketSettings() : null;
 	if (withBucket && settings === null) {
