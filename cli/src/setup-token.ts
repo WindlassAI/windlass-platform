@@ -1,12 +1,13 @@
 /**
  * Runs `claude setup-token` for its user and reads the token it prints. It runs under a pseudo-terminal
  * (`script`), so Claude Code draws its usual screens and takes the user's input, while its output is copied to
- * this terminal and kept in memory to read the token from. Nothing is written to disk.
+ * this terminal (without the token: `TokenGate`) and kept in memory to read the token from. Nothing is written to disk.
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
-import { extractToken } from "./token.ts";
+import { StringDecoder } from "node:string_decoder";
+import { extractToken, TokenGate } from "./token.ts";
 
 /** Output kept to read the token from: the newest part of it. */
 const KEEP_BYTES = 2 * 1024 * 1024;
@@ -62,8 +63,10 @@ export function runSetupToken(): Promise<SetupTokenRun> {
 		const child = spawn(pty[0], pty[1], { stdio: ["inherit", "pipe", "inherit"] });
 		let kept: Buffer[] = [];
 		let size = 0;
+		const decoder = new StringDecoder("utf8");
+		const gate = new TokenGate();
 		child.stdout!.on("data", (chunk: Buffer) => {
-			process.stdout.write(chunk);
+			process.stdout.write(gate.write(decoder.write(chunk)));
 			kept.push(chunk);
 			size += chunk.length;
 			while (size > KEEP_BYTES && kept.length > 1) size -= kept.shift()!.length;
@@ -72,7 +75,9 @@ export function runSetupToken(): Promise<SetupTokenRun> {
 		child.once("close", code => {
 			const output = Buffer.concat(kept).toString("utf8");
 			kept = [];
-			resolve({ token: extractToken(output), captured: true, exitCode: code });
+			const token = extractToken(output);
+			process.stdout.write(gate.end(token) + decoder.end());
+			resolve({ token, captured: true, exitCode: code });
 		});
 	});
 }

@@ -99,12 +99,9 @@ test("approve in the browser, then claude setup-token's token connects the plan"
 	);
 	assert.deepEqual(site.seen.at(-1)!.body, { request: REQUEST, token: TOKEN });
 	assert.ok(!run.stderr.includes("sk-ant"));
-	// The CLI's own lines never show the token; Claude Code's screen, copied through, is the only place it appears.
-	const own = run.stdout
-		.split("\n")
-		.filter(line => !line.includes("│"))
-		.join("\n");
-	assert.ok(!own.includes("sk-ant") && !own.includes("WWAA"));
+	// Nothing on screen shows the token: not the CLI's lines, and not Claude Code's screen copied through.
+	for (const piece of TOKEN.match(/.{1,40}/g)!) assert.ok(!run.stdout.includes(piece), "a token piece on screen");
+	assert.ok(!run.stdout.includes("WWAA") && run.stdout.includes("(hidden)"));
 });
 
 test("a denied request runs nothing and connects nothing", async () => {

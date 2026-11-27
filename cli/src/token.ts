@@ -68,3 +68,57 @@ export function extractToken(output: string): string | null {
 export function scrub(text: string): string {
 	return text.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…");
 }
+
+/** The longest end of `text` that could be the start of the token's prefix, held back until the next chunk. */
+function prefixStart(text: string): number {
+	for (let n = Math.min(PREFIX.length - 1, text.length); n > 0; n--) if (PREFIX.startsWith(text.slice(-n))) return n;
+	return 0;
+}
+
+/**
+ * What of Claude Code's output reaches the user's terminal. Its screens pass through as they come, so its prompts
+ * work, until the token starts; from there the output is held. When it exits, `end` gives the held rest as plain
+ * text with the token taken out, every wrapped piece of it too. The token comes last, so nothing interactive waits.
+ */
+export class TokenGate {
+	private held = "";
+	private rest: string[] = [];
+	private stopped = false;
+
+	/** The part of `chunk` to show now. */
+	write(chunk: string): string {
+		if (this.stopped) {
+			this.rest.push(chunk);
+			return "";
+		}
+		const text = this.held + chunk;
+		const at = text.indexOf(PREFIX);
+		if (at !== -1) {
+			this.stopped = true;
+			this.held = "";
+			this.rest.push(text.slice(at));
+			return text.slice(0, at);
+		}
+		const keep = prefixStart(text);
+		this.held = text.slice(text.length - keep);
+		return text.slice(0, text.length - keep);
+	}
+
+	/** What is left to show once the output has ended, with `token` (when one was read) removed. */
+	end(token: string | null): string {
+		if (!this.stopped) return this.held;
+		const shown = plainText(this.rest.join(""))
+			.split("\n")
+			.filter(line => {
+				const bare = line.replace(EDGE, "");
+				return !(token && bare.length >= 8 && !bare.includes(PREFIX) && token.includes(bare));
+			})
+			.join("\n");
+		return (
+			"\x1b[0m" +
+			scrub(shown)
+				.replace(/sk-ant-…/g, "sk-ant-oat01-… (hidden)")
+				.replace(/\n{3,}/g, "\n\n")
+		);
+	}
+}

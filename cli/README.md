@@ -22,4 +22,5 @@ it (hidden). To pass a token you already have: `npx @windlassai/cli connect clau
 - `--token-stdin`: read the setup token from standard input instead of running `claude setup-token`.
 
 Needs Node.js 18 or later. On Linux and macOS, `claude setup-token` runs under `script`, a pseudo-terminal, so
-the token can be read from its output; elsewhere you paste it.
+the token can be read from its output; elsewhere you paste it. Claude Code's screens show as usual, but the
+token itself is never shown: once it starts, the rest of the output is held and printed with the token removed.
