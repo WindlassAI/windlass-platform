@@ -312,22 +312,14 @@ export function recentSubject(at: number, now = Date.now()) {
  * The item's first log line for one filed from a GitHub issue: who wrote the issue, and, apart, who filed it (added
  * the label or wrote the comment), so that the filer is never read as the issue's author.
  */
-export function filedFromIssue(origin: { issue: { number: number; author: string }; sender: string }): string {
-	const { number, author } = origin.issue;
-	return author === origin.sender
-		? `Filed from GitHub issue #${number}, written and filed by @${author}.`
-		: `Filed from GitHub issue #${number}, written by @${author}. Filed by @${origin.sender}.`;
-}
+/** The first log line of an item filed from `what` ("GitHub issue #12"), with its author and sender as the source writes them. */
+export const filedFrom = (what: string, author: string, sender: string) =>
+	author === sender
+		? `Filed from ${what}, written and filed by ${author}.`
+		: `Filed from ${what}, written by ${author}. Filed by ${sender}.`;
 
-function filedFromTracker(tracker: string, issue: { identifier: string; author: string }, sender: string) {
-	const { identifier, author } = issue;
-	return author === sender
-		? `Filed from ${tracker} issue ${identifier}, written and filed by ${author}.`
-		: `Filed from ${tracker} issue ${identifier}, written by ${author}. Filed by ${sender}.`;
-}
-
-export const filedFromLinear = (origin: LinearIssueOrigin) => filedFromTracker("Linear", origin.linear, origin.sender);
-export const filedFromJira = (origin: JiraIssueOrigin) => filedFromTracker("Jira", origin.jira, origin.sender);
+export const filedFromIssue = (origin: { issue: { number: number; author: string }; sender: string }) =>
+	filedFrom(`GitHub issue #${origin.issue.number}`, "@" + origin.issue.author, "@" + origin.sender);
 
 /** Bounded identity component: never contains the reservation key separator. */
 export const trackerId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);

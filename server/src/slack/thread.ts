@@ -60,7 +60,7 @@ export function postFor(itemId: string, page: Page | null, effect: SlackEffect, 
 
 export async function performSlackWrite(
 	db: Pick<RawAccess, "execute">,
-	destination: SlackBinding,
+	destination: Pick<SlackBinding, "threadTs">,
 	itemId: string,
 	effect: SlackEffect,
 	io: SlackIo,

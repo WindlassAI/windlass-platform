@@ -4,6 +4,7 @@ import { SOURCE_IDS, type Connector, type ConnectorCaps, type SourceId } from ".
 
 const codeHostIssue = {
 	noun: "issue",
+	handle: "@",
 	scope: null,
 	connect: "via-code-host",
 	refresh: false,
@@ -58,6 +59,7 @@ export const CONNECTORS: Record<SourceId, Connector> = {
 		caps: {
 			displayName: "Linear",
 			noun: "issue",
+			handle: "",
 			scope: { noun: "team", plural: "teams" },
 			connect: "oauth-pkce",
 			refresh: true,
@@ -90,6 +92,7 @@ export const CONNECTORS: Record<SourceId, Connector> = {
 		caps: {
 			displayName: "Jira",
 			noun: "issue",
+			handle: "",
 			scope: { noun: "project", plural: "projects" },
 			connect: "oauth",
 			refresh: true,
@@ -122,6 +125,7 @@ export const CONNECTORS: Record<SourceId, Connector> = {
 		caps: {
 			displayName: "Slack",
 			noun: "message",
+			handle: "",
 			scope: { noun: "channel", plural: "channels" },
 			connect: "oauth",
 			refresh: false,

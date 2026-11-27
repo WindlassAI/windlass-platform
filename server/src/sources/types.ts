@@ -16,6 +16,8 @@ export interface ConnectorCaps {
 	displayName: string;
 	/** What one filing is: an issue, or a message (which has no issue to re-read). */
 	noun: "issue" | "message";
+	/** How the source writes a person's name before it: "@" for a login (GitHub, GitLab), nothing for a full name. */
+	handle: "@" | "";
 	/** What an owner maps to a repository. Null: the source lives inside the repository (code-host issues). */
 	scope: { noun: "team" | "project" | "channel"; plural: string } | null;
 
@@ -52,6 +54,36 @@ export interface ConnectorCaps {
 
 	/** Someone else's filing as the agent's turn names it (`untrustedWords.source`), and the pattern that recognizes it as third-party text. */
 	untrusted: { words(display: string, author: string): string; pattern: RegExp };
+}
+
+/** One filing in a source: the same shape for every source. */
+export interface SourceRef {
+	source: SourceId;
+	/** The source's account the filing is in: GitHub installation, GitLab project, Linear workspace, Jira site, Slack team. */
+	tenant: string;
+	/** What an owner mapped to the repository: Linear team, Jira project, Slack channel. Null for code-host issues. */
+	scope: string | null;
+	/** The issue's id; Slack: the thread the request was posted in, empty when it was in none. */
+	id: string;
+	/** As the source shows it: "#12", "ENG-12"; empty for a Slack message. */
+	display: string;
+	url: string | null;
+}
+
+/** An item's tie to a source: where it was filed from (`origin`), or later also posts to (`follower`). */
+export interface SourceBinding {
+	ref: SourceRef;
+	role: "origin" | "follower";
+	/** Which filing of the issue it is; a message is filed once. */
+	generation: number | "message";
+	/** Only the mapping captured at admission authorizes posting (Slack's rule). */
+	mappingGeneration: string | null;
+	/** What the page and the first log line show. Empty names where the source keeps none. */
+	origin: { author: string; sender: string; trusted: boolean };
+	trigger: { via: string | null; at: number; senderId: string } | null;
+	modeReason?: string | null;
+	/** Facts only one source has: GitHub's installation id, issue number, content digest, reaction target, trigger label. */
+	extra?: Record<string, string | number>;
 }
 
 /** One work source. Later steps add its adapter: parse, read, render and perform. */

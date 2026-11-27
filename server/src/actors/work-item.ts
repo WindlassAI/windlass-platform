@@ -5,6 +5,8 @@
 import { performSlackWrite, SLACK_QUESTIONS, SLACK_RECEIPTS } from "../slack/thread.js";
 import { sourceEffects, type SourceEffect } from "../sources/effects.js";
 import { itemUpdates } from "../sources/updates.js";
+import { bindingTo, filingNote, issueBindingOf, originBinding, originOf } from "../sources/bindings.js";
+import type { SourceBinding } from "../sources/types.js";
 import { slackMayAnswer } from "../slack/blocks.js";
 import type { SlackBinding } from "../factory/intake.js";
 import { finishedItem, mergeKindAllowed, type TaskKind } from "../factory/readiness-track.js";
@@ -78,15 +80,7 @@ import {
 	type IssueNotice,
 	type ObservedIssue,
 } from "./github-item.js";
-import {
-	filedFromIssue,
-	filedFromJira,
-	filedFromLinear,
-	recentSubject,
-	type IssueBinding,
-	type JiraBinding,
-	type LinearBinding,
-} from "../factory/intake.js";
+import { recentSubject, type IssueBinding, type JiraBinding, type LinearBinding } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
@@ -186,6 +180,8 @@ export interface ItemMeta {
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
+	/** Its bindings to work sources (sources/bindings.ts); items so far keep a field per source instead, read by `bindingsOf`. */
+	bindings?: SourceBinding[];
 	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Only set for a GitHub item. */
 	github?: IssueBinding;
 	/** The Linear issue it was filed from: the destination for its progress updates. */
@@ -350,7 +346,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
-		origin: meta.github?.origin ?? meta.linear?.origin ?? meta.jira?.origin ?? null,
+		origin: originOf(meta),
 		state: item.state,
 		wait: item.wait,
 		question:
@@ -766,11 +762,9 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 	}
 }
 
-function filingNote(meta: ItemMeta) {
-	if (meta.github) return filedFromIssue(meta.github.origin);
-	if (meta.linear) return filedFromLinear(meta.linear.origin);
-	if (meta.jira) return filedFromJira(meta.jira.origin);
-	if (meta.slack) return "Filed from Slack.";
+function filedNote(meta: ItemMeta) {
+	const origin = originBinding(meta);
+	if (origin) return filingNote(origin);
 	return `Filed from ${meta.source === "api" ? "the API" : "the web app"}.`;
 }
 
@@ -3248,13 +3242,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
 	if (effect.kind === "slack_write") {
-		const binding = meta.slack!;
-		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
-		await performSlackWrite(c.db, binding, item.id, effect, {
+		const { ref, mappingGeneration } = bindingTo(meta, "slack")!;
+		const channel = ref.scope ?? "",
+			generation = mappingGeneration ?? "";
+		const workspace = c.client().slackWorkspace.get([ref.tenant], { params: serviceParams() });
+		await performSlackWrite(c.db, { threadTs: ref.id || null }, item.id, effect, {
 			read: () => viewOf(c),
 			post: (message, thread) =>
-				workspace.internalPost(binding.channelId, binding.generation, message, thread, { uid: meta.uid, id: item.id }),
-			update: (ts, message) => workspace.internalUpdate(binding.channelId, binding.generation, ts, message),
+				workspace.internalPost(channel, generation, message, thread, { uid: meta.uid, id: item.id }),
+			update: (ts, message) => workspace.internalUpdate(channel, generation, ts, message),
 		});
 		return true;
 	}
@@ -3263,20 +3259,20 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		const owner = userActor(c, meta.uid);
 		let posted: boolean;
 		if (effect.kind === "jira_comment") {
-			const { siteId, projectId, origin } = meta.jira!;
+			const { ref } = bindingTo(meta, "jira")!;
 			posted = await owner.internalJiraWrite({
-				siteId,
-				projectId,
-				issueId: origin.jira.id,
+				siteId: ref.tenant,
+				projectId: ref.scope ?? "",
+				issueId: ref.id,
 				itemId: item.id,
 				action: effect,
 			});
 		} else {
-			const { workspaceId, teamId, origin } = meta.linear!;
+			const { ref } = bindingTo(meta, "linear")!;
 			posted = await owner.internalLinearWrite({
-				workspaceId,
-				teamId,
-				issueId: origin.linear.id,
+				workspaceId: ref.tenant,
+				teamId: ref.scope ?? "",
+				issueId: ref.id,
 				itemId: item.id,
 				write: effect,
 			});
@@ -3688,7 +3684,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await checkIssue(c, meta, effect);
 			return true;
 		case "issue_comment": {
-			const binding = meta.github!;
+			const binding = issueBindingOf(bindingTo(meta, "github")!);
 			const hub = await github(c, meta);
 			const [old] = await c.db.execute<{ id: string }>("SELECT id FROM issue_comment");
 			const latest = c.vars.stored!.item;
@@ -3709,7 +3705,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "register_issue":
 			return queued(c, async () => {
 				if (!live(c.vars.stored!.item, effect)) return false;
-				const binding = meta.github!;
+				const binding = issueBindingOf(bindingTo(meta, "github")!);
 				await repositoryDirectory(c, meta).internalRegister({
 					uid: meta.uid,
 					itemId: item.id,
@@ -4456,7 +4452,7 @@ export const workItem = actor({
 							at: input.meta.createdAt,
 							by: input.startedBy ?? "platform",
 							step: null,
-							said: filingNote(input.meta),
+							said: filedNote(input.meta),
 						} satisfies ItemEvent),
 					);
 					for (const event of events)

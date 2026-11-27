@@ -8,6 +8,8 @@ import type { JiraCommentAction } from "../factory/intake.js";
 import type { FactoryItem } from "../factory/types.js";
 import type { LinearWrite } from "../linear/app.js";
 import { resolvedText, type SlackEffect } from "../slack/thread.js";
+import { bindingsOf, type StoredBindings } from "./bindings.js";
+import type { SourceBinding, SourceId } from "./types.js";
 import { isEndedState, type ItemUpdate } from "./updates.js";
 
 export type LinearEffect = { kind: "linear_write" } & LinearWrite;
@@ -111,16 +113,24 @@ function slackEffects({ updates, next }: Rendering): SlackEffect[] {
  * code-host issue was deleted, so its comment is not upserted again.
  */
 export function sourceEffects(
-	meta: { github?: { reactionTarget?: string }; linear?: object; jira?: object; slack?: object },
+	meta: StoredBindings,
 	updates: readonly ItemUpdate[],
 	next: FactoryItem,
 	{ url, issueGone = false }: { url: string; issueGone?: boolean },
 ): SourceEffect[] {
 	const rendering = { updates, next, url };
-	return [
-		...(meta.github ? issueEffects(rendering, meta.github.reactionTarget, issueGone) : []),
-		...(meta.linear ? linearEffects(rendering) : []),
-		...(meta.jira ? jiraEffects(rendering) : []),
-		...(meta.slack ? slackEffects(rendering) : []),
-	];
+	return bindingsOf(meta).flatMap(binding => RENDERERS[binding.ref.source](rendering, binding, issueGone));
 }
+
+const RENDERERS: Record<
+	SourceId,
+	(rendering: Rendering, binding: SourceBinding, issueGone: boolean) => SourceEffect[]
+> = {
+	github: (rendering, binding, issueGone) =>
+		issueEffects(rendering, binding.extra?.reactionTarget as string | undefined, issueGone),
+	/** GitLab items post nothing back yet. */
+	gitlab: () => [],
+	linear: linearEffects,
+	jira: jiraEffects,
+	slack: slackEffects,
+};
