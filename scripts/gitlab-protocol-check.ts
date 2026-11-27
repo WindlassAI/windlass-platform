@@ -16,7 +16,7 @@ import { GITLAB_WEBHOOK_PATH, MAX_WEBHOOK_BYTES, type GitlabDelivery } from "../
 
 import { GitlabStandin } from "./gitlab-standin.js";
 import { GitlabApp, GitlabError, challengeOf, newVerifier } from "../server/src/gitlab/app.js";
-import { gitlabCi, gitlabEyes, gitlabItemHost, gitlabMerge } from "../server/src/actors/gitlab-item.js";
+import { gitlabCi, gitlabEyes, gitlabItemHost, prepareGitlabMerge } from "../server/src/actors/gitlab-item.js";
 import { gitlabCodeHost } from "../server/src/gitlab/host.js";
 
 /** Exercise the same clone, fetch, scanned push and actor-held receipt as a live session. */
@@ -206,7 +206,8 @@ try {
 	assert.equal(observed.prHead, head);
 	assert.equal(observed.baseAhead, 0);
 	assert.equal(ciState(observed.reading), "passed");
-	const merge = (expected: string) => gitlabMerge(hub, mr.number, expected, mr.base, observed.baseTip, "i_protocol");
+	const prepare = (expected: string, kinds?: Parameters<typeof prepareGitlabMerge>[6]) => prepareGitlabMerge(hub, mr.number, expected, mr.base, observed.baseTip, "i_protocol", kinds);
+	const merge = async (expected: string) => (await prepare(expected))();
 	await assert.rejects(merge("1".repeat(40)), /reviewed head and base/);
 	await assert.rejects(merge(head), /feedback/); // The earlier unhandled human note.
 	await host.updateComment(token, owner, name, note, "<!-- windlass-item:i_protocol -->\nVerdict");
@@ -215,8 +216,14 @@ try {
 	detached.status = "success";
 	const changed = await app.changedPaths(token, projectId, observed.baseTip!, head);
 	assert.ok(changed?.length && changed.every(path => !path.endsWith("package.json")), "the pushed change is not a dependency bump");
-	await assert.rejects(gitlabMerge(hub, mr.number, head, mr.base, observed.baseTip, "i_protocol", undefined, ["dependency bumps"]), /kind of change/);
-	await gitlabMerge(hub, mr.number, head, mr.base, observed.baseTip, "i_protocol", undefined, [...kinds]);
+	await assert.rejects(prepare(head, ["dependency bumps"]), /kind of change/);
+	const ready = await prepare(head, [...kinds]);
+	// The head moves between the reads and the merge: the recheck refuses, and nothing is merged.
+	const late = fixture.commit(project, branch, { "late.md": "late" }, "Late push");
+	await assert.rejects(ready(), /changed before merge/);
+	assert.equal((await host.readPull(token, owner, name, mr.number)).state, "open");
+	execFileSync("git", ["update-ref", `refs/heads/${branch}`, head, late], { cwd: project.path });
+	await (await prepare(head, [...kinds]))();
 	assert.equal((await host.readPull(token, owner, name, mr.number)).state, "merged");
 	const nextBranch = "docs/follow-up";
 	fixture.commit(project, nextBranch, { "follow-up": "x" }, "Follow up", project.defaultBranch);

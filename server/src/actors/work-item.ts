@@ -30,7 +30,7 @@ import { featureBranch, subtaskBranch, openFeature, refHead, advanceFeatureRef, 
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
-import { gitlabItemHost, gitlabCi, gitlabEyes, gitlabMerge, type GitlabItemHost } from "./gitlab-item.js";
+import { gitlabItemHost, gitlabCi, gitlabEyes, prepareGitlabMerge, type GitlabItemHost } from "./gitlab-item.js";
 import { GitlabError } from "../gitlab/app.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type LinearBinding } from "../factory/intake.js";
@@ -2183,13 +2183,17 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (meta.repository.provider === "gitlab") {
 				let reason: string | null = null;
 				try {
+					const refused = () => new Error("Automatic merge is not authorized for this merge request.");
 					const hub = await gitlabItemHost(c, meta.uid, meta.repository);
+					const policy = await repositoryAutonomy(c, meta);
+					if (!policy.autoMergeSingles) throw refused();
+					// GitLab is read outside the write queue; only the recheck and the merge hold it.
+					const merge = await prepareGitlabMerge(hub, effect.pr, effect.head, item.task.base, effect.baseTip, item.id, policy.mergeKinds);
 					await queued(c, async () => {
 						const latest = c.vars.stored!.item, review = latest.run?.ci?.secondReview;
-						const policy = await repositoryAutonomy(c, meta);
-						if (!live(latest, effect) || !review || !mergeCandidate(latest, review) || !policy.autoMergeSingles)
-							throw new Error("Automatic merge is not authorized for this merge request.");
-						await gitlabMerge(hub, effect.pr, effect.head, item.task.base, effect.baseTip, item.id, undefined, policy.mergeKinds);
+						const now = await repositoryAutonomy(c, meta);
+						if (!live(latest, effect) || !review || !mergeCandidate(latest, review) || !now.autoMergeSingles || JSON.stringify(now.mergeKinds) !== JSON.stringify(policy.mergeKinds)) throw refused();
+						await merge();
 					});
 				} catch (error) { reason = describeError(error); }
 				await take(c, { kind: "auto_merge_result", key: effect.key, head: effect.head, at: Date.now(), reason, behind: false });
@@ -2724,8 +2728,8 @@ export const workItem = actor({
 		internalMergeGitlab: async (c, reviewedHead: string): Promise<ItemView> => {
 			requireServiceFor(c, "call");
 			const refused = (message: string) => new UserError(message, { code: "gitlab_merge_refused" });
-			// Serialize owner clicks. A lost response after GitLab accepted the merge is reconciled by reading the MR.
-			const receipt = await queued(c, async () => {
+			/** What a merge of the reviewed head needs of the item, or null once it is done. */
+			const mergeable = () => {
 				const stored = c.vars.stored;
 				if (stored?.meta.repository.provider !== "gitlab") throw refused("This item has no GitLab merge request.");
 				const { item, meta } = stored;
@@ -2737,18 +2741,28 @@ export const workItem = actor({
 					throw refused("Merge requires a handed-over item with a passing verdict and pipeline for this head.");
 				const key = prPollKey(item);
 				if (!key) throw refused("The item is not waiting for a merge.");
-				const hub = await gitlabItemHost(c, meta.uid, meta.repository);
-				const matches = (mr: Awaited<ReturnType<typeof hub.pull>>) => mr.state === "merged" && mr.headSha === head && mr.base === item.task.base;
-				if (!matches(await hub.pull(pr))) {
-					try {
-						await gitlabMerge(hub, pr, head, item.task.base, base.sha, item.id, () => {
-							if (c.vars.stored?.item !== item) throw refused("The item changed. Refresh it before merging.");
-						});
-					} catch (error) { throw refused(describeError(error)); }
-					if (!matches(await hub.pull(pr))) throw refused("GitLab has not confirmed a merge at this head and base.");
-				}
-				return { key, head };
+				return { meta, head, pr, target: item.task.base, base: base.sha, key, itemId: item.id };
+			};
+			const ready = mergeable();
+			if (!ready) return viewOf(c);
+			// GitLab is read outside the write queue. A lost response after GitLab accepted the merge is reconciled by reading the MR.
+			const hub = await gitlabItemHost(c, ready.meta.uid, ready.meta.repository);
+			const matches = (mr: Awaited<ReturnType<typeof hub.pull>>) => mr.state === "merged" && mr.headSha === ready.head && mr.base === ready.target;
+			let merge: (() => Promise<void>) | null = null;
+			if (!matches(await hub.pull(ready.pr))) {
+				try { merge = await prepareGitlabMerge(hub, ready.pr, ready.head, ready.target, ready.base, ready.itemId); }
+				catch (error) { throw refused(describeError(error)); }
+			}
+			let failure: unknown = null;
+			// Serialize owner clicks, and recheck only what the reads were for before merging.
+			const receipt = await queued(c, async () => {
+				const now = mergeable();
+				if (!now) return null;
+				if (now.pr !== ready.pr || now.base !== ready.base || now.key !== ready.key || now.target !== ready.target) throw refused("The item changed. Refresh it before merging.");
+				if (merge) await merge().catch(error => { failure = error; });
+				return { key: now.key, head: now.head };
 			});
+			if (receipt && !matches(await hub.pull(ready.pr))) throw refused(failure ? describeError(failure) : "GitLab has not confirmed a merge at this head and base.");
 			if (receipt) await take(c, { kind: "pr_read", key: receipt.key, prHead: receipt.head, state: "merged", at: Date.now(), webhooks: true });
 			return viewOf(c);
 		},
