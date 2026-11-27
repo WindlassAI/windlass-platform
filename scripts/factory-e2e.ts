@@ -34,6 +34,8 @@ import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
 import { optionsDigest } from "../server/src/runner/catalog.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
+import { sectionMatcher, sectionPrefixes } from "./check-sections.js";
+import { sleep } from "./check-wait.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const { engine: ENGINE_PORT, http: [HTTP_PORT] } = await localListeners();
@@ -43,8 +45,8 @@ const ORIGIN = "http://localhost:5173";
 /** A CI poll is a minute after the push (github/ci.ts), and a turn of the fake layer a few seconds. */
 const CI_WAIT_MS = 150_000;
 
-const only = (process.env.FACTORY_ONLY ?? "").split(",").map((name) => name.trim()).filter(Boolean);
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+const only = sectionPrefixes("FACTORY_ONLY");
+const inFactoryOnly = sectionMatcher("FACTORY_ONLY");
 let failed = 0;
 const output: string[] = [];
 
@@ -57,7 +59,7 @@ const skip = process.env.FACTORY_SKIP;
 
 async function check(name: string, body: () => Promise<string | undefined>): Promise<void> {
 	if (skip && name.startsWith(skip)) return void console.log(`SKIP  ${name}  (in FACTORY_SKIP)`);
-	if (only.length > 0 && !only.some((prefix) => name.startsWith(prefix))) return void console.log(`SKIP  ${name}  (not in FACTORY_ONLY)`);
+	if (!inFactoryOnly(name)) return void console.log(`SKIP  ${name}  (not in FACTORY_ONLY)`);
 	try {
 		const detail = await body();
 		console.log(`PASS  ${name}${detail ? `  (${detail.replace(/\s+/g, " ").slice(0, 400)})` : ""}`);

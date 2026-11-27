@@ -35,6 +35,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../server/src/client.js";
 import { type AuthResult, MAX_REMEMBERED_SUBMISSIONS, type SessionSnapshot, type SessionSummary, type TimelineItem } from "../server/src/contract.js";
+import { sleep, waitFor } from "./check-wait.js";
 
 // The client's own log lines about refusals are not this check's output.
 process.env.RIVET_LOG_LEVEL ??= "silent";
@@ -50,23 +51,12 @@ const RUNNING_CEILING = 3;
 /** A prompt whose turn runs one command for a while: long enough to send a second message into. */
 const LONG = "Run the long build and report its progress (slow)";
 
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const plain = (value: unknown) => JSON.stringify(value);
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
 	if (!ok) failed += 1;
 	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${detail ? `\n      ${detail}` : ""}`);
-}
-
-async function waitFor<T>(what: string, probe: () => Promise<T | undefined | false>, timeoutMs = 30_000, everyMs = 40): Promise<T> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const value = await probe();
-		if (value !== undefined && value !== false) return value;
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-		await sleep(everyMs);
-	}
 }
 
 /** What a call was answered with: its value, or the code it was refused with. */

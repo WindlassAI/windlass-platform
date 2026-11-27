@@ -33,6 +33,7 @@ import { DEAD_MS, type Operation } from "../server/src/runner/protocol.js";
 import { StandInRunner, assert, enginePrompts, until, opened } from "./runner-standin.js";
 import { GithubStandin } from "./github-standin.js";
 import { FakeRunner } from "./runner-fake.js";
+import { sleep } from "./check-wait.js";
 
 const { engine: PORT, http: [HTTP] } = process.argv[2] === "node"
 	? { engine: Number(process.env.RIVET_RUN_ENGINE_PORT), http: [Number(process.env.WLP_HTTP_PORT)] }
@@ -45,7 +46,6 @@ const CEILING = 1;
 /** The design's numbers (Plans/2026-11-19, section 1.4): how long a session waits for its runner's socket. */
 const OFFLINE_WAIT_MS = 15_000;
 
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 let failed = 0;
 /** `promise`, or an error naming `what` once `ms` have passed: for calls that a restart can leave unanswered. */
 async function within<T>(what: string, promise: Promise<T>, ms: number): Promise<T> {

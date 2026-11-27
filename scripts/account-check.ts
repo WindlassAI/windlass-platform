@@ -54,12 +54,10 @@ import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { personalServerReach, serverQuestionWords } from "../server/src/server-question.js";
 import { createSealer } from "../server/src/signin/seal.js";
 import { PLATFORM_WAKE, TURN_TIME_HOOK, platformConfig } from "../server/src/windlass-config.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 const plain = (value: unknown) => JSON.stringify(value);
 
@@ -503,5 +501,4 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	expect("a file that is not Windlass's configuration is left alone, with or without servers to write", ["{ not json", "[]", JSON.stringify({ mcp: [] }), JSON.stringify({ mcp: { servers: [] } })].every((text) => platformConfig(text, null, [tracker]) === null && platformConfig(text, null, []) === null));
 }
 
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));

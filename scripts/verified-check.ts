@@ -22,14 +22,12 @@ import { CHECKS_TABLE, type ChecksDb, ChecksProblem, cleanChecks, readChecks, sa
 import type { TurnChecks } from "../server/src/sandbox/api.js";
 import { VerificationLog, type WorkDiff, checkScripts, isTestPath, outputTail, verifiedSection, verifiedWords, withOutputs, withVerifiedSection, workFlags } from "../server/src/verified.js";
 import { PLATFORM_WAKE, TURN_TIME_HOOK, platformConfig, projectChecks } from "../server/src/windlass-config.js";
+import { OkReport } from "./check-report.js";
 /** The platform's own hooks, which every configuration it writes has (windlass-config.ts `TURN_TIME_HOOK`). */
 const HOOKS = { beforeTool: [TURN_TIME_HOOK] };
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 const plain = (value: unknown) => JSON.stringify(value);
 const refused = (raw: unknown): string | null => {
 	try {
@@ -625,5 +623,4 @@ if (process.argv.includes("--docker")) {
 	await cases();
 }
 
-console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nALL PASSED", (failed) => `\n${failed} FAILED`));

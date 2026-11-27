@@ -27,6 +27,8 @@ import { SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/s
 import { type SignInMaterial, cleanMaterial } from "../server/src/signin/material.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
+import { sleep as wait } from "./check-wait.js";
+import { Report } from "./check-report.js";
 
 const run = randomBytes(3).toString("hex");
 /** The Windlass the sections with a real one run: the executable WLP_WINDLASS_BIN names, else the pinned release, which sandbox/fetch-windlass.sh keeps and fetches the first time. */
@@ -47,20 +49,9 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-let failures = 0;
-let passes = 0;
+const tally = new Report();
+const { expect } = tally;
 
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) {
-		passes += 1;
-		console.log(`PASS  ${name}${text ? `  (${text})` : ""}`);
-	} else {
-		failures += 1;
-		console.log(`FAIL  ${name}  ${text || "condition not met"}`);
-	}
-	return ok;
-}
 function info(text: string): void {
 	console.log(`      ${text}`);
 }
@@ -73,7 +64,6 @@ async function section(name: string, body: () => Promise<void>): Promise<void> {
 		expect(`${name}: unexpected error`, false, error instanceof Error ? (error.stack ?? error.message) : String(error));
 	}
 }
-const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const caught = <T>(promise: Promise<T>) =>
 	promise.then(
 		() => null,
@@ -1177,15 +1167,15 @@ async function main(): Promise<void> {
 		expect("no token is in anything this check printed", leaked.length === 0, `${output.length} lines read${leaked.length === 0 ? "" : `; first: ${leaked[0]!.replace(SECRET, "<a token>").slice(0, 120)}`}`);
 	});
 
-	console.log(`\n${failures === 0 ? "ALL PASSED" : "FAILED"}: ${passes} passed, ${failures} failed`);
+	tally.summary(true);
 }
 
 main()
 	.catch((error) => {
-		failures += 1;
+		tally.failures += 1;
 		console.error(error);
 	})
 	.finally(() => {
 		rmSync(scratch, { recursive: true, force: true });
-		process.exit(failures === 0 ? 0 : 1);
+		process.exit(tally.failures === 0 ? 0 : 1);
 	});

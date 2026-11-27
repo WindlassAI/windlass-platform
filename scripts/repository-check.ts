@@ -17,12 +17,10 @@ import { MAX_REPOSITORY_DEFAULTS, type MachineSummary, type ModelList, type Repo
 import { readAccountDefaults, saveAccountDefaults } from "../server/src/repository-defaults.js";
 import { resolveStartPlace } from "../server/src/start-place.js";
 import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 const plain = (value: unknown) => JSON.stringify(value);
 
@@ -224,5 +222,4 @@ async function wholeRowSave(db: DefaultsDb, change: DefaultsChange, now: number)
 	);
 }
 
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));

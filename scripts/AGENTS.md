@@ -32,9 +32,11 @@ Run one command from the repository root.
 
 ## Shared helpers
 
-Reuse these instead of re-implementing them in a new check.
+Reuse these instead of re-implementing them in a new check. A new check reports through `./check-report.ts` and waits through `./check-wait.ts` rather than defining its own `expect`, `sleep` or polling loop.
 
-- `./check-sections.ts` holds `matchesSection(name)` for `WLP_CHECK_SECTIONS`.
+- `./check-report.ts` holds the PASS/FAIL reporters. `Report` counts and prints `PASS  name  (detail)` and `FAIL` lines (`failure: "dash"` for `FAIL  name  -- detail`) and runs `check(name, body)`; `OkReport` prints `ok`/`FAIL` with a failure's detail on the next line. Each `summary()` prints the closing line and returns the exit code.
+- `./check-wait.ts` holds `sleep` (from `server/src/util.ts`) and `waitFor(what, probe, timeoutMs, everyMs)`, which polls until the probe gives a value other than undefined, null or false, and throws a timeout naming `what`.
+- `./check-sections.ts` holds `matchesSection(name)` for `WLP_CHECK_SECTIONS`, and `sectionMatcher(variable)` and `sectionPrefixes(variable)` for a check's own variable such as `FACTORY_ONLY`.
 - `./check-listeners.ts` holds `localListeners(httpCount)`, which reserves RivetKit engine and HTTP ports outside the kernel's ephemeral range so parallel checks do not collide, and `portFree(port)`.
 - `./check-secret.ts` sets a random `WLP_SECRET` when imported. Import it before server config so a multi-node check shares a key without writing a secret file under `.data`.
 - `./check-image.ts` holds `imageId()`, which resolves the sandbox image tag once so every container in a check uses the same image.
@@ -47,15 +49,14 @@ Each check parses its own filter, so the semantics differ. Copy the exact case n
 
 | Variable | Read by | Match |
 | --- | --- | --- |
-| `WLP_CHECK_SECTIONS` | `./connection-check.ts`, `./github-check.ts`, `./sandbox-check.ts`, `./signin-check.ts` via `./check-sections.ts` | Comma-separated, trimmed name prefixes. The connection `output` and sandbox `cleanup` sections always run. |
-| `WLP_CHECK_SECTIONS` | `./e2b-provider-test.ts`, `./e2b-snapshot-check.ts` | Comma-separated prefixes, parsed inline without trimming. |
+| `WLP_CHECK_SECTIONS` | `./connection-check.ts`, `./github-check.ts`, `./sandbox-check.ts`, `./signin-check.ts`, `./e2b-provider-test.ts`, `./e2b-snapshot-check.ts` via `./check-sections.ts` | Comma-separated, trimmed name prefixes. The connection `output` and sandbox `cleanup` sections always run. |
 | `WLP_CHECK_SECTIONS` | `./billing-check.ts` | Exact value `exempt`. Exits after the exempt-account cases. |
-| `FACTORY_ONLY` | `./factory-e2e.ts` | Comma-separated, trimmed prefixes. `memory` selects the in-memory cases, which need no server. |
+| `FACTORY_ONLY` | `./factory-e2e.ts` via `./check-sections.ts` | Comma-separated, trimmed prefixes. `memory` selects the in-memory cases, which need no server. |
 | `FACTORY_ONLY` | `./factory-check.ts` | Exact value `hosted-size`. Exits after the hosted-size cases, which run after the earlier ones. |
-| `WEBHOOK_ONLY` | `./webhook-check.ts` | One case-sensitive prefix. |
-| `LINEAR_ONLY` | `./linear-check.ts` | Comma-separated prefixes, untrimmed. Later cases depend on state from earlier ones. |
-| `RUNNER_E2E_ONLY` | `./runner-e2e.ts` | A regular expression tested against case names. |
-| `WLP_ESCAPE_ONLY` | `./codex-sandbox-escape-check.mjs` | A substring of the case name. |
+| `WEBHOOK_ONLY` | `./webhook-check.ts` | One case-sensitive prefix, not split on commas. |
+| `LINEAR_ONLY` | `./linear-check.ts` via `./check-sections.ts` | Comma-separated, trimmed prefixes. Later cases depend on state from earlier ones. |
+| `RUNNER_E2E_ONLY` | `./runner-e2e.ts` | A regular expression tested against case names, so `.` and `(` are special. |
+| `WLP_ESCAPE_ONLY` | `./codex-sandbox-escape-check.mjs` | A substring anywhere in the case name. |
 
 `./runner-check.ts` uses flags instead, such as `--snapshots-only`, `--sizing-only`, `--profiles-only` and `--main-only`. Checks that import `node:test` take `--test-name-pattern`.
 

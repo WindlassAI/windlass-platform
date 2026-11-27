@@ -7,6 +7,8 @@ import { matchesSection } from "./check-sections.js";
 import { execFile } from "node:child_process";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { sleep as wait } from "./check-wait.js";
+import { Report } from "./check-report.js";
 
 // What the `cluster` section is given, taken before the made-up values below replace it.
 const realEngine = (process.env.WLP_CHECK_ENGINE ?? "").trim().replace(/\/+$/, "");
@@ -27,20 +29,9 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-let failures = 0;
-let passes = 0;
+const tally = new Report();
+const { expect } = tally;
 
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) {
-		passes += 1;
-		console.log(`PASS  ${name}${text ? `  (${text})` : ""}`);
-	} else {
-		failures += 1;
-		console.log(`FAIL  ${name}  ${text || "condition not met"}`);
-	}
-	return ok;
-}
 function info(text: string): void {
 	console.log(`      ${text}`);
 }
@@ -58,7 +49,6 @@ const caught = <T>(promise: Promise<T>) =>
 		() => null,
 		(error: unknown) => error,
 	);
-const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const plain = (value: unknown) => JSON.stringify(value);
 
 // ---------------------------------------------------------------------------------------------
@@ -480,12 +470,12 @@ async function main(): Promise<void> {
 		expect("no admin token and no issued token is in anything this check printed", leaked.length === 0, `${output.length} lines read, ${secrets.size} secrets looked for`);
 	});
 
-	console.log(`\n${failures === 0 ? "ALL PASSED" : "FAILED"}: ${passes} passed, ${failures} failed`);
+	tally.summary(true);
 }
 
 main()
 	.catch((error) => {
-		failures += 1;
+		tally.failures += 1;
 		console.error(error instanceof Error ? error.message : "the check failed");
 	})
-	.finally(() => process.exit(failures === 0 ? 0 : 1));
+	.finally(() => process.exit(tally.failures === 0 ? 0 : 1));

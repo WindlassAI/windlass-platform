@@ -37,13 +37,13 @@ import type { AccessToken } from "../server/src/sandbox/api.js";
 import { DATA_DIR } from "../server/src/sandbox/provider.js";
 import { DockerModelRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
 import { imageId } from "./check-image.js";
+import { sleep } from "./check-wait.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
 	if (!ok) failed += 1;
 	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail.slice(0, 2000)}` : ""}`);
 }
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const run = randomBytes(4).toString("hex");
 const network = `wlp-mr-check-${run}`;

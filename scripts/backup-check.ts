@@ -43,12 +43,14 @@ import type { WindlassEvent } from "../server/src/contract.js";
 import type { ExecOptions, ExecResult, SandboxHandle, ScriptedModel } from "../server/src/sandbox/api.js";
 import { BACKUP_ENV, LINK_TTL_MS, SandboxSessionBackups } from "../server/src/sandbox/backup.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
+import { sleep } from "./check-wait.js";
+import { Report } from "./check-report.js";
 
 const withBucket = process.argv.includes("--bucket");
 const withDocker = process.argv.includes("--docker");
 const run = randomId(4);
-let passes = 0;
-let failures = 0;
+const tally = new Report({ print: say });
+const { expect } = tally;
 /** Everything printed, for the last check. */
 let printed = "";
 /** What must never be printed: the bucket's settings, and every link this run was handed. */
@@ -58,17 +60,6 @@ function say(line: string): void {
 	printed += `${line}\n`;
 	console.log(line);
 }
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) {
-		passes += 1;
-		say(`PASS  ${name}${text ? `  (${text})` : ""}`);
-	} else {
-		failures += 1;
-		say(`FAIL  ${name}  ${text || "condition not met"}`);
-	}
-	return ok;
-}
 function info(text: string): void {
 	say(`INFO  ${text.trim().replace(/\s*\n\s*/g, " | ")}`);
 }
@@ -77,12 +68,11 @@ async function section(name: string, body: () => Promise<void>): Promise<void> {
 	try {
 		await body();
 	} catch (error) {
-		failures += 1;
+		tally.failures += 1;
 		say(`FAIL  ${name}: unexpected error  ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
 	}
 }
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------------------------
 // The stand-in
@@ -524,7 +514,7 @@ async function main(): Promise<number> {
 
 	const settings = withBucket ? bucketSettings() : null;
 	if (withBucket && settings === null) {
-		failures += 1;
+		tally.failures += 1;
 		say("\nFAIL  --bucket: no bucket is configured. Set WLP_BUCKET_ENDPOINT, WLP_BUCKET_NAME, WLP_BUCKET_ACCESS_KEY_ID and WLP_BUCKET_SECRET_ACCESS_KEY (or the R2_* names).");
 	}
 	if (settings === null) {
@@ -556,8 +546,7 @@ async function main(): Promise<number> {
 	const leaked = secrets.filter((secret) => secret.length >= 6 && printed.includes(secret));
 	const signatures = /X-Amz-Signature=[0-9a-f]{16}|wlp-stand-in:\/\/\S+signature=/.test(printed.replace(/X-Amz-Signature=\.\.\./g, ""));
 	expect("nothing printed here holds a setting of the bucket, a link or a signature", leaked.length === 0 && !signatures, `${leaked.length} value(s) found${signatures ? ", and a signature" : ""}`);
-	say(`\n${passes} passed, ${failures} failed`);
-	return failures === 0 ? 0 : 1;
+	return tally.summary();
 }
 
 main().then(

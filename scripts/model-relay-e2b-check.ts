@@ -33,6 +33,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccessToken, AccessTokens, ChatgptLogins, TurnQuestion } from "../server/src/sandbox/api.js";
 import type { WindlassEvent } from "../server/src/contract.js";
+import { sleep } from "./check-wait.js";
 
 const LIMIT_MS = 5 * 60_000;
 let passes = 0;
@@ -44,7 +45,6 @@ function expect(name: string, ok: boolean, detail = ""): boolean {
 	console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${oneLine(detail)})` : ""}`);
 	return ok;
 }
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const apiKey = (process.env.E2B_API_KEY ?? "").trim();
 const tokenFile = (process.env.WLP_RELAY_CHECK_TOKEN_FILE ?? "").trim();

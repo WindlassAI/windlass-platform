@@ -57,33 +57,25 @@ import { INIT_WORKSPACE } from "../server/src/github/git-flags.js";
 import { execFileSync } from "node:child_process";
 import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { sleep } from "./check-wait.js";
+import { Report } from "./check-report.js";
+import { matchesSection } from "./check-sections.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const withDocker = process.argv.includes("--docker");
 /** With --docker: only the network checks through the stand-in of E2B's filter, not the real turns. */
 const networkOnly = process.argv.includes("--network-only");
 const run = randomId(3);
-let passes = 0;
-let failures = 0;
+const tally = new Report();
+const { expect } = tally;
 
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) {
-		passes += 1;
-		console.log(`PASS  ${name}${text ? `  (${text})` : ""}`);
-	} else {
-		failures += 1;
-		console.log(`FAIL  ${name}  ${text || "condition not met"}`);
-	}
-	return ok;
-}
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (process.env.WLP_CHECK_SECTIONS && !process.env.WLP_CHECK_SECTIONS.split(",").some(prefix => name.startsWith(prefix))) return;
+	if (!matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();
 	} catch (error) {
-		failures += 1;
+		tally.failures += 1;
 		console.log(`FAIL  ${name}: unexpected error  ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
 	}
 }
@@ -95,7 +87,6 @@ async function userError(body: () => Promise<unknown>): Promise<string | null> {
 		return error instanceof SandboxUserError ? error.message : `not a SandboxUserError: ${error instanceof Error ? error.message : String(error)}`;
 	}
 }
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const MINUTE = 60_000;
 const SETTINGS: E2bSettings = {
@@ -1488,5 +1479,4 @@ if (withDocker) {
 	console.log('\n== a real turn\n      skipped: run with --docker to drive real containers of the sandbox image through the provider');
 }
 
-console.log(`\n${passes} passed, ${failures} failed`);
-process.exit(failures === 0 ? 0 : 1);
+process.exit(tally.summary());

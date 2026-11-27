@@ -42,13 +42,11 @@ import { RELAY_REFUSED, relayRefused } from "../server/src/sandbox/handoff.js";
 import type { AccessToken } from "../server/src/sandbox/api.js";
 import { keyedDigest, signedPayload } from "../server/src/signatures.js";
 import { randomBytes } from "node:crypto";
+import { OkReport } from "./check-report.js";
+import { sleep } from "./check-wait.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const tally = new OkReport();
+const { expect } = tally;
 const REAL_A = "real-chatgpt-token-A-" + "a".repeat(48);
 const REAL_B = "real-chatgpt-token-B-" + "b".repeat(48);
 
@@ -906,5 +904,4 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	expect("with Windlass 0.7.1 and WLP_MODEL_RELAY_URL the relay's origin is its own host", readE2bSettings(env({})).modelRelayOrigin === "https://relay.example.com");
 }
 
-console.log(failed === 0 ? "\nall model relay checks passed" : `\n${failed} model relay check(s) failed`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nall model relay checks passed", (failed) => `\n${failed} model relay check(s) failed`));

@@ -45,12 +45,10 @@ import {
 } from "../server/src/repo-secrets.js";
 import { PROFILES, e2bProfile } from "../server/src/sandbox/profiles.js";
 import { SealError, createSealer } from "../server/src/signin/seal.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 function refused(clean: () => unknown): string | null {
 	try {
@@ -66,7 +64,7 @@ const made = (bytes = 18) => `wlpcheck_${randomBytes(bytes).toString("base64url"
 
 if (process.argv.includes("--redaction")) {
 	checkRedaction();
-	process.exit(failed ? 1 : 0);
+	process.exit(tally.failures ? 1 : 0);
 }
 
 // Names.
@@ -317,5 +315,4 @@ function checkRedaction() {
 }
 
 checkRedaction();
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));

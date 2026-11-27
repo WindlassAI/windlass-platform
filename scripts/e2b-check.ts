@@ -54,30 +54,16 @@ import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
 import { type E2bSandboxHandle, e2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { BWRAP_PROBE } from "../server/src/sandbox/provider.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
+import { oneLine, Report } from "./check-report.js";
 
 const MAX_LIMIT_MS = 6 * 60_000;
 const startedAt = Date.now();
-let passes = 0;
-let failures = 0;
-
-function pass(name: string, detail = ""): void {
-	passes += 1;
-	console.log(`PASS  ${name}${detail ? `  (${oneLine(detail)})` : ""}`);
-}
-function fail(name: string, detail = ""): void {
-	failures += 1;
-	console.log(`FAIL  ${name}  ${oneLine(detail) || "condition not met"}`);
-}
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	if (ok) pass(name, detail);
-	else fail(name, detail);
-	return ok;
-}
+const tally = new Report();
+const { expect, pass, fail } = tally;
 /** Something the owner should read that is neither right nor wrong: what E2B turned out to do. */
 function info(text: string): void {
 	console.log(`INFO  ${oneLine(text)}`);
 }
-const oneLine = (text: string) => text.trim().replace(/\s*\n\s*/g, " | ");
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 async function step(name: string, body: () => Promise<void>): Promise<void> {
@@ -403,8 +389,8 @@ async function main(): Promise<number> {
 		console.log(`\ne2b-check: the sandbox ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB, settings.rateCard)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
 		console.log("e2b-check: that is an estimate from the deployment's rate card and this script's own clock; the account's usage page has what was billed.");
 	}
-	console.log(`\n${passes} passed, ${failures} failed`);
-	return timedOut ? 3 : failures === 0 ? 0 : 1;
+	const code = tally.summary();
+	return timedOut ? 3 : code;
 }
 
 main().then(

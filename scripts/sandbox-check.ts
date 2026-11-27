@@ -28,6 +28,7 @@ import { dropSessionVolume, ensureDataVolume, ensureSessionVolume, sessionVolume
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
+import { sleep as wait } from "./check-wait.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** This machine's architecture as Windlass's builds name it. */
@@ -217,7 +218,6 @@ const lastStepError = (found: TurnRun) => ((dataOf(ofType(found.events, "step.fa
 const lastStepCode = (found: TurnRun) => ((dataOf(ofType(found.events, "step.failed").at(-1)).error as { error?: { code?: string | null } } | undefined)?.error?.code ?? "none") as string;
 /** After how many seconds each failed replacement of a turn's token file said it would be tried again. */
 const retryWaits = (lines: string[]) => lines.filter((line) => line.includes("token.replace_failed")).map((line) => Number(/trying again in (\d+) s/.exec(line)?.[1] ?? Number.NaN));
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const NET_PROBE = "if timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then echo NET_OK; else echo NET_BLOCKED; fi";
 

@@ -34,6 +34,8 @@ import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin } from "./github-standin.js";
 import { sessionCapabilities } from "../server/src/sandbox/harnesses.js";
+import { Report } from "./check-report.js";
+import { sleep, waitFor } from "./check-wait.js";
 import {
 	type AuthResult,
 	type RepositoryEnvironment,
@@ -85,7 +87,6 @@ const QUESTION_MS = FAKE ? 8_000 : 20_000;
 
 /** The ceiling on a person's hosted agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_HOSTED_RUNNING). */
 const RUNNING_CEILING = 3;
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 // A browser sends its origin on the WebSocket handshake. Node's WebSocket can be told to as well, which
 // lets this script play a page from an origin the server does not allow.
@@ -99,24 +100,8 @@ class OriginWebSocket extends NativeWebSocket {
 }
 globalThis.WebSocket = OriginWebSocket as typeof WebSocket;
 
-let passed = 0;
-let failed = 0;
-let skipped = 0;
-
-function pass(name: string, detail = ""): void {
-	passed += 1;
-	console.log(`PASS  ${name}${detail ? `  (${detail})` : ""}`);
-}
-
-function fail(name: string, detail: string): void {
-	failed += 1;
-	console.log(`FAIL  ${name}  -- ${detail}`);
-}
-
-function skip(name: string, why: string): void {
-	skipped += 1;
-	console.log(`SKIP  ${name}  (${why})`);
-}
+const tally = new Report({ failure: "dash", fold: false });
+const { pass, fail, skip } = tally;
 
 function describe(error: unknown): string {
 	if (typeof error === "object" && error !== null) {
@@ -128,15 +113,7 @@ function describe(error: unknown): string {
 }
 
 /** Runs one check: PASS with what it returns, FAIL with what it throws. */
-async function check(name: string, body: () => Promise<string | undefined> | string | undefined): Promise<boolean> {
-	try {
-		pass(name, (await body()) ?? "");
-		return true;
-	} catch (error) {
-		fail(name, describe(error));
-		return false;
-	}
-}
+const check = (name: string, body: () => Promise<string | undefined> | string | undefined) => tally.check(name, body, describe);
 
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
@@ -154,16 +131,6 @@ async function refused(call: () => Promise<unknown>, code: string | string[]): P
 		return String((error as { message?: unknown }).message);
 	}
 	throw new Error(`expected error ${codes.join(" or ")}, but the call succeeded with ${JSON.stringify(result)?.slice(0, 200)}`);
-}
-
-async function waitFor<T>(what: string, probe: () => T | undefined | null | false | Promise<T | undefined | null | false>, timeoutMs: number, everyMs = 25): Promise<T> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const value = await probe();
-		if (value !== undefined && value !== null && value !== false) return value;
-		if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
-		await sleep(everyMs);
-	}
 }
 
 function withTimeout<T>(what: string, promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -294,7 +261,7 @@ class Server {
 	}
 
 	remove(): void {
-		if (failed === 0 && process.env.WLP_E2E_KEEP !== "1") rmSync(this.storage, { recursive: true, force: true });
+		if (tally.failures === 0 && process.env.WLP_E2E_KEEP !== "1") rmSync(this.storage, { recursive: true, force: true });
 		else console.log(`\nserver log and state kept in ${this.storage}`);
 	}
 }
@@ -4942,7 +4909,7 @@ try {
 		}
 	}
 }
-if (crashed) failed += 1;
-console.log(`\n${failed === 0 ? "ALL PASSED" : "FAILED"}: ${passed} passed, ${failed} failed, ${skipped} skipped (sandbox layer: ${MODE})`);
+if (crashed) tally.failures += 1;
+console.log(`\n${tally.failures === 0 ? "ALL PASSED" : "FAILED"}: ${tally.passes} passed, ${tally.failures} failed, ${tally.skips} skipped (sandbox layer: ${MODE})`);
 server?.remove();
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.failures === 0 ? 0 : 1);

@@ -25,12 +25,10 @@ import { HOSTED_SIZES, HOSTED_SIZE_SPECS, largerHostedSize, MAX_MACHINES } from 
 import { allowanceRefusal, DAY_MS, dayOf, UsageBook } from "../server/src/usage.js";
 import { effectiveUserLimits } from "../server/src/user-limits.js";
 import { delivery, FAKE_KEY, FAKE_SECRET, FakeDodo, paymentData, subscriptionData } from "./dodo-fake.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 async function rejects(promise: Promise<unknown>): Promise<unknown> {
 	try { await promise; return null; } catch (error) { return error; }
 }
@@ -107,7 +105,7 @@ Object.assign(process.env, { WLP_BILLING_PROVIDER: "dodo", WLP_DODO_API_KEY: FAK
 	}
 	config.usage.dailySeconds = originalDaily;
 }
-if (process.env.WLP_CHECK_SECTIONS === "exempt") process.exit(failed === 0 ? 0 : 1);
+if (process.env.WLP_CHECK_SECTIONS === "exempt") process.exit(tally.failures === 0 ? 0 : 1);
 
 // --- Billing off: today's behaviour --------------------------------------------------------------------------------
 {
@@ -653,5 +651,4 @@ async function memoryDbWithTables() {
 
 }
 
-console.log(failed === 0 ? "\nAll billing checks passed." : `\n${failed} billing check(s) failed.`);
-process.exitCode = failed === 0 ? 0 : 1;
+process.exitCode = tally.summary("\nAll billing checks passed.", (failed) => `\n${failed} billing check(s) failed.`);

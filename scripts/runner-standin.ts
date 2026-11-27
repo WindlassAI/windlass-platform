@@ -9,9 +9,9 @@ import { MIN_RUNNER_VERSION, parseConnection, parseServerFrame, sessionProof } f
 import type { Operation } from "../server/src/runner/protocol.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 import { FakeRunner } from "./runner-fake.js";
+import { sleep } from "./check-wait.js";
 
 const FIXTURE = fileURLToPath(new URL("../fixtures/windlass-events/demo-several-steps-in-one-turn.jsonl", import.meta.url));
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 export function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);

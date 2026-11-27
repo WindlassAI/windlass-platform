@@ -39,20 +39,14 @@ import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
+import { oneLine, Report } from "./check-report.js";
 
 const LIMIT_MS = 4 * 60_000;
 const startedAt = Date.now();
-let passes = 0;
-let failures = 0;
+const tally = new Report();
+const { expect } = tally;
 
-const oneLine = (text: string) => text.trim().replace(/\s*\n\s*/g, " | ");
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	if (ok) passes += 1;
-	else failures += 1;
-	console.log(ok ? `PASS  ${name}${detail ? `  (${oneLine(detail)})` : ""}` : `FAIL  ${name}  ${oneLine(detail) || "condition not met"}`);
-	return ok;
-}
 function info(text: string): void {
 	console.log(`INFO  ${oneLine(text)}`);
 }
@@ -201,8 +195,8 @@ async function main(): Promise<number> {
 		console.log(`\ne2b-backup-check: the sandboxes ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB, settings.rateCard)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
 		console.log("e2b-backup-check: that is an estimate from the deployment's rate card and this script's own clock; the account's usage page has what was billed.");
 	}
-	console.log(`\n${passes} passed, ${failures} failed`);
-	return timedOut ? 3 : failures === 0 ? 0 : 1;
+	const code = tally.summary();
+	return timedOut ? 3 : code;
 }
 
 main().then(

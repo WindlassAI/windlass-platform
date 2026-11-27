@@ -32,26 +32,20 @@ import { type E2bSandboxHandle, e2bSandboxes, META } from "../server/src/sandbox
 import { AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, SNAP_META } from "../server/src/sandbox/e2b/snapshots.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 import { docker, IMAGE } from "../server/src/sandbox/docker.js";
+import { Report } from "./check-report.js";
+import { matchesSection } from "./check-sections.js";
 
 const live = process.argv.includes("--live");
 /** --docker: also runs the disk check for real, as root in a throwaway container of the sandbox image. */
 const withDocker = process.argv.includes("--docker");
-let passes = 0;
-let failures = 0;
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) { passes += 1; console.log(`PASS  ${name}${text ? `  (${text})` : ""}`); }
-	else { failures += 1; console.log(`FAIL  ${name}  ${text || "condition not met"}`); }
-	return ok;
-}
-const sections = process.env.WLP_CHECK_SECTIONS?.split(",");
-const selected = (name: string) => !sections || sections.some(prefix => name.startsWith(prefix));
+const tally = new Report();
+const { expect } = tally;
 
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (!selected(name)) return;
+	if (!matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try { await body(); }
-	catch (error) { failures += 1; console.log(`FAIL  ${name}: unexpected error  ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`); }
+	catch (error) { tally.failures += 1; console.log(`FAIL  ${name}: unexpected error  ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`); }
 }
 
 const MINUTE = 60_000;
@@ -406,8 +400,7 @@ async function liveCheck() {
 if (live) await liveCheck();
 else {
 	await fakeChecks();
-	if (selected("placement")) placementChecks();
+	if (matchesSection("placement")) placementChecks();
 	if (withDocker) await dockerChecks();
 }
-console.log(`\n${passes} passed, ${failures} failed`);
-process.exit(failures === 0 ? 0 : 1);
+process.exit(tally.summary());

@@ -48,12 +48,10 @@ import {
 import { GithubApp, type GithubAppSettings } from "../server/src/github/app.js";
 import { MAX_HOSTS, PRESETS } from "../server/src/sandbox/hosted-network.js";
 import { DNS_STUB, GUEST_DNS_SCRIPT, readE2bNetwork, withHosts, blockedLookups, guestDnsArgv, networkConfig } from "../server/src/sandbox/e2b/network.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 const plain = (value: unknown) => JSON.stringify(value);
 function refusal(run: () => unknown): string | null {
 	try {
@@ -352,8 +350,8 @@ else {
 	}
 }
 
-if (failed > 0) {
-	console.log(`\n${failed} failed`);
+if (tally.failures > 0) {
+	console.log(`\n${tally.failures} failed`);
 	process.exit(1);
 }
 console.log("\nall passed");

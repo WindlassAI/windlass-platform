@@ -41,6 +41,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthResult, PlatformConnection, PlatformInfo, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
+import { Report } from "./check-report.js";
+import { sleep, waitFor } from "./check-wait.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const { engine, http: [HTTP_PORT] } = await localListeners();
@@ -50,29 +52,10 @@ const ADMIN = "FAKE-ADMIN-TOKEN-for-connection-e2e";
 /** How long the front's tokens last. The server hands one out until half of that is gone. */
 const TOKEN_MS = 12_000;
 
-const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
-let failed = 0;
-let passed = 0;
-
-async function check(name: string, body: () => Promise<string | void>): Promise<void> {
-	try {
-		const detail = await body();
-		passed += 1;
-		console.log(`PASS  ${name}${detail ? `  (${detail})` : ""}`);
-	} catch (error) {
-		failed += 1;
-		console.log(`FAIL  ${name}  -- ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
+const tally = new Report({ failure: "dash", fold: false });
+const { check } = tally;
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
-}
-async function waitFor(what: string, test: () => boolean | Promise<boolean>, ms: number, every = 50): Promise<void> {
-	const deadline = Date.now() + ms;
-	while (!(await test())) {
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-		await sleep(every);
-	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -481,12 +464,12 @@ async function main(): Promise<void> {
 		await server.stop();
 		await front.stop();
 	}
-	console.log(`\n${failed === 0 ? "ALL PASSED" : "FAILED"}: ${passed} passed, ${failed} failed`);
+	tally.summary(true);
 }
 
 main()
 	.catch((error) => {
-		failed += 1;
+		tally.failures += 1;
 		console.error(error instanceof Error ? error.message : "the check failed");
 	})
-	.finally(() => process.exit(failed === 0 ? 0 : 1));
+	.finally(() => process.exit(tally.failures === 0 ? 0 : 1));

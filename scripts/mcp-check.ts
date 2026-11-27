@@ -61,6 +61,8 @@ import { variablesRead } from "../server/src/sandbox/turn.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 import { APPROVAL_TTL_MS, ApprovalBook, type ApprovalProject, type ServerApproval, knownServers, projectOf, serversView } from "../server/src/server-approvals.js";
 import { forgettingWords, serverApprovedNote, serverForgottenNote, serverNotNowNote, serverPanelWords, serverQuestionWords, serverRecalledNote } from "../server/src/server-question.js";
+import { sleep as wait } from "./check-wait.js";
+import { Report } from "./check-report.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "fixtures/mcp-repo");
@@ -74,16 +76,8 @@ const uidOther = `mcp-${run}-b`;
 const created = new Set<string>();
 /** Every Docker user a sandbox was made for: each has a data volume to remove. */
 const users = new Set<string>();
-let failures = 0;
-let passes = 0;
-
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) passes += 1;
-	else failures += 1;
-	console.log(`${ok ? "PASS" : "FAIL"}  ${name}${text ? `  ${ok ? `(${text})` : text}` : ok ? "" : "  condition not met"}`);
-	return ok;
-}
+const tally = new Report();
+const { expect } = tally;
 function info(text: string): void {
 	console.log(`      ${text}`);
 }
@@ -224,7 +218,6 @@ const toolsBeforeFirstStep = (found: TurnRun): string | null => {
 	const appended = found.events.findIndex((event) => event.type === "instruction.appended" && dataOf(event).source === "mcp");
 	return appended >= 0 && firstStep >= 0 && appended < firstStep ? String(dataOf(found.events[appended]).text ?? "") : null;
 };
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** An approved server's outcome: running, or still starting when the layer's wait ran out on a loaded host. */
 const startedOrRunning = (state: string | undefined) => state === "running" || state === "starting";
 
@@ -872,8 +865,7 @@ async function main(): Promise<void> {
 		expect("nothing this run created is left", mine.length === 0, mine.join(", ") || "no containers or volumes of this run");
 	});
 
-	console.log(`\n${failures === 0 ? "ALL PASSED" : "FAILED"}: ${passes} passed, ${failures} failed`);
-	if (failures > 0) process.exitCode = 1;
+	if (tally.summary(true) > 0) process.exitCode = 1;
 }
 
 await main();

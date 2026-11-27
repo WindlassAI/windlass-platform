@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../server/src/sandbox/api.js";
 import { GithubStandin, type StandinInstallation, type StandinRepository, gitHttpBackendAvailable } from "./github-standin.js";
+import { Report } from "./check-report.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "wlp-github-check-"));
 // Set before the server's modules are loaded: they read their configuration when they are.
@@ -54,21 +55,8 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-let failures = 0;
-let passes = 0;
-let skips = 0;
-
-function expect(name: string, ok: boolean, detail = ""): boolean {
-	const text = detail.trim().replace(/\s*\n\s*/g, " | ");
-	if (ok) {
-		passes += 1;
-		console.log(`PASS  ${name}${text ? `  (${text})` : ""}`);
-	} else {
-		failures += 1;
-		console.log(`FAIL  ${name}${text ? `  -- ${text}` : ""}`);
-	}
-	return ok;
-}
+const tally = new Report({ failure: "dash" });
+const { expect } = tally;
 
 async function section(name: string, body: () => Promise<void>): Promise<void> {
 	if (!matchesSection(name)) return;
@@ -1486,7 +1474,7 @@ await section("hostile: a workspace set up to catch the token catches nothing", 
 
 await section("docker: the same git commands in a container of the sandbox image", async () => {
 	if (!DOCKER) {
-		skips += 1;
+		tally.skips += 1;
 		console.log("SKIP  not asked for (--docker)");
 		return;
 	}
@@ -1709,7 +1697,7 @@ async function mirrorFixture(name: string) {
 
 async function mirrorSection(name: string, repository: string, body: (f: Awaited<ReturnType<typeof mirrorFixture>>) => Promise<void>, enabled = DOCKER) {
 	await section(name, async () => {
-		if (!enabled) { skips++; return; }
+		if (!enabled) { tally.skips++; return; }
 		const f = await mirrorFixture(repository);
 		const floor = snapshotLimits.free;
 		try { await body(f); }
@@ -2267,5 +2255,4 @@ await section("secrets: nothing that was printed or thrown holds one", async () 
 
 await standin.stop();
 rmSync(scratch, { recursive: true, force: true });
-console.log(`\n${failures === 0 ? "ALL PASSED" : "FAILED"}: ${passes} passed, ${failures} failed${skips > 0 ? `, ${skips} skipped` : ""}`);
-process.exit(failures === 0 ? 0 : 1);
+process.exit(tally.summary(true));

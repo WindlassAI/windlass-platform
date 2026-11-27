@@ -17,12 +17,10 @@ import { PROFILES } from "../server/src/sandbox/profiles.js";
 import { runSetupCommand, stopCutOffSetup } from "../server/src/sandbox/setup.js";
 import type { SandboxHandle } from "../server/src/sandbox/api.js";
 import { OutputTail, SetupCommandProblem, cleanSetupCommand, lastLines, setupNote, setupProjectKey, setupProjectOf } from "../server/src/setup-command.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 function refused(raw: unknown): string | null {
 	try {
@@ -123,5 +121,4 @@ for (const profile of profiles) {
 	expect("nor is one that is gone", !await stopCutOffSetup(sandboxes, "sb") && connects === 1);
 }
 
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));

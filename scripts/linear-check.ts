@@ -15,6 +15,7 @@ import { pollUntil, readProvenance } from "./issue-intake-fixture.js";
 import { GithubStandin } from "./github-standin.js";
 import { LinearStandin, type StandinIssue, type StandinPerson, type StandinTeam } from "./linear-standin.js";
 import { localListeners } from "./check-listeners.js";
+import { sectionMatcher } from "./check-sections.js";
 
 const ORIGIN = "http://127.0.0.1:5173";
 const OPERATOR = "linear-check";
@@ -78,6 +79,7 @@ async function testNode() {
 }
 
 const until = pollUntil(20_000);
+const inLinearOnly = sectionMatcher("LINEAR_ONLY");
 
 async function run() {
 	const { engine, http: [http] } = await localListeners();
@@ -104,7 +106,7 @@ async function run() {
 
 	const failed: string[] = [];
 	const check = async (name: string, fn: () => Promise<void> | void) => {
-		if (process.env.LINEAR_ONLY && !process.env.LINEAR_ONLY.split(",").some(prefix => name.startsWith(prefix))) return;
+		if (!inLinearOnly(name)) return;
 		try { await fn(); console.log("PASS " + name); }
 		catch (error) {
 			failed.push(name);

@@ -13,12 +13,10 @@
  */
 
 import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, cutTurnUsage, cutTurnUsageNote, dayOf, foundStoppedAt, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
+import { OkReport } from "./check-report.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 const LIMITS: UsageLimits = { dailySeconds: 3600, maxKept: 2, holdSeconds: 600 };
 /** 2026-11-17 09:00:00 UTC. */
@@ -30,7 +28,7 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 const keptChecks = [checkKeptLimit, checkReconcile, checkClaim, checkSharedPlace];
 if (process.argv.includes("--kept-only")) {
 	for (const check of keptChecks) check();
-	process.exit(failed ? 1 : 0);
+	process.exit(tally.failures ? 1 : 0);
 }
 
 // Reserve, then settle.
@@ -348,5 +346,4 @@ for (const check of keptChecks) check();
 	expect("the timeline says what of a cut-off turn is counted", /1,590 tokens/.test(cutTurnUsageNote(used)) && /none are counted/.test(cutTurnUsageNote(null)));
 }
 
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));

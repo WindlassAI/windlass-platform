@@ -33,15 +33,13 @@ import { AccountModels, type ListedModels, MODELS_TABLE, ModelProblem, type Mode
 import type { ModelList } from "../server/src/contract.js";
 import { WindlassSignIns, parseModels } from "../server/src/signin/commands.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
+import { OkReport } from "./check-report.js";
+import { sleep as wait } from "./check-wait.js";
 
-let failed = 0;
-function expect(what: string, ok: boolean, detail = ""): void {
-	if (!ok) failed += 1;
-	console.log(`${ok ? "ok  " : "FAIL"}  ${what}${!ok && detail ? `\n      ${detail}` : ""}`);
-}
+const tally = new OkReport();
+const { expect } = tally;
 
 const plain = (value: unknown) => JSON.stringify(value);
-const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const caught = <T>(promise: Promise<T>) =>
 	promise.then(
 		() => null,
@@ -498,5 +496,4 @@ if (binary === undefined) {
 	}
 }
 
-console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
-process.exit(failed === 0 ? 0 : 1);
+process.exit(tally.summary("\nAll checks passed.", (failed) => `\n${failed} check(s) failed.`));
