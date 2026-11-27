@@ -52,11 +52,11 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
 		expect(state("claude-plan")).toBe("not connected");
 		await press(row("claude-plan"), "Connect");
-		expect(row("claude-plan").querySelector(".claude-plan-command code")?.textContent).toBe(
+		expect(row("claude-plan").querySelector(".plan-command code")?.textContent).toBe(
 			"npx @windlassai/cli connect claude",
 		);
 		// The terminal's code is approved on the connect page; the row turns green on its own once the plan arrives.
-		await client.user(auth).approvePlanConnect("KQ2M-8XF4");
+		await client.user(auth).approvePlanConnect("KQ2M-8XF4", "anthropic");
 		for (let i = 0; i < 40 && state("claude-plan") !== "connected"; i++)
 			await act(async () => void (await new Promise(r => setTimeout(r, 200))));
 		expect(state("claude-plan")).toBe("connected");
@@ -98,17 +98,13 @@ it("adds, checks, replaces and removes a provider key", async () => {
 	}
 }, 15_000);
 
-it("shows the ChatGPT sign-in as the ChatGPT plan, and its Codex line only where plans are on", async () => {
+it("connects the ChatGPT plan from a terminal, and shows its Codex line only where plans are on", async () => {
 	const base = createMockClient({ pace: 0 });
 	const auth = {
 		token: "mock:user:u_chatgpt:ada@example.com",
 		profile: { uid: "u_chatgpt", email: "ada@example.com", demo: false },
 	};
 	saveAuth("mock", auth);
-	const user = base.user(auth);
-	const started = await user.startChatgpt();
-	const state = new URL(started.url).searchParams.get("state")!;
-	await user.finishChatgpt(`${started.redirectPrefix}?code=mock_code&state=${state}`);
 	let allowed = true;
 	let rechecked = 0;
 	const client = {
@@ -132,8 +128,20 @@ it("shows the ChatGPT sign-in as the ChatGPT plan, and its Codex line only where
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
 		await settle();
 	};
+	const state = () => row().querySelector(".machine-used")?.textContent;
 	try {
 		await render();
+		expect(state()).toBe("not connected");
+		const connect = [...row().querySelectorAll("button")].find(b => b.textContent === "Connect")!;
+		await act(async () => connect.click());
+		await settle();
+		expect(row().querySelector(".plan-command code")?.textContent).toBe("npx @windlassai/cli connect codex");
+		// The terminal's code is approved on the connect page; the row turns green on its own once the sign-in arrives.
+		await base.user(auth).approvePlanConnect("KQ2M-8XF4", "openai");
+		for (let i = 0; i < 40 && state() !== "connected"; i++)
+			await act(async () => void (await new Promise(r => setTimeout(r, 200))));
+		expect(state()).toBe("connected");
+		expect(row().querySelector(".plan-command")).toBeNull();
 		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
 		expect(row().textContent).toContain("Also pays for hosted Codex · 2 models");
 		const check = [...row().querySelectorAll("button")].find(b => b.textContent === "Check again")!;
@@ -157,4 +165,4 @@ it("shows the ChatGPT sign-in as the ChatGPT plan, and its Codex line only where
 		base.dispose();
 		localStorage.clear();
 	}
-}, 15_000);
+}, 20_000);

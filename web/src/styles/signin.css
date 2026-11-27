@@ -237,21 +237,6 @@
 	flex: none;
 }
 
-.mock-authorize {
-	display: grid;
-	place-items: center;
-	min-height: 100dvh;
-	padding: 24px 16px;
-}
-.mock-authorize .signin-card {
-	width: min(480px, 100%);
-}
-.mock-authorize-actions {
-	display: flex;
-	gap: 10px;
-	margin-top: 6px;
-}
-
 /* The connect page: one card, the terminal's code to compare, approve or deny. */
 .connect-page {
 	min-height: 100dvh;

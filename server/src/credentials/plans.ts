@@ -103,7 +103,7 @@ async function claudeAccount(token: string): Promise<string | null> {
 export class PlanProblem extends Error {
 	constructor(
 		message: string,
-		readonly code: "bad_plan_token" | "plan_refused" | "plan_check_unavailable" | "plans_off",
+		readonly code: "bad_plan_token" | "bad_sign_in" | "plan_refused" | "plan_check_unavailable" | "plans_off",
 	) {
 		super(message);
 	}

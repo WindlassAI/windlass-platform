@@ -14,7 +14,13 @@ An item's own choice comes first, then the repository's, then yours, then the de
 
 ### Model providers
 
-**Connect**, on the ChatGPT plan row under Models, opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
+**Connect**, on the ChatGPT plan row under Models, shows a command to run in a terminal on your own computer (Node 18 or later):
+
+```sh
+npx @windlassai/cli connect codex
+```
+
+The command shows a code and opens a Windlass page in your browser. Check that the page shows the same code, then choose **Approve**. The command then runs Windlass's sign-in, which opens ChatGPT's sign-in in your browser. On a computer without a browser it prints a link instead: open it anywhere, approve, and paste the address the browser ends on back into the terminal. The command hands the sign-in to your account; your own Windlass sign-in on that computer is untouched. The platform keeps the sign-in encrypted and refreshes it itself. **Reconnect** replaces it and **Disconnect** removes it. Your platform login and sessions stay with your GitHub or Google identity.
 
 This connection is your **ChatGPT plan**. Windlass's ChatGPT models run on it. Where the platform offers plans, hosted Codex runs on it too, before an OpenAI key, and the row says "Also pays for hosted Codex". Codex's models on the plan come from ChatGPT's own list, read when you connect; **Check again** reads it anew. Until it has been read, Codex offers only **Agent default**. The plan's tokens never enter a sandbox, and turns already running on an old connection stop when you reconnect or disconnect.
 

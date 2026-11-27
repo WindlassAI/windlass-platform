@@ -53,7 +53,7 @@ export interface SignInStore {
 	/** Null when nothing was ever saved. */
 	load(): Promise<StoredSignIn | null>;
 	/** Resolves when the store has it. */
-	save(row: StoredSignIn, pendingId?: string): Promise<void>;
+	save(row: StoredSignIn): Promise<void>;
 }
 
 export interface SignInHolderOptions {
@@ -155,22 +155,25 @@ export class SignInHolder {
 	 * Replaces the user's sign-in with the one in `sealed`, a finished sign-in sealed for this user.
 	 * Tokens of the earlier sign-in are not handed out again.
 	 */
-	async adopt(sealed: string, pendingId?: string): Promise<void> {
+	async adopt(sealed: string): Promise<void> {
 		// Looked at before anything is touched: what is not a finished sign-in sealed for this user changes nothing.
 		let material: SignInMaterial;
 		try {
-			material = signInOnly(parse(this.options.sealer.open("user", this.uid, sealed)));
+			material = parse(this.options.sealer.open("user", this.uid, sealed));
 		} catch (error) {
 			throw new Error(`the sign-in handed over for user ${this.uid} was refused: ${errorText(error)}`);
 		}
+		await this.adoptMaterial(material);
+	}
+
+	/** Replaces the user's sign-in with `material`, already opened: the connect command's upload (credentials/index.ts). */
+	async adoptMaterial(given: SignInMaterial): Promise<void> {
+		const material = signInOnly(cleanMaterial(given.files));
 		const account = accountOf(material);
 		if (account === null) throw new SandboxUserError("This sign-in is not finished yet.");
 		this.running?.abort();
 		await this.exclusive(async () => {
-			await this.options.store.save(
-				{ sealed: this.seal(material), generation: randomUUID(), shortNoted: false },
-				pendingId,
-			);
+			await this.options.store.save({ sealed: this.seal(material), generation: randomUUID(), shortNoted: false });
 			this.unsaved = null;
 			this.kept = null;
 		});

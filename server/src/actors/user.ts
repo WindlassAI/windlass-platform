@@ -1838,9 +1838,8 @@ export const user = actor({
 					launch_claim INTEGER
 				)
 			`);
-			await db.execute(
-				"CREATE TABLE IF NOT EXISTS model_attempt (id INTEGER PRIMARY KEY CHECK(id=1), sealed TEXT NOT NULL, expires INTEGER NOT NULL, generation INTEGER NOT NULL)",
-			);
+			// The in-page ChatGPT sign-in's pending attempt; ChatGPT is connected with the connect command now.
+			await db.execute("DROP TABLE IF EXISTS model_attempt");
 			// Only installation metadata is stored here. Each GitHub request uses its own scoped token.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS github (
@@ -1915,7 +1914,6 @@ export const user = actor({
 			);
 			for (const [table, column, definition] of [
 				["readiness", "diagnosis", "TEXT"],
-				["model_attempt", "attempt_id", "TEXT"],
 				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
 				["token_generation", "disconnect_job", "TEXT"],
 				["sessions", "disconnect_pending", "INTEGER NOT NULL DEFAULT 0"],
@@ -2032,7 +2030,6 @@ export const user = actor({
 		await dropHostedSnapshots(c.key[0]);
 	},
 	onWake: async c => {
-		await c.db.execute("DELETE FROM model_attempt WHERE attempt_id IS NULL OR expires<=?", Date.now());
 		queueOverageReport(c);
 		if (c.vars.profile)
 			void c.keepAwake(
@@ -2297,9 +2294,6 @@ export const user = actor({
 		internalWithdrawTurn: itemActions.internalWithdrawTurn,
 		[QUEUE_ACTION]: (c): Promise<void> => itemActions.internalTurnQueue(c),
 		me: (c): UserProfile => requireUser(c),
-		startChatgpt: signinActions.startChatgpt,
-		expireModelAttempt: signinActions.expireModelAttempt,
-		finishChatgpt: signinActions.finishChatgpt,
 		chatgpt: signinActions.chatgpt,
 		forgetChatgpt: signinActions.forgetChatgpt,
 		models: signinActions.models,
@@ -3579,7 +3573,8 @@ export const user = actor({
 			credentialActions.internalCredential(c, ref, nonce, chatgptPlan(c)),
 
 		modelPlans: c => credentialActions.modelPlans(c),
-		approvePlanConnect: (c, userCode: string) => credentialActions.approvePlanConnect(c, userCode),
+		approvePlanConnect: (c, userCode: string, provider: PlanProvider) =>
+			credentialActions.approvePlanConnect(c, userCode, provider),
 		denyPlanConnect: (c, userCode: string) => credentialActions.denyPlanConnect(c, userCode),
 		removeModelPlan: async (c, provider: PlanProvider) => {
 			await credentialActions.removeModelPlan(c, provider, chatgptPlan(c));
@@ -3592,7 +3587,7 @@ export const user = actor({
 		},
 		internalPlanModels: (c, ref: unknown, ids: unknown) => credentialActions.internalPlanModels(c, ref, ids),
 		internalConnectPlan: async (c, provider: PlanProvider, digest: string, sealed: string) => {
-			const plan = await credentialActions.internalConnectPlan(c, provider, digest, sealed);
+			const plan = await credentialActions.internalConnectPlan(c, provider, digest, sealed, chatgptPlan(c));
 			await credentialsChanged(c);
 			return plan;
 		},

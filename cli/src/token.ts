@@ -64,9 +64,11 @@ export function extractToken(output: string): string | null {
 	return found;
 }
 
-/** Text with anything that looks like an Anthropic secret taken out, for every message the CLI shows. */
+/** Text with anything that looks like an Anthropic secret or a JWT (a ChatGPT sign-in's tokens) taken out, for every message the CLI shows. */
 export function scrub(text: string): string {
-	return text.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…");
+	return text
+		.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…")
+		.replace(/eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)*/g, "eyJ…");
 }
 
 /** The longest end of `text` that could be the start of the token's prefix, held back until the next chunk. */

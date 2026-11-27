@@ -3,18 +3,13 @@
  * `claude` on PATH that prints a setup token the way Claude Code's screen does (colours, a box, wrapped).
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { cli as run, platform, REQUEST } from "./stand-ins.ts";
 
-const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const TOKEN = "sk-ant-oat01-" + "Zq8_k-3".repeat(13) + "WWAA";
-const REQUEST = "r".repeat(43);
 
 const bin = mkdtempSync(join(tmpdir(), "windlassai-cli-"));
 after(() => rmSync(bin, { recursive: true, force: true }));
@@ -36,53 +31,9 @@ printf '\\r\\nStore this token securely.\\033[?25h\\r\\n'
 );
 chmodSync(join(bin, "claude"), 0o755);
 
-type Plan = { decision: "approved" | "denied"; connect: number; body?: unknown };
-
-/** The platform's three routes: approval arrives on the second poll; the connect answer is the case's. */
-async function platform(plan: Plan) {
-	const seen: { path: string; body: Record<string, unknown> }[] = [];
-	let polls = 0;
-	const read = async (req: IncomingMessage) => {
-		let text = "";
-		for await (const chunk of req) text += chunk;
-		return JSON.parse(text) as Record<string, unknown>;
-	};
-	const server = createServer(async (req, res) => {
-		const body = await read(req);
-		seen.push({ path: req.url!, body });
-		const send = (status: number, answer: unknown) =>
-			res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(answer));
-		if (req.url === "/platform/connect/start")
-			return send(201, {
-				userCode: "KQ2M-8XF4",
-				approveUrl: "http://127.0.0.1:1/connect?code=KQ2M-8XF4",
-				request: REQUEST,
-				expiresAt: Date.now() + 600_000,
-				interval: 1_000,
-			});
-		if (req.url === "/platform/connect/poll") return send(200, { state: ++polls < 2 ? "pending" : plan.decision });
-		if (req.url === "/platform/connect") return send(plan.connect, plan.body ?? { account: "a@b.com · Max" });
-		send(404, {});
-	});
-	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-	after(() => server.close());
-	return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen };
-}
-
 function cli(args: string[], env: Record<string, string>, stdin = "") {
 	rmSync(ran, { force: true });
-	const child = spawn(process.execPath, [MAIN, ...args], {
-		env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DISPLAY: "", WAYLAND_DISPLAY: "", ...env },
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	child.stdin.end(stdin);
-	let stdout = "",
-		stderr = "";
-	child.stdout.on("data", chunk => (stdout += chunk));
-	child.stderr.on("data", chunk => (stderr += chunk));
-	return new Promise<{ code: number | null; stdout: string; stderr: string }>(resolve =>
-		child.on("close", code => resolve({ code, stdout, stderr })),
-	);
+	return run(bin, args, env, stdin);
 }
 
 test("approve in the browser, then claude setup-token's token connects the plan", async () => {
@@ -143,9 +94,9 @@ test("no token in the output and no terminal to paste into: it says how to finis
 });
 
 test("usage, planned commands and platform addresses", async () => {
-	const codex = await cli(["connect", "codex"], { WINDLASS_PLATFORM: "https://windlass.example.com" });
+	const codex = await cli(["connect", "codex", "--token-stdin"], { WINDLASS_PLATFORM: "https://windlass.example.com" });
 	assert.equal(codex.code, 2);
-	assert.match(codex.stderr, /signing in with ChatGPT on the platform.*https:\/\/windlass\.example\.com\/settings/);
+	assert.match(codex.stderr, /--token-stdin is for connect claude/);
 	assert.match((await cli(["connect", "--machine"], {})).stderr, /not available yet/);
 	const plain = await cli(["connect", "claude"], { WINDLASS_PLATFORM: "http://example.com" });
 	assert.match(plain.stderr, /must start with https:\/\//);

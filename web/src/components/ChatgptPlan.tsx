@@ -1,36 +1,26 @@
-import type { LoginStart, ModelPlanStatus } from "@contract";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useChatgpt } from "../state/hooks";
+import { PlanCommand, usePlanConnect } from "./PlanConnect";
 
+/**
+ * The ChatGPT plan row, for any signed-in user: the command that, on the user's own computer, asks them to approve its
+ * code here and then signs in with ChatGPT through Windlass, handing the sign-in to the platform. Where plans are on
+ * (`allowed`, WLP_PLAN_USERS) the sign-in also pays for hosted Codex.
+ */
 export function ChatgptPlan() {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const { status, error: statusError } = useChatgpt();
-	const [attempt, setAttempt] = useState<LoginStart | null>(null);
-	const [callback, setCallback] = useState("");
+	const { allowed, plan, setPlan, waiting, wait, cancel } = usePlanConnect("openai", status);
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	/** The sign-in as the ChatGPT plan: its account label, and whether it also pays for hosted Codex here (WLP_PLAN_USERS). */
-	const [plan, setPlan] = useState<ModelPlanStatus | null>(null);
-	const [allowed, setAllowed] = useState(false);
 	const [checking, setChecking] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 
-	useEffect(() => {
-		let live = true;
-		client
-			.user(auth)
-			.modelPlans()
-			.then(
-				found => {
-					if (!live) return;
-					setAllowed(found.allowed);
-					setPlan(found.plans.find(p => p.provider === "openai") ?? null);
-				},
-				() => undefined,
-			);
-		return () => void (live = false);
-	}, [client, auth, status]);
+	function connect() {
+		setError(null);
+		wait();
+	}
 
 	async function checkAgain() {
 		setChecking(true);
@@ -45,21 +35,13 @@ export function ChatgptPlan() {
 		}
 	}
 
-	async function change(action: "start" | "finish" | "disconnect") {
+	async function disconnect() {
 		setBusy(true);
 		setError(null);
 		try {
-			const user = client.user(auth);
-			if (action === "start") {
-				setAttempt(await user.startChatgpt());
-				setCallback("");
-			} else {
-				if (action === "finish") await user.finishChatgpt(callback.trim());
-				else await user.forgetChatgpt();
-				setAttempt(null);
-				setCallback("");
-				window.dispatchEvent(new Event(PROVIDERS_CHANGED));
-			}
+			await client.user(auth).forgetChatgpt();
+			setPlan(null);
+			window.dispatchEvent(new Event(PROVIDERS_CHANGED));
 		} catch (failure) {
 			setError(explain(failure));
 		} finally {
@@ -99,42 +81,11 @@ export function ChatgptPlan() {
 						</button>
 					</p>
 				)}
-				{attempt ? (
-					<form
-						className="chatgpt-plan-form"
-						onSubmit={event => {
-							event.preventDefault();
-							void change("finish");
-						}}
-					>
-						<a className="link" href={attempt.url} target="_blank" rel="noopener noreferrer">
-							Authorize your plan at OpenAI ↗
-						</a>
-						<label className="field">
-							Paste the full address from the page that ends at {attempt.redirectPrefix}.
-							<input
-								className="input"
-								type="url"
-								autoComplete="off"
-								value={callback}
-								onChange={e => setCallback(e.target.value)}
-								required
-							/>
-						</label>
-						<div className="chatgpt-plan-actions">
-							<button className="button button-primary button-small" disabled={busy || !callback.trim()}>
-								Finish connecting
-							</button>
-							<button
-								type="button"
-								className="button button-quiet button-small"
-								disabled={busy}
-								onClick={() => setAttempt(null)}
-							>
-								Cancel
-							</button>
-						</div>
-					</form>
+				{waiting ? (
+					<PlanCommand provider="openai">
+						Run this in a terminal on your computer. It opens a page here to approve, then signs in with ChatGPT in your
+						browser through Windlass on your computer.
+					</PlanCommand>
 				) : null}
 				{(error || statusError) && (
 					<p className="field-note tone-bad" role="alert">
@@ -146,65 +97,30 @@ export function ChatgptPlan() {
 				{connected ? "connected" : "not connected"}
 			</span>
 			<div className="provider-actions">
-				{attempt ? null : connected ? (
+				{waiting ? (
+					<button type="button" className="button button-quiet button-small" onClick={cancel}>
+						Cancel
+					</button>
+				) : connected ? (
 					<>
-						<button
-							type="button"
-							className="button button-outline button-small"
-							disabled={busy}
-							onClick={() => void change("start")}
-						>
+						<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
 							Reconnect
 						</button>
 						<button
 							type="button"
 							className="button button-outline button-small"
 							disabled={busy}
-							onClick={() => void change("disconnect")}
+							onClick={() => void disconnect()}
 						>
 							Disconnect
 						</button>
 					</>
 				) : (
-					<button
-						type="button"
-						className="button button-outline button-small"
-						disabled={busy}
-						onClick={() => void change("start")}
-					>
+					<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
 						Connect
 					</button>
 				)}
 			</div>
 		</li>
-	);
-}
-
-/** The mock's stand-in for OpenAI's page: approving sends the tab to the loopback address, which cannot load. */
-export function MockAuthorize() {
-	const params = new URLSearchParams(location.search);
-	const redirect = "http://127.0.0.1:1455/auth/callback";
-	const state = params.get("state") ?? "";
-	const approve = `${redirect}?${new URLSearchParams({ code: "mock_code_4f2a91", scope: "openid profile email offline_access", state })}`;
-	const deny = `${redirect}?${new URLSearchParams({ error: "access_denied", state })}`;
-	return (
-		<main className="mock-authorize">
-			<div className="signin-card">
-				<p className="eyebrow">mock · stands in for OpenAI's sign-in page</p>
-				<h1 className="signin-title">Let Windlass use your ChatGPT account?</h1>
-				<p className="signin-text">
-					Approving sends this tab to <code>{redirect}</code>, which will fail to load. Copy that address and paste it
-					into the tab you came from.
-				</p>
-				<div className="mock-authorize-actions">
-					<a className="button button-primary" href={approve}>
-						Approve
-					</a>
-					<a className="button button-outline" href={deny}>
-						Deny
-					</a>
-				</div>
-			</div>
-		</main>
 	);
 }

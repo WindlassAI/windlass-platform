@@ -1,41 +1,48 @@
 /**
- * `connect claude`, `gh auth login`-style: the platform opens a request and gives a code; the user approves that
- * code on the platform's web page, signed in there; only then does this run `claude setup-token` and hand the
- * token over, once, to the account that approved. The token is never printed, logged or stored here.
+ * `connect claude` and `connect codex`, `gh auth login`-style: the platform opens a request and gives a code; the
+ * user approves that code on the platform's web page, signed in there; only then does this get the plan's secret on
+ * this computer (`claude setup-token`'s token, or the files of a ChatGPT sign-in through Windlass) and hand it over,
+ * once, to the account that approved. The secret is never printed, logged or stored here.
  */
 import {
 	CONNECT_PATHS,
 	type ConnectRequestState,
 	type ConnectStart,
 	type PlanProvider,
+	type SignInUpload,
 	validPlanToken,
 } from "../../server/src/contract/connect.ts";
 import { CliError, post } from "./platform.ts";
 import { runSetupToken } from "./setup-token.ts";
 import { openBrowser, printable, readHidden, say } from "./terminal.ts";
+import { windlassSignIn } from "./windlass-login.ts";
+
+/** What is handed to the platform: a Claude plan's token, or a ChatGPT sign-in's files (which the platform then refreshes). */
+export type Handover = { token: string } | { signIn: SignInUpload };
 
 /**
- * What `connect <name>` connects: the plan's provider on the platform and how this computer gets its token.
- * A ChatGPT plan has no token to hand over (it is a sign-in the platform refreshes), so `connect codex` is not one;
- * connecting a machine (`connect --machine`) is its own flow beside this one.
+ * What `connect <name>` connects: the plan's provider on the platform and how this computer gets what it hands
+ * over. Connecting a machine (`connect --machine`) is its own flow beside this one.
  */
 export interface PlanSource {
 	provider: PlanProvider;
 	name: string;
-	/** Gets the plan's token on this computer, after the user approved. */
-	obtainToken(): Promise<string>;
+	/** Gets the plan's secret on this computer, after the user approved. */
+	obtain(): Promise<Handover>;
 }
 
 export const PLAN_SOURCES: Record<string, PlanSource> = {
-	claude: { provider: "anthropic", name: "Claude plan", obtainToken: claudeToken },
+	claude: { provider: "anthropic", name: "Claude plan", obtain: async () => ({ token: await claudeToken() }) },
+	codex: { provider: "openai", name: "ChatGPT plan", obtain: async () => ({ signIn: await chatgptSignIn() }) },
 };
 
 /** What the platform's refusals mean for the person at the terminal. */
 const REFUSALS: Record<string, string> = {
 	bad_plan_token: "That is not a setup token (it starts with sk-ant-oat01-). Run the command again.",
+	bad_sign_in: "Windlass did not save a finished ChatGPT sign-in. Run the command again.",
 	plan_refused: "Anthropic did not accept that token. Run the command again to make a new one.",
 	plan_check_unavailable: "Anthropic could not be reached to check the plan. Run the command again in a minute.",
-	plans_off: "Connecting a Claude plan is not available on this account. Ask the platform's operator.",
+	plans_off: "Connecting this plan is not available on this account. Ask the platform's operator.",
 	connect_code_not_found: "This connect request expired or was already used. Run the command again.",
 	too_many_connects: "The platform has too many connect requests open. Try again in a minute.",
 	rate_limited: "Too many connect attempts from this network. Try again in a minute.",
@@ -62,7 +69,7 @@ function parseStart(body: Record<string, unknown>): ConnectStart | null {
 
 export interface ConnectOptions {
 	platform: string;
-	/** A token read from standard input (`--token-stdin`) instead of running `claude setup-token`. */
+	/** A Claude plan's token read from standard input (`--token-stdin`) instead of running `claude setup-token`. */
 	token?: string;
 	browser: boolean;
 }
@@ -86,8 +93,10 @@ export async function connectPlan(source: PlanSource, options: ConnectOptions): 
 	if (state === "expired") throw new CliError("The code expired before it was approved. Run the command again.");
 
 	say("Approved.");
-	const token = options.token ?? (await source.obtainToken());
-	const connected = await post(options.platform, CONNECT_PATHS.connect, { request: request.request, token });
+	let handover: Handover | null = options.token !== undefined ? { token: options.token } : await source.obtain();
+	const body = { request: request.request, ...handover };
+	handover = null;
+	const connected = await post(options.platform, CONNECT_PATHS.connect, body);
 	if (connected.status !== 200) throw refusal(connected);
 	const account = typeof connected.body.account === "string" ? printable(connected.body.account) : "";
 	say(`Connected: ${account || `your ${source.name}`}`);
@@ -121,6 +130,17 @@ async function waitForDecision(platform: string, request: ConnectStart): Promise
 		if (state === "approved" || state === "denied" || state === "expired") return state;
 	}
 	return "expired";
+}
+
+/** Signs in with ChatGPT through Windlass on this computer, in a directory of its own (windlass-login.ts). */
+async function chatgptSignIn(): Promise<SignInUpload> {
+	say(
+		"Signing in with ChatGPT through Windlass on this computer, in a private directory: your own Windlass sign-in is not touched.",
+	);
+	say("Approve Windlass in the browser it opens (or follow the link it prints).\n");
+	const signIn = await windlassSignIn();
+	say("\nSigned in. Handing the sign-in to the platform, which keeps and refreshes it.");
+	return signIn;
 }
 
 /** Runs `claude setup-token`; falls back to a hidden paste when the token could not be read off its output. */

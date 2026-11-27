@@ -26,7 +26,6 @@ import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Connect } from "./screens/Connect";
 import { Settings } from "./screens/Settings";
 import { Plans } from "./screens/Plans";
-import { MockAuthorize } from "./components/ChatgptPlan";
 import { LinkCallback, SignIn } from "./screens/SignIn";
 import { Usage } from "./screens/Usage";
 import { Workspace, type Selection } from "./screens/Workspace";
@@ -161,7 +160,7 @@ function FactoryRoute({
 
 export function App() {
 	const route = useRoute();
-	const { auth, client, platform } = useApp();
+	const { auth, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 	// The user's work items, read once for every page: the bar's needs-you count on each, the Agents home and the Factory.
 	const offered = Boolean(platform.info?.items);
@@ -240,8 +239,6 @@ export function App() {
 		if (route.name === "home" && !auth) document.title = LANDING_TITLE;
 	}, [route.name, auth]);
 
-	if (route.name === "mock-authorize" && client.kind === "mock") return <MockAuthorize />;
-
 	// Open to everyone, signed in or not.
 	if (route.name === "docs") {
 		return (
@@ -251,7 +248,7 @@ export function App() {
 		);
 	}
 
-	if (route.name === "notfound" || route.name === "mock-authorize" || noMachines || noItems) {
+	if (route.name === "notfound" || noMachines || noItems) {
 		return (
 			<div className="app">
 				<TopBar {...bar} />
@@ -272,7 +269,8 @@ export function App() {
 		return auth ? <LinkCallback /> : <SignIn theme={theme} onToggleTheme={toggleTheme} />;
 	}
 
-	if (route.name === "connect") return <Connect code={route.code} theme={theme} onToggleTheme={toggleTheme} />;
+	if (route.name === "connect")
+		return <Connect code={route.code} plan={route.plan} theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (route.name === "session") return <SessionRoute key={route.id} sessionId={route.id} bar={bar} />;
 

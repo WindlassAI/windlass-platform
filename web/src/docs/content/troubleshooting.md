@@ -8,9 +8,6 @@ Ask the operator to invite your platform UID or your verified provider email.
 **"This sign-in attempt has expired. Start again."**\
 A sign-in attempt lasts 10 minutes. Choose your provider again.
 
-**"That is not the address the browser ended on. It starts with http://127.0.0.1:1455/auth/callback?code="**\
-In Settings → Model providers, paste the full loopback address from the tab where you approved the ChatGPT connection.
-
 **"Your sign-in is no longer accepted. Sign in again to carry on."**\
 Your sign-in on the platform ended, or you were taken off its list. Sign in again.
 

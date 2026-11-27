@@ -1,7 +1,6 @@
 // All sessions for one user share this sign-in holder. It persists a refreshed credential before returning a token sealed for the caller.
 // The sign-in is the user's ChatGPT plan: the holder keeps it in the plan's `model_plan` row (credentials/plans.ts).
 
-import { randomBytes } from "node:crypto";
 import { changed as machinesChanged, logoutMachines } from "../user-machines.js";
 import { type ItemsCtx, notifyProviderWaits, queueChanged } from "../user-items.js";
 import { UserError } from "rivetkit";
@@ -23,9 +22,8 @@ import type { ChatgptPlan } from "../../credentials/index.js";
 import { errorText } from "../../util.js";
 import { SandboxUserError, type AccessToken, type ChatgptAccount } from "../../sandbox/api.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../../signin/directory.js";
-import { SignInHolder, type StoredSignIn } from "../../signin/holder.js";
+import { SignInHolder } from "../../signin/holder.js";
 import { getSignIns } from "../../signin/index.js";
-import { config } from "../../config.js";
 import { getLayer } from "../../layer.js";
 import type { UserCtx, UserVars } from "./state.js";
 
@@ -33,25 +31,6 @@ interface SignInCtx {
 	vars: UserVars;
 	db: RawAccess;
 	key: string[];
-}
-
-/** Consume the pending authorization in the same transaction that commits the credential. */
-export async function saveModelSignIn(db: RawAccess, row: StoredSignIn, attemptId?: string): Promise<void> {
-	const write = (sql: RawAccess) => writeChatgptSignIn(sql, row);
-	if (attemptId === undefined) {
-		await write(db);
-		return;
-	}
-	await db.transaction(async tx => {
-		const claimed = await tx.execute(
-			`DELETE FROM model_attempt WHERE attempt_id=? AND expires>?
-			AND generation=(SELECT gen FROM token_generation WHERE id=1) RETURNING id`,
-			attemptId,
-			Date.now(),
-		);
-		if (!claimed.length) throw new SandboxUserError("Start the ChatGPT connection again.");
-		await write(tx);
-	});
 }
 
 // The save must finish before the holder hands out a refreshed token.
@@ -70,7 +49,7 @@ function signIn(c: SignInCtx): Promise<SignInHolder> {
 					revoke: hooks.revoke,
 					store: {
 						load: () => loadChatgptSignIn(db()),
-						save: (row, attemptId) => saveModelSignIn(db(), row, attemptId),
+						save: row => writeChatgptSignIn(db(), row),
 					},
 				}),
 		)
@@ -164,6 +143,11 @@ export async function checkChatgptPlan(c: ModelsCtx): Promise<void> {
 export function chatgptPlan(c: SignInActionCtx): ChatgptPlan {
 	return {
 		token: () => chatgptPlanToken(c),
+		adopt: async material => {
+			await (await getLayer()).logins.ensureUserVolume(c.key[0]!);
+			await (await signIn(c)).adoptMaterial(material);
+			await adopted(c);
+		},
 		check: () => checkChatgptPlan(c),
 		forget: () => forgetSignIn(c, c.key[0]!),
 	};
@@ -195,8 +179,17 @@ export async function writeActorProfile(c: UserCtx, profile: UserProfile, atLogi
 	if (written.length) c.vars.profile = profile;
 }
 
+/** After a new sign-in is stored: its label and models, and everything waiting on a ChatGPT sign-in hears of it. */
+async function adopted(c: SignInActionCtx): Promise<void> {
+	await checkChatgptPlan(c);
+	if (c.vars.machines.size) await machinesChanged(c);
+	queueChanged(c);
+	await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
+	c.vars.reached = true;
+	console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);
+}
+
 async function forgetSignIn(c: SignInActionCtx, uid: string) {
-	await c.db.execute("DELETE FROM model_attempt");
 	await (await signIn(c)).logout();
 	await c.vars.models.forget(c.db);
 	await logoutMachines(c);
@@ -222,65 +215,6 @@ export const signinActions = {
 		c.vars.reached = true;
 		return c.vars.tokenGen;
 	},
-	startChatgpt: async (c: SignInActionCtx) => {
-		const { uid, demo } = requireUser(c);
-		if (demo) throw new UserError("The demo uses a scripted model.", { code: "demo" });
-		const generation = c.vars.tokenGen;
-		try {
-			const attemptId = randomBytes(16).toString("hex");
-			const expiresAt = Date.now() + config.loginTtlMs;
-			await c.db.execute(
-				"INSERT OR REPLACE INTO model_attempt (id, sealed, expires, generation, attempt_id) VALUES (1, '', ?, ?, ?)",
-				expiresAt,
-				generation,
-				attemptId,
-			);
-			await c.schedule.at(expiresAt, "expireModelAttempt");
-			const { url, redirectPrefix, attempt } = await (await getLayer()).logins.start(uid);
-			const ready = await c.db.execute(
-				"UPDATE model_attempt SET sealed=? WHERE attempt_id=? AND expires>? RETURNING id",
-				attempt,
-				attemptId,
-				Date.now(),
-			);
-			if (!ready.length) throw new UserError("Start the ChatGPT connection again.", { code: "attempt_expired" });
-			return { url, redirectPrefix, expiresAt };
-		} catch (error) {
-			throw clientError(c.log, error, "Could not start the ChatGPT connection.");
-		}
-	},
-	expireModelAttempt: async (c: SignInActionCtx) => {
-		if (!c.scheduledFire) throw new UserError("Internal action.", { code: "forbidden" });
-		await c.db.execute("DELETE FROM model_attempt WHERE expires<=?", Date.now());
-	},
-	finishChatgpt: async (c: SignInActionCtx, callback: string): Promise<void> => {
-		const { uid, demo } = requireUser(c);
-		if (demo || typeof callback !== "string" || callback.length > 8192)
-			throw new UserError("Invalid model connection.", { code: "bad_input" });
-		const [row] = await c.db.execute<{ sealed: string; attempt_id: string }>(
-			"SELECT sealed,attempt_id FROM model_attempt WHERE id=1 AND sealed<>'' AND attempt_id IS NOT NULL AND expires > ? AND generation = ?",
-			Date.now(),
-			c.vars.tokenGen,
-		);
-		if (!row) throw new UserError("Start the ChatGPT connection again.", { code: "attempt_expired" });
-		try {
-			const { logins } = await getLayer();
-			const finished = await logins.finish(uid, row.sealed, callback);
-			requireUser(c);
-			// Windlass accepts a code once. Keep the finished result until the model holder acknowledges it.
-			const claimed = await c.db.execute(
-				"UPDATE model_attempt SET sealed=? WHERE id=1 AND sealed=? AND expires > ? RETURNING id",
-				finished.attempt,
-				row.sealed,
-				Date.now(),
-			);
-			if (!claimed.length) throw new UserError("Start the ChatGPT connection again.", { code: "attempt_expired" });
-			await logins.adopt(uid, finished.attempt, uid, row.attempt_id);
-		} catch (error) {
-			throw clientError(c.log, error, "Could not finish the ChatGPT connection.");
-		}
-	},
-
 	chatgpt: async (c: SignInActionCtx): Promise<ChatgptStatus> => {
 		const profile = requireUser(c);
 		try {
@@ -311,16 +245,11 @@ export const signinActions = {
 			throw clientError(c.log, error, "Your models could not be read. Try again.");
 		}
 	},
-	internalAdoptSignIn: async (c: SignInActionCtx, sealed: string, attemptId?: string): Promise<SignInAnswer<null>> => {
+	internalAdoptSignIn: async (c: SignInActionCtx, sealed: string): Promise<SignInAnswer<null>> => {
 		requireService(c);
 		return answered(c, async () => {
-			await (await signIn(c)).adopt(sealed, attemptId);
-			await checkChatgptPlan(c);
-			if (c.vars.machines.size) await machinesChanged(c);
-			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
-			c.vars.reached = true;
-			console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);
+			await (await signIn(c)).adopt(sealed);
+			await adopted(c);
 			return null;
 		});
 	},

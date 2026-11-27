@@ -5,7 +5,7 @@
  * the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
-import type { GithubId, ItemSummary } from "@contract";
+import { type GithubId, type ItemSummary, isPlanProvider, type PlanProvider } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { routeLabel } from "./nav";
 
@@ -37,10 +37,11 @@ export type Route =
 	| { name: "item"; id: string }
 	/** Every work item across repositories, by what its person must do: `repository` and `from` filter it (`?repository=`, `?from=`). */
 	| { name: "factory"; repository?: GithubId; from?: ItemSource }
-	/** The mock's stand-in for OpenAI's sign-in page. */
-	| { name: "mock-authorize" }
-	/** Approves the connect command's request in a terminal: `code` is the one the terminal shows (`?code=`). */
-	| { name: "connect"; code?: string }
+	/**
+	 * Approves the connect command's request in a terminal: `code` is the one the terminal shows (`?code=`), `plan`
+	 * the plan it connects (`?plan=`).
+	 */
+	| { name: "connect"; code?: string; plan?: PlanProvider }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
 	| { name: "docs"; slug: string; section?: string }
 	| { name: "notfound" };
@@ -89,10 +90,11 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/machines") return { name: "machines" };
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
-	if (path === "/mock/authorize") return { name: "mock-authorize" };
 	if (path === "/connect") {
-		const code = new URLSearchParams(search).get("code");
-		return code ? { name: "connect", code } : { name: "connect" };
+		const query = new URLSearchParams(search);
+		const code = query.get("code");
+		const plan = query.get("plan");
+		return { name: "connect", ...(code ? { code } : {}), ...(isPlanProvider(plan) ? { plan } : {}) };
 	}
 	if (path === "/docs") return { name: "docs", slug: "" };
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
@@ -141,8 +143,6 @@ function pathOf(route: Route): string {
 			return `/items/${encodeURIComponent(route.id)}`;
 		case "factory":
 			return "/factory";
-		case "mock-authorize":
-			return "/mock/authorize";
 		case "connect":
 			return "/connect";
 		case "docs":
@@ -158,6 +158,7 @@ export function href(route: Route): string {
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
 	if (route.name === "connect" && route.code) query.set("code", route.code);
+	if (route.name === "connect" && route.plan) query.set("plan", route.plan);
 	if (mock !== null) query.set("mock", mock);
 	const fragment =
 		(route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section
@@ -171,7 +172,7 @@ const LAST_APP_PAGE = "wlp.lastAppPage";
 
 export function rememberAppPage(): void {
 	const page = parseRoute(location.pathname).name;
-	if (page === "docs" || page === "notfound" || page === "mock-authorize") return;
+	if (page === "docs" || page === "notfound") return;
 	try {
 		// Login and integration callbacks can carry one-time credentials.
 		const search = page === "signin" ? new URL(href({ name: "signin" }), location.origin).search : location.search;

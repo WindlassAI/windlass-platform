@@ -13,6 +13,7 @@ process.env.WLP_CLIENT_IP_HEADER = "x-check-address";
 
 const { modelKeyCaller, planConnectCaller } = await import("../server/src/actors/internal.js");
 const { credentialActions: credentials, CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
+type ChatgptPlan = import("../server/src/credentials/index.js").ChatgptPlan;
 const { connectCodeDigest, connectTransitSubject, newConnectRequest } = await import(
 	"../server/src/credentials/connect-code.js"
 );
@@ -142,7 +143,7 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 	// Off for an account (WLP_PLAN_USERS): no approving, no connect, and a saved plan is never used.
 	assert.equal((await credentials.modelPlans(off.context)).allowed, false);
 	await assert.rejects(
-		credentials.approvePlanConnect({ ...off.context, client: () => assert.fail() } as never, "KQ2M-8XF4"),
+		credentials.approvePlanConnect({ ...off.context, client: () => assert.fail() } as never, "KQ2M-8XF4", "anthropic"),
 		/not available/,
 	);
 	const blocked = handover("plan-check-off", tokens.good);
@@ -204,14 +205,20 @@ function connectWorld() {
 		if (!users.has(uid)) users.set(uid, account(uid));
 		return users.get(uid)!;
 	};
-	const bind = <T extends object>(actions: T, context: object) =>
+	/** The user actor passes its ChatGPT sign-in holder to `internalConnectPlan` (actors/user.ts); a case may give one. */
+	const holders = new Map<string, ChatgptPlan>();
+	const bind = <T extends object>(actions: T, context: object, chatgpt?: ChatgptPlan) =>
 		new Proxy(
 			{},
 			{
 				get:
 					(_, name) =>
 					(...args: unknown[]) =>
-						(actions as Record<string | symbol, (...a: unknown[]) => unknown>)[name]!(context, ...args),
+						(actions as Record<string | symbol, (...a: unknown[]) => unknown>)[name]!(
+							context,
+							...args,
+							...(name === "internalConnectPlan" && chatgpt ? [chatgpt] : []),
+						),
 			},
 		);
 	const codes = connectCodes.config.actions!;
@@ -221,13 +228,15 @@ function connectWorld() {
 		},
 		user: {
 			get: ([uid]: string[], { params }: { params: unknown }) =>
-				bind(credentials, { ...userOf(uid).context, client: () => client, conn: { params } }),
+				bind(credentials, { ...userOf(uid).context, client: () => client, conn: { params } }, holders.get(uid)),
 		},
 	};
 	const engine = () => client as never;
 	let address = 0;
 	return {
 		sql,
+		holders,
+		db: (uid: string) => userOf(uid).context.db,
 		ready: async () => {
 			if (!("db" in connectCodes.config)) throw new Error("Missing connect-codes database");
 			await connectCodes.config.db.onMigrate(migrating as never);
@@ -274,13 +283,13 @@ test("a terminal connects a plan only after its user approves the code, once", a
 		return started.body as { userCode: string; request: string; approveUrl: string; interval: number };
 	};
 	const state = async (request: string) => (await world.post(poll, { request })).body.state;
-	const approve = (uid: string, code: string) => credentials.approvePlanConnect(world.as(uid), code);
+	const approve = (uid: string, code: string) => credentials.approvePlanConnect(world.as(uid), code, "anthropic");
 	const code = (err: unknown) => (err as { code?: string }).code;
 
 	// start answers the code to show, the page to approve it on and the terminal's secret; nothing is signed in.
-	assert.equal((await world.post(start, { provider: "openai" })).status, 400);
+	assert.equal((await world.post(start, { provider: "gemini" })).status, 400);
 	const first = await open();
-	assert.equal(first.approveUrl, `${config.origins[0]}/connect?code=${first.userCode}`);
+	assert.equal(first.approveUrl, `${config.origins[0]}/connect?code=${first.userCode}&plan=anthropic`);
 	assert.equal(first.interval, 2_000);
 	assert.equal(await state(first.request), "pending");
 	assert.equal((await world.post(poll, { request: "nope" })).status, 400);
@@ -373,6 +382,155 @@ test("hosted Codex pays with the ChatGPT plan first, an OpenAI key otherwise, an
 	assert.equal(hostedCatalog("windlass", [chatgpt]), undefined);
 });
 
+test("a terminal connects the ChatGPT plan with the sign-in Windlass saved on its computer, for any signed-in user", async t => {
+	const { SignInHolder } = await import("../server/src/signin/holder.js");
+	const { checkChatgptPlan } = await import("../server/src/actors/user/signin.js");
+	const { loadChatgptSignIn, writeChatgptSignIn } = await import("../server/src/credentials/plans.js");
+	const catalog = createServer((req, res) => {
+		if (req.headers.authorization !== "Bearer chatgpt-access-for-catalog") return void res.writeHead(401).end("{}");
+		res.end(JSON.stringify({ models: [{ slug: "gpt-5.5-codex", visibility: "list" }] }));
+	});
+	await new Promise<void>(resolve => catalog.listen(0, "127.0.0.1", resolve));
+	t.after(() => catalog.close());
+	process.env.WLP_OPENAI_BASE_URL = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
+	const world = connectWorld();
+	t.after(() => world.close());
+	await world.ready();
+	// Each user's actor holds a real holder over its own `model_plan` row, and runs the same check after adopting.
+	const holderOf = (uid: string) => {
+		const db = world.db(uid);
+		const holder = new SignInHolder({
+			uid,
+			sealer: serverSealer(),
+			store: { load: () => loadChatgptSignIn(db), save: row => writeChatgptSignIn(db, row) },
+			commands: {
+				token: async (material: unknown) => ({
+					ok: true,
+					material,
+					token: { accessToken: "chatgpt-access-for-catalog", expiresAt: Date.now() + 3_600_000 },
+					shorter: false,
+				}),
+			} as never,
+			log: () => {},
+		});
+		const ctx = { vars: { signIn: Promise.resolve(holder) }, db, key: [uid], keepAwake: <T>(p: Promise<T>) => p };
+		const plan: ChatgptPlan = {
+			token: async () => null,
+			adopt: async material => {
+				await holder.adoptMaterial(material);
+				await checkChatgptPlan(ctx as never);
+			},
+			check: async () => {},
+			forget: () => holder.logout(),
+		};
+		world.holders.set(uid, plan);
+		return holder;
+	};
+	const { start, poll, connect } = CONNECT_PATHS;
+	const code = (err: unknown) => (err as { code?: string }).code;
+	const open = async () => {
+		const started = await world.post(start, { provider: "openai" }, world.address());
+		assert.equal(started.status, 201);
+		return started.body as { userCode: string; request: string; approveUrl: string };
+	};
+	const state = async (request: string) => (await world.post(poll, { request })).body.state;
+	const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_plan_type: "plus" } })).toString(
+		"base64url",
+	);
+	const refresh = "chatgpt-refresh-" + hex();
+	const signIn = (email: string) => ({
+		files: {
+			"auth.json": JSON.stringify({
+				account: { sub: `sub-${email}`, email },
+				accessToken: "chatgpt-access-" + hex(),
+				refreshToken: refresh,
+				expiresAt: Date.now() + 3_600_000,
+				idToken: `h.${claims}.sig`,
+			}),
+			"host-id": "host-" + hex(),
+		},
+	});
+
+	// plan-check-b is not in WLP_PLAN_USERS: the ChatGPT sign-in is still theirs to connect, for Windlass.
+	const holderB = holderOf("plan-check-b");
+	holderOf("plan-check-c");
+	const first = await open();
+	assert.equal(first.approveUrl, `${config.origins[0]}/connect?code=${first.userCode}&plan=openai`);
+	// A page that names another plan approves nothing.
+	await assert.rejects(
+		credentials.approvePlanConnect(world.as("plan-check-a"), first.userCode, "anthropic"),
+		err => code(err) === "connect_code_not_found",
+	);
+	assert.equal(await state(first.request), "pending");
+	await credentials.approvePlanConnect(world.as("plan-check-b"), first.userCode, "openai");
+	assert.equal(await state(first.request), "approved");
+
+	// Not a finished sign-in, an unknown file, too large, or a Claude token: refused before the request is taken.
+	const good = signIn("b@example.com");
+	for (const bad of [
+		{ signIn: { files: { "auth.json": "{}" } } },
+		{ signIn: { files: { "host-id": "h" } } },
+		{ signIn: { files: { ...good.files, "auth-pending.json": "{}" } } },
+		{ signIn: { files: { ...good.files, "host-id": "x".repeat(64 * 1024 + 1) } } },
+		{ signIn: "auth.json" },
+	]) {
+		const refused = await world.post(connect, { request: first.request, ...bad });
+		assert.deepEqual([refused.status, refused.body.code], [400, "bad_sign_in"], JSON.stringify(bad).slice(0, 80));
+	}
+	const huge = await world.post(connect, {
+		request: first.request,
+		signIn: { files: { "auth.json": "x".repeat(300 * 1024) } },
+	});
+	assert.equal(huge.status, 413);
+	assert.equal(await state(first.request), "approved");
+
+	// The sign-in connects the approving user's ChatGPT plan through their holder, once: a new generation, its label read.
+	const done = await world.post(connect, { request: first.request, ...{ signIn: good } });
+	assert.deepEqual(done, { status: 200, body: { account: "b@example.com · Plus" } });
+	const [plan] = (await world.plans("plan-check-b")).plans;
+	assert.deepEqual([plan?.provider, plan?.account, plan?.models], ["openai", "b@example.com · Plus", undefined]);
+	const stored = await loadChatgptSignIn(world.db("plan-check-b"));
+	assert.ok(stored?.sealed && stored.generation, "stored by the holder under a generation");
+	assert.ok(
+		!stored.sealed.includes(refresh) &&
+			!format("%o", world.sql.prepare("SELECT * FROM requests").all()).includes(refresh),
+	);
+	assert.equal((await holderB.status())?.email, "b@example.com");
+	assert.deepEqual((await world.plans("plan-check-c")).plans, [], "only the approving user gets it");
+	const again = await world.post(connect, { request: first.request, signIn: good });
+	assert.deepEqual([again.status, again.body.code], [404, "connect_code_not_found"]);
+
+	// Connecting again replaces it with a new generation; a plan user's catalog is read with its access token.
+	holderOf("plan-check-a");
+	const second = await open();
+	await credentials.approvePlanConnect(world.as("plan-check-a"), second.userCode, "openai");
+	assert.equal((await world.post(connect, { request: second.request, signIn: signIn("a@example.com") })).status, 200);
+	const planA = (await world.plans("plan-check-a")).plans.find(p => p.provider === "openai");
+	assert.deepEqual([planA?.account, planA?.models], ["a@example.com · Plus", ["gpt-5.5-codex"]]);
+
+	// A Claude token for a ChatGPT request is refused, and the request it took is spent.
+	const third = await open();
+	await credentials.approvePlanConnect(world.as("plan-check-a"), third.userCode, "openai");
+	const crossed = await world.post(connect, { request: third.request, token: planToken() });
+	assert.deepEqual([crossed.status, crossed.body.code], [400, "bad_plan_token"]);
+	assert.equal(await state(third.request), "expired");
+
+	// In transit the sign-in is sealed to its user and request: another user's actor cannot open it.
+	const digest = connectCodeDigest.ofRequest(newConnectRequest().request)!;
+	const sealed = serverSealer().seal(
+		"transit",
+		connectTransitSubject("plan-check-b", "openai", digest),
+		JSON.stringify(good),
+	);
+	assert.ok(!sealed.includes(refresh));
+	const c = account("plan-check-c");
+	t.after(() => c.sql.close());
+	await assert.rejects(
+		credentials.internalConnectPlan(c.route, "openai", digest, sealed, world.holders.get("plan-check-c")),
+	);
+	assert.deepEqual(await loadChatgptSignIn(c.context.db), null);
+});
+
 test("a ChatGPT plan is the sign-in: generation kept across refreshes, the current access token per request, behind WLP_PLAN_USERS", async t => {
 	const { writeChatgptSignIn, loadChatgptSignIn, saveChatgptCheck } = await import(
 		"../server/src/credentials/plans.js"
@@ -413,6 +571,7 @@ test("a ChatGPT plan is the sign-in: generation kept across refreshes, the curre
 	const expiresAt = Date.now() + 40 * 60_000;
 	const holder = {
 		token: async () => ({ secret: access, generation: "g1", expiresAt }),
+		adopt: async () => {},
 		check: async () => {},
 		forget: async () => {},
 	};

@@ -29,7 +29,7 @@ Run the formatter before committing; editors with the Biome extension do it on s
 - `server/` is the platform: one RivetKit node plus its own HTTP routes (`server/src/index.ts`).
 - `web/` is the React app. It calls actors through the Rivet gateway and imports server types via `@contract`.
 - `runner/` is the CLI on a user's machine. It pairs with the server and runs sandbox operations locally.
-- `cli/` is `@windlassai/cli`, run with npx: `connect claude` connects a Claude plan ([CLI guide](cli/AGENTS.md)).
+- `cli/` is `@windlassai/cli`, run with npx: `connect claude` and `connect codex` connect a Claude or ChatGPT plan ([CLI guide](cli/AGENTS.md)).
 - `scripts/` holds standalone checks, stand-ins for external services and the CI selector.
 - `sandbox/` builds the Docker and E2B images, harness wrappers and the model relay; `fixtures/` feeds the checks.
 - `docs/` is operator documentation; `deploy/selfhost` is the self-hosting setup.

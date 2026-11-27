@@ -15,9 +15,11 @@ import {
 	type ModelPlans,
 	type ModelPlanStatus,
 	type PlanProvider,
+	validSignInUpload,
 } from "../contract.js";
 import type { DefaultsDb } from "../repository-defaults.js";
 import { serverSealer } from "../signin/seal.js";
+import { accountOf, cleanMaterial, NO_MATERIAL, type SignInMaterial, signInOnly } from "../signin/material.js";
 import { connectCodeDigest, connectTransitSubject } from "./connect-code.js";
 import { keyGeneration, MODEL_PROVIDER_TABLES, providerStatuses, savedKey, savedModelKeys } from "./keys.js";
 import type { HostedCredential } from "../sandbox/harnesses.js";
@@ -47,6 +49,8 @@ type Context = Parameters<typeof requireUser>[0] & { db: DefaultsDb };
  */
 export interface ChatgptPlan {
 	token(): Promise<OpenedCredential | null>;
+	/** Replaces the sign-in with one made elsewhere (the connect command's), as a finished in-page sign-in would: a new generation. */
+	adopt(material: SignInMaterial): Promise<void>;
 	check(): Promise<void>;
 	forget(): Promise<void>;
 }
@@ -81,13 +85,19 @@ function saved(db: DefaultsDb, uid: string, ref: Saved, chatgpt: ChatgptPlan | u
 	return plansAllowed(uid) && chatgpt ? chatgpt.token() : null;
 }
 
-async function decideConnect(c: HasClient, uid: string, userCode: unknown, approve: boolean): Promise<void> {
+async function decideConnect(
+	c: HasClient,
+	uid: string,
+	userCode: unknown,
+	approve: boolean,
+	provider?: PlanProvider,
+): Promise<void> {
 	const digest = connectCodeDigest.ofUserCode(userCode);
 	if (!digest) throw new UserError("That is not a connect code. It looks like KQ2M-8XF4.", { code: "bad_input" });
 	const decided: ConnectDecision = await c
 		.client()
 		.connectCodes.getOrCreate(["codes"], { params: serviceParams() })
-		.internalDecide(digest, uid, approve);
+		.internalDecide(digest, uid, approve, provider);
 	if (decided === "rate_limited")
 		throw new UserError("Too many codes did not match. Wait ten minutes, then run the command again.", {
 			code: "rate_limited",
@@ -98,17 +108,36 @@ async function decideConnect(c: HasClient, uid: string, userCode: unknown, appro
 		});
 }
 
+/** The finished sign-in in a connect command's upload (its JSON text); refused unless it has the upload's shape and names an account. */
+export function uploadedSignIn(text: string): SignInMaterial {
+	let upload: unknown;
+	try {
+		upload = JSON.parse(text);
+	} catch {
+		upload = null;
+	}
+	const material = validSignInUpload(upload) ? signInOnly(cleanMaterial(upload.files)) : NO_MATERIAL;
+	if (!accountOf(material))
+		throw new PlanProblem("That is not a finished ChatGPT sign-in. Run the command again.", "bad_sign_in");
+	return material;
+}
+
 export const credentialActions = {
 	async modelPlans(c: Context): Promise<ModelPlans> {
 		const { uid } = requireUser(c);
 		return { allowed: plansAllowed(uid), plans: await planStatuses(c.db) };
 	},
-	/** Approves the connect request whose code the user's terminal shows: that terminal may now hand over its token. */
-	async approvePlanConnect(c: Context & HasClient, userCode: unknown): Promise<void> {
-		const { uid } = requireUser(c);
-		if (!plansAllowed(uid))
+	/**
+	 * Approves the connect request whose code the user's terminal shows, for the plan the page names: that terminal
+	 * may now hand over its token or sign-in. A Claude plan needs WLP_PLAN_USERS; the ChatGPT sign-in is Windlass's
+	 * for every signed-in user (only paying for hosted Codex with it is gated), so connecting it is not.
+	 */
+	async approvePlanConnect(c: Context & HasClient, userCode: unknown, raw: unknown): Promise<void> {
+		const { uid, demo } = requireUser(c);
+		const provider = planProviderOf(raw);
+		if (provider === "openai" ? demo : !plansAllowed(uid))
 			throw new UserError("Connecting a plan is not available on this account.", { code: "plans_off" });
-		await decideConnect(c, uid, userCode, true);
+		await decideConnect(c, uid, userCode, true, provider);
 	},
 	async denyPlanConnect(c: Context & HasClient, userCode: unknown): Promise<void> {
 		const { uid } = requireUser(c);
@@ -142,15 +171,31 @@ export const credentialActions = {
 		if (!ref?.plan || typeof ref.generation !== "string" || !Array.isArray(ids)) return false;
 		return recordAgentModels(c.db, planProviderOf(ref.provider), ref.generation, ids);
 	},
-	/** The connect route hands over a plan's token, sealed for this user and the request it took. */
-	async internalConnectPlan(c: Context, raw: PlanProvider, digest: string, sealed: string): Promise<ModelPlanStatus> {
+	/**
+	 * The connect route hands over a plan's token (a Claude plan) or the sign-in Windlass saved on the user's
+	 * computer (the ChatGPT plan, a `SignInUpload`), sealed for this user and the request it took.
+	 */
+	async internalConnectPlan(
+		c: Context,
+		raw: PlanProvider,
+		digest: string,
+		sealed: string,
+		chatgpt?: ChatgptPlan,
+	): Promise<ModelPlanStatus> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, planConnectCaller(uid));
 		const provider = planProviderOf(raw);
 		const code = connectCodeDigest.parse(digest);
-		const token = serverSealer().open("transit", connectTransitSubject(uid, provider, code), sealed);
+		const opened = serverSealer().open("transit", connectTransitSubject(uid, provider, code), sealed);
 		try {
-			return await connectPlan(c.db, uid, provider, token);
+			if (provider === "openai") {
+				if (!chatgpt) throw new Error("No ChatGPT sign-in holder to connect to");
+				await chatgpt.adopt(uploadedSignIn(opened));
+				const plan = (await planStatuses(c.db)).find(p => p.provider === "openai");
+				if (!plan) throw new Error("The ChatGPT sign-in was not stored");
+				return plan;
+			}
+			return await connectPlan(c.db, uid, provider, opened);
 		} catch (error) {
 			if (error instanceof PlanProblem) throw new UserError(error.message, { code: error.code });
 			throw error;

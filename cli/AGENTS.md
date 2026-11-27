@@ -10,18 +10,22 @@ Run one command from the repository root.
 - `cd cli && npx tsc --noEmit -p .` typechecks the CLI and the one server module it imports.
 - `cd cli && node --test test/token.test.ts` checks reading the token off captured terminal output.
 - `cd cli && node --test test/connect.test.ts` runs the whole flow against a stand-in platform and `claude`.
+- `cd cli && node --test test/connect-codex.test.ts` runs `connect codex` against the stand-in platform and a stand-in `windlass` and `npx`.
 - `cd cli && node build.mjs` writes the bundle.
 
 ## Module map
 
-- `./src/main.ts` parses the command line. `connect codex` points at Settings: a ChatGPT plan is a sign-in through Windlass's login on the platform, with no token to hand over. `connect --machine` is named but not built.
-- `./src/connect.ts` runs `connect <plan>`: start, browser approval, poll, token, hand-over (`PLAN_SOURCES`).
+- `./src/main.ts` parses the command line. `connect --machine` is named but not built.
+- `./src/connect.ts` runs `connect <plan>`: start, browser approval, poll, then the plan's token or sign-in, hand-over (`PLAN_SOURCES`).
+- `./src/windlass-login.ts` runs `windlass login` for `connect codex` with a private `XDG_DATA_HOME` and reads back the sign-in's files (`SIGN_IN_UPLOAD_FILES`).
 - `./src/setup-token.ts` runs `claude setup-token` under `script` and keeps its output in memory.
 - `./src/token.ts` reads the token off terminal output and scrubs secrets out of messages.
 - `./src/platform.ts` resolves the platform address and posts JSON; `./src/terminal.ts` is the browser and prompts.
+- `./test/stand-ins.ts` is the stand-in platform and the CLI run both flow tests share.
 
 ## Invariants
 
-- The wire (`CONNECT_PATHS`, `ConnectStart`, `validPlanToken`) comes from `server/src/contract/connect.ts`; keep that module import-free.
-- Never print, log or write the token. Every error goes through `scrub` in `./src/token.ts`.
+- The wire (`CONNECT_PATHS`, `ConnectStart`, `validPlanToken`, `validSignInUpload`, the sign-in's file names and size limit, `SIGN_IN_WINDLASS_VERSION`) comes from `server/src/contract/connect.ts`; keep that module import-free.
+- Never print, log or write the token or the sign-in's files. Every error goes through `scrub` in `./src/token.ts`.
+- Windlass never sees this computer's own data directory or a WINDLASS_ variable, and its private directory is removed in every outcome.
 - The server side is `server/src/connect-route.ts`; its checks are in `scripts/model-plans-check.ts`.

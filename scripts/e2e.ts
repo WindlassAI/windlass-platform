@@ -21,6 +21,7 @@
  */
 
 import { loginHttp } from "./login-http.js";
+import { connectChatgpt } from "./chatgpt-connect.js";
 import { imageId } from "./check-image.js";
 import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, execFile, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -702,9 +703,9 @@ async function identityChecks(client: Client, server: Server, github: GithubStan
 	await check("ChatGPT connects to the authenticated uid only", async () => {
 		const auth = await signIn("my-sub");
 		const user = userOf(auth);
-		await refused(() => client.user.get([auth.profile.uid]).startChatgpt(), "unauthorized");
-		const plan = await user.startChatgpt();
-		await user.finishChatgpt(plan.redirectPrefix + "?code=plan");
+		await refused(() => client.user.get([auth.profile.uid]).approvePlanConnect("KQ2M-8XF4", "openai"), "unauthorized");
+		const { fakeSignInFiles } = await import("../server/src/sandbox-fake.js");
+		await connectChatgpt(API, user, { files: fakeSignInFiles("plan") });
 		assert((await user.chatgpt()).email === "plan@example.com", "model grant missing");
 		assert(
 			(await user.me()).uid === "u_owner" && (await user.me()).email === auth.profile.email,
@@ -715,10 +716,6 @@ async function identityChecks(client: Client, server: Server, github: GithubStan
 			!(await user.chatgpt()).connected && (await user.me()).uid === "u_owner",
 			"disconnect changed platform session",
 		);
-		const racing = await user.startChatgpt();
-		await Promise.allSettled([user.finishChatgpt(racing.redirectPrefix + "?code=racing"), user.forgetChatgpt()]);
-		assert(!(await user.chatgpt()).connected, "in-flight completion restored a disconnected plan");
-		await refused(() => user.finishChatgpt(racing.redirectPrefix + "?code=racing"), "attempt_expired");
 		return "model grant attached and removed, same uid and session";
 	});
 
@@ -3430,8 +3427,8 @@ async function main(server: Server | null): Promise<void> {
 			const { issueUserToken } = await import("../server/src/tokens.js");
 			const auth = { profile, token: issueUserToken(profile, 0) };
 			const user = client.user.getOrCreate([profile.uid], { params: { token: auth.token } });
-			const plan = await user.startChatgpt();
-			await user.finishChatgpt(plan.redirectPrefix + "?" + new URLSearchParams({ code }));
+			const { fakeSignInFiles } = await import("../server/src/sandbox-fake.js");
+			await connectChatgpt(API, user, { files: fakeSignInFiles(code) });
 			return auth;
 		};
 

@@ -62,10 +62,17 @@ export const connectCodes = actor({
 			return row?.state ?? "expired";
 		},
 		/**
-		 * The signed-in user approves or denies the code on the page. Only a pending, live request is decided;
-		 * approving gives the terminal a fresh TTL for `claude setup-token`. Wrong codes count against the user.
+		 * The signed-in user approves or denies the code on the page. Only a pending, live request is decided, and
+		 * an approval only for the plan the page named (`provider`), so a link that names another plan approves
+		 * nothing. Approving gives the terminal a fresh TTL for its sign-in. Wrong codes count against the user.
 		 */
-		internalDecide: async (c, userCode: string, uid: string, approve: boolean): Promise<ConnectDecision> => {
+		internalDecide: async (
+			c,
+			userCode: string,
+			uid: string,
+			approve: boolean,
+			provider?: PlanProvider,
+		): Promise<ConnectDecision> => {
 			requireServiceFor(c, "call");
 			const now = Date.now();
 			const [misses] = await c.db.execute<{ n: number }>(
@@ -76,12 +83,14 @@ export const connectCodes = actor({
 			if ((misses?.n ?? 0) >= MISSES_PER_USER) return "rate_limited";
 			const decided = await c.db.execute(
 				`UPDATE requests SET state = ?, uid = ?, expires = ?
-				WHERE user_code = ? AND state = 'pending' AND expires > ? RETURNING provider`,
+				WHERE user_code = ? AND state = 'pending' AND expires > ? AND (? IS NULL OR provider = ?) RETURNING provider`,
 				approve ? "approved" : "denied",
 				uid,
 				approve ? now + CONNECT_REQUEST_TTL_MS : now + 60_000,
 				userCode,
 				now,
+				provider ?? null,
+				provider ?? null,
 			);
 			if (decided.length) return "ok";
 			await c.db.execute("INSERT INTO misses VALUES (?, ?)", uid, now);

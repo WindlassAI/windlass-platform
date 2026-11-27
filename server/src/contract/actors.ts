@@ -8,7 +8,6 @@ import type {
 	IdempotencyKey,
 	LinkedLogin,
 	LoginProvider,
-	LoginStart,
 	ModelList,
 	SandboxProfile,
 	SandboxProfileId,
@@ -80,8 +79,6 @@ export interface UserActions {
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
-	startChatgpt(): Promise<LoginStart>;
-	finishChatgpt(callback: string): Promise<void>;
 	forgetChatgpt(): Promise<void>;
 	/** On fetch failure return cached or fallback choices and identify their source. */
 	models(): Promise<ModelList>;
@@ -231,10 +228,11 @@ export interface UserActions {
 	/** The plans connected to this account, and whether it may connect them. Tokens never leave the platform. */
 	modelPlans(): Promise<ModelPlans>;
 	/**
-	 * Approves the connect request whose code the terminal shows (`npx @windlassai/cli connect claude`): only then
-	 * does that terminal hand its plan's token to this account. `denyPlanConnect` refuses it.
+	 * Approves the connect request whose code the terminal shows (`npx @windlassai/cli connect claude|codex`), for
+	 * the plan the connect page names: only then does that terminal hand its plan's token (or ChatGPT sign-in) to
+	 * this account. A code for another plan approves nothing. `denyPlanConnect` refuses it.
 	 */
-	approvePlanConnect(userCode: string): Promise<void>;
+	approvePlanConnect(userCode: string, provider: PlanProvider): Promise<void>;
 	denyPlanConnect(userCode: string): Promise<void>;
 	/** Forgets a plan; the ChatGPT plan is the ChatGPT sign-in, so this is `forgetChatgpt` for it. */
 	removeModelPlan(provider: PlanProvider): Promise<void>;

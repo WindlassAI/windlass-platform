@@ -191,8 +191,6 @@ export interface UserApi
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
-	startChatgpt(): Promise<LoginStart>;
-	finishChatgpt(callback: string): Promise<void>;
 	forgetChatgpt(): Promise<void>;
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */
 	models(): Promise<ModelList>;

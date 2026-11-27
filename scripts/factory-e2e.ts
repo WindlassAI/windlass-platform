@@ -17,6 +17,7 @@
  */
 
 import { loginHttp } from "./login-http.js";
+import { connectChatgpt } from "./chatgpt-connect.js";
 import { commitsBehindBase, subtaskBranch } from "../server/src/github/feature.js";
 import { BaseMergeConflict, branchFor, updateBranchFromBase } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
@@ -203,8 +204,8 @@ async function fixtureLogin(client: Client, standin: GithubStandin, code: string
 	const { url } = await login.start("github");
 	const auth = await login.finish(standin.authorize("ada", url));
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
-	const plan = await user.startChatgpt();
-	await user.finishChatgpt(plan.redirectPrefix + "?" + new URLSearchParams({ code }));
+	const { fakeSignInFiles } = await import("../server/src/sandbox-fake.js");
+	await connectChatgpt(API, user, { files: fakeSignInFiles(code) });
 	return auth;
 }
 

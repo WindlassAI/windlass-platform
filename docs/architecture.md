@@ -205,9 +205,11 @@ opens a per-attempt actor. The attempt binds its OAuth state and PKCE verifier t
 and, for an account link, the signed-in UID. The user actor checks the resulting platform token
 on connection and again on each action.
 
-From Settings, a signed-in user can also connect a ChatGPT plan. Windlass runs `windlass login start`,
-the user pastes the loopback callback, and `finishChatgpt` runs `windlass login finish`. The user
-actor stores the model credentials encrypted. See [Sign-ins](#sign-ins).
+A signed-in user connects a ChatGPT plan with `npx @windlassai/cli connect codex` (`cli/`): after the user
+approves its code on the connect page, Windlass signs in on the user's own computer (OpenAI's sign-in takes
+only a loopback callback there), and the command posts the files it saved to `/platform/connect`
+(`server/src/connect-route.ts`), sealed in transit to the user's actor, which stores them encrypted.
+See [Sign-ins](#sign-ins).
 
 ### No sandbox holds the sign-in
 
@@ -328,12 +330,12 @@ tokens itself. It stores the files and lends them to Windlass for one command at
 
 The identity directory keys GitHub accounts by API origin and numeric user ID, and Google accounts by issuer and OpenID Connect subject. A new identity creates a fresh UID after admission. A signed-in account can link another provider, and an operator can [recover a signed-out owner](operating.md#recover-a-platform-login). Email is an admission attribute only.
 
-The signed-in user can authorize a ChatGPT plan from Settings. The user actor owns the pending model connection and adopts the finished credentials under its own UID.
+The signed-in user connects a ChatGPT plan with the connect command. The user actor adopts the uploaded sign-in under its own UID.
 
 | What | Where | Sealed for | Until |
 |---|---|---|---|
-| the user's sign-in (`auth.json`, `host-id`) | `user` actor, table `signin`, column `sealed` | that uid | it is replaced or forgotten |
-| a pending model connection (`auth-pending.json`, `host-id`) | `user` actor, table `model_attempt` | that uid | ten minutes, until superseded, or until completion or disconnect |
+| the user's sign-in (`auth.json`, `host-id`) | `user` actor, table `model_plan` (row `openai`), column `sealed` | that uid | it is replaced or forgotten |
+| an uploaded sign-in on its way from the connect route to the user's actor | not stored: an action's argument | that uid and that connect request | it is opened |
 | an access token on its way to the server that runs the turn | not stored: an actor's answer, through the engine | that uid and that request | it is read |
 
 Each is AES-256-GCM (`server/src/signin/seal.ts`) under a key derived with HKDF-SHA256 from `WLP_SIGNIN_KEY`,

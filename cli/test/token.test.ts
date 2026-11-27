@@ -47,8 +47,9 @@ test("finds nothing where there is no token", () => {
 	assert.equal(extractToken("sk-ant-api03-" + "x".repeat(80)), null);
 });
 
-test("scrubs Anthropic secrets out of messages", () => {
+test("scrubs Anthropic secrets and JWTs (a ChatGPT sign-in's tokens) out of messages", () => {
 	assert.equal(scrub(`refused ${TOKEN} and sk-ant-api03-abc`), "refused sk-ant-… and sk-ant-…");
+	assert.equal(scrub("bad token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln: no"), "bad token eyJ…: no");
 });
 
 test("the token never reaches the screen, even split across chunks and wrapped in a box", () => {

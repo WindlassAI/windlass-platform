@@ -40,11 +40,12 @@ import { type SignInCommands, type TokenAnswer, WindlassSignIns } from "../serve
 import { ActorSignInDirectory, errorOf, problemOf, tokenSubject } from "../server/src/signin/directory.js";
 import { memorySignIns } from "../server/src/signin/facade.js";
 import { SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
-import { type SignInMaterial, cleanMaterial } from "../server/src/signin/material.js";
+import { type SignInMaterial, cleanMaterial, signInOnly } from "../server/src/signin/material.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
 import { sleep as wait } from "./check-wait.js";
 import { Report } from "./check-report.js";
+import { connectChatgpt } from "./chatgpt-connect.js";
 
 const run = randomBytes(3).toString("hex");
 /** The Windlass the sections with a real one run: the executable WLP_WINDLASS_BIN names, else the pinned release, which sandbox/fetch-windlass.sh keeps and fetches the first time. */
@@ -697,29 +698,6 @@ async function main(): Promise<void> {
 			commands: SignInCommands,
 			extra: Partial<ConstructorParameters<typeof SignInHolder>[0]> = {},
 		) => new SignInHolder({ uid, store: rows.store, commands, sealer, log, ...extra });
-
-		// A disconnect after the exchange invalidates the grant at the credential store.
-		{
-			const rows = new Rows();
-			const commands = new ScriptedCommands();
-			const holder = new SignInHolder({
-				uid,
-				commands,
-				sealer,
-				store: {
-					...rows.store,
-					save: async (row, expected) => {
-						if (expected === "disconnected") throw new Error("attempt expired");
-						await rows.store.save(row);
-					},
-				},
-			});
-			const stale = await caught(holder.adopt(seal(fakeMaterial("old", Date.now() + 60_000, 1)), "disconnected"));
-			expect(
-				"an invalidated attempt is refused at the final credential write",
-				stale instanceof Error && rows.row === null,
-			);
-		}
 
 		// ---- nothing saved
 		{
@@ -1504,13 +1482,17 @@ async function main(): Promise<void> {
 			// This process is the second server: it has the same secret and no actors of its own.
 			const second = new ActorSignInDirectory(serverSealer());
 
-			// Attach the real model connection to an existing platform user.
+			// Attach the real model connection to an existing platform user, as `npx @windlassai/cli connect codex`
+			// does: the real Windlass signs in on "the user's computer" (here), and its files go to the connect route.
 			standin.expiresIn = 600;
 			const uid = "u_existing";
 			const { issueUserToken } = await import("../server/src/tokens.js");
 			const auth = { token: issueUserToken({ uid, email: "platform@example.invalid", demo: false }, 0) };
 			const user = client.user.getOrCreate([uid], { params: { token: auth.token } });
-			const started = await user.startChatgpt();
+			const laptopRoot = join(scratch, "laptop");
+			mkdirSync(laptopRoot);
+			const laptop = new WindlassSignIns(new LocalLoginRunner({ binary, tmpRoot: laptopRoot, env: standin.env() }));
+			const started = await laptop.start();
 			const url = new URL(started.url);
 			standin.expect("FAKE-code-actors", {
 				nonce: url.searchParams.get("nonce") ?? "",
@@ -1518,9 +1500,14 @@ async function main(): Promise<void> {
 				email: "actors@example.invalid",
 				clientId: "FAKE-client-id-for-signin-check",
 			});
-			await user.finishChatgpt(
+			const finished = await laptop.finish(
+				started.material,
 				`${started.redirectPrefix}?code=FAKE-code-actors&state=${url.searchParams.get("state")}&client_id=FAKE-client-id-for-signin-check`,
 			);
+			const signedIn = signInOnly(finished.material).files;
+			await connectChatgpt(`http://127.0.0.1:${httpPort}`, user, {
+				files: { "auth.json": signedIn["auth.json"] ?? "", "host-id": signedIn["host-id"] },
+			});
 			standin.expiresIn = 3600;
 			const status = await user.chatgpt();
 			expect(

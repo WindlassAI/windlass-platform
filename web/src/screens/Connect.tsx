@@ -1,6 +1,7 @@
+import { PLAN_NAMES, type PlanProvider } from "@contract";
 import { useState } from "react";
-import { CONNECT_COMMAND } from "../components/ClaudePlan";
 import { WarnIcon } from "../components/Icons";
+import { CONNECT_COMMANDS } from "../components/PlanConnect";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { linkProps } from "../lib/router";
 import type { Theme } from "../lib/theme";
@@ -10,11 +11,31 @@ const CODE_SHAPE = /^[0-9A-HJKMNP-TV-Z]{4}-?[0-9A-HJKMNP-TV-Z]{4}$/;
 
 type Outcome = "approved" | "denied";
 
+/** What the terminal does once its code is approved, by the plan it connects. */
+const NEXT: Record<PlanProvider, React.ReactNode> = {
+	anthropic: (
+		<>
+			it runs <code>claude setup-token</code> and finishes there.
+		</>
+	),
+	openai: <>it signs in with ChatGPT through Windlass in your browser and finishes there.</>,
+};
+
 /**
- * Where `npx @windlassai/cli connect claude` sends its user: the code the terminal shows, to compare and approve.
- * Only after approval does that terminal run `claude setup-token` and hand the token to this account.
+ * Where `npx @windlassai/cli connect claude|codex` sends its user: the code the terminal shows, for the plan it
+ * names, to compare and approve. Only after approval does that terminal hand the plan's sign-in to this account.
  */
-export function Connect({ code: raw, theme, onToggleTheme }: { code?: string; theme: Theme; onToggleTheme(): void }) {
+export function Connect({
+	code: raw,
+	plan,
+	theme,
+	onToggleTheme,
+}: {
+	code?: string;
+	plan?: PlanProvider;
+	theme: Theme;
+	onToggleTheme(): void;
+}) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState<Outcome | null>(null);
@@ -24,11 +45,12 @@ export function Connect({ code: raw, theme, onToggleTheme }: { code?: string; th
 	const wellFormed = CODE_SHAPE.test(code);
 
 	async function decide(choice: Outcome) {
+		if (!plan) return;
 		setBusy(choice);
 		setError(null);
 		try {
 			const user = client.user(auth);
-			await (choice === "approved" ? user.approvePlanConnect(code) : user.denyPlanConnect(code));
+			await (choice === "approved" ? user.approvePlanConnect(code, plan) : user.denyPlanConnect(code));
 			setOutcome(choice);
 		} catch (failure) {
 			setError(explain(failure));
@@ -48,16 +70,16 @@ export function Connect({ code: raw, theme, onToggleTheme }: { code?: string; th
 			<main className="connect-main">
 				<section className="signin-card connect-card" aria-labelledby="connect-title">
 					<h1 id="connect-title" className="signin-title">
-						Connect your Claude plan from a terminal?
+						{plan ? `Connect your ${PLAN_NAMES[plan]} from a terminal?` : "Connect a plan from a terminal?"}
 					</h1>
-					{!wellFormed ? (
+					{!wellFormed || !plan ? (
 						<p className="signin-text">
-							This link has no connect code. Run <code>{CONNECT_COMMAND}</code> in a terminal and follow the link it
-							opens.
+							This link has no connect code. Run <code>{CONNECT_COMMANDS.anthropic}</code> or{" "}
+							<code>{CONNECT_COMMANDS.openai}</code> in a terminal and follow the link it opens.
 						</p>
 					) : outcome === "approved" ? (
 						<p className="signin-text" role="status">
-							Approved. Go back to your terminal: it runs <code>claude setup-token</code> and finishes there.
+							Approved. Go back to your terminal: {NEXT[plan]}
 						</p>
 					) : outcome === "denied" ? (
 						<p className="signin-text" role="status">
@@ -99,7 +121,7 @@ export function Connect({ code: raw, theme, onToggleTheme }: { code?: string; th
 							<span>{error}</span>
 						</p>
 					) : null}
-					{outcome || !wellFormed ? (
+					{outcome || !wellFormed || !plan ? (
 						<a className="link" {...linkProps({ name: "settings", section: "settings-models" })}>
 							Go to Settings
 						</a>

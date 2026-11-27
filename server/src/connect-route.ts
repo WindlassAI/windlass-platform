@@ -2,9 +2,10 @@
  * The connect command's HTTP routes (`CONNECT_PATHS`), `gh auth login`-style and without signing in:
  * `start` opens a request and answers the code the terminal shows; the user approves that code on the web
  * page (credentials/index.ts `approvePlanConnect`); the terminal polls `poll`, and only once approved runs
- * `claude setup-token` and posts the token to `connect`, which takes the approved request once and hands the
- * token, sealed, to the approving user's actor. A body that is not a token at all is refused before the
- * request is taken, so a typo does not cost it.
+ * `claude setup-token` (a Claude plan) or Windlass's own sign-in (a ChatGPT plan) and posts the token or the
+ * sign-in's files to `connect`, which takes the approved request once and hands them, sealed, to the approving
+ * user's actor. A body that is not a token or a finished sign-in at all is refused before the request is taken,
+ * so a typo does not cost it.
  */
 
 import { createClient } from "rivetkit/client";
@@ -15,13 +16,12 @@ import {
 	CONNECT_PATHS,
 	type ConnectRequestState,
 	type ConnectStart,
-	connectsWithToken,
 	isPlanProvider,
-	PLAN_PROVIDERS,
 	type PlanProvider,
 	validPlanToken,
 } from "./contract.js";
 import { connectCodeDigest, connectTransitSubject, newConnectRequest } from "./credentials/connect-code.js";
+import { uploadedSignIn } from "./credentials/index.js";
 import { AddressBudget, clientAddress, rateLimited, readJsonBody } from "./http-limits.js";
 import type { Registry } from "./registry.js";
 import { serverSealer } from "./signin/seal.js";
@@ -29,7 +29,10 @@ import { serverSealer } from "./signin/seal.js";
 export const CONNECT_ROUTE_PATHS: readonly string[] = Object.values(CONNECT_PATHS);
 /** How often the terminal polls, like a runner's pairing poll. */
 const POLL_INTERVAL_MS = 2_000;
-const REFUSALS = /^(bad_plan_token|plan_refused|plan_check_unavailable|plans_off)$/;
+const REFUSALS = /^(bad_plan_token|bad_sign_in|plan_refused|plan_check_unavailable|plans_off)$/;
+/** A token fits in a few kilobytes; a sign-in's files (`SignInUpload`) in a few more, escaped as JSON. */
+const MAX_BODY_BYTES = 4096;
+const MAX_SIGN_IN_BODY_BYTES = 256 * 1024;
 
 const budget = new AddressBudget(config.httpLimits.connect);
 const polls = new AddressBudget(config.httpLimits.connectPoll);
@@ -59,9 +62,12 @@ export async function connectResponse(request: Request, engine: Engine = ownEngi
 	const { pathname } = new URL(request.url);
 	const admission = (pathname === CONNECT_PATHS.poll ? polls : budget).take(clientAddress(request));
 	if (admission) return rateLimited(admission, "Too many connect attempts from this address. Try again later.");
-	const body = await readJsonBody(request, 4096);
+	const body = await readJsonBody(
+		request,
+		pathname === CONNECT_PATHS.connect ? MAX_SIGN_IN_BODY_BYTES : MAX_BODY_BYTES,
+	);
 	if (body instanceof Response) return body;
-	const input = body.value as { provider?: unknown; request?: unknown; token?: unknown } | null;
+	const input = body.value as { provider?: unknown; request?: unknown; token?: unknown; signIn?: unknown } | null;
 	try {
 		if (pathname === CONNECT_PATHS.start) return await start(engine, input?.provider);
 		const digest = connectCodeDigest.ofRequest(input?.request);
@@ -70,7 +76,7 @@ export async function connectResponse(request: Request, engine: Engine = ownEngi
 			const state: ConnectRequestState = await requests(engine).internalPoll(digest);
 			return json(200, { state });
 		}
-		return await connect(engine, digest, input?.token);
+		return await connect(engine, digest, input);
 	} catch (error) {
 		const refused = error as { code?: unknown; message?: unknown } | null;
 		if (typeof refused?.code === "string" && REFUSALS.test(refused.code))
@@ -85,8 +91,9 @@ export async function connectResponse(request: Request, engine: Engine = ownEngi
 }
 
 async function start(engine: Engine, provider: unknown): Promise<Response> {
-	if (!isPlanProvider(provider) || !connectsWithToken(provider)) return json(400, { code: "bad_input" });
-	if (plansOff())
+	if (!isPlanProvider(provider)) return json(400, { code: "bad_input" });
+	// The ChatGPT sign-in is Windlass's for every user; WLP_PLAN_USERS gates only what pays for hosted agents with it.
+	if (provider === "anthropic" && plansOff())
 		return json(404, { code: "plans_off", message: "Connecting a plan is not available on this platform." });
 	const opened = newConnectRequest();
 	const expiresAt: number | null = await requests(engine).internalStart(
@@ -96,19 +103,40 @@ async function start(engine: Engine, provider: unknown): Promise<Response> {
 	);
 	if (expiresAt === null)
 		return rateLimited(60, "Too many connect requests are open. Try again in a minute.", "too_many_connects");
-	const approveUrl = `${config.origins[0]}/connect?${new URLSearchParams({ code: opened.userCode })}`;
+	const approveUrl = `${config.origins[0]}/connect?${new URLSearchParams({ code: opened.userCode, plan: provider })}`;
 	const answer: ConnectStart = { ...opened, approveUrl, expiresAt, interval: POLL_INTERVAL_MS };
 	return json(201, answer);
 }
 
-async function connect(engine: Engine, digest: string, token: unknown): Promise<Response> {
-	if (!PLAN_PROVIDERS.some(provider => validPlanToken(provider, token)))
+/** What was handed over, checked as far as it can be before the request is taken: the secret to seal, and for which plan. */
+function handedOver(
+	input: { token?: unknown; signIn?: unknown } | null,
+): { provider: PlanProvider; secret: string } | null {
+	if (input?.signIn !== undefined) {
+		const secret = JSON.stringify(input.signIn);
+		uploadedSignIn(secret);
+		return { provider: "openai", secret };
+	}
+	return validPlanToken("anthropic", input?.token) ? { provider: "anthropic", secret: input.token } : null;
+}
+
+async function connect(
+	engine: Engine,
+	digest: string,
+	input: { token?: unknown; signIn?: unknown } | null,
+): Promise<Response> {
+	const handed = handedOver(input);
+	if (!handed)
 		return json(400, { code: "bad_plan_token", message: "That's not a setup token. It starts with sk-ant-oat01-." });
 	const owner: { uid: string; provider: PlanProvider } | null = await requests(engine).internalTake(digest);
 	if (!owner) return expired();
-	if (!validPlanToken(owner.provider, token))
-		return json(400, { code: "bad_plan_token", message: "That token is not for this plan." });
-	const sealed = serverSealer().seal("transit", connectTransitSubject(owner.uid, owner.provider, digest), token);
+	if (owner.provider !== handed.provider)
+		return json(400, { code: "bad_plan_token", message: "That is not for the plan this request connects." });
+	const sealed = serverSealer().seal(
+		"transit",
+		connectTransitSubject(owner.uid, owner.provider, digest),
+		handed.secret,
+	);
 	const plan = await planConnectActor({ client: engine }, owner.uid).internalConnectPlan(
 		owner.provider,
 		digest,

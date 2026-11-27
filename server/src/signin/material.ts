@@ -19,12 +19,10 @@
 
 import type { ChatgptAccount } from "../sandbox/api.js";
 
-/** The files of a sign-in, by their names in Windlass's data directory. No other name is ever written or read back. */
-export const MATERIAL_FILES = ["auth.json", "host-id", "auth-pending.json"] as const;
-export type MaterialFile = (typeof MATERIAL_FILES)[number];
+import { MATERIAL_FILES, type MaterialFile, MAX_MATERIAL_FILE_BYTES } from "../contract/connect.js";
 
-/** More than any of these files holds by far (an `auth.json` is a few kilobytes): what is larger is not one. */
-export const MAX_MATERIAL_FILE_BYTES = 64 * 1024;
+/** The files of a sign-in and their size limit live in the connect contract, which the CLI's `connect codex` shares. */
+export { MATERIAL_FILES, type MaterialFile, MAX_MATERIAL_FILE_BYTES };
 
 export interface SignInMaterial {
 	files: Partial<Record<MaterialFile, string>>;

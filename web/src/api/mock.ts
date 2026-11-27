@@ -656,7 +656,6 @@ export function mockStandInModels(source: Exclude<ModelList["source"], "account"
 	}));
 	return { source, models, defaultModel: "gpt-6.1-sol", fetchedAt: null };
 }
-const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
 
 /** The server's refusal of a prompt to a work item's agent (`prompt` in agent-session.ts), word for word. */
 export const ITEM_SESSION_PROMPT =
@@ -1036,6 +1035,8 @@ type SavedDefaults = AccountDefaults & { updatedAt: number };
 interface World {
 	offers: Map<GithubId, OfferRow[]>;
 	planConnected: boolean;
+	/** When the ChatGPT plan was last connected by code (0 for one remembered from an earlier visit). */
+	planAddedAt: number;
 	guideChecks: Map<GithubId, RepositoryView["guideCheck"]>;
 	knowledge: Map<GithubId, RepositoryView["knowledge"]>;
 	readiness: Map<GithubId, { at: number; finished: boolean; weekly: boolean }>;
@@ -1187,7 +1188,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	const worlds = new Map<string, World>();
 	let attempt: { owner?: string; provider: LoginProvider; state: string; expiresAt: number } | null = null;
-	const modelAttempts = new Map<string, { state: string; expiresAt: number }>();
 	let disposed = false;
 	const timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -1328,7 +1328,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			{
 				provider: "openai",
 				account: `${world.profile.email ?? "you@example.com"} · Plus`,
-				addedAt: 0,
+				addedAt: world.planAddedAt,
 				checkedAt: realNow() - 5 * MINUTE,
 				ok: true,
 				models: ["gpt-5.5-codex", "gpt-5.5-codex-mini"],
@@ -1368,6 +1368,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				knowledge: new Map(),
 				readiness: new Map(),
 				planConnected: recall("wlp.mock.plan." + uid) === "1",
+				planAddedAt: 0,
 				profile: { uid, email: email || null, demo: kind === "demo" },
 				sessions: new Map(),
 				feeds: new Set(),
@@ -5501,37 +5502,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					? { connected: false, email: null, accessExpiresAt: null }
 					: { connected: true, email: profile.email, accessExpiresAt: now() + 52 * MINUTE };
 			},
-			async startChatgpt() {
-				const { uid, demo } = world().profile;
-				if (demo) throw new PlatformError("user", "The demo uses a scripted model.");
-				const state = hex(16),
-					expiresAt = now() + 10 * MINUTE;
-				modelAttempts.set(uid, { state, expiresAt });
-				return {
-					url: origin + "/mock/authorize?" + new URLSearchParams({ state }),
-					redirectPrefix: REDIRECT_PREFIX,
-					expiresAt,
-				};
-			},
-			async finishChatgpt(callback) {
-				const { uid } = world().profile;
-				const pending = modelAttempts.get(uid);
-				const url = new URL(callback);
-				if (
-					!pending ||
-					pending.expiresAt < now() ||
-					url.origin + url.pathname !== REDIRECT_PREFIX ||
-					url.searchParams.get("state") !== pending.state ||
-					!url.searchParams.get("code")
-				)
-					throw new PlatformError("user", "Start the ChatGPT connection again.");
-				modelAttempts.delete(uid);
-				world().planConnected = true;
-				keep("wlp.mock.plan." + uid, "1");
-			},
 			async forgetChatgpt() {
 				const { uid } = world().profile;
-				modelAttempts.delete(uid);
 				world().planConnected = false;
 				keep("wlp.mock.plan." + uid, "0");
 			},
@@ -6112,20 +6084,26 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async modelPlans() {
 				return { allowed: true, plans: structuredClone(plansOf(world())) };
 			},
-			// The mock has no terminal: approving a code connects the plan a few seconds later, as the command would.
-			async approvePlanConnect(userCode) {
+			// The mock has no terminal: approving a code connects the named plan a few seconds later, as the command would.
+			async approvePlanConnect(userCode, provider) {
 				await latency(200);
 				mockConnectCode(userCode);
-				const plans = world().account.plans;
+				const mine = world();
 				setTimeout(() => {
 					const at = now();
-					plans.set("anthropic", {
-						provider: "anthropic",
-						account: "you@example.com · Max",
-						addedAt: at,
-						checkedAt: at,
-						ok: true,
-					});
+					if (provider === "openai") {
+						mine.planConnected = true;
+						mine.planAddedAt = at;
+						keep("wlp.mock.plan." + mine.profile.uid, "1");
+					} else {
+						mine.account.plans.set("anthropic", {
+							provider: "anthropic",
+							account: "you@example.com · Max",
+							addedAt: at,
+							checkedAt: at,
+							ok: true,
+						});
+					}
 					machinesChanged(auth);
 				}, 3_000);
 			},
