@@ -10,6 +10,7 @@
  */
 import { itemSessionRole, type SessionSummary, type SessionRepository } from "@contract";
 import type { RepositoryPaneView, Route } from "./router";
+import { repoAddress } from "../../../server/src/codehost/ref.js";
 
 export type Section = "agents" | "factory" | "machines" | "account";
 
@@ -106,7 +107,7 @@ export function factoryLabel(repository?: string | null): string {
 	return repository ? `Factory · ${repository}` : "Factory";
 }
 
-type Repo = Pick<SessionRepository, "id" | "name">;
+type Repo = Pick<SessionRepository, "id" | "name"> & Partial<Pick<SessionRepository, "provider" | "instance">>;
 type ItemLike = { title: string; repository: Repo; parent?: { itemId: string; title: string } | null };
 
 function factoryCrumbs(repository: Repo | null | undefined): Crumb[] {
@@ -116,7 +117,7 @@ function factoryCrumbs(repository: Repo | null | undefined): Crumb[] {
 			? [
 					{
 						label: repository.name,
-						route: { name: "factory", repository: repository.id } as Route,
+						route: { name: "factory", repository: repoAddress(repository) } as Route,
 						back: factoryLabel(repository.name),
 					},
 				]

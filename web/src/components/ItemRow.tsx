@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { HARNESS_NAMES } from "../lib/acp";
 import { absoluteTime, relativeTime } from "../lib/format";
 import { CI_WORD, inSecondReview, questionLine, verdictWord } from "../lib/items";
-import { originIssue } from "../lib/origin";
+import { filingSource, originIssue } from "../lib/origin";
 import { linkProps } from "../lib/router";
 import { LongText } from "./Fold";
 import { AskIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon } from "./Icons";
@@ -417,6 +417,7 @@ export function ItemRow({
 }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
+	const origin = item.origin && originIssue(item.origin);
 	const running =
 		!asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
@@ -454,26 +455,22 @@ export function ItemRow({
 							</a>
 						</span>
 					) : null}
-					{item.origin ? (
+					{origin ? (
 						<span>
 							<a
 								className="item-pull"
-								href={originIssue(item.origin).url}
+								href={origin.url}
 								target="_blank"
 								rel="noreferrer"
-								aria-label={
-									item.origin.issue
-										? `Issue #${item.origin.issue.number} on GitHub`
-										: `Issue ${item.origin.linear.identifier} on Linear`
-								}
+								aria-label={`Issue ${origin.label} on ${origin.tracker}`}
 							>
-								{originIssue(item.origin).label}
+								{origin.tracker === "GitHub" ? `issue ${origin.label}` : origin.label}
 								<ExternalIcon size={10} />
 							</a>
 						</span>
 					) : null}
-					{ci && item.origin && !originIssue(item.origin).trusted ? <span>from an outside author</span> : null}
-					{item.source === "api" ? <span>from the API</span> : null}
+					{origin && !origin.trusted ? <span>from an outside author</span> : null}
+					{item.source === "api" || item.source === "slack" ? <span>from {filingSource[item.source]}</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>
 							<AgentGlyph harness={item.agent.harness} size={11} inline />

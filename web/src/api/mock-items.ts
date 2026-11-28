@@ -386,6 +386,26 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			acceptance: ["@harbor-user wrote: Nothing is uploaded or tagged with --dry-run."],
 		},
 		{
+			n: 197,
+			title: "Include the release date in the changelog",
+			on: HARBOR,
+			source: "jira",
+			state: "draft",
+			filed: 38,
+			origin: {
+				jira: {
+					id: "10042",
+					identifier: "REL-42",
+					url: "https://acme.atlassian.net/browse/REL-42",
+					author: "Sam Lee",
+					trusted: false,
+				},
+				sender: "Ada Lovelace",
+			},
+			body: "From Jira issue REL-42. https://acme.atlassian.net/browse/REL-42\n\nSam Lee wrote:\n> Include the release date next to the version in the changelog.",
+			acceptance: ["Sam Lee wrote: Every new release heading includes a date."],
+		},
+		{
 			n: 99,
 			title: "Show the release channel in the About dialog",
 			on: HARBOR,
@@ -5095,6 +5115,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		| "item"
 		| "itemAttachmentLinks"
 		| "createItem"
+		| "mergeGitlabItem"
 		| "actOnItem"
 		| "factoryLimits"
 		| "apiTokens"
@@ -5317,6 +5338,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					changed(auth);
 				}
 				return summaryOf(item);
+			},
+			async mergeGitlabItem() {
+				throw new PlatformError("user", "There is no GitLab merge request in this demo.", { reason: "item_conflict" });
 			},
 			async actOnItem(id, action) {
 				await answer(360);

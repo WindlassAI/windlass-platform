@@ -1,6 +1,7 @@
 import { VERIFIED_NAME } from "./checks.js";
 import type { GithubId } from "../contract.js";
 import { decimalId, githubId, ownApp } from "./ids.js";
+import { sourceCaps } from "../sources/registry.js";
 
 /** The edge keeps just the inputs to a later lookup. GUID and receipt time come from the route. */
 type Sender = { id: GithubId; login: string; association: string };
@@ -162,7 +163,7 @@ export function edge(
 		const label = str(obj(p.label).name);
 		if (
 			["labeled", "unlabeled"].includes(action) &&
-			["windlass", "windlass:orchestrate", "windlass:quick"].includes(label)
+			["windlass", "windlass:orchestrate", ...sourceCaps("github").quickLabels].includes(label)
 		)
 			return { ...base, event, data: { issue: n, sender, ...(label !== "windlass" && { label }) } };
 		if (["closed", "reopened", "edited", "deleted", "transferred"].includes(action))

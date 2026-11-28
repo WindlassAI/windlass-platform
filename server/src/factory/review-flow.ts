@@ -1,6 +1,6 @@
 // After CI: the second agent's review, its fixes, the handoff verdict and reading the pull request.
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemReview } from "../contract.js";
-import { CI_POLLING, ciState } from "../github/ci.js";
+import { CI_POLLING, ciState } from "../codehost/ci.js";
 import { choice } from "./answered.js";
 import { feedbackWords } from "./feedback.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";

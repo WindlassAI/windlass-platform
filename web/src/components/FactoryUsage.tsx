@@ -3,6 +3,7 @@ import { linkProps } from "../lib/router";
 import { FoldRows } from "./Fold";
 import { useItems } from "../state/items";
 import type { FactoryLimits } from "@contract";
+import { sourceNames } from "../../../server/src/sources/registry.js";
 
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
@@ -41,9 +42,9 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 						</dd>
 					</div>
 					<div>
-						<dt>Items from GitHub and Linear</dt>
+						<dt>Items from issues and Slack</dt>
 						<dd className="factory-limit-text">
-							{count(value.githubItemsPerDay)} per UTC day, shared by GitHub and Linear, drafts among them
+							{count(value.githubItemsPerDay)} per UTC day, shared by {sourceNames()}, including drafts
 						</dd>
 					</div>
 					<div>

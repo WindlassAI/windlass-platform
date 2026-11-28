@@ -7309,7 +7309,7 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const { untrustedSource, UNTRUSTED_SOURCE_MAX, untrustedWords } = await import("../server/src/factory/untrusted.js");
 	const sourcesOf = (o: Outcome) => effect(o, "deliver")?.untrusted ?? [];
 	const same = (o: Outcome, want: string[]) => isDeepStrictEqual(sourcesOf(o), want);
-	const ISSUE = untrustedWords.issue(42, "someone");
+	const ISSUE = untrustedWords.source("github", "#42", "someone");
 	const fromIssue = (more: Parameters<typeof newItem>[0] = {}) => ({ ...newItem(more), untrusted: [ISSUE] });
 
 	const { taskOfIssue } = await import("../server/src/factory/intake.js");

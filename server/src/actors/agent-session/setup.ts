@@ -20,7 +20,9 @@ import { setupProjectOf, OutputTail, lastLines } from "../../setup-command.js";
 import { judgeChecks } from "../../environments.js";
 import { outputExcerpt } from "../../factory/check-environment.js";
 import { PlatformChecks } from "../../sandbox/platform-checks.js";
+import { cloneGitlab } from "../../gitlab/workspace.js";
 import {
+	gitlabAccess,
 	sessionSandboxInput,
 	itemActor,
 	userActor,
@@ -85,7 +87,7 @@ export async function cloneConnected(
 	const repo = meta.repo;
 	if (!repo) return true;
 	const app = githubApp();
-	if (!app)
+	if (repo.provider !== "gitlab" && !app)
 		throw new ReviewRefused(
 			`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`,
 		);
@@ -99,16 +101,19 @@ export async function cloneConnected(
 			: (meta.pushedHead && meta.publishBranch) || (childSeed ? repo.branch : undefined);
 	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${pinnedBase ?? repo.branch}`);
 	try {
-		const cloned = await cloneRepository(
-			app,
-			await githubConnection(c, meta),
-			repo,
-			sandbox,
-			signal,
-			work,
-			pinnedBase,
-			meta.uid,
-		);
+		const cloned =
+			repo.provider === "gitlab"
+				? await cloneGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, signal, work, pinnedBase)
+				: await cloneRepository(
+						app!,
+						await githubConnection(c, meta),
+						repo,
+						sandbox,
+						signal,
+						work,
+						pinnedBase,
+						meta.uid,
+					);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {
@@ -125,12 +130,12 @@ export async function cloneConnected(
 				c,
 				turn,
 				"warn",
-				`${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`,
+				`${work} is no longer on the remote, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`,
 			);
 		}
 		c.vars.unpushed = null;
 		// The new clone has not been set up: the repository's setup command is due, where the clone is.
-		meta.setupDue = directory;
+		meta.setupDue = repo.provider === "gitlab" ? null : directory;
 		meta.cloneDirectory = directory;
 	} catch (error) {
 		if (error instanceof GithubProblem) {

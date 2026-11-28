@@ -50,7 +50,7 @@ export function sandboxChanged(c: Ctx): void {
 
 /** The user's GitHub connection as their actor has it now: asked each time, so a connection that was removed stops working at once. */
 export function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection | null> {
-	return userActor(c, meta.uid).internalGithubConnection();
+	return meta.repo?.provider === "gitlab" ? Promise.resolve(null) : userActor(c, meta.uid).internalGithubConnection();
 }
 
 export function itemPrompt(row: InboxRow): string {

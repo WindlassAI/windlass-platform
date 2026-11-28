@@ -1,6 +1,6 @@
 // A feature's parts: dispatching subtasks, the feature branch's CI and updates, and approving the plan.
 import { isDeepStrictEqual } from "node:util";
-import { ciPollEvery } from "../github/ci.js";
+import { ciPollEvery } from "../codehost/ci.js";
 import { partRun, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, reviewPart, placeKey, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";

@@ -32,7 +32,7 @@ import type {
 	Waiting,
 } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
-import type { RerunnableJob, CiReading, CiState } from "../github/ci.js";
+import type { RerunnableJob, CiReading, CiState } from "../codehost/ci.js";
 
 export type {
 	ChoiceId,

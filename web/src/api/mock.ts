@@ -148,8 +148,15 @@ import {
 	type HostedMonth,
 	type PlanId,
 	type PlanInfo,
+	type JiraConnection,
+	type JiraMapping,
+	type JiraProjectList,
 	type LinearConnection,
 	type LinearStatus,
+	type GitlabStatus,
+	type SlackSettingsActions,
+	type SlackStatus,
+	type SlackMapping,
 	type LinearTeamList,
 } from "@contract";
 import {
@@ -215,8 +222,12 @@ export interface MockOptions {
 	questionTimeoutMs?: number;
 	/** False plays a deployment with no GitHub App: nothing of GitHub is offered. */
 	github?: boolean;
+	gitlab?: boolean;
 	/** Whether the deployment has a Linear OAuth client and signing secret. On unless false. */
 	linear?: boolean;
+	/** False plays a deployment with Jira disabled. */
+	jira?: boolean;
+	slack?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
 	sandbox?: "docker" | "e2b";
 	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
@@ -486,6 +497,8 @@ export interface MockClient extends PlatformClient {
 	mockNextAnswer(kind: "elsewhere" | "error"): void;
 	/** Makes the next call about GitHub of that kind fail (`__wlpMock.mockNextGithub("protected")`, then push). */
 	mockNextGithub(kind: MockGithubFailure): void;
+	/** A single-use proof like the one Slack sends privately to a member. */
+	mockSlackLinkTicket(): string;
 	/**
 	 * Makes the next call about a project's MCP servers fail, for looking at the panel's errors by hand:
 	 * "list" the reading of the list, "approve" and "forget" the action (`__wlpMock.mockNextServers("forget")`,
@@ -1385,6 +1398,25 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 	}
 
+	const gitlabUrl = "https://gitlab.example.com";
+	const gitlabProjects: SessionRepository[] = [
+		{ id: "90071992547409931", owner: "acme/tools", name: "harbor" },
+		{ id: "7202", owner: "acme", name: "website" },
+	].map(project => ({
+		...project,
+		provider: "gitlab",
+		branch: "main",
+		private: true,
+		url: `${gitlabUrl}/${project.owner}/${project.name}`,
+	}));
+	function gitlabStatus(uid: string): GitlabStatus {
+		if (options.gitlab === false) return { state: "off" };
+		const stored = recall(`wlp.mock.gitlab.${uid}`);
+		return stored
+			? { state: "connected", baseUrl: gitlabUrl, project: gitlabProjects.find(p => p.id === stored) ?? null }
+			: { state: "disconnected" };
+	}
+
 	// ---- Linear ---------------------------------------------------------------------------------
 
 	const LINEAR_TEAMS = [
@@ -1440,6 +1472,122 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 							: null,
 				};
 			}),
+		};
+	}
+
+	// ---- Jira -----------------------------------------------------------------------------------
+
+	const jiraSites = [
+		{ id: "site-acme", name: "Acme", url: "https://acme.atlassian.net" },
+		{ id: "site-harbor", name: "Harbor", url: "https://harbor.atlassian.net" },
+	];
+	const projectsBySite: Record<string, { id: string; key: string; name: string }[]> = {
+		"site-acme": [
+			{ id: "10001", key: "ENG", name: "Engineering" },
+			{ id: "10002", key: "OPS", name: "Operations" },
+		],
+		"site-harbor": [{ id: "10001", key: "DOC", name: "Documentation" }],
+	};
+	interface JiraKept {
+		connection: JiraConnection;
+		mappings: Record<string, JiraMapping>;
+	}
+	const jiraMemory = new Map<string, string>();
+
+	// ---- Slack ----------------------------------------------------------------------------------
+
+	const slackWorkspace = { id: "T08ACME01", name: "Acme Engineering" };
+	const slackChannels = [
+		{ id: "C08HARB01", name: "harbor-engineering" },
+		{ id: "C08DOCS01", name: "docs-triage" },
+	];
+	const slackMember = { teamId: slackWorkspace.id, workspaceName: slackWorkspace.name };
+	const slackKey = (key: string) => "wlp.mock.slack." + key;
+	function slackTicket(key: string) {
+		const ticket = crypto.randomUUID();
+		keep(slackKey(key), ticket);
+		return ticket;
+	}
+	function claimSlack(key: string, ticket: string) {
+		if (!ticket || recall(slackKey(key)) !== ticket) throw new Error("This Slack link is invalid or expired.");
+		keep(slackKey(key), "");
+	}
+	function slackActions(world: () => World): SlackSettingsActions {
+		const uid = () => world().profile.uid;
+		const mappings = (): SlackMapping[] => JSON.parse(recall(slackKey("mappings")) || "[]");
+		const status = (): SlackStatus => {
+			if (options.slack === false) return { state: "off" };
+			const links = recall(slackKey("member")) === uid() ? [slackMember] : [];
+			return recall(slackKey("owner")) === uid()
+				? { state: "connected", workspaceName: slackWorkspace.name, mappings: mappings(), links }
+				: { state: "disconnected", links };
+		};
+		const owner = () => {
+			if (status().state !== "connected") throw new Error("Connect a Slack workspace first.");
+		};
+		return {
+			async slack() {
+				return status();
+			},
+			async slackConnect({ origin }) {
+				return { url: `${origin}/settings${location.search}#slack=${slackTicket(uid())}` };
+			},
+			async slackComplete(ticket) {
+				claimSlack(uid(), ticket);
+				if (recall(slackKey("owner")) && recall(slackKey("owner")) !== uid())
+					throw new Error("This workspace already has an owner.");
+				keep(slackKey("owner"), uid());
+				return status();
+			},
+			async slackChannels() {
+				owner();
+				return slackChannels;
+			},
+			async saveSlackMapping({ channelId, repositoryId }) {
+				owner();
+				requireGithub(world());
+				const channel = slackChannels.find(ch => ch.id === channelId);
+				const repository = GITHUB_REPOSITORIES.find(repo => repo.id === repositoryId);
+				if (!channel || !repository?.canPush) throw new Error("Choose a channel and a repository with write access.");
+				const { id, owner: login, name } = repository;
+				keep(
+					slackKey("mappings"),
+					JSON.stringify([
+						...mappings().filter(m => m.channel.id !== channelId),
+						{ channel, repository: { id, owner: login, name }, details: !repository.private },
+					]),
+				);
+				return status();
+			},
+			async setSlackDetails({ channelId, details }) {
+				owner();
+				keep(
+					slackKey("mappings"),
+					JSON.stringify(mappings().map(m => (m.channel.id === channelId ? { ...m, details } : m))),
+				);
+				return status();
+			},
+			async removeSlackMapping(id) {
+				owner();
+				keep(slackKey("mappings"), JSON.stringify(mappings().filter(m => m.channel.id !== id)));
+				return status();
+			},
+			async disconnectSlack() {
+				owner();
+				for (const key of ["owner", "member", "member-ticket", "mappings", uid()]) keep(slackKey(key), "");
+				return status();
+			},
+			async linkSlack(ticket) {
+				claimSlack("member-ticket", ticket);
+				if (recall(slackKey("member")) && recall(slackKey("member")) !== uid())
+					throw new Error("This Slack account is already linked.");
+				keep(slackKey("member"), uid());
+				return status();
+			},
+			async unlinkSlack(team) {
+				if (team === slackMember.teamId && recall(slackKey("member")) === uid()) keep(slackKey("member"), "");
+				return status();
+			},
 		};
 	}
 
@@ -5425,6 +5573,30 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function userApi(auth: AuthResult): UserApi {
 		const world = () => worldOf(auth);
+		const jiraKey = (suffix = "") => `wlp.mock.jira.${world().profile.uid}${suffix}`;
+		function readJira<T>(suffix = ""): T | null {
+			if (options.jira === false)
+				throw new PlatformError("user", "This deployment has no Jira client.", { reason: "jira_off" });
+			const key = jiraKey(suffix);
+			return JSON.parse(recall(key) ?? jiraMemory.get(key) ?? "null");
+		}
+		function storeJira(value: unknown, suffix = "") {
+			const key = jiraKey(suffix),
+				data = JSON.stringify(value);
+			jiraMemory.set(key, data);
+			keep(key, data);
+		}
+		function connectedJira() {
+			const kept = readJira<JiraKept>();
+			if (!kept) throw new PlatformError("user", "Connect Jira first.", { reason: "jira_not_connected" });
+			return kept;
+		}
+		function projectList(kept: JiraKept, expectedSite?: string): JiraProjectList {
+			const site = kept.connection.site;
+			if (!site || (expectedSite !== undefined && site.id !== expectedSite))
+				throw new PlatformError("user", "Choose the Jira site first.", { reason: "jira_site" });
+			return { projects: projectsBySite[site.id]!.map(p => ({ ...p, mapping: kept.mappings[p.id] ?? null })) };
+		}
 		return {
 			async linkedLogins() {
 				return (["github", "google"] as const)
@@ -5705,6 +5877,116 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const list = listOf(world());
 				for (const feed of world().feeds) feed.onSessions(list);
 			},
+			async gitlab() {
+				return gitlabStatus(world().profile.uid);
+			},
+			async gitlabConnect({ origin }) {
+				const uid = world().profile.uid;
+				if (options.gitlab === false) throw new PlatformError("user", "GitLab is unavailable.");
+				const ticket = `mock.${now() + 5 * MINUTE}.${crypto.randomUUID()}`;
+				keep(`wlp.mock.gitlab.ticket.${uid}`, ticket);
+				const url = new URL("/settings", origin);
+				url.search = typeof location === "undefined" ? "" : location.search;
+				url.hash = `gitlab=${ticket}`;
+				return { url: url.href };
+			},
+			async gitlabComplete(ticket) {
+				const uid = world().profile.uid;
+				const key = `wlp.mock.gitlab.ticket.${uid}`;
+				if (options.gitlab === false || !ticket || recall(key) !== ticket || !(Number(ticket.split(".")[1]) > now()))
+					throw new PlatformError("user", "This link is no longer valid. Connect GitLab again.");
+				keep(key, "");
+				keep(`wlp.mock.gitlab.${uid}`, "connected");
+				return gitlabStatus(uid);
+			},
+			async gitlabProjects(query) {
+				if (gitlabStatus(world().profile.uid).state !== "connected")
+					throw new PlatformError("user", "Connect GitLab first.");
+				return {
+					projects: gitlabProjects.filter(p => `${p.owner}/${p.name}`.includes(query.trim().toLowerCase())),
+					more: false,
+				};
+			},
+			async gitlabPickProject(id) {
+				const uid = world().profile.uid;
+				if (gitlabStatus(uid).state !== "connected" || !gitlabProjects.some(p => p.id === id))
+					throw new PlatformError("user", "That GitLab project is not available.");
+				keep(`wlp.mock.gitlab.${uid}`, id);
+				return gitlabStatus(uid);
+			},
+			async gitlabDisconnect() {
+				const uid = world().profile.uid;
+				keep(`wlp.mock.gitlab.ticket.${uid}`, "");
+				keep(`wlp.mock.gitlab.${uid}`, "");
+				return gitlabStatus(uid);
+			},
+			async jira() {
+				if (options.jira === false) return { state: "off" };
+				const kept = readJira<JiraKept>();
+				return kept ? { state: "connected", connection: kept.connection } : { state: "disconnected" };
+			},
+			async jiraConnect({ origin }) {
+				readJira();
+				const ticket = crypto.randomUUID();
+				storeJira({ ticket, expires: now() + 300_000 }, ".ticket");
+				return { url: `${origin}/settings${typeof location === "undefined" ? "" : location.search}#jira=${ticket}` };
+			},
+			async jiraComplete(ticket) {
+				const pending = readJira<{ ticket: string; expires: number }>(".ticket");
+				if (!pending || pending.ticket !== ticket || pending.expires <= now())
+					throw new PlatformError("user", "Invalid Jira return. Connect Jira again.", { reason: "jira_ticket" });
+				storeJira(null, ".ticket");
+				const connection = {
+					user: { id: "jira-ada", name: "Ada Lovelace" },
+					sites: jiraSites,
+					site: null,
+					connectedAt: now(),
+				};
+				storeJira({ connection, mappings: {} });
+				return { state: "connected", connection };
+			},
+			async jiraSelectSite(siteId) {
+				const kept = connectedJira(),
+					site = jiraSites.find(s => s.id === siteId);
+				if (!site) throw new PlatformError("user", "That site is not authorized.", { reason: "jira_site" });
+				if (kept.connection.site?.id !== siteId) kept.mappings = {};
+				kept.connection.site = site;
+				storeJira(kept);
+				return { state: "connected", connection: kept.connection };
+			},
+			async jiraProjects() {
+				return projectList(connectedJira());
+			},
+			async saveJiraMapping({ siteId, projectId, repositoryId }) {
+				const kept = connectedJira();
+				if (!projectList(kept, siteId).projects.some(p => p.id === projectId))
+					throw new PlatformError("user", "Choose a listed project.", { reason: "jira_project" });
+				requireGithub(world());
+				const repo = GITHUB_REPOSITORIES.find(r => r.id === repositoryId);
+				if (!repo?.canPush) throw new PlatformError("user", "Choose a writable repository.", { reason: "bad_input" });
+				kept.mappings[projectId] = {
+					siteId,
+					projectId,
+					repository: { id: repo.id, owner: repo.owner, name: repo.name },
+					savedAt: now(),
+				};
+				storeJira(kept);
+				return projectList(kept);
+			},
+			async removeJiraMapping({ siteId, projectId }) {
+				const kept = connectedJira();
+				delete kept.mappings[projectId];
+				const list = projectList(kept, siteId);
+				storeJira(kept);
+				return list;
+			},
+			async disconnectJira() {
+				readJira();
+				storeJira(null);
+				storeJira(null, ".ticket");
+				return { state: "disconnected" };
+			},
+			...slackActions(world),
 			async linear(): Promise<LinearStatus> {
 				await latency(200);
 				if (options.linear === false) return { state: "off" };
@@ -7096,6 +7378,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		mockNextAnswer(kind) {
 			nextAnswer = kind;
 		},
+		mockSlackLinkTicket: () => slackTicket("member-ticket"),
 		mockNextGithub(kind) {
 			nextGithub = kind;
 		},
