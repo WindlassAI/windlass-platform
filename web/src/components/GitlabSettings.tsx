@@ -1,6 +1,17 @@
 import type { GitlabProjectList, GitlabStatus } from "@contract";
 import { useEffect, useMemo, useState } from "react";
 import { useApp, useAuth } from "../state/app";
+import { WarnIcon } from "./Icons";
+import {
+	IntegrationCard,
+	IntegrationFacts,
+	IntegrationSteps,
+	MappedRepository,
+	MappingForm,
+	useReturnRound,
+} from "./IntegrationCard";
+
+const RETURN = /^#gitlab(?:-error)?=/;
 
 export function useGitlabSettings() {
 	const { client, explain } = useApp();
@@ -9,6 +20,8 @@ export function useGitlabSettings() {
 	const [status, setStatus] = useState<GitlabStatus | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [attempt, retry] = useState(0);
+	// A return to the page already open (only its fragment changes) is read again.
+	const returned = useReturnRound(RETURN);
 	// Both StrictMode subscriptions await the same one-time ticket redemption.
 	const load = useMemo(() => {
 		let pending: Promise<{ status: GitlabStatus; error?: string }> | undefined;
@@ -27,7 +40,7 @@ export function useGitlabSettings() {
 			return { status: await api.gitlab(), error: message };
 		}
 		return () => (pending ??= read());
-	}, [api, explain, attempt]);
+	}, [api, explain, attempt, returned]);
 	useEffect(() => {
 		let live = true;
 		void load().then(
@@ -93,137 +106,170 @@ export function GitlabSettings({ connection }: { connection: ReturnType<typeof u
 		}
 	}
 	if (status?.state === "off" || (!status && !error)) return null;
+	const connect = () =>
+		void run(async () => {
+			location.assign((await api.gitlabConnect({ origin: location.origin })).url);
+		});
+	const reconnect = status?.state === "disconnected" && status.reconnect;
 	return (
-		<section className="usage-section repo-saved" id="settings-gitlab" aria-labelledby="settings-gitlab-title">
-			<h3 className="usage-title" id="settings-gitlab-title">
-				GitLab
-				{status?.state === "disconnected" && (
-					<button
-						className="link secret-add"
-						disabled={busy}
-						onClick={() =>
-							void run(async () => {
-								location.assign((await api.gitlabConnect({ origin: location.origin })).url);
-							})
-						}
-					>
-						Connect GitLab…
+		<IntegrationCard
+			id="settings-gitlab"
+			provider="gitlab"
+			name="GitLab"
+			what="Agents work on a GitLab project and hand their work back as merge requests."
+			state={!status ? "loading" : connected ? "connected" : reconnect ? "reconnect" : "disconnected"}
+			action={
+				status?.state === "disconnected" ? (
+					<button className="button button-outline button-small" disabled={busy} onClick={connect}>
+						{reconnect ? "Reconnect GitLab…" : "Connect GitLab…"}
 					</button>
-				)}
-				{connected && (
-					<button
-						className="link secret-add"
-						disabled={busy}
-						onClick={() => {
-							if (confirm("Disconnect GitLab and forget the selected project?"))
-								void run(async () => {
-									setStatus(await api.gitlabDisconnect());
-									setQuery("");
-								});
-						}}
-					>
-						Disconnect…
-					</button>
-				)}
-			</h3>
+				) : null
+			}
+			more={
+				connected
+					? [
+							{
+								id: "disconnect",
+								label: "Disconnect…",
+								tone: "warn",
+								disabled: busy,
+								onSelect: () => {
+									if (confirm("Disconnect GitLab and forget the selected project?"))
+										void run(async () => {
+											setStatus(await api.gitlabDisconnect());
+											setQuery("");
+										});
+								},
+							},
+						]
+					: []
+			}
+		>
 			{error && (
 				<p className="callout callout-warn" role="alert">
-					{error}{" "}
-					{!status && (
-						<button className="link" onClick={reload}>
-							Try again
-						</button>
-					)}
+					<WarnIcon />
+					<span>
+						{error}{" "}
+						{!status && (
+							<button className="link" onClick={reload}>
+								Try again
+							</button>
+						)}
+					</span>
 				</p>
 			)}
 			{status?.state === "disconnected" &&
-				(status.reconnect ? (
+				(reconnect ? (
 					<p className="callout callout-warn" role="status">
-						GitLab no longer accepts Windlass's access. Reconnect GitLab and choose the project again.
+						<WarnIcon />
+						<span>GitLab no longer accepts Windlass's access. Reconnect GitLab and choose the project again.</span>
 					</p>
 				) : (
-					<p className="usage-lede">Connect GitLab to choose a project for Windlass.</p>
+					<IntegrationSteps
+						steps={[
+							"Connect your GitLab account.",
+							"Choose the project agents work on.",
+							"Their work comes back as a merge request, with its pipeline read.",
+						]}
+					/>
 				))}
 			{status?.state === "connected" && (
 				<>
-					<p className="usage-lede">
-						Connected to <strong>{status.baseUrl}</strong>.
-					</p>
-					<p className="field-note" role="status">
-						{status.project ? (
+					<IntegrationFacts
+						facts={[
+							["Instance", <span className="mono">{status.baseUrl.replace(/^https?:\/\//, "")}</span>],
+							[
+								"Project",
+								<span role="status">
+									{status.project ? (
+										<>
+											<span className="visually-hidden">Selected project: </span>
+											<MappedRepository host="gitlab" owner={status.project.owner} name={status.project.name} />{" "}
+											<span className="faint">into</span> <code>{status.project.branch}</code>
+										</>
+									) : (
+										<span className="faint">No project selected</span>
+									)}
+								</span>,
+							],
+						]}
+					/>
+					<MappingForm
+						title={status.project ? "Change the project" : "Choose the project"}
+						to={
 							<>
-								Selected project:{" "}
-								<strong>
-									{status.project.owner}/{status.project.name}
-								</strong>{" "}
-								· <code>{status.project.branch}</code>
+								<label className="visually-hidden" htmlFor="gitlab-query">
+									Search GitLab projects
+								</label>
+								<input
+									className="input"
+									type="search"
+									maxLength={256}
+									id="gitlab-query"
+									placeholder="Search projects"
+									value={query}
+									onChange={e => setQuery(e.target.value)}
+									disabled={busy}
+								/>
+								<label className="visually-hidden" htmlFor="gitlab-project">
+									GitLab project
+								</label>
+								<select
+									className="select"
+									id="gitlab-project"
+									value={selected}
+									onChange={e => setSelected(e.target.value)}
+									disabled={busy || !list?.projects.length}
+								>
+									<option value="">
+										{listError
+											? "Projects unavailable"
+											: !list
+												? "Loading projects…"
+												: !list.projects.length
+													? "No matching projects"
+													: "Choose a project"}
+									</option>
+									{list?.projects.map(p => (
+										<option key={p.id} value={String(p.id)}>
+											{p.owner}/{p.name}
+										</option>
+									))}
+								</select>
 							</>
-						) : (
-							"No project selected."
-						)}
-					</p>
-					<p className="field-note" id="gitlab-hook-note">
-						Saving registers a webhook on the selected GitLab project. You need Maintainer access or higher.
-					</p>
-					<div className="linear-map">
-						<label className="visually-hidden" htmlFor="gitlab-query">
-							Search GitLab projects
-						</label>
-						<input
-							className="input"
-							type="search"
-							maxLength={256}
-							id="gitlab-query"
-							placeholder="Search projects"
-							value={query}
-							onChange={e => setQuery(e.target.value)}
-							disabled={busy}
-						/>
-						<label className="visually-hidden" htmlFor="gitlab-project">
-							GitLab project
-						</label>
-						<select
-							className="select"
-							id="gitlab-project"
-							value={selected}
-							onChange={e => setSelected(e.target.value)}
-							disabled={busy || !list?.projects.length}
-						>
-							<option value="">
-								{listError
-									? "Projects unavailable"
-									: !list
-										? "Loading projects…"
-										: !list.projects.length
-											? "No matching projects"
-											: "Choose a project"}
-							</option>
-							{list?.projects.map(p => (
-								<option key={p.id} value={String(p.id)}>
-									{p.owner}/{p.name}
-								</option>
-							))}
-						</select>
-						<button
-							className="button button-outline button-small"
-							aria-describedby="gitlab-hook-note"
-							disabled={busy || !selected || selected === String(status.project?.id)}
-							onClick={() => void run(async () => setStatus(await api.gitlabPickProject(selected)))}
-						>
-							Save project
-						</button>
-					</div>
-					{list?.more && <p className="field-note">Search by project name to narrow the list.</p>}
+						}
+						submit={
+							<button
+								className="button button-outline"
+								aria-describedby="gitlab-hook-note"
+								disabled={busy || !selected || selected === String(status.project?.id)}
+								onClick={() => void run(async () => setStatus(await api.gitlabPickProject(selected)))}
+							>
+								Save project
+							</button>
+						}
+						note={
+							<>
+								<p className="field-note" id="gitlab-hook-note">
+									Saving registers a webhook on the selected GitLab project. You need Maintainer access or higher.
+								</p>
+								{list?.more && <p className="field-note">Search by project name to narrow the list.</p>}
+							</>
+						}
+					/>
 					{listError && (
 						<p className="callout callout-warn" role="alert">
-							{listError}{" "}
-							<button className="link" onClick={() => retry(n => n + 1)}>
-								Try again
-							</button>
+							<WarnIcon />
+							<span>
+								{listError}{" "}
+								<button className="link" onClick={() => retry(n => n + 1)}>
+									Try again
+								</button>
+							</span>
 						</p>
 					)}
 				</>
 			)}
-		</section>
+		</IntegrationCard>
 	);
 }

@@ -27,6 +27,8 @@ import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
 import { CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { BranchName } from "../components/BranchName";
+import { ProviderIcon, providerOf, PROVIDER_NAMES } from "../components/ProviderIcon";
 import { ReviewBlocks } from "../components/ReviewBlocks";
 import { Screenshots, useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { ItemNetwork } from "../components/ItemNetwork";
@@ -723,6 +725,9 @@ function Question({
 	// The agent's own question: its words are the reply's subject, and the reply is the note, so the note is needed.
 	const asked = question.kind === "agent_ask" ? (question.asked ?? null) : null;
 	const replying = question.kind === "agent_ask";
+	// The host refused to mark the pull request ready: the person's own way is on the host, so that link leads.
+	const onHost = question.kind === "ready_refused" && view.pullRequest ? view.pullRequest : null;
+	const host = view.repository.provider;
 	const answer = (choice: ChoiceId, budget?: Partial<ItemBudget>) =>
 		acting.act({
 			kind: "answer",
@@ -789,13 +794,20 @@ function Question({
 						</div>
 					) : null}
 					<div className="item-choices">
+						{onHost ? (
+							<a className="button button-primary" href={onHost.url} target="_blank" rel="noreferrer">
+								<ProviderIcon id={host} size={14} />
+								Mark {host === "gitlab" ? `!${onHost.number}` : `#${onHost.number}`} ready on {PROVIDER_NAMES[host]}
+								<ExternalIcon size={12} />
+							</a>
+						) : null}
 						{question.choices
 							.filter(choice => !view.parent || question.kind === "branch_push" || choice.id !== "hand_over")
 							.flatMap((choice, index) => [
 								<button
 									key={choice.id}
 									type="button"
-									className={`button ${(question.recommended ? choice.id === question.recommended : index === 0) ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+									className={`button ${onHost ? (choice.id === "dismiss" ? "button-quiet" : "button-outline") : (question.recommended ? choice.id === question.recommended : index === 0) ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
 									disabled={busy || (choice.id === "reply" && note.trim() === "")}
 									onClick={() => answer(choice.id)}
 								>
@@ -1263,14 +1275,33 @@ const readFirst = (item: Pick<ItemView, "state" | "origin">) =>
 	item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
-	const { url, author, tracker, label } = originIssue(origin);
+	const { url, author, tracker, label, provider } = originIssue(origin);
 	return (
 		<span className="item-origin">
 			from{" "}
-			<a href={url} target="_blank" rel="noreferrer" title={tracker}>
+			<a className="item-origin-issue" href={url} target="_blank" rel="noreferrer" title={`${tracker} issue ${label}`}>
+				<ProviderIcon id={provider} size={12} />
 				{label}
 			</a>{" "}
 			by {author}
+		</span>
+	);
+}
+
+/** An item filed without an issue to link: "from the web", "from the API", or the source's mark and name. */
+function FiledFrom({ source }: { source: ItemView["source"] }) {
+	const provider = providerOf(source);
+	return (
+		<span className="item-filed-from">
+			from{" "}
+			{provider ? (
+				<span className="item-origin-issue">
+					<ProviderIcon id={provider} size={12} />
+					{filingSource[source]}
+				</span>
+			) : (
+				filingSource[source]
+			)}
 		</span>
 	);
 }
@@ -1475,6 +1506,7 @@ export function Item({ page }: { page: ItemPage }) {
 							target="_blank"
 							rel="noreferrer"
 						>
+							<ProviderIcon id={repository.provider} size={13} />
 							{repository.provider === "gitlab" ? "MR !" : "PR #"}
 							{view.pullRequest.number} <ExternalIcon size={12} />
 						</a>
@@ -1568,9 +1600,9 @@ export function Item({ page }: { page: ItemPage }) {
 						>
 							{repository.owner}/{repository.name}
 						</a>{" "}
-						→ {view.task.base}
+						→ <BranchName branch={view.task.base} />
 					</span>
-					{view.origin ? <IssueOrigin origin={view.origin} /> : <span>from {filingSource[view.source]}</span>}
+					{view.origin ? <IssueOrigin origin={view.origin} /> : <FiledFrom source={view.source} />}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>
 						filed {relativeTime(view.createdAt, now)}
 					</time>

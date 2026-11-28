@@ -27,6 +27,7 @@ import {
 } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { BranchName } from "./BranchName";
+import { PROVIDER_NAMES, ProviderIcon } from "./ProviderIcon";
 import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -35,16 +36,7 @@ import { createPortal } from "react-dom";
 import { setPanelHidden, setPublishFeedback, usePanelHidden, usePublishRequests } from "../state/sessionChrome";
 import { ContinueButton, stackChoice } from "./ContinueSession";
 import { Dialog } from "./Dialog";
-import {
-	BranchIcon,
-	CrossIcon,
-	ExternalIcon,
-	InfoIcon,
-	MergedIcon,
-	PullRequestIcon,
-	RefreshIcon,
-	WarnIcon,
-} from "./Icons";
+import { CrossIcon, ExternalIcon, InfoIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -543,7 +535,16 @@ export function PullRequestSection({
 			{pull ? (
 				<div className="gh-pull">
 					<a className="gh-pull-link" href={pull.url} target="_blank" rel="noreferrer" title={pull.title}>
-						<span className="gh-pull-number">#{pull.number}</span>
+						<ProviderIcon
+							id={repository.provider}
+							size={14}
+							label={PROVIDER_NAMES[repository.provider]}
+							className="gh-pull-host"
+						/>
+						<span className="gh-pull-number">
+							{repository.provider === "gitlab" ? "!" : "#"}
+							{pull.number}
+						</span>
 						<span className="gh-pull-title">{pull.title}</span>
 						<ExternalIcon size={12} />
 					</a>
@@ -552,8 +553,9 @@ export function PullRequestSection({
 						<time dateTime={new Date(pull.pushedAt).toISOString()}>pushed {relativeTime(pull.pushedAt, now)}</time>
 					</p>
 					<p className="gh-pull-branch">
-						<BranchIcon size={12} />
 						<BranchName branch={pull.branch} />
+						<span className="gh-pull-into">into</span>
+						<BranchName branch={pull.base} />
 					</p>
 				</div>
 			) : null}
