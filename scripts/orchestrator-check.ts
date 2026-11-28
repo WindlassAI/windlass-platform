@@ -1180,6 +1180,81 @@ test("only an unsupported draft retries as an in-progress ordinary PR", async ()
 		await assert.rejects(opening(error), error);
 });
 
+async function readying(answer: unknown, draft = true) {
+	const { readyFeature } = await import("../server/src/github/feature.js");
+	const requests: { method?: string; path: string }[] = [];
+	const app = {
+		settings: { apiUrl: "https://api.github.com" },
+		call: async (request: { method?: string; path: string }) => {
+			requests.push(request);
+			if (request.method !== "POST")
+				return { status: 200, body: { head: { ref: "windlass/feature-i_feature" }, draft, node_id: "PR_1" } };
+			return { status: 200, body: answer };
+		},
+	};
+	const done = await readyFeature(app as never, "token", "ada", "repo", 12, "i_feature").then(
+		() => null,
+		(error: Error) => error,
+	);
+	return { done, requests };
+}
+
+test("marking the feature PR ready says GitHub's GraphQL error, sent with 200", async () => {
+	const { GraphqlRefusal } = await import("../server/src/github/app.js");
+	const refused = await readying({
+		data: { markPullRequestReadyForReview: null },
+		errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration", path: ["x"] }],
+	});
+	assert.ok(refused.done instanceof GraphqlRefusal);
+	assert.equal(refused.done.type, "FORBIDDEN");
+	assert.equal(refused.done.said, "FORBIDDEN: Resource not accessible by integration");
+	assert.equal(
+		refused.done.message,
+		"GitHub refused to mark the PR ready for review: FORBIDDEN: Resource not accessible by integration",
+	);
+	assert.equal(refused.requests.at(-1)?.path, "/graphql");
+	const silent = await readying({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: true } } } });
+	assert.ok(silent.done instanceof GraphqlRefusal && silent.done.said === null);
+	assert.equal(silent.done.message, "GitHub did not confirm the PR is ready for review.");
+	const untyped = await readying({ errors: [{ message: "Something\n went  wrong" }] });
+	assert.equal((untyped.done as InstanceType<typeof GraphqlRefusal>).said, "Something went wrong");
+	assert.equal(
+		(await readying({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } })).done,
+		null,
+	);
+	// Marked ready already (by the person, say): read, and nothing to change.
+	const ready = await readying(null, false);
+	assert.equal(ready.done, null);
+	assert.equal(ready.requests.length, 1);
+});
+
+test("a refused ready-for-review is tried after 5 min, 15 min and 1 h, then handed to the person once", async () => {
+	const { readyStep, READY_RETRY_MS } = await import("../server/src/actors/work-item.js");
+	assert.deepEqual(READY_RETRY_MS, [300_000, 900_000, 3_600_000]);
+	let calls = 0;
+	const refuse = async () => (calls++, "FORBIDDEN: Resource not accessible by integration");
+	const steps = [];
+	let refusals = 0;
+	for (let i = 0; i < 5; i++) {
+		const step = await readyStep(refusals, refuse);
+		steps.push(step);
+		if ("refusals" in step) refusals = step.refusals;
+	}
+	assert.deepEqual(
+		steps.map(s => [s.kind, "wait" in s ? s.wait : null]),
+		[
+			["retry", 300_000],
+			["retry", 900_000],
+			["retry", 3_600_000],
+			["ask", null],
+			["asked", null],
+		],
+	);
+	assert.equal(calls, 4, "Asked once, the hand-off stops marking the PR ready");
+	assert.equal((steps[3] as { said: string }).said, "FORBIDDEN: Resource not accessible by integration");
+	assert.deepEqual(await readyStep(2, async () => null), { kind: "ready" });
+});
+
 test("each subtask must fund a useful build and verification turn", async () => {
 	const { validatePlan } = await plans();
 	const p = proposal();

@@ -189,6 +189,7 @@ export type QuestionKind =
 	| "branch_push"
 	| "run_place"
 	| "push_ci"
+	| "ready_refused"
 	| "feature_update"
 	| "sandboxes"
 	| "integration"

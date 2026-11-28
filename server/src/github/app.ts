@@ -86,6 +86,32 @@ export class GithubError extends Error {
 	}
 }
 
+/**
+ * A GraphQL request GitHub answered without doing it. GitHub answers most refusals with 200 and an `errors` list, so
+ * `type` and `said` come from its first error; both are null when it gave none and only left out the expected data.
+ */
+export class GraphqlRefusal extends Error {
+	readonly type: string | null;
+	readonly said: string | null;
+	constructor(what: string, body: unknown, unconfirmed: string) {
+		const first = graphqlError(body);
+		super(first ? `GitHub refused to ${what}: ${first.text}` : unconfirmed);
+		this.name = "GraphqlRefusal";
+		this.type = first?.type ?? null;
+		this.said = first?.text ?? null;
+	}
+}
+
+/** The first of a GraphQL answer's `errors`, as "TYPE: message", cut to a log line. */
+export function graphqlError(body: unknown): { type: string | null; text: string } | null {
+	const errors = record(body).errors;
+	if (!Array.isArray(errors) || errors.length === 0) return null;
+	const first = record(errors[0]);
+	const type = typeof first.type === "string" && first.type ? first.type.slice(0, 64) : null;
+	const message = typeof first.message === "string" ? first.message.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+	return { type, text: [type, message].filter(Boolean).join(": ") || "an error without a message" };
+}
+
 export type PermissionLevel = "read" | "write";
 
 /** What an installation token is asked for: one repository (or none: the installation's list) and the permissions of one step. */
@@ -1430,9 +1456,13 @@ export class GithubApp {
 				});
 				const result = record(record(body).data).addReaction;
 				if (record(record(result).reaction).content !== "EYES")
-					throw new Error("GitHub did not acknowledge the review.");
+					throw new GraphqlRefusal("acknowledge the review", body, "GitHub did not acknowledge the review.");
 			},
 		).catch(error => {
+			if (error instanceof GraphqlRefusal && (error.type === "FORBIDDEN" || error.type === "NOT_FOUND")) {
+				console.warn(`github.feedback.ack_skipped entry=${key} graphql=${error.type}`);
+				return;
+			}
 			if (!(error instanceof GithubError) || error.rateLimited || ![403, 404, 410].includes(error.status)) throw error;
 			console.warn(`github.feedback.ack_skipped entry=${key} status=${error.status}`);
 		});
