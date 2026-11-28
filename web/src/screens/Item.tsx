@@ -713,7 +713,9 @@ function Question({
 	now: number;
 }) {
 	// No agent is left to read a note once its machine was removed.
-	const noted = !["machine_removed", "feedback_feature", "feedback_more", "push_ci"].includes(question.kind);
+	const noted = !["machine_removed", "feedback_feature", "feedback_more", "push_ci", "ready_refused"].includes(
+		question.kind,
+	);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId(), asked: useId() };
