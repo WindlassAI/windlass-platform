@@ -42,8 +42,11 @@ export function planRelaySources(): string {
 
 /** A relay in the sandbox: the env and placeholder of a key lease, and the token it sends can be replaced. */
 export interface LocalModelRelay extends KeyTurnRelay {
-	/** Replaces the token; requests that start once this resolved carry the new one, those running keep theirs. */
-	hand(token: string): Promise<void>;
+	/**
+	 * Replaces the token; requests that start once this resolved carry the new one, those running keep theirs. With
+	 * `expiresAt`, the relay stops by itself then instead (a turn taken up after a restart has a new window).
+	 */
+	hand(token: string, expiresAt?: number): Promise<void>;
 }
 
 /** What a turn asks of `TurnSandbox.localPlanRelay`: the plan's wire, the agent whose routes it allows, the turn's limits. */
@@ -189,10 +192,10 @@ export async function startPlanRelay(
 		placeholder,
 		// The wire's API base, as the platform relay's: `/v1` for a ChatGPT plan, where Codex and Windlass append their routes.
 		env: { WINDLASS_MODEL_BASE_URL: origin + wires[options.wire].base, WINDLASS_MODEL_ALLOWED_ORIGIN: origin },
-		hand: async next => {
+		hand: async (next, expiresAt) => {
 			if (closing || running.hasEnded) throw new Error("This relay has ended.");
 			const done = new Promise<void>((resolve, reject) => handed.push({ resolve, reject }));
-			running.write(`${JSON.stringify({ token: next })}\n`);
+			running.write(`${JSON.stringify({ token: next, expiresAt })}\n`);
 			await done;
 		},
 		close,

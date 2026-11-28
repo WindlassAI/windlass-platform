@@ -35,7 +35,7 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `RIVET_ADMIN_TOKEN` | the engine's admin token, a secret: the server issues the short-lived tokens browsers connect with. Needs `WLP_PUBLIC_ENDPOINT`. Unset, as with the local engine: browsers are handed no token |
 | `WLP_TOKEN_ENDPOINT` | optional private route to the same engine for issuing those tokens (default `WLP_PUBLIC_ENDPOINT`); no query string or fragment |
 | `WLP_CONNECTION_TOKEN_TTL_MS` | how long such a token lasts (default one hour; from one minute to 24 hours) |
-| `WLP_CLIENT_IP_HEADER` | the header a trusted ingress writes with the client's address; unset, no per-address limit applies ([operating.md, "Public HTTP rate limits"](operating.md#public-http-rate-limits)) |
+| `WLP_CLIENT_IP_HEADER` | the header a trusted ingress writes with the client's address; unset, no per-address limit applies ([operating.md, "Public HTTP rate limits"](operating.md#public-http-rate-limits)). Set it behind a trusted ingress: without it, plan connect requests from every address share one budget |
 | `WLP_API_ADDRESS_PER_MINUTE`, `WLP_API_TOKEN_PER_MINUTE`, `WLP_API_FAILURES_PER_MINUTE`, `WLP_WEBHOOK_REFUSALS_PER_MINUTE`, `WLP_RUNNER_POLLS_PER_MINUTE`, `WLP_RUNNER_CONNECTIONS_PER_MINUTE`, `WLP_CONNECT_PER_MINUTE`, `WLP_CONNECT_POLLS_PER_MINUTE` | the public HTTP rate limits (defaults 240, 60, 12, 30, 240, 120, 30 and 240 a minute; each from 1 to 1,000,000). [operating.md](operating.md#public-http-rate-limits) says what each covers |
 
 ## Sign-ins
@@ -86,6 +86,15 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_DAILY_SANDBOX_SECONDS` | how many seconds a user's sandboxes may run in one UTC day, all of them together (default 7200, two hours; at least 60), or `unlimited` ([architecture.md, "Usage and limits"](architecture.md#usage-and-limits)) |
 | `WLP_MAX_KEPT_SANDBOXES` | how many of the platform's own (hosted) sandboxes a user may keep at the same time, running or paused; sandboxes on the user's machines are not counted, and have only the limits their owners set on the runner (default 5; at least 1), or `unlimited` |
 | `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
+
+## Subscription plans
+
+A Claude plan or a ChatGPT plan that a user connects with `npx @windlassai/cli connect claude` or `connect codex` ([model-relay.md](model-relay.md)).
+
+| Variable | Effect |
+|---|---|
+| `WLP_PLAN_USERS` | who may connect a Claude plan and run hosted turns on a plan: user ids (`u_...`), comma-separated, or `*` for everyone. Unset or empty: nobody, and the server says so at startup. Hosted Windlass's own models run on the ChatGPT plan, so hosted Windlass on them is refused too, and users are told to run on their machine or pick a Settings key's model. Removing a user stops their plan-paid turns at the next turn, and a running turn's relay within a minute. On a user's machine, the ChatGPT plan is not behind this setting |
+| `WLP_PLAN_PARALLEL_TURNS` | the most hosted turns one connected plan pays for at once (default 3, 1 to 20); past it an item waits and a person is asked, as at the plan's limit |
 
 ## Plans and billing
 

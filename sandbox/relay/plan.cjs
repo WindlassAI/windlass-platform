@@ -5,7 +5,8 @@
 //   {token, placeholder, expiresAt, wire, harness}
 //                                     first: the token, the bearer it accepts in its place, when it stops, the
 //                                     plan's wire (claude-plan, chatgpt-plan) and the agent whose routes it allows
-//   {token}                           later: replaces the token; requests that start after it carry the new one
+//   {token, expiresAt?}               later: replaces the token; requests that start after it carry the new one.
+//                                     A later `expiresAt` moves when it stops (a turn taken up after a restart)
 //   {took, ok}                        the platform's answer to a request it was asked to count
 // On a paired machine the first line also names `socket`, a Unix socket path in the relay's socket volume: it listens
 // there instead, behind the turn's forwarder, which writes its nonce first (server/src/sandbox/model-relay.ts `openPlan`).
@@ -166,6 +167,7 @@ function main(input = process.stdin, output = process.stdout, rest = "") {
 			if (!TOKEN.test(value.token)) return fail("unreadable token");
 			state.token = value.token;
 			state.used.add(value.token);
+			if (Number.isSafeInteger(value.expiresAt) && value.expiresAt > state.expiresAt) state.expiresAt = value.expiresAt;
 			return say({ handed: true });
 		}
 		if (Number.isSafeInteger(value.took)) {

@@ -906,7 +906,9 @@ async function durableRestart(): Promise<void> {
 			forward: { provider: "openai", host: "relay.fixture.test", placeholder: "wlpm1.pending", expiresAt: 1 },
 		}),
 	);
-	void outcome(s1.request("planRelayToken", { ...box, lease: "a".repeat(32), token: "RELAY-TOKEN-VALUE-0123" }));
+	void outcome(
+		s1.request("planRelayToken", { ...box, lease: "a".repeat(32), token: "RELAY-TOKEN-VALUE-0123", expiresAt: 1 }),
+	);
 	store.save(s1);
 	const stored = JSON.stringify(store.read());
 	expect(

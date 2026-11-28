@@ -57,7 +57,7 @@ Docker provider
 
 Credentials, network and data
 
-- `./token-file.ts` opens Settings-key and plan relays (`openModelKeyRelay`), writes Windlass's plan placeholder file (`writePlanPlaceholder`), and keeps a ChatGPT plan's token fresh in a turn's relay (`rotatePlanToken`). No sandbox is handed an access token.
+- `./token-file.ts` opens Settings-key and plan relays (`openModelKeyRelay`), writes Windlass's plan placeholder file (`writePlanPlaceholder`), and keeps a turn's relay on its plan (`rotatePlanToken`): a ChatGPT plan's token fresh, and the relay closed within a minute once the plan is gone. No sandbox is handed an access token.
 - `./relay-leases.ts` holds the platform route's leases (a credential reference each, never a secret), signed placeholders and route limits (`RelayLimiter`).
 - `./plan-relay.ts` starts a plan's relay (Claude or ChatGPT) inside an E2B or Daytona sandbox as the transport user, its source and token on stdin (`localPlanRelay` of `TurnSandbox`). Its base URL is the wire's (`/v1` for ChatGPT).
 - `./handoff.ts` describes the ChatGPT sign-in hand-off in words and numbers.

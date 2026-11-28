@@ -4,8 +4,9 @@
  * turn (`writePlanPlaceholder`), in Docker's per-container /dev/shm tmpfs or Windlass's data directory on a microVM's
  * private disk, which bubblewrap hides from sandboxed commands. The plan's token itself goes to a relay the agent
  * cannot read (`openModelKeyRelay`): inside the sandbox on E2B and Daytona, in a container on a paired machine, or the
- * platform's relay hosted. A token that expires (a ChatGPT plan's) is handed again before it runs out
- * (`rotatePlanToken`). No sandbox, hosted or on a machine, is ever handed an access token itself.
+ * platform's relay hosted. A token that expires (a ChatGPT plan's) is handed again before it runs out, and a plan that
+ * was removed, reconnected or turned off closes the relay within a minute (`rotatePlanToken`). No sandbox, hosted or
+ * on a machine, is ever handed an access token itself.
  */
 
 import { SandboxUserError } from "./api.js";
@@ -37,11 +38,16 @@ export function turnTokenFilePath(sandbox: Pick<TurnSandbox, "id" | "profile">):
 	return tokenFilePath(sandbox.id, hosted ? DATA_DIR : DOCKER_TOKEN_DIR);
 }
 
+/** How often a turn's relay in a sandbox or on a machine looks whether its plan is still the one it pays with. */
+export const PLAN_CHECK_MS = 60_000;
+
 export interface RotateOptions {
 	/** How much the token in the relay has left when it is replaced. Default `TOKEN_REPLACE_LEAD_MS`; checks change it. */
 	leadMs?: number;
 	/** How long after a failed replacement the next is tried, and the least time between two. Default `TOKEN_REPLACE_RETRY_MS`. */
 	retryMs?: number;
+	/** The most time between two looks at the plan, also for a token that never expires (a setup token). Default `PLAN_CHECK_MS`. */
+	checkMs?: number;
 	/** Where the log lines go: `[wlp] plan_token.gone`, `plan_token.replace_failed`. Default the console. They never contain a token. */
 	log?: (line: string) => void;
 }
@@ -57,9 +63,9 @@ export class TokenFileError extends Error {
 /**
  * Settings-key turns get only a relay address and placeholder. A plan on a sandbox with an address of its own
  * gets the relay inside it (`TurnSandbox.localPlanRelay`), so the plan's requests leave from there; the token,
- * opened here for this turn, goes to that relay and nowhere the agent can read. A token that expires (a ChatGPT
- * plan's) is replaced in that relay on a token file's schedule (`rotatePlanToken`). Elsewhere (hosted Docker) a
- * plan goes through the platform relay like a key, which resolves the plan's current token at every request.
+ * opened here for this turn, goes to that relay and nowhere the agent can read, which then follows the plan
+ * (`rotatePlanToken`). Elsewhere (hosted Docker) a plan goes through the platform relay like a key, which resolves the
+ * plan's current token at every request.
  */
 export async function openModelKeyRelay(
 	sandbox: TurnSandbox,
@@ -96,7 +102,7 @@ export async function openModelKeyRelay(
 			harness: key.harness,
 			onSeen,
 		});
-		return opened.expiresAt === undefined ? relay : rotatePlanToken(relay, opened.expiresAt, openSecret);
+		return rotatePlanToken(relay, opened.expiresAt, openSecret);
 	}
 	if (!sandbox.modelKeyRelay)
 		throw new TokenFileError(
@@ -132,22 +138,27 @@ function replaceAtOf(expiresAt: number, leadMs: number, now = Date.now()): numbe
 }
 
 /**
- * Keeps an expiring plan token fresh in the turn's relay inside the sandbox, on a token file's schedule: the token
- * handed at the start has at least twenty minutes left (the sign-in holder's promise), and when it has ten left
- * `open` asks for the current one, which the holder refreshes, and the relay is handed it. A try that fails is
- * tried again every `retryMs`. A plan that was reconnected or removed meanwhile gives no token: the relay keeps the
- * one it has until it expires, and nothing newer is handed.
+ * Keeps the turn's relay in a sandbox or on a machine on the plan it pays with. An expiring token (`expiresAt`, a
+ * ChatGPT plan's) is replaced on a token file's schedule: the token handed at the start has at least twenty minutes
+ * left (the sign-in holder's promise), and when it has ten left `open` asks for the current one, which the holder
+ * refreshes, and the relay is handed it. A try that fails is tried again every `retryMs`. Between replacements, and for
+ * a token that never expires (a setup token), the plan is looked at every `checkMs`: one that was reconnected, removed
+ * or turned off (`WLP_PLAN_USERS`) gives no token, and the relay is closed, so the turn's requests stop.
  */
 export function rotatePlanToken(
 	relay: LocalModelRelay,
-	expiresAt: number,
+	expiresAt: number | undefined,
 	open: () => Promise<PlanSecret | null>,
 	options: RotateOptions = {},
 ): KeyTurnRelay {
 	const leadMs = options.leadMs ?? TOKEN_REPLACE_LEAD_MS;
 	const retryMs = options.retryMs ?? TOKEN_REPLACE_RETRY_MS;
+	const checkMs = options.checkMs ?? PLAN_CHECK_MS;
 	const log = options.log ?? (line => console.warn(line));
 	let current = expiresAt;
+	/** Until the next look: the next check, or the replacement if that is sooner. */
+	const nextIn = () =>
+		current === undefined ? checkMs : Math.max(retryMs, Math.min(checkMs, replaceAtOf(current, leadMs) - Date.now()));
 	let stopped = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const schedule = (inMs: number) => {
@@ -160,16 +171,19 @@ export function rotatePlanToken(
 			const next = await open();
 			if (stopped) return;
 			if (!next) {
-				log(
-					"[wlp] plan_token.gone: the plan changed or was removed; its relay keeps the token it has until it expires",
-				);
+				stopped = true;
+				log("[wlp] plan_token.gone: the plan changed, was removed or is off for this user; its relay is closed");
+				await relay.close();
 				return;
 			}
-			// The same token again: the holder still reuses it. Look again soon.
-			if (next.expiresAt === undefined || next.expiresAt === current) return schedule(retryMs);
+			if (next.expiresAt === undefined || next.expiresAt === current) {
+				// Nothing newer: a token that never expires, or one the holder still reuses (looked at again soon once due).
+				const due = current !== undefined && replaceAtOf(current, leadMs) <= Date.now();
+				return schedule(due ? retryMs : nextIn());
+			}
 			await relay.hand(next.secret);
 			current = next.expiresAt;
-			schedule(Math.max(retryMs, replaceAtOf(current, leadMs) - Date.now()));
+			schedule(nextIn());
 		} catch (error) {
 			if (stopped) return;
 			log(
@@ -178,7 +192,7 @@ export function rotatePlanToken(
 			schedule(retryMs);
 		}
 	};
-	schedule(Math.max(retryMs, replaceAtOf(current, leadMs) - Date.now()));
+	schedule(nextIn());
 	return {
 		env: relay.env,
 		placeholder: relay.placeholder,

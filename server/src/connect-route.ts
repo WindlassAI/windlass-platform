@@ -4,11 +4,12 @@
  * page (credentials/index.ts `approvePlanConnect`); the terminal polls `poll`, and only once approved runs
  * `claude setup-token` (a Claude plan) or Windlass's own sign-in (a ChatGPT plan) and posts the token or the
  * sign-in's files to `connect`, which takes the approved request once and hands them, sealed, to the approving
- * user's actor. A body that is not a token or a finished sign-in at all is refused before the request is taken,
- * so a typo does not cost it.
+ * user's actor. A body that is not a token or a finished sign-in at all, or one for the other plan, is refused
+ * before the request is taken, so a typo does not cost it; nor does a provider that could not be reached to check it.
  */
 
 import { createClient } from "rivetkit/client";
+import type { TakenRequest } from "./actors/connect-codes.js";
 import { isActorGone, planConnectActor } from "./actors/internal.js";
 import { assertOrigin, serviceParams } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
@@ -128,19 +129,26 @@ async function connect(
 	const handed = handedOver(input);
 	if (!handed)
 		return json(400, { code: "bad_plan_token", message: "That's not a setup token. It starts with sk-ant-oat01-." });
-	const owner: { uid: string; provider: PlanProvider } | null = await requests(engine).internalTake(digest);
-	if (!owner) return expired();
-	if (owner.provider !== handed.provider)
+	const owner: TakenRequest | "other_plan" | null = await requests(engine).internalTake(digest, handed.provider);
+	if (owner === "other_plan")
 		return json(400, { code: "bad_plan_token", message: "That is not for the plan this request connects." });
+	if (!owner) return expired();
 	const sealed = serverSealer().seal(
 		"transit",
 		connectTransitSubject(owner.uid, owner.provider, digest),
 		handed.secret,
 	);
-	const plan = await planConnectActor({ client: engine }, owner.uid).internalConnectPlan(
-		owner.provider,
-		digest,
-		sealed,
-	);
-	return json(200, { account: plan.account });
+	try {
+		const plan = await planConnectActor({ client: engine }, owner.uid).internalConnectPlan(
+			owner.provider,
+			digest,
+			sealed,
+		);
+		return json(200, { account: plan.account });
+	} catch (error) {
+		// The provider could not be asked: the terminal may hand the same secret over again.
+		if ((error as { code?: unknown } | null)?.code === "plan_check_unavailable")
+			await requests(engine).internalUntake(owner);
+		throw error;
+	}
 }

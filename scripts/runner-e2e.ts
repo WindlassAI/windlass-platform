@@ -2379,7 +2379,9 @@ async function main(): Promise<void> {
 					const expected = eventSeqs((await snapshotOf(client, uid, main.id, token)).timeline, first.ended.turn);
 					assert(relays.opened === before.opened + 1, `${relays.opened - before.opened} plan relay(s) for one turn`);
 					assert(relays.closed === before.closed + 1, "the ordinary plan turn's relay was not closed");
+					assert(relays.limits.at(-1)! > 0, "the machine's plan relay was given no request limit");
 					const opened = relays.opened;
+					const ends = relays.ends.length;
 					const taken = await acrossRestart(() => server.kill());
 					assert(
 						taken.end.kind === "turn.ended" && taken.end.outcome === "succeeded",
@@ -2390,6 +2392,11 @@ async function main(): Promise<void> {
 					assert(!taken.notes.some(text => /cut short|resumed/i.test(text)), `notes: ${taken.notes.join(" | ")}`);
 					assert(relays.opened === opened + 1, `${relays.opened - opened} plan relay(s) opened for the taken-up turn`);
 					assert(relays.tokens >= 1, "the taken-up turn's relay was not handed its token again");
+					const [openEnd, ...handEnds] = relays.ends.slice(ends);
+					assert(
+						openEnd !== undefined && handEnds.length > 0 && handEnds.every(end => end > openEnd),
+						"handing the taken-up turn's relay its token did not move its end on",
+					);
 					assert(relays.closed === before.closed + 2 && relays.leases.size === 0, "a plan relay was left open");
 					assert(server.log().includes(`turn.take_up session=${main.id}`), "no take-up in the server's log");
 					return `one relay, kept through the restart, handed ${relays.tokens} token(s), closed at the end`;

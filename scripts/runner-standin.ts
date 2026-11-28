@@ -263,7 +263,16 @@ export class StandInRunner {
 	 * runner has the plan relay; what the server asks of it is counted here.
 	 */
 	paying = false;
-	readonly planRelays = { opened: 0, tokens: 0, seen: 0, closed: 0, leases: new Set<string>() };
+	/** What plan relays were asked: `limits` each one's request limit, `ends` each open's and hand-over's `expiresAt`. */
+	readonly planRelays = {
+		opened: 0,
+		tokens: 0,
+		seen: 0,
+		closed: 0,
+		leases: new Set<string>(),
+		limits: [] as number[],
+		ends: [] as number[],
+	};
 	creates = 0;
 	offline = false;
 	removed = false;
@@ -592,6 +601,8 @@ export class StandInRunner {
 				const lease = randomBytes(16).toString("hex");
 				this.planRelays.opened += 1;
 				this.planRelays.leases.add(lease);
+				this.planRelays.limits.push(op.args.requestLimit);
+				this.planRelays.ends.push(op.args.expiresAt);
 				return channel.respond(op, {
 					lease,
 					placeholder: `wlp-plan.${randomBytes(32).toString("base64url")}`,
@@ -605,6 +616,7 @@ export class StandInRunner {
 				if (!this.planRelays.leases.has(op.args.lease))
 					return channel.refuse(op, { kind: "refused", message: "This plan relay lease has ended." });
 				this.planRelays.tokens += 1;
+				this.planRelays.ends.push(op.args.expiresAt);
 				return channel.respond(op, null);
 			case "planRelaySeen":
 				this.planRelays.seen += 1;

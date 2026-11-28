@@ -481,7 +481,14 @@ export class DockerModelRelay {
 		container: string,
 		sandbox: string,
 		token: string,
-		options: { wire: KeyWire; harness: HarnessId; expiresAt: number; onSeen?: (seen: RelaySeen) => void },
+		options: {
+			wire: KeyWire;
+			harness: HarnessId;
+			expiresAt: number;
+			/** The most model requests it sends: the turn's (`PlanRelayOptions.requestLimit`). */
+			requestLimit: number;
+			onSeen?: (seen: RelaySeen) => void;
+		},
 	): Promise<DockerPlanRelay> {
 		await this.options.ensureImage?.();
 		await this.ensureVolume();
@@ -532,6 +539,7 @@ export class DockerModelRelay {
 				wire: options.wire,
 				harness: options.harness,
 				expiresAt: options.expiresAt,
+				requestLimit: options.requestLimit,
 				socket: `/workspace/${socket}`,
 				upstream: this.options.upstream,
 				onSeen: options.onSeen,
@@ -548,7 +556,7 @@ export class DockerModelRelay {
 			nonce,
 			placeholder: relay.placeholder,
 			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + wires[options.wire].base },
-			hand: token => relay.hand(token),
+			hand: (token, expiresAt) => relay.hand(token, expiresAt),
 			close: async () => {
 				if (this.openLeases.get(sandbox) === lease) this.openLeases.delete(sandbox);
 				await relay.close();

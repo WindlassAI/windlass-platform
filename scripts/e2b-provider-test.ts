@@ -1864,11 +1864,11 @@ await section("a plan's relay in the sandbox", async () => {
 		rotatingStarted.stdin.slice(-200),
 	);
 	expect(
-		"a plan that changed meanwhile gives no token, and nothing more is handed",
-		rotatingStarted.stdin.split("\n").filter(line => line.includes('"token"')).length === 2,
+		"a plan that changed meanwhile gives no token, nothing more is handed, and its relay is stopped",
+		rotatingStarted.stdin.split("\n").filter(line => line.includes('"token"')).length === 2 &&
+			rotatingStarted.ended === true,
 	);
 	await rotated.close();
-	expect("the turn's end stops the relay", rotatingStarted.ended === true);
 
 	// Hosted Windlass on the ChatGPT plan: the same relay in the sandbox, on Windlass's routes, its file only the placeholder.
 	const windlassId = await w.sandboxes.create({ uid: "u1", sessionId: "s3", profile: "e2b" });

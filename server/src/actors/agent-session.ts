@@ -335,11 +335,17 @@ async function chatgptPlanCredential(
 	keyOnce?: boolean,
 ): Promise<TurnCredential> {
 	if (meta.demo || meta.environmentBuild) return { model };
-	if (!plansAllowed(meta.uid)) throw new UserError(CHATGPT_PLAN_OFF, { code: "harness_signed_out" });
+	const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
+	// The key Pay with chose ("use my key" this once, or the rule) pays whether or not the plan could.
+	if (answer && "pay" in answer.decision && answer.ref && !answer.ref.plan) return payerCredential(meta, answer, model);
+	if (!plansAllowed(meta.uid)) {
+		// The person sees CHATGPT_PLAN_OFF; the operator, the setting that decides it.
+		console.log(`[wlp] plan.off uid=${meta.uid} session=${meta.sessionId}: WLP_PLAN_USERS does not name this user`);
+		throw new UserError(CHATGPT_PLAN_OFF, { code: "harness_signed_out" });
+	}
 	const ref = { provider: "openai", plan: true } as const;
 	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref);
 	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
-	const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
 	if (answer) return payerCredential(meta, answer, model);
 	return { model, key: { ...ref, generation } };
 }

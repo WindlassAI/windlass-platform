@@ -151,12 +151,14 @@ Docker sandboxes share the server's address and keep the route.
   (`internalCredential`, `openSavedCredential` in `server/src/credentials/transit.ts`) and checks the turn's pinned
   generation. The relay's source and then `{token, placeholder, expiresAt, wire, harness}` go to its standard
   input, one JSON line each. Nothing is written to the sandbox's disk and nothing secret is on a command line or in an
-  environment. Stdin stays open as the control channel: a later `{token}` replaces the token (requests that start
-  after it carry the new one, running ones keep theirs), and the relay asks the platform to count each request
-  against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
+  environment. Stdin stays open as the control channel: a later `{token, expiresAt?}` replaces the token (requests
+  that start after it carry the new one, running ones keep theirs; a later `expiresAt` moves the relay's end on), and
+  the relay asks the platform to count each request against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
 - **A ChatGPT plan's token expires.** The turn hands the relay a fresh one before it does
-  ([Refresh and rotation](#refresh-and-rotation)). A plan reconnected or removed meanwhile gives no token: the relay
-  keeps the one it has until it expires.
+  ([Refresh and rotation](#refresh-and-rotation)).
+- **The plan is looked at every minute** (`PLAN_CHECK_MS`, `rotatePlanToken`), a Claude setup token's too though it
+  never expires. A plan reconnected or removed meanwhile, or `WLP_PLAN_USERS` turned off for its user, gives no token:
+  the turn closes the relay (`[wlp] plan_token.gone`), so its requests stop.
 - **What it accepts.** It listens on `127.0.0.1` on a port the kernel picks. It accepts only
   `Authorization: Bearer <placeholder>`, a fresh `wlp-plan.` placeholder for each turn, and only the turn's agent's
   routes on the plan's wire with that wire's headers (and betas). It sends them to the wire's host
@@ -172,9 +174,8 @@ Docker sandboxes share the server's address and keep the route.
   the turn ends or is aborted, so a paused or snapshotted sandbox keeps no token. If it cannot start or listen,
   the turn fails; the token is never put in the sandbox instead. A relay whose server died mid-turn stops itself
   at the turn's limit plus a minute, by the wall clock.
-- **Revocation is per turn.** The route checks the plan's generation at every request. This relay checks it once,
-  at the turn's start. A reconnected or removed plan, or `WLP_PLAN_USERS` turned off, takes effect at the next
-  turn, not mid-turn.
+- **Revocation.** The route checks the plan's generation at every request. This relay is checked at the turn's start
+  and then every minute: a reconnected or removed plan, or `WLP_PLAN_USERS` turned off, closes it within a minute.
 - **E2B network.** Out of `open`, a Claude Code sandbox (its `wlp_harness` metadata) may also reach
   `api.anthropic.com`, and a Codex or Windlass sandbox (no `wlp_harness`) `api.openai.com`, at create and at every
   connect (`withPlanHosts` in `server/src/sandbox/e2b/network.ts`, `planProviders` in
@@ -204,7 +205,8 @@ It is the same program as in a microVM, `sandbox/relay/plan.cjs`, with the same 
   journalled (`carriesSecret`). The runner starts the container with `docker run -i --rm` and writes the relay's
   sources and the token to its standard input, which the runner holds. Nothing is written to a file or a volume, and
   nothing secret is on a command line or in an environment. `planRelayToken` replaces the token on the turn's
-  rotation schedule (`rotatePlanToken`), as for a microVM.
+  rotation schedule (`rotatePlanToken`), as for a microVM, and moves the relay's end to the turn's limit plus a minute
+  from then. The plan is looked at every minute, and a plan that is gone closes the relay, as for a microVM.
 - **What the agent gets.** Windlass: `WINDLASS_MODEL_BASE_URL=http://127.0.0.1:17893/v1` and its token file with the
   placeholder. Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:17893` and `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>`.
   Codex: `WLP_CODEX_BASE_URL=http://127.0.0.1:17893/v1` and `WLP_SESSION_BEARER=<placeholder>`
@@ -213,14 +215,17 @@ It is the same program as in a microVM, `sandbox/relay/plan.cjs`, with the same 
   input, and the container is removed with its forwarder. A server's restart is not its end: with durable machine
   turns (`WLP_RUNNER_DURABLE_TURNS`) the runner keeps the relay with the conversation through the grace, the turn's
   checkpoint names its lease (no credential), and the restarted server takes it up (`TurnSandbox.resumePlanRelay`),
-  opens the plan's current token and hands it over `planRelayToken` before the turn goes on, then keeps rotating it.
+  opens the plan's current token and hands it over `planRelayToken` before the turn goes on (which gives the relay
+  the taken-up turn's new window), then keeps rotating it. A plan reconnected or removed meanwhile closes the relay
+  and fails the turn.
   A conversation the runner gives up on ends the relay with it. A runner that stops takes the relay's input with it, so the
-  relay ends. A relay stops itself at the turn's limit plus a minute. At its first welcome the runner removes every
+  relay ends. A relay stops itself at the turn's limit plus a minute from its last token. At its first welcome the runner removes every
   plan relay container and forwarder a runner that died left, and stale sockets.
 - **Health.** The relay's `{seen}` lines are kept by the runner (the latest 32) and taken by the session every 15 s
   and at the end (`planRelaySeen`), then told to the user's actor as a microVM relay's are.
-- **Request counting.** The relay on a machine does not count the turn's requests against
-  `WLP_MODEL_RELAY_TURN_REQUESTS`; machine turns have no such cap.
+- **Request counting.** The relay on a machine counts the turn's requests itself against
+  `WLP_MODEL_RELAY_TURN_REQUESTS` (the `planRelay` operation's `requestLimit`), as a microVM's relay does without the
+  platform counting for it, and answers 429 past it. The count lives with the relay, so a taken-up turn keeps it.
 
 Who pays on a machine: Windlass's unqualified models pin the ChatGPT plan (`machineChatgptPlan` in
 `server/src/actors/agent-session.ts`); Claude Code and Codex follow Pay with as hosted turns do (`machinePaysWith`,

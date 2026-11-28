@@ -608,8 +608,8 @@ key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes ar
 
 ### Forgetting the ChatGPT sign-in
 
-Nothing is sent to the machines: none of them holds a ChatGPT token. A plan relay running a turn keeps the token it
-was handed until the turn ends or the token expires, and its next replacement is refused (the plan is gone).
+Nothing is sent to the machines: none of them holds a ChatGPT token. A plan relay running a turn is closed at the
+turn's next look at the plan, within a minute (the plan is gone), and the token it was handed goes with it.
 
 ### Pull requests, and the machine's name
 

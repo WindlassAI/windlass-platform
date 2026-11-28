@@ -82,6 +82,28 @@ test("--token-stdin skips claude setup-token; refusals read as the platform mean
 	assert.match(typo.stderr, /does not hold a setup token/);
 });
 
+test("a plan Anthropic could not be checked for is handed over again, with the same request", async () => {
+	const unavailable = { code: "plan_check_unavailable", message: "Anthropic could not be reached." };
+	const site = await platform({ decision: "approved", connect: [503, 200], body: unavailable });
+	const run = await cli(["connect", "claude", "--token-stdin"], { WINDLASS_PLATFORM: site.url }, `${TOKEN}\n`);
+	assert.equal(run.code, 0, run.stderr);
+	assert.match(run.stdout, /Connected:/);
+	const handovers = site.seen.filter(one => one.path === "/platform/connect");
+	assert.deepEqual(
+		handovers.map(one => one.body),
+		[
+			{ request: REQUEST, token: TOKEN },
+			{ request: REQUEST, token: TOKEN },
+		],
+	);
+
+	const down = await platform({ decision: "approved", connect: 503, body: unavailable });
+	const failed = await cli(["connect", "claude", "--token-stdin"], { WINDLASS_PLATFORM: down.url }, `${TOKEN}\n`);
+	assert.equal(failed.code, 1);
+	assert.match(failed.stderr, /Anthropic could not be reached to check the plan/);
+	assert.equal(down.seen.filter(one => one.path === "/platform/connect").length, 4, "tried, then three more times");
+});
+
 test("no token in the output and no terminal to paste into: it says how to finish", async () => {
 	const site = await platform({ decision: "approved", connect: 200 });
 	const run = await cli(["connect", "claude", "--no-browser"], {

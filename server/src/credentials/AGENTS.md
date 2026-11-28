@@ -6,7 +6,8 @@ A key never reaches a sandbox: the platform model relay opens the secret for one
 On E2B and Daytona a plan's token is opened at the turn's start and handed on stdin to a relay inside the sandbox
 that runs as another user than the agent's (`openSavedCredential` in `./transit.ts`, `server/src/sandbox/plan-relay.ts`),
 and on a paired machine to the same relay in a container on the machine (`openPlan` in `server/src/sandbox/model-relay.ts`);
-an expiring one (a ChatGPT plan's) is handed again before it runs out (`rotatePlanToken` in `server/src/sandbox/token-file.ts`).
+an expiring one (a ChatGPT plan's) is handed again before it runs out, and a plan gone or turned off closes the relay
+within a minute (`rotatePlanToken` in `server/src/sandbox/token-file.ts`).
 
 Plans, one `model_plan` row each:
 
@@ -45,10 +46,12 @@ start by `server/src/actors/user-payer.ts`.
 ## Invariants and pitfalls
 
 - Seal before anything crosses the Rivet engine: a token is sealed under `transit` between the connect route and the actor, and under `model-plan` at rest.
-- A new connect replaces the generation, so every lease of the old token ends at its next request. A refresh of the ChatGPT plan never changes it.
+- A new connect replaces the generation, so every lease of the old token on the platform's relay ends at its next request, and a relay in a sandbox or on a machine within a minute. A refresh of the ChatGPT plan never changes it.
+- `savedPlan` answers only a plan whose last check passed, except for `claudePlanCheck`, which asks Anthropic again with the stored token whatever it said last, so a plan can recover.
 - `WLP_PLAN_USERS` unset turns plans off at once: no Claude plan requests, approving or connect, and `savedPlan`/`planGeneration` answer null. Any signed-in (non-demo) user may still connect the ChatGPT sign-in with the command, for Windlass on their machines; paying for any hosted turn with it (Windlass's ChatGPT models, Codex) is gated, and a user left out gets `CHATGPT_PLAN_OFF` ("Your ChatGPT plan isn't enabled for hosted runs on this account").
 - The ChatGPT plan's generation is the sign-in's: Windlass's ChatGPT model list (`server/src/account-models.ts`) is keyed by it, and a plan-paid Windlass turn's tokens count against the daily ChatGPT allowance, not as a key's (`usesPlatformModel`).
-- Approving names the plan (`approvePlanConnect(code, provider)`, from the page's `plan`): a code for another plan approves nothing. An upload that is not a finished sign-in (`uploadedSignIn`) is refused before the request is taken.
+- Approving names the plan (`approvePlanConnect(code, provider)`, from the page's `plan`): a code for another plan approves nothing. An upload that is not a finished sign-in (`uploadedSignIn`), or a handover for the other plan, is refused before the request is taken; one the provider could not be asked about (`plan_check_unavailable`) puts it back (`internalUntake`), and the command hands it over again.
+- Connect requests wait three minutes for approval (`CONNECT_PENDING_TTL_MS`) and ten once approved; at the bound (`LIVE_REQUESTS`) a new one pushes out the oldest unapproved one.
 - A plan's models are never hard-coded: without a report a plan offers only the agent's default.
 - A connect request is taken once, and only after its user approved it (`approvePlanConnect`). A wrong code counts against the user who typed it, so a signed-in stranger cannot guess a live code and receive someone else's token.
 - A plan's limits are its own account, never the key's of the same provider; its health is reset when it is connected again.

@@ -40,7 +40,7 @@ import { webFiles } from "./web.js";
 import { registry } from "./registry.js";
 import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
-import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
+import { planUsersWarning, reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
 import { errorText } from "./util.js";
 
 const debug = debuglog("wlp");
@@ -150,6 +150,8 @@ if (config.sandbox === "e2b" && config.modelRelay.on && relayHost === null)
 	console.log(
 		"[wlp] model_relay: WLP_MODEL_RELAY_URL is not set, so E2B turns are handed their access token in the sandbox; the platform's public host is never opened to E2B sandboxes in its place",
 	);
+const planUsers = planUsersWarning(config);
+if (planUsers) console.error(planUsers);
 // An admin token the engine refuses: said now, not to the first visitor.
 void warnAboutConnectionTokens(connectionTokens());
 

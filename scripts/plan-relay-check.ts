@@ -281,6 +281,44 @@ test("closing it or the turn's abort stops it, and past its expiry it refuses", 
 	assert.equal(brief.seen.length, 0);
 });
 
+test("a token handed with a later expiry moves the relay's end on", async t => {
+	const { relay, claude, seen } = await stack(t, undefined, { expiresAt: Date.now() + 1000 });
+	await relay.hand(NEXT, Date.now() + 60_000);
+	await new Promise(resolve => setTimeout(resolve, 1100));
+	assert.equal((await claude()).status, 200);
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${NEXT}`);
+	// An earlier one never brings it forward.
+	await relay.hand(TOKEN, Date.now() + 500);
+	await new Promise(resolve => setTimeout(resolve, 600));
+	assert.equal((await claude()).status, 200);
+});
+
+test("a plan that is gone closes the turn's relay at the next look, also for a token that never expires", async t => {
+	const { relay, claude } = await stack(t);
+	let plan: { secret: string } | null = { secret: TOKEN };
+	let asked = 0;
+	const lines: string[] = [];
+	const following = rotatePlanToken(
+		relay,
+		undefined,
+		async () => {
+			asked += 1;
+			return plan;
+		},
+		{ checkMs: 100, retryMs: 10, log: line => lines.push(line) },
+	);
+	t.after(() => following.close());
+	for (let i = 0; i < 100 && asked < 2; i++) await new Promise(r => setTimeout(r, 20));
+	assert.equal((await claude()).status, 200, "the same plan: it keeps paying");
+	plan = null;
+	for (let i = 0; i < 100 && lines.length === 0; i++) await new Promise(r => setTimeout(r, 20));
+	assert.match(lines[0] ?? "", /plan_token\.gone.*closed/);
+	await assert.rejects(claude(), "the relay stopped taking requests");
+	const after = asked;
+	await new Promise(r => setTimeout(r, 300));
+	assert.equal(asked, after, "nothing is asked once it is closed");
+});
+
 async function bare(
 	stdin: string,
 	closeAfter = true,

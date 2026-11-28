@@ -8,7 +8,8 @@
  *              Nothing here opens it; whoever needs it asks the holder for an access token.
  *
  * `generation` changes when a plan is connected, reconnected or removed, never when its token is refreshed: a
- * turn pins it, and every lease of an older one ends at its next request. `models` is what the plan offers,
+ * turn pins it. A lease of an older one on the platform's relay ends at its next request; a turn's relay in a sandbox
+ * or on a machine is closed at its next look at the plan, within a minute (`rotatePlanToken`). `models` is what the plan offers,
  * as its provider lists it (ChatGPT) or its agent reported it (Claude Code); none until then.
  */
 
@@ -175,7 +176,8 @@ export async function connectPlan(
 
 /** Asks Anthropic again whose the saved Claude plan is: a token it no longer accepts makes the plan unusable. */
 export async function claudePlanCheck(db: DefaultsDb, uid: string): Promise<void> {
-	const saved = await savedPlan(db, uid, "anthropic");
+	// Whatever the last check said: a token Anthropic refused once may be accepted again.
+	const saved = await savedPlan(db, uid, "anthropic", false);
 	if (!saved) return;
 	let account: string | null;
 	try {
@@ -265,14 +267,16 @@ export async function planGeneration(
 
 /**
  * A token plan's token and generation, resealed under the current key when it was sealed with an older one. A
- * ChatGPT plan has no token to open here: its access token comes from the user's sign-in holder.
+ * ChatGPT plan has no token to open here: its access token comes from the user's sign-in holder. `usable`: only one
+ * whose last check passed.
  */
-export async function savedPlan(db: DefaultsDb, uid: string, provider: PlanProvider) {
+export async function savedPlan(db: DefaultsDb, uid: string, provider: PlanProvider, usable = true) {
 	if (provider === "openai") throw new Error("A ChatGPT plan's access token comes from the sign-in holder");
 	if (!plansAllowed(uid)) return null;
 	const [row] = await db.execute<{ sealed: string; generation: string }>(
-		"SELECT sealed, generation FROM model_plan WHERE provider = ? AND check_ok=1",
+		"SELECT sealed, generation FROM model_plan WHERE provider = ? AND (check_ok = 1 OR ?)",
 		provider,
+		usable ? 0 : 1,
 	);
 	if (!row) return null;
 	const sealer = serverSealer();

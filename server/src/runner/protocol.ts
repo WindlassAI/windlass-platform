@@ -289,9 +289,10 @@ const operations = {
 	/**
 	 * A plan-paid turn's relay on the machine: the runner starts the
 	 * plan relay (sandbox/relay/plan.cjs) with the plan's token on its standard input, kept in its memory only, and a
-	 * forwarder in the sandbox. `expiresAt` is when it stops by itself. `planRelayToken` replaces the token (a ChatGPT
-	 * plan's, before it expires); `planRelaySeen` takes what the provider said of the plan since the last ask. It ends
-	 * with `modelRelayClose`, the end of its sandbox, or the conversation's.
+	 * forwarder in the sandbox. `expiresAt` is when it stops by itself, and `requestLimit` the most model requests it
+	 * sends (the turn's). `planRelayToken` replaces the token (a ChatGPT plan's, before it expires, or any plan's when a
+	 * restarted server takes the turn up) and moves `expiresAt` on; `planRelaySeen` takes what the provider said of the
+	 * plan since the last ask. It ends with `modelRelayClose`, the end of its sandbox, or the conversation's.
 	 */
 	planRelay: [
 		object({
@@ -300,6 +301,7 @@ const operations = {
 			harness: oneOf(...HARNESS_IDS),
 			token: planToken,
 			expiresAt: count,
+			requestLimit: positiveLimit,
 		}),
 		object({
 			lease: relayLease,
@@ -307,7 +309,7 @@ const operations = {
 			env,
 		}),
 	],
-	planRelayToken: [object({ ...sandbox, lease: relayLease, token: planToken }), nil],
+	planRelayToken: [object({ ...sandbox, lease: relayLease, token: planToken, expiresAt: count }), nil],
 	planRelaySeen: [object({ ...sandbox, lease: relayLease }), list(relaySeen, MAX_PLAN_SEEN)],
 	/**
 	 * The copies of a session's agent session that the machine keeps (machine-backups.ts), only to a

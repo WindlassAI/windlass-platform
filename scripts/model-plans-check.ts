@@ -69,13 +69,14 @@ test("plan tokens, user codes and request secrets have their own shapes", () => 
 test("a connected Claude plan is checked, sealed and opened only for the relay", async t => {
 	const tokens = { good: planToken(), refused: planToken() };
 	const seen: string[] = [];
+	let refuseAll = false;
 	const server = createServer((req, res) => {
 		assert.equal(req.method, "GET");
 		assert.equal(req.url, "/api/oauth/profile");
 		assert.equal(req.headers["anthropic-beta"], "oauth-2025-04-20");
 		const token = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
 		seen.push(token);
-		if (token !== tokens.good) return void res.writeHead(401).end(JSON.stringify({ error: token }));
+		if (token !== tokens.good || refuseAll) return void res.writeHead(401).end(JSON.stringify({ error: token }));
 		res.end(
 			JSON.stringify({ account: { email: "a@b.com", echo: token }, organization: { organization_type: "claude_max" } }),
 		);
@@ -137,6 +138,13 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 	const again = handover("plan-check-a", tokens.good);
 	await credentials.internalConnectPlan(a.route, "anthropic", again.digest, again.sealed);
 	assert.notEqual(await credentials.internalCredentialGeneration(a.relay, ref), generation);
+	// A recheck Anthropic refuses stops the plan; one it accepts later asks with the same token and makes it usable again.
+	refuseAll = true;
+	assert.equal((await credentials.recheckModelPlan(a.context, "anthropic"))?.ok, false);
+	assert.equal(await credentials.internalCredentialGeneration(a.relay, ref), null, "a refused plan is not used");
+	refuseAll = false;
+	assert.equal((await credentials.recheckModelPlan(a.context, "anthropic"))?.ok, true);
+	assert.ok(await credentials.internalCredentialGeneration(a.relay, ref), "accepted again, it is used again");
 	await credentials.removeModelPlan(a.context, "anthropic");
 	assert.equal(await credentials.internalCredential(a.relay, ref, nonce), null);
 
@@ -158,7 +166,7 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 		.run(serverSealer().seal("model-plan", JSON.stringify(["plan-check-off", "anthropic"]), tokens.good));
 	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref), null);
 	assert.equal(await credentials.internalCredential(off.relay, ref, nonce), null);
-	assert.equal(seen.filter(tok => tok === tokens.good).length, 2, "one check per connect, none per use");
+	assert.equal(seen.filter(tok => tok === tokens.good).length, 4, "one check per connect or recheck, none per use");
 });
 
 test("hosted pickers take a plan first, then a key, and a plan only for its own agent", async () => {
@@ -278,9 +286,11 @@ function connectWorld() {
 
 test("a terminal connects a plan only after its user approves the code, once", async t => {
 	const good = planToken(),
-		refused = planToken();
+		refused = planToken(),
+		unchecked = planToken();
 	const server = createServer((req, res) => {
 		const token = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
+		if (token === unchecked) return void res.writeHead(500).end("{}");
 		if (token !== good) return void res.writeHead(401).end("{}");
 		res.end(JSON.stringify({ account: { email: "a@b.com" }, organization: { organization_type: "claude_max" } }));
 	});
@@ -349,6 +359,15 @@ test("a terminal connects a plan only after its user approves the code, once", a
 	assert.deepEqual([no.status, no.body.code], [400, "plan_refused"]);
 	assert.equal(await state(spent.request), "expired");
 
+	// Anthropic could not be reached to check it: the request is kept, and the terminal may hand a token over again.
+	const retried = await open();
+	await approve("plan-check-a", retried.userCode);
+	const unavailable = await world.post(connect, { request: retried.request, token: unchecked });
+	assert.deepEqual([unavailable.status, unavailable.body.code], [503, "plan_check_unavailable"]);
+	assert.equal(await state(retried.request), "approved");
+	assert.equal((await world.post(connect, { request: retried.request, token: good })).status, 200);
+	assert.equal(await state(retried.request), "expired");
+
 	// Out of time: neither approved nor connected.
 	const late = await open();
 	world.sql.prepare("UPDATE requests SET expires = 1").run();
@@ -369,6 +388,48 @@ test("a terminal connects a plan only after its user approves the code, once", a
 	const limited = await world.post(start, { provider: "anthropic" }, busy);
 	assert.equal(limited.status, 429);
 	assert.equal((await world.post(poll, { request: guessed.request }, busy)).status, 200);
+});
+
+test("connect requests nobody approved last minutes, and at the bound make room for new ones", async t => {
+	const { CONNECT_PENDING_TTL_MS, CONNECT_REQUEST_TTL_MS, LIVE_REQUESTS } = await import(
+		"../server/src/actors/connect-codes.js"
+	);
+	const world = connectWorld();
+	t.after(() => world.close());
+	await world.ready();
+	const { start, poll } = CONNECT_PATHS;
+	const open = () => world.post(start, { provider: "anthropic" }, world.address());
+	const state = async (request: string) => (await world.post(poll, { request })).body.state;
+
+	// Waiting for approval, a request lasts minutes; approved, it has the longer window for the sign-in.
+	const before = Date.now();
+	const first = (await open()).body as { userCode: string; request: string; expiresAt: number };
+	assert.ok(Math.abs(first.expiresAt - (before + CONNECT_PENDING_TTL_MS)) < 5_000);
+	await credentials.approvePlanConnect(world.as("plan-check-a"), first.userCode, "anthropic");
+	const [approved] = world.sql.prepare("SELECT expires FROM requests").all() as { expires: number }[];
+	assert.ok(Math.abs(approved!.expires - (Date.now() + CONNECT_REQUEST_TTL_MS)) < 5_000);
+
+	// The table full of requests nobody approved: a new one pushes out the oldest of them, never an approved one.
+	const fill = world.sql.prepare(
+		"INSERT INTO requests (request, user_code, provider, state, expires) VALUES (?, ?, ?, ?, ?)",
+	);
+	const soon = Date.now() + 60_000;
+	for (let i = 1; i < LIVE_REQUESTS; i++)
+		fill.run(`r${i}`, `c${i}`, "anthropic", i === 1 ? "denied" : "pending", soon + i);
+	const count = () => (world.sql.prepare("SELECT count(*) AS n FROM requests").get() as { n: number }).n;
+	assert.equal(count(), LIVE_REQUESTS);
+	const next = await open();
+	assert.equal(next.status, 201);
+	assert.equal(count(), LIVE_REQUESTS);
+	assert.equal(world.sql.prepare("SELECT 1 FROM requests WHERE request = 'r1'").get(), undefined, "the oldest went");
+	assert.equal(await state(first.request), "approved");
+	assert.equal((await open()).status, 201);
+	assert.equal(world.sql.prepare("SELECT 1 FROM requests WHERE request = 'r2'").get(), undefined);
+
+	// Only when every open request is approved is a new one refused.
+	world.sql.prepare("UPDATE requests SET state = 'approved', uid = 'plan-check-a'").run();
+	const full = await open();
+	assert.deepEqual([full.status, full.body.code], [429, "too_many_connects"]);
 });
 
 test("a terminal connects the ChatGPT plan with the sign-in Windlass saved on its computer, for any signed-in user", async t => {
@@ -497,12 +558,13 @@ test("a terminal connects the ChatGPT plan with the sign-in Windlass saved on it
 	const planA = (await world.plans("plan-check-a")).plans.find(p => p.provider === "openai");
 	assert.deepEqual([planA?.account, planA?.models], ["a@example.com · Plus", ["gpt-5.5-codex"]]);
 
-	// A Claude token for a ChatGPT request is refused, and the request it took is spent.
+	// A Claude token for a ChatGPT request is refused before the request is taken: the sign-in can still follow.
 	const third = await open();
 	await credentials.approvePlanConnect(world.as("plan-check-a"), third.userCode, "openai");
 	const crossed = await world.post(connect, { request: third.request, token: planToken() });
 	assert.deepEqual([crossed.status, crossed.body.code], [400, "bad_plan_token"]);
-	assert.equal(await state(third.request), "expired");
+	assert.equal(await state(third.request), "approved");
+	assert.equal((await world.post(connect, { request: third.request, signIn: signIn("a@example.com") })).status, 200);
 
 	// In transit the sign-in is sealed to its user and request: another user's actor cannot open it.
 	const digest = connectCodeDigest.ofRequest(newConnectRequest().request)!;
@@ -659,6 +721,19 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 			/Connect your ChatGPT plan/.test(error.message) && error.code === "chatgpt_required",
 		"no plan connected",
 	);
+	// "Use my key" this once pays with the OpenAI key's version of the model, where no plan is connected or allowed.
+	const keyPays = {
+		decision: { pay: "key" },
+		ref: { provider: "openai", generation: "key-g" },
+		plan: "openai",
+		rule: { payWith: "plan", whenLimited: "ask", keyWhenLimited: true },
+		keyModel: "openai/gpt-5.5",
+	};
+	const byKey = { model: "openai/gpt-5.5", key: { provider: "openai", generation: "key-g" } };
+	payer = keyPays;
+	assert.deepEqual(await turn("gpt-5.5", {}, undefined, true), byKey);
+	assert.deepEqual(await resolver(off, "plan-check-off")("gpt-5.5", {}, undefined, true), byKey);
+	payer = null;
 	await writeChatgptSignIn(a.context.db, { sealed: "sealed-1", generation: "g1", shortNoted: false });
 	const plan = { provider: "openai", plan: true, generation: "g1" };
 	assert.deepEqual(await turn("gpt-5.5"), { model: "gpt-5.5", key: plan });

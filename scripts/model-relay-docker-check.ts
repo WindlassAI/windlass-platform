@@ -442,6 +442,7 @@ async function check() {
 		wire: "chatgpt-plan",
 		harness: "windlass",
 		expiresAt: Date.now() + 5 * 60_000,
+		requestLimit: 300,
 	});
 	cleanup.push(() => plan.close());
 	const [planned] = await request(p, plan.placeholder, "/v1/models");

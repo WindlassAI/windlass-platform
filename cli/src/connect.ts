@@ -96,14 +96,28 @@ export async function connectPlan(source: PlanSource, options: ConnectOptions): 
 	let handover: Handover | null = options.token !== undefined ? { token: options.token } : await source.obtain();
 	const body = { request: request.request, ...handover };
 	handover = null;
-	const connected = await post(options.platform, CONNECT_PATHS.connect, body);
+	let connected = await post(options.platform, CONNECT_PATHS.connect, body);
+	// The provider could not be reached to check it: the platform kept the request, so the same body is handed again.
+	for (let again = 1; again <= CHECK_RETRIES && checkUnavailable(connected); again++) {
+		await sleep(pollInterval(request) * 2 * again);
+		connected = await post(options.platform, CONNECT_PATHS.connect, body);
+	}
 	if (connected.status !== 200) throw refusal(connected);
 	const account = typeof connected.body.account === "string" ? printable(connected.body.account) : "";
 	say(`Connected: ${account || `your ${source.name}`}`);
 }
 
+/** How many more times a handover is tried while the provider cannot be reached to check it. */
+const CHECK_RETRIES = 3;
+
+function checkUnavailable(answer: { status: number; body: Record<string, unknown> }): boolean {
+	return answer.status === 503 && answer.body.code === "plan_check_unavailable";
+}
+
+const pollInterval = (request: ConnectStart) => Math.min(Math.max(request.interval, 1_000), 10_000);
+
 async function waitForDecision(platform: string, request: ConnectStart): Promise<ConnectRequestState> {
-	const interval = Math.min(Math.max(request.interval, 1_000), 10_000);
+	const interval = pollInterval(request);
 	// The platform decides when the request expires; this only stops a poll that never hears back.
 	const giveUp = Date.now() + 15 * 60_000;
 	let failures = 0;

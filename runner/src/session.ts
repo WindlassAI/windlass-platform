@@ -370,7 +370,7 @@ class Conversation {
 				}
 				case "planRelay": {
 					abort?.signal.throwIfAborted();
-					const { wire, harness, token, expiresAt } = op.args;
+					const { wire, harness, token, expiresAt, requestLimit } = op.args;
 					if ((harness === "windlass") !== !box.harness || (box.harness && harness !== box.harness))
 						throw new Refusal("This plan relay is for another agent.");
 					const plan = { seen: [] as RelaySeen[] };
@@ -378,6 +378,7 @@ class Conversation {
 						wire,
 						harness,
 						expiresAt,
+						requestLimit,
 						onSeen: seen => {
 							plan.seen.push(seen);
 							if (plan.seen.length > MAX_PLAN_SEEN) plan.seen.shift();
@@ -399,7 +400,7 @@ class Conversation {
 					const held = this.relays.get(op.args.lease);
 					if (held?.id !== id || !held.plan || !("hand" in held.relay))
 						throw new Refusal("This plan relay lease is not this sandbox's, or it has ended.");
-					await (held.relay as DockerPlanRelay).hand(op.args.token);
+					await (held.relay as DockerPlanRelay).hand(op.args.token, op.args.expiresAt);
 					return null;
 				}
 				case "planRelaySeen": {

@@ -968,7 +968,8 @@ class Turn {
 
 	/**
 	 * Takes up the plan relay the runner kept on the machine (`resumePlanRelay`) and hands it the plan's current token
-	 * again, then keeps it fresh on the turn's schedule (`rotatePlanToken`). Closed with the turn, as when it was opened.
+	 * again, which moves its end on for the turn's new window, then keeps it on the plan (`rotatePlanToken`). Closed
+	 * with the turn, as when it was opened; a plan reconnected or removed meanwhile closes it now and fails the turn.
 	 */
 	private async resumePlan(planLease: import("./provider.js").PlanRelayLease): Promise<void> {
 		const ref = this.input.modelKey!;
@@ -976,12 +977,14 @@ class Turn {
 		this.keyLease = relay;
 		this.planLease = planLease;
 		this.redactor = redactKeyLease(this.redactor, relay.placeholder);
-		const opened = await ref.openSecret?.();
-		// A plan reconnected or removed meanwhile: the relay keeps the token it has, as a rotation would.
-		if (!opened) return;
+		if (!ref.openSecret) throw new Error("A plan turn on this sandbox needs its secret opened for the turn.");
+		const opened = await ref.openSecret();
+		if (!opened) {
+			await relay.close();
+			throw new Error("the plan for this turn changed or was removed");
+		}
 		await relay.hand(opened.secret);
-		if (opened.expiresAt !== undefined && ref.openSecret)
-			this.keyLease = rotatePlanToken(relay, opened.expiresAt, ref.openSecret);
+		this.keyLease = rotatePlanToken(relay, opened.expiresAt, ref.openSecret);
 	}
 
 	private answered(request: Promise<PromptResult>): void {

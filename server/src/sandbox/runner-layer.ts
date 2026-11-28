@@ -617,6 +617,9 @@ class RunnerProcess implements SandboxProcess {
 /** How often a turn takes what its machine's plan relay saw of the plan. */
 const PLAN_SEEN_MS = 15_000;
 
+/** When a machine's plan relay stops by itself: past the turn's limit from now, so a dead server leaves no token for long. */
+const planRelayExpiry = () => Date.now() + config.turnTimeoutMs + 60_000;
+
 class RunnerHandle implements TurnSandbox {
 	readonly approval: "auto" | "full";
 	readonly profile: SandboxProfileId;
@@ -666,6 +669,7 @@ class RunnerHandle implements TurnSandbox {
 				);
 			};
 		}
+		// The turn's request limit, counted by the relay on the machine: a machine turn has no `takeRequest`.
 		this.localPlanRelay = async (token, options) => {
 			if (options.wire !== "claude-plan" && options.wire !== "chatgpt-plan")
 				throw new Error("A plan relay takes only a plan's wire.");
@@ -676,7 +680,8 @@ class RunnerHandle implements TurnSandbox {
 					wire: options.wire,
 					harness: options.harness,
 					token,
-					expiresAt: Date.now() + config.turnTimeoutMs + 60_000,
+					expiresAt: planRelayExpiry(),
+					requestLimit: config.modelRelay.turnRequests,
 				},
 				{ signal: options.signal },
 			);
@@ -730,9 +735,15 @@ class RunnerHandle implements TurnSandbox {
 			env: opened.env,
 			// Where a restarted server takes it up again (`resumePlanRelay`).
 			lease: opened.lease,
+			// Each hand-over moves its end on: a turn taken up after a restart has a new window (`resumePlanRelay`).
 			hand: async token => {
 				if (closing) throw new Error("This relay has ended.");
-				await this.link.again("planRelayToken", { id: this.id, lease: opened.lease, token });
+				await this.link.again("planRelayToken", {
+					id: this.id,
+					lease: opened.lease,
+					token,
+					expiresAt: planRelayExpiry(),
+				});
 			},
 			close: () =>
 				(closing ??= (async () => {

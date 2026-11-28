@@ -22,6 +22,50 @@ import { modeSelection, optionsOf } from "../server/src/sandbox/acp-options.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 
 {
+	// A machine turn's credential: only a machine agent's asks the runner what it offers (Windlass's never uses it), and
+	// an item that waits for its plan's reset names the machine it runs on.
+	const { takeCredential } = await import("../server/src/actors/agent-session/turn.js");
+	const { PlanWaitError } = await import("../server/src/actors/agent-session/common.js");
+	let asked = 0;
+	const runner = {
+		who: { uid: "owner", sessionId: "s1", machineId: "desk" },
+		facts: async () => {
+			asked += 1;
+			return { name: "Desk", report: { harnesses: [] } };
+		},
+	};
+	const take = (harness: string, turnCredential: () => Promise<unknown>, item?: object) => {
+		const meta = { place: { kind: "machine", machineId: "desk" }, uid: "owner", sessionId: "s1", harness, model: "m" };
+		const scope = {
+			meta: { ...meta, machineName: "Desk" },
+			active: { item },
+			signal: new AbortController().signal,
+			hooks: { turnCredential },
+			handling: { kind: "run" },
+		};
+		return takeCredential({ key: ["owner", "s1"], vars: { runner, meta } } as never, scope as never);
+	};
+	await take("windlass", async () => ({ model: "gpt-5.5" }));
+	assert.equal(asked, 0, "a Windlass turn on a machine does not ask the runner what it offers");
+	await take("opencode", async () => ({ model: "m" }));
+	assert.equal(asked, 1, "a machine agent's turn does");
+	const item = { row: { text: "go", fetchBase: null, untrusted: [] } } as { providerRefusal?: { placeName?: string } };
+	await assert.rejects(
+		take(
+			"windlass",
+			async () => {
+				throw new PlanWaitError("Your ChatGPT plan is limited until 14:00 UTC.", 2, "openai");
+			},
+			item,
+		),
+		/limited until/,
+	);
+	assert.equal(item.providerRefusal?.placeName, "Desk", "the wait names the machine, not hosted");
+	console.log(
+		"ok  a machine turn's credential asks the runner only for a machine agent; a plan wait names its machine",
+	);
+}
+{
 	const { turnCredential } = await import("../server/src/actors/agent-session.js");
 	const machine = { kind: "machine", machineId: "desk" },
 		hosted = { kind: "hosted" };

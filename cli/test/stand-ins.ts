@@ -8,12 +8,14 @@ import { fileURLToPath } from "node:url";
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 export const REQUEST = "r".repeat(43);
 
-export type Plan = { decision: "approved" | "denied"; connect: number; body?: unknown };
+/** `connect`: the handover's status, or successive handovers' (the last one repeats), each answered with `body`. */
+export type Plan = { decision: "approved" | "denied"; connect: number | number[]; body?: unknown };
 
 /** The platform's three routes: approval arrives on the second poll; the connect answer is the case's. */
 export async function platform(plan: Plan) {
 	const seen: { path: string; body: Record<string, unknown> }[] = [];
 	let polls = 0;
+	let handovers = 0;
 	const read = async (req: IncomingMessage) => {
 		let text = "";
 		for await (const chunk of req) text += chunk;
@@ -33,7 +35,11 @@ export async function platform(plan: Plan) {
 				interval: 1_000,
 			});
 		if (req.url === "/platform/connect/poll") return send(200, { state: ++polls < 2 ? "pending" : plan.decision });
-		if (req.url === "/platform/connect") return send(plan.connect, plan.body ?? { account: "a@b.com · Max" });
+		if (req.url === "/platform/connect") {
+			const statuses = [plan.connect].flat();
+			const status = statuses[Math.min(handovers++, statuses.length - 1)]!;
+			return send(status, plan.body ?? { account: "a@b.com · Max" });
+		}
 		send(404, {});
 	});
 	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));

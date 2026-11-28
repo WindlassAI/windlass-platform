@@ -557,18 +557,23 @@ export async function noteTurnMemory(
  * Pay with held an item's turn for its plan after the queue had let it start (the plan was limited meanwhile): the item
  * waits for the plan's reset as after a usage-limit refusal (blueprint.ts `askProviderRefusal`), and asks where none is known.
  */
-function planWait(item: ActiveTurn["item"], wait: PlanWaitError): never {
+function planWait(meta: SessionMeta, item: ActiveTurn["item"], wait: PlanWaitError): never {
 	if (item) {
 		const { text, fetchBase, untrusted } = item.row;
 		item.providerRefusal = {
 			kind: "usage_limit",
 			message: wait.message,
 			...(wait.retryAt !== null && { resetsAt: wait.retryAt }),
-			placeName: "hosted",
+			placeName: placeNameOf(meta),
 			retry: { text, fetchBase, ...(untrusted.length && { untrusted }) },
 		};
 	}
 	throw new TurnProblem(wait.message);
+}
+
+/** Where the session runs, as an item's refusal names it. */
+export function placeNameOf(meta: Pick<SessionMeta, "place" | "machineName">): string | undefined {
+	return meta.place.kind === "hosted" ? "hosted" : (meta.machineName ?? undefined);
 }
 
 function refuseItemPolicy(item: ActiveTurn["item"], reason: string): never {
@@ -728,12 +733,16 @@ export async function takeCredential(
 	const { meta, active, signal, run } = t;
 	const layer = (t.layer = await layerOf(c, meta));
 	// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
-	const facts = meta.place.kind === "machine" ? await runnerLink(c, meta.place.machineId).facts() : null;
+	// Only a machine agent's turn reads what the runner offers; Windlass's does not.
+	const facts =
+		meta.place.kind === "machine" && machineHarness(meta.harness)
+			? await runnerLink(c, meta.place.machineId).facts()
+			: null;
 	const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
 	const credential =
 		active.credential ??
 		(await t.hooks.turnCredential(c, meta, offered, meta.model, signal, run?.credential, false).catch(error => {
-			if (error instanceof PlanWaitError) return planWait(active.item, error);
+			if (error instanceof PlanWaitError) return planWait(meta, active.item, error);
 			if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
 				throw error;
 			return refuseItemPolicy(active.item, error.message);
@@ -2142,7 +2151,7 @@ async function noteProviderOutcome(
 			active.item.providerRefusal = {
 				...safe,
 				accountKey: t.generation === null ? undefined : accountKey(account, t.generation),
-				placeName: meta.place.kind === "hosted" ? "hosted" : (meta.machineName ?? undefined),
+				placeName: placeNameOf(meta),
 				retry: {
 					text: redactor?.text(text) ?? text,
 					fetchBase,
