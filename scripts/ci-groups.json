@@ -83,7 +83,7 @@
         "models": "tsx ../scripts/models-check.ts",
         "model-providers": "tsx ../scripts/model-providers-check.ts",
         "model-plans": "tsx ../scripts/model-plans-check.ts",
-        "cli": "node --test ../cli/test/token.test.ts ../cli/test/connect.test.ts",
+        "cli": "node --test ../cli/test/token.test.ts ../cli/test/connect.test.ts ../cli/test/connect-codex.test.ts ../cli/test/connect-machine.test.ts",
         "plan-relay": "tsx --test ../scripts/plan-relay-check.ts",
         "stored-data": "tsx ../scripts/stored-data-check.ts",
     "network": "tsx ../scripts/network-check.ts",

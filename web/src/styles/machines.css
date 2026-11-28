@@ -482,7 +482,8 @@
 	font-weight: var(--weight-medium);
 	color: var(--ink);
 }
-/* The commands from before the one-line install, folded under it. */
+/* The ways in other than the connect command, folded under it. */
+.machine-no-node,
 .machine-other-ways {
 	margin-top: 0;
 }

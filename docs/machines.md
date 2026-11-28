@@ -33,14 +33,42 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
   account it joined ("Paired with ada. ..."; "an account without a GitHub login" where GitHub is not
   connected) and connects.
 - A code belongs to the first account that types it; for any other account it is not found.
+- **Deny** on the connect page (`denyMachine`) ends a pairing whose code this account looked up and has not
+  confirmed: the runner's next poll finds it gone and it stops ("The pairing code expired or was denied, ...").
 - A name given with `--name` is kept in the state volume. A paired runner restarted with a new name updates
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
 
+### Connecting from the CLI
+
+The Machines page shows `npx @windlassai/cli connect --machine` first ([cli/src/machine.ts](../cli/src/machine.ts)),
+`curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` under **No Node?**, and the Docker commands under **Other ways**.
+The command and install.sh run the same container: its arguments, the state volume and the messages for
+Docker's problems are defined once in [machine-setup.ts](../server/src/contract/machine-setup.ts)
+(`setupRunArgs`, `DOCKER_HELP`), which install-script.ts renders into the script and the CLI bundles. The CLI
+reads the image and the address from `GET /platform/info` (`machines.runnerImage`, `machines.platformUrl`),
+checks Docker with `docker info`, pulls the image and runs `docker run --rm --log-driver none -v
+/var/run/docker.sock:/var/run/docker.sock -v windlass-runner:/var/lib/windlass-runner <image> setup --platform
+<address> --connect --name <host name>` with no terminal.
+
+The pairing is the one above, unchanged: the runner in that container makes its key pair, asks
+`POST /runner/pair` and polls. `setup --connect` asks nothing ([setup-events.ts](../runner/src/setup-events.ts)): it
+writes one JSON line per event (`SetupEvent`), and the CLI shows them. For the `pairing` event (code and machine
+key) the CLI opens `<address>/connect?code=XXXX-XXXX&kind=machine`. That page looks the code up (`claimMachine`,
+so the code becomes this account's), shows the code, the machine key, name and system to compare with the
+terminal, and **Approve** is `confirmMachine` with `keyConfirmed`, **Deny** is `denyMachine`. The machine's key
+never leaves the container and its volume; the CLI sees only what install.sh's terminal shows. After the
+pairing the setup takes its defaults: every agent in the image (or the saved ones), both profiles, restricted
+network and automatic limits, signs no agent in (the agents pay with the account's plans and keys, see
+[Plans on this machine](#plans-on-this-machine)), starts the service and waits until it is online. A machine
+already paired with the platform keeps its pairing: with its runner running nothing is changed (its settings
+may come from flags this mode would not keep), else the runner is started with the saved settings; `setup`
+(Pair again) makes a new pairing. The host name is
+passed with `--name` because inside Docker Desktop the runner sees only the VM's name.
+
 ### The one-line install and the setup wizard
 
-The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` first, and the Docker commands under
-**Other ways**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
+The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` under **No Node?**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
 sh script, as `text/plain` with `cache-control: no-store`, with the platform's address and the pinned
 `WLP_RUNNER_IMAGE` written in. While no image is published the script says so and exits 1; with
 `WLP_MACHINES` off the path is a 404. The script:

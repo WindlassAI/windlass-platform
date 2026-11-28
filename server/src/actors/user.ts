@@ -2268,6 +2268,7 @@ export const user = actor({
 		machineCatalog: machineActions.machineCatalog,
 		claimMachine: machineActions.claimMachine,
 		confirmMachine: machineActions.confirmMachine,
+		denyMachine: machineActions.denyMachine,
 		removeMachine: machineActions.removeMachine,
 		internalProviderGeneration: (c, location: AccountLocation) => {
 			requireServiceFor(c, "call");

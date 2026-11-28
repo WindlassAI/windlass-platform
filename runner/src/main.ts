@@ -135,6 +135,7 @@ async function main() {
 			"snapshot-user": { type: "string" },
 			"keep-free": { type: "string" },
 			quick: { type: "boolean" },
+			connect: { type: "boolean" },
 			"no-tui": { type: "boolean" },
 		},
 	});
@@ -166,7 +167,7 @@ async function main() {
 		: positionals.length <= (wizard ? 2 : 1) && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
 		throw new RunnerError(
-			"Use windlass-runner [setup [--quick|--no-tui|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--spares 0|1|2] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].",
+			"Use windlass-runner [setup [--quick|--no-tui|--connect|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--spares 0|1|2] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].",
 		);
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
@@ -211,8 +212,9 @@ async function main() {
 		maxRunning: limit("max-running", values["max-running"]),
 		store: storeFlags(values),
 	};
-	if ((values.quick || values["no-tui"]) && command !== "setup")
-		throw new RunnerError("Use --quick and --no-tui with setup.");
+	if ((values.quick || values["no-tui"] || values.connect) && command !== "setup")
+		throw new RunnerError("Use --quick, --no-tui and --connect with setup.");
+	if (values.connect && !wizard) throw new RunnerError("Use --connect with setup alone, without --harness.");
 	if (values.quick && !wizard) throw new RunnerError("Use --quick with setup alone, without --harness.");
 	if (wizard) return setupWizard(positionals.slice(1), values);
 	if (command === "log") return showLog();

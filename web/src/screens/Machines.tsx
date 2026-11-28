@@ -1,4 +1,5 @@
 import {
+	MACHINE_CONNECT_COMMAND,
 	MAX_MACHINES,
 	type MachineClaim,
 	type MachineSummary,
@@ -42,7 +43,7 @@ import {
 	tagsOf,
 } from "../lib/machines";
 import { MachineState, SandboxLine } from "../components/MachineState";
-import { useMachines } from "../state/machines";
+import { type MachinesState, useMachines } from "../state/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
@@ -699,10 +700,13 @@ type AddStep = { step: "command" } | { step: "code" } | { step: "confirm"; claim
 /** Pairing a machine: the command that starts its runner, the code the runner prints, and what that machine says it is. */
 function AddDialog({
 	info,
+	machines,
 	onClose,
 	onAdded,
 }: {
 	info: MachinesInfo;
+	/** The user's machines as the page keeps them, live: a machine paired from the connect page arrives here. */
+	machines: MachinesState;
 	onClose(): void;
 	onAdded(machine: MachineSummary): void;
 }) {
@@ -741,6 +745,7 @@ function AddDialog({
 	const install = installCommand(info, agents);
 	const oneLine = oneLineInstall(info);
 	const complete = code.replace(/-/g, "").length === 8;
+	const paired = useNewMachine(machines, step.step === "command");
 
 	const shown = useRef(step.step);
 	useEffect(() => {
@@ -938,33 +943,57 @@ function AddDialog({
 			lede="Use a terminal on your Mac, Linux computer or Windows machine (WSL) with Docker."
 			onClose={onClose}
 			footer={
-				<>
-					<button type="button" className="button button-quiet" onClick={onClose}>
+				paired ? (
+					<button type="button" className="button button-primary" onClick={onClose}>
+						Done
+					</button>
+				) : (
+					<button type="button" className="button button-quiet" onClick={onClose} ref={aim}>
 						Cancel
 					</button>
-					<button type="button" className="button button-primary" onClick={() => go({ step: "code" })} ref={aim}>
-						Enter the code
-					</button>
-				</>
+				)
 			}
 		>
 			<div className="machine-dialog">
 				{oneLine ? (
-					<div>
-						<p className="machine-step">1. Install</p>
-						<Command text={oneLine} label="The install command" />
-						<details className="field-note">
-							<summary>What setup asks</summary>
-							<p>
-								Choose a name, sign in your agents and set network access, isolation and limits. Setup starts the
-								machine software in the background.{" "}
-								<a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">
-									Read the script
+					<>
+						<div>
+							<Command text={MACHINE_CONNECT_COMMAND} label="The connect command" />
+							<p className="field-note">
+								It needs Docker and Node. It opens a page here to approve the machine, then starts the runner in the
+								background. No agent sign-in is needed: the machine's agents use the plans and keys on{" "}
+								<a className="link" {...linkProps({ name: "connections" })}>
+									Connections
 								</a>
 								.
 							</p>
+							<p className="field-note machine-wait" role="status">
+								{paired ? `Paired: ${machineLabel(paired)}.` : "Waiting for your machine…"}
+							</p>
+						</div>
+						<details className="panel-more machine-no-node">
+							<summary>
+								<ChevronIcon size={12} className="panel-more-chevron" />
+								No Node?
+							</summary>
+							<div className="machine-other-ways-body">
+								<Command text={oneLine} label="The install command" />
+								<p className="field-note">
+									Setup asks for a name, signs in your agents and sets network access, isolation and limits, then starts
+									the machine software in the background.{" "}
+									<a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">
+										Read the script
+									</a>
+									. It prints a code: enter it here, then confirm the machine key.
+								</p>
+								<p>
+									<button type="button" className="button button-outline" onClick={() => go({ step: "code" })}>
+										Enter the code
+									</button>
+								</p>
+							</div>
 						</details>
-					</div>
+					</>
 				) : (
 					<p className="callout callout-info">
 						<InfoIcon />
@@ -1030,11 +1059,36 @@ function AddDialog({
 						</div>
 					</details>
 				) : null}
-				<p className="machine-step">2. Enter the code from your terminal</p>
-				<p className="machine-step">3. Confirm the machine key to finish</p>
 			</div>
 		</Dialog>
 	);
+}
+
+/**
+ * A machine that joined the list after the dialog's first step was shown (paired from the connect page the
+ * command opens); null until one does. The page's list follows the user's actor; it is read again when the person
+ * comes back to this tab from that page.
+ */
+function useNewMachine(machines: MachinesState, watching: boolean): MachineSummary | null {
+	const known = useRef<Set<string> | null>(null);
+	const [found, setFound] = useState<MachineSummary | null>(null);
+	const { list, reload } = machines;
+	useEffect(() => {
+		if (!watching) return;
+		window.addEventListener("focus", reload);
+		return () => window.removeEventListener("focus", reload);
+	}, [watching, reload]);
+	useEffect(() => {
+		if (list === null || found) return;
+		if (known.current === null) {
+			known.current = new Set(list.map(machine => machine.machineId));
+			return;
+		}
+		if (!watching) return;
+		const fresh = list.find(machine => !known.current?.has(machine.machineId));
+		if (fresh) setFound(fresh);
+	}, [list, watching, found]);
+	return found;
 }
 
 function RemoveDialog({
@@ -1272,6 +1326,7 @@ export function Machines({ adding }: { adding: boolean }) {
 			{adding && info !== null && canAdd ? (
 				<AddDialog
 					info={info}
+					machines={machines}
 					onClose={closeAdd}
 					onAdded={machine =>
 						machines.replace([...(list ?? []).filter(one => one.machineId !== machine.machineId), machine])

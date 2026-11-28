@@ -27,17 +27,29 @@ export interface Answer {
 	retryAfter: number;
 }
 
+/** GETs JSON. Throws only when the platform could not be reached. */
+export async function get(origin: string, path: string, timeoutMs = 20_000): Promise<Answer> {
+	return request(origin + path, { method: "GET", headers: { accept: "application/json" } }, timeoutMs);
+}
+
 /** POSTs JSON and reads the JSON answer. Throws only when the platform could not be reached. */
 export async function post(origin: string, path: string, body: unknown, timeoutMs = 20_000): Promise<Answer> {
-	let response: Response;
-	try {
-		response = await fetch(origin + path, {
+	return request(
+		origin + path,
+		{
 			method: "POST",
 			headers: { "content-type": "application/json", accept: "application/json" },
 			body: JSON.stringify(body),
-			redirect: "error",
-			signal: AbortSignal.timeout(timeoutMs),
-		});
+		},
+		timeoutMs,
+	);
+}
+
+async function request(url: string, init: RequestInit, timeoutMs: number): Promise<Answer> {
+	const origin = new URL(url).origin;
+	let response: Response;
+	try {
+		response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
 	} catch (error) {
 		throw new CliError(`Could not reach ${origin} (${error instanceof Error ? error.message : "network error"}).`);
 	}

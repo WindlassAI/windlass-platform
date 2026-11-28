@@ -312,6 +312,8 @@ export interface UserApi
 	claimMachine(input: { code: string }): Promise<MachineClaim>;
 	/** Pairs the machine of a code this user looked up. Throws as `claimMachine` does. */
 	confirmMachine(input: { code: string; keyConfirmed: true }): Promise<MachineSummary>;
+	/** Ends the pairing of a code this user looked up, so its runner stops; nothing once its machine is paired. Throws with reason `pairing_not_found` for a code this user did not look up. */
+	denyMachine(input: { code: string }): Promise<void>;
 	/** Removes a machine; with `removeSandboxes` its runner also removes the agents' sandboxes on it. Throws with reason `machine_not_found`. */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */

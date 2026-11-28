@@ -319,6 +319,12 @@ export interface UserActions {
 	 */
 	confirmMachine(input: { code: string; keyConfirmed: true }): Promise<MachineSummary>;
 	/**
+	 * Refuses the machine of a code this user looked up (the connect page's Deny): its pairing ends at once, so
+	 * its runner stops waiting and pairs with nobody. Throws as `claimMachine` does for a code this user did not
+	 * look up, and refuses nothing once the machine is paired.
+	 */
+	denyMachine(input: { code: string }): Promise<void>;
+	/**
 	 * Removes a machine: its key stops working at once, and its agents keep their conversations and can
 	 * no longer run. With `removeSandboxes`, its runner also removes the agents' sandboxes on it and
 	 * Windlass's data volume there, now when it is online and when it next connects when not. Throws a

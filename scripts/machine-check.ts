@@ -653,6 +653,31 @@ async function check() {
 		assert.equal(expired.status, 410);
 		assert.deepEqual(await expired.json(), { reason: "removed", removeSandboxes: false });
 
+		step("Deny on the connect page ends a pairing, only for the account that looked its code up");
+		const denier = await account();
+		const outsider = await account();
+		const deniedRunner = new FakeRunner();
+		const deniedPair = await deniedRunner.pair(origin);
+		const deniedCode = { code: deniedPair.code };
+		await refused(denier.user.denyMachine(deniedCode), "pairing_not_found");
+		await denier.user.claimMachine(deniedCode);
+		await refused(outsider.user.claimMachine(deniedCode), "pairing_not_found");
+		await refused(outsider.user.denyMachine(deniedCode), "pairing_not_found");
+		assert.deepEqual(await deniedRunner.poll(origin, deniedPair), { state: "waiting" });
+		await denier.user.denyMachine(deniedCode);
+		assert.deepEqual(await deniedRunner.poll(origin, deniedPair), { state: "gone" });
+		await refused(denier.user.confirmMachine({ ...deniedCode, keyConfirmed: true }), "pairing_not_found");
+		await refused(denier.user.denyMachine(deniedCode), "pairing_not_found");
+		// Once confirmed, Deny leaves the machine paired: it is removed on Machines.
+		const keptPair = await new FakeRunner().pair(origin);
+		await denier.user.claimMachine({ code: keptPair.code });
+		const keptMachine = await denier.user.confirmMachine({ code: keptPair.code, keyConfirmed: true });
+		await denier.user.denyMachine({ code: keptPair.code });
+		assert.deepEqual(
+			(await denier.user.machines()).map(m => m.machineId),
+			[keptMachine.machineId],
+		);
+
 		step("pairing quotas across nodes regardless of forwarding headers, with room for other runners");
 		const quotaRunner = new FakeRunner();
 		const starts = await Promise.all(
@@ -682,8 +707,8 @@ async function check() {
 		const budget = client.pairingDirectory.get(["starts"], { params: serviceParams() }).connect();
 		let admitted = 0;
 		try {
-			// Eleven earlier admissions are still in this ten-minute window (including the short-lived fixture).
-			const earlier = 11;
+			// Thirteen earlier admissions are still in this ten-minute window (including the short-lived fixture and the two of Deny).
+			const earlier = 13;
 			for (let i = 0; i < 128 && admitted + earlier < 1024; i++) {
 				const batch = await Promise.all(
 					Array.from({ length: 32 }, () =>

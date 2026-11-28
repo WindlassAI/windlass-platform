@@ -93,11 +93,14 @@ test("no token in the output and no terminal to paste into: it says how to finis
 	assert.ok(!site.seen.some(one => one.path === "/platform/connect"));
 });
 
-test("usage, planned commands and platform addresses", async () => {
+test("usage, a machine with a plan, and platform addresses", async () => {
 	const codex = await cli(["connect", "codex", "--token-stdin"], { WINDLASS_PLATFORM: "https://windlass.example.com" });
 	assert.equal(codex.code, 2);
 	assert.match(codex.stderr, /--token-stdin is for connect claude/);
-	assert.match((await cli(["connect", "--machine"], {})).stderr, /not available yet/);
+	// `--machine` is a flow of its own (connect-machine.test.ts): with a plan named too, it is a usage error.
+	const both = await cli(["connect", "codex", "--machine"], { WINDLASS_PLATFORM: "https://windlass.example.com" });
+	assert.equal(both.code, 2);
+	assert.match(both.stderr, /^Usage:/);
 	const plain = await cli(["connect", "claude"], { WINDLASS_PLATFORM: "http://example.com" });
 	assert.match(plain.stderr, /must start with https:\/\//);
 });

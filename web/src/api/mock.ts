@@ -4882,6 +4882,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		list: MachineSummary[];
 		/** The codes this user looked up, normalised, with the machine confirming one made. */
 		claims: Map<string, string | null>;
+		/** The codes this user denied: their pairings ended, so no one can look them up again. */
+		denied: Set<string>;
 		/** When this user looked a code up, for the limit of five in ten minutes. */
 		lookups: number[];
 		/** For `stale`: whether the user's connection dropped yet, after which the list can no longer be read. */
@@ -4903,7 +4905,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const world = worldOf(auth);
 		let set = machineSets.get(world.profile.uid);
 		if (!set) {
-			set = { list: seedMachines(machineState), claims: new Map(), lookups: [], dropped: "no" };
+			set = { list: seedMachines(machineState), claims: new Map(), denied: new Set(), lookups: [], dropped: "no" };
 			machineSets.set(world.profile.uid, set);
 		}
 		return set;
@@ -5363,15 +5365,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				{ reason: "too_many_claims" },
 			);
 		set.lookups.push(at);
-		if (!/^[0-9A-HJKMNP-TV-Z]{8}$/.test(clean) || clean === "ZZZZZZZZ")
-			throw new PlatformError(
-				"user",
-				"No machine is waiting with that code. A code lasts ten minutes: check the one the runner printed last.",
-				{ reason: "pairing_not_found" },
-			);
+		if (!/^[0-9A-HJKMNP-TV-Z]{8}$/.test(clean) || clean === "ZZZZZZZZ" || set.denied.has(clean)) throw noPairing();
 		set.claims.set(clean, null);
 		return clean;
 	}
+
+	const noPairing = () =>
+		new PlatformError(
+			"user",
+			"No machine is waiting with that code. A code lasts ten minutes: check the one the runner printed last.",
+			{ reason: "pairing_not_found" },
+		);
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
 	function machineCalls(
@@ -5382,6 +5386,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		| "machineCatalog"
 		| "claimMachine"
 		| "confirmMachine"
+		| "denyMachine"
 		| "removeMachine"
 		| "setMachineDetails"
 		| "setMachineSecrets"
@@ -5466,6 +5471,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					machinesChanged(auth);
 				});
 				return machinesView(auth).find(one => one.machineId === machineId) as MachineSummary;
+			},
+			async denyMachine({ code }) {
+				machinesOn();
+				await latency(320);
+				const set = machinesOf(auth);
+				const clean = pairingCode(code);
+				if (!set.claims.has(clean)) throw noPairing();
+				// Once its machine is paired, denying it changes nothing.
+				if (set.claims.get(clean)) return;
+				set.claims.delete(clean);
+				set.denied.add(clean);
 			},
 			async removeMachine({ machineId }) {
 				machinesOn();

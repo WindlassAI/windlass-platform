@@ -274,7 +274,7 @@ export function App() {
 	}
 
 	if (route.name === "connect")
-		return <Connect code={route.code} plan={route.plan} theme={theme} onToggleTheme={toggleTheme} />;
+		return <Connect code={route.code} plan={route.plan} kind={route.kind} theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (route.name === "session") return <SessionRoute key={route.id} sessionId={route.id} bar={bar} />;
 

@@ -188,7 +188,7 @@ export async function pair(
 			return { paired };
 		}
 	}
-	return { idle: `The pairing code expired, so ${again}` };
+	return { idle: `The pairing code expired or was denied, so ${again}` };
 }
 
 async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {

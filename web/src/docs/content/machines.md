@@ -33,9 +33,26 @@ Where Hosted can be used, choose its size and isolation here too. The agent and 
 
 Open the account menu and choose **Machines**, then **Add a machine**.
 
+### Connect it with one command
+
+The dialog shows one command first. Copy it and run it in a terminal on the computer. It needs Docker and Node:
+
+```sh
+npx @windlassai/cli connect --machine
+```
+
+It checks that Docker is installed and running, and says what to do if it is not. Then it fetches the runner image, pairs the machine and opens a page here to approve it. The page and your terminal show the same pairing code and **machine key**: check that they match, then choose **Approve**. Choose **Deny** if they differ or you did not run the command yourself; nothing is connected and the terminal stops. The dialog on the Machines page notices the new machine by itself.
+
+After you approve, it starts the runner in the background with the defaults: every agent in the runner image offered, the recommended profiles (see [What you need](#what-you-need)), **Restricted** [network access](#network-access) and limits sized for the computer. It signs no agent in: the machine's agents use the plans and keys connected on **Connections**. To change the settings later, run setup on the machine:
+
+```sh
+docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner <runner image> setup
+```
+
 ### 1. Start the runner
 
-The dialog shows one line first. Copy it and run it in a terminal on the computer:
+Without Node, open **No Node?** in the dialog. It shows one line. Copy it and run it in a terminal on the computer:
 
 ```sh
 curl -fsSL <platform address>/install.sh | sh
@@ -108,7 +125,7 @@ When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the addre
 docker logs windlass-runner
 ```
 
-Choose **Enter the code**, type the code and choose **Check code**. Case, spaces and dashes do not matter. A code lasts ten minutes. It belongs to the first account that enters it.
+Under **No Node?** in the dialog, choose **Enter the code**, type the code and choose **Check code**. Case, spaces and dashes do not matter. A code lasts ten minutes. It belongs to the first account that enters it.
 
 ### 3. Connect it
 

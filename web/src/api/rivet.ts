@@ -522,6 +522,7 @@ export function createRivetClient(
 			machineCatalog: input => act("machineCatalog", input),
 			claimMachine: input => act("claimMachine", input),
 			confirmMachine: input => act("confirmMachine", input),
+			denyMachine: input => act("denyMachine", input),
 			removeMachine: input => act("removeMachine", input),
 			setMachineDetails: input => act("setMachineDetails", input),
 			setMachineSecrets: input => act("setMachineSecrets", input),

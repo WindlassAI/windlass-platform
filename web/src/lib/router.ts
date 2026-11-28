@@ -44,9 +44,9 @@ export type Route =
 	| { name: "factory"; repository?: GithubId; from?: ItemSource }
 	/**
 	 * Approves the connect command's request in a terminal: `code` is the one the terminal shows (`?code=`), `plan`
-	 * the plan it connects (`?plan=`).
+	 * the plan it connects (`?plan=`), or `kind: "machine"` a machine it pairs (`?kind=machine`).
 	 */
-	| { name: "connect"; code?: string; plan?: PlanProvider }
+	| { name: "connect"; code?: string; plan?: PlanProvider; kind?: "machine" }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
 	| { name: "docs"; slug: string; section?: string }
 	| { name: "notfound" };
@@ -100,7 +100,12 @@ export function parseRoute(pathname: string, search = ""): Route {
 		const query = new URLSearchParams(search);
 		const code = query.get("code");
 		const plan = query.get("plan");
-		return { name: "connect", ...(code ? { code } : {}), ...(isPlanProvider(plan) ? { plan } : {}) };
+		return {
+			name: "connect",
+			...(code ? { code } : {}),
+			...(isPlanProvider(plan) ? { plan } : {}),
+			...(query.get("kind") === "machine" ? { kind: "machine" as const } : {}),
+		};
 	}
 	if (path === "/docs") return { name: "docs", slug: "" };
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
@@ -167,6 +172,7 @@ export function href(route: Route): string {
 	if (route.name === "factory" && route.from) query.set("from", route.from);
 	if (route.name === "connect" && route.code) query.set("code", route.code);
 	if (route.name === "connect" && route.plan) query.set("plan", route.plan);
+	if (route.name === "connect" && route.kind) query.set("kind", route.kind);
 	if (mock !== null) query.set("mock", mock);
 	const fragment =
 		(route.name === "repository" ||

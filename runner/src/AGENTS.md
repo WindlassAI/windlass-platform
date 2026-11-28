@@ -59,7 +59,7 @@ Harness sign-in and relays:
 Setup wizard:
 
 - `./setup-wizard.ts` holds the prompts and navigation; `WizardEffects` owns pairing, sign-in and Docker work.
-- `./setup-prompt.ts` is the prompt interface, implemented by `./setup-tui.ts` (full screen) and `./setup-lines.ts` (plain lines, `--no-tui`).
+- `./setup-prompt.ts` is the prompt interface, implemented by `./setup-tui.ts` (full screen), `./setup-lines.ts` (plain lines, `--no-tui`) and `./setup-events.ts` (`--connect`: no questions, JSON event lines for the CLI's `connect --machine`).
 - `./setup-choices.ts` persists choices and converts them to flags; `./setup-run.ts` runs the wizard in a one-off container; `./setup.ts` checks the setup container and signs agents in.
 
 ## Invariants

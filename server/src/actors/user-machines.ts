@@ -434,6 +434,15 @@ export const machineActions = {
 		if (!summary) throw pairingGone();
 		return summary;
 	},
+	async denyMachine(c: Ctx, input: { code: string }): Promise<void> {
+		const { uid } = requireUser(c);
+		enabled();
+		const handle = await pairing(c, input);
+		const { machineId } = await handle.internalClaimed(uid).catch(asPairingError);
+		// Once confirmed, the machine is this user's to remove on Machines, not to deny here.
+		if ((await c.db.execute("SELECT 1 FROM machines WHERE id = ?", machineId)).length) return;
+		await handle.internalDeny(uid).catch(asPairingError);
+	},
 	async removeMachine(c: Ctx, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> {
 		requireUser(c);
 		enabled();
