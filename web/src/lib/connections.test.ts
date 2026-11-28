@@ -68,6 +68,25 @@ describe("a hosted cell", () => {
 		expect(hostedCell("claude", planOnly).detail).toBe("a@b.com · Max");
 	});
 
+	it("shows what the saved Pay with choice makes pay, not the default", () => {
+		const both = { keys: [key("anthropic")], plans: { allowed: true, plans: [plan("anthropic")] } };
+		const keyOnly = inputs({
+			...both,
+			payWith: [{ harness: "claude", payWith: "key", whenLimited: null, updatedAt: 1 }],
+		});
+		expect(hostedCell("claude", keyOnly)).toMatchObject({ state: "key", label: "Anthropic key" });
+		const planOnly = inputs({
+			...both,
+			payWith: [{ harness: "claude", payWith: "plan", whenLimited: null, updatedAt: 1 }],
+		});
+		expect(hostedCell("claude", planOnly)).toMatchObject({ state: "plan", detail: "a@b.com · Max" });
+		const planOnlyNoPlan = inputs({
+			keys: [key("anthropic")],
+			payWith: [{ harness: "claude", payWith: "plan", whenLimited: null, updatedAt: 1 }],
+		});
+		expect(hostedCell("claude", planOnlyNoPlan).state).not.toBe("key");
+	});
+
 	it("ignores a plan the account may not use, and says the key pays", () => {
 		const off = inputs({ keys: [key("anthropic")], plans: { allowed: false, plans: [plan("anthropic")] } });
 		expect(hostedCell("claude", off)).toMatchObject({ state: "key", label: "Anthropic key", detail: "…4f2a" });

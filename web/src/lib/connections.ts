@@ -11,6 +11,7 @@ import {
 	type ModelPlans,
 	type ModelProvider,
 	type ModelProviderStatus,
+	type PayWithChoice,
 	PLAN_NAMES,
 	type PlanProvider,
 } from "@contract";
@@ -21,6 +22,7 @@ import {
 	machineHarness,
 	WINDLASS_KEY_PROVIDERS,
 } from "../../../server/src/sandbox/harnesses.js";
+import { payWithFor } from "../../../server/src/pay-with.js";
 import type { ReportedHarness } from "./acp";
 import { clockTime } from "./format";
 import { SOURCE_NAMES } from "./models";
@@ -33,6 +35,8 @@ export interface ConnectionInputs {
 	chatgpt: boolean;
 	/** Whether this account may connect the ChatGPT sign-in (not the demo user). */
 	canConnectChatgpt: boolean;
+	/** The saved Pay with choices: a hosted cell shows what they make pay, not the default. */
+	payWith?: readonly PayWithChoice[];
 }
 
 /**
@@ -139,10 +143,15 @@ export function hostedCell(harness: HarnessId, inputs: ConnectionInputs, now = D
 		if (okKeys.length)
 			return { id, state: "key", label: "Your keys", detail: keyNames(okKeys.map(key => key.provider)), action: null };
 	} else {
-		const payer = hostedPayer(harness, undefined, hostedCredentialsFrom(inputs));
+		// What the saved Pay with choice lets pay an item's turn: "Key only" never uses the plan, "Plan only" never the key.
+		const rule = payWithFor(inputs.payWith ?? [], harness, "item", okKeys.length > 0);
+		const usable = hostedCredentialsFrom(inputs).filter(one =>
+			rule.payWith === "key" ? !one.plan : rule.payWith === "plan" ? one.plan : true,
+		);
+		const payer = hostedPayer(harness, undefined, usable);
 		if (payer?.plan) {
 			const plan = inputs.plans.plans.find(one => one.provider === payer.provider);
-			const backup = okKeys[0];
+			const backup = rule.payWith === "plan-then-key" ? okKeys[0] : undefined;
 			return withHealth(
 				{
 					id,

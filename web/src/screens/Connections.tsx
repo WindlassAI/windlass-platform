@@ -330,7 +330,7 @@ export function Connections() {
 							</p>
 						)
 					) : (
-						<Grid inputs={inputs} machines={list} onAct={act} />
+						<Grid inputs={{ ...inputs, payWith: payWith.choices ?? [] }} machines={list} onAct={act} />
 					)}
 				</SettingsGroup>
 
