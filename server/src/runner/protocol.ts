@@ -60,7 +60,16 @@ import {
 export const positiveLimit = is<number>(v => count(v) && v > 0);
 
 export const PROTOCOL_VERSION = 2;
-export const OLD_RUNNER = "This runner is too old for this platform. Update it with the command on the Machines page.";
+/**
+ * The oldest runner release this server serves: the first whose turns pay with a plan through a relay on the machine
+ * and that keeps no ChatGPT or Codex sign-in of its own. Raise it when the server stops reading what older runners send.
+ */
+export const MIN_RUNNER_VERSION = "0.3.13";
+/** What a runner below `MIN_RUNNER_VERSION` is told, on connect and on the Machines page. `version`: the runner's, when known. */
+export function outdatedRunner(version?: string): string {
+	return `${version ? `This runner is ${version}. ` : ""}Update your runner to ${MIN_RUNNER_VERSION} or later with the command on the Machines page.`;
+}
+export const OLD_RUNNER = outdatedRunner();
 /** Under the 256 KiB RivetKit takes per incoming message (registry.ts); the probe measures the gateway. */
 export const MAX_FRAME_BYTES = 128 * 1024;
 /** The largest message, as JSON: a `run` result holds up to 4 MiB of output (sandboxes.ts, STDOUT_CAP). */
@@ -210,11 +219,8 @@ const operations = {
 				snapshot: optional(snapshotSource),
 				screenshots: optional(boolean),
 				ownData: optional(oneOf(true)),
-				/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
+				/** Windlass's Settings-key turns can use the machine's model relay (`modelRelay` below): its image's Windlass reads the relay's address. */
 				modelRelay: optional(oneOf(true)),
-				windlassKeyRelay: optional(oneOf(true)),
-				/** Its turns can pay with a plan through a relay on the machine (the plan operations below), said only to a server that named `plan-relay`. */
-				planRelay: optional(oneOf(true)),
 				blockedNetwork: optional(oneOf(true)),
 				memoryEvents: optional(oneOf(true)),
 				/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
@@ -267,30 +273,21 @@ const operations = {
 	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
 	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
 	/**
-	 * Windlass's model relay (docs/model-relay.md), only to a runner whose connect said `modelRelay`: a
-	 * lease for one turn (its forwarder listens in the sandbox), the turn's token handed to the relay, and
-	 * the lease's end. `lease` names the lease on the runner; it is no credential.
+	 * A Settings key's lease for one turn (docs/model-relay.md): Windlass's through the machine's model relay, only to a
+	 * runner whose connect said `modelRelay`, or a harness's through its key relay. The forwarder listens in the
+	 * sandbox; the key stays on the platform. `lease` names the lease on the runner; it is no credential.
 	 */
 	modelRelay: [
-		object({ ...sandbox, forward: optional(forwardKey) }),
+		object({ ...sandbox, forward: forwardKey }),
 		object({
 			lease: relayLease,
 			placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)),
 			env,
 		}),
 	],
-	modelRelayToken: [
-		object({
-			...sandbox,
-			lease: relayLease,
-			accessToken: is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,16384}$/.test(v)),
-			expiresAt: count,
-		}),
-		nil,
-	],
 	modelRelayClose: [object({ ...sandbox, lease: relayLease }), nil],
 	/**
-	 * A plan-paid turn's relay on the machine, only to a runner whose connect said `planRelay`: the runner starts the
+	 * A plan-paid turn's relay on the machine: the runner starts the
 	 * plan relay (sandbox/relay/plan.cjs) with the plan's token on its standard input, kept in its memory only, and a
 	 * forwarder in the sandbox. `expiresAt` is when it stops by itself. `planRelayToken` replaces the token (a ChatGPT
 	 * plan's, before it expires); `planRelaySeen` takes what the provider said of the plan since the last ask. It ends

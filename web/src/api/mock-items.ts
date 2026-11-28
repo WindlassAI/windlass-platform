@@ -5419,7 +5419,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					if (offered.signIn !== "token")
 						throw new PlatformError(
 							"user",
-							`${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” is not signed in. Run windlass-runner login ${harness} there.`,
+							offered.paysWith
+								? `Nothing can pay for ${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” yet. Connect a plan or add a key on Connections.`
+								: `${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” is not signed in. Run windlass-runner login ${harness} there.`,
 							{ reason: "harness_signed_out" },
 						);
 				}
@@ -5585,7 +5587,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (machine.warnings.some(warning => warning.kind === "outdated")) {
 			throw new PlatformError(
 				"user",
-				`The runner on "${machine.name}" is older than this platform takes: update it to ${machines.minRunnerVersion} or later, then start the agent again.`,
+				`Update your runner on “${machine.name}” to ${machines.minRunnerVersion} or later, then start the agent again.`,
 				{ reason: "runner_outdated" },
 			);
 		}

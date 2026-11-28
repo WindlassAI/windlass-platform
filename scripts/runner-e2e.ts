@@ -2361,9 +2361,7 @@ async function main(): Promise<void> {
 				await server.stop();
 				await server.start(durable);
 				await machineIs("online");
-				runner.planRelay = true;
-				runner.fake.report.planRelay = true;
-				runner.report();
+				runner.paying = true;
 				const paying = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as {
 					e2ePaying(paying: boolean): Promise<void>;
 				};
@@ -2396,9 +2394,7 @@ async function main(): Promise<void> {
 					assert(server.log().includes(`turn.take_up session=${main.id}`), "no take-up in the server's log");
 					return `one relay, kept through the restart, handed ${relays.tokens} token(s), closed at the end`;
 				} finally {
-					runner.planRelay = false;
-					delete runner.fake.report.planRelay;
-					runner.report();
+					runner.paying = false;
 					await paying.e2ePaying(false);
 					await forceSleep(main.id);
 				}
@@ -2435,8 +2431,7 @@ async function main(): Promise<void> {
 			"a graceful restart keeps a plan-paid machine turn and its plan relay, which the next server hands a token again",
 			async () => {
 				runner.fake.report.resumableConversation = true;
-				runner.planRelay = true;
-				runner.fake.report.planRelay = true;
+				runner.paying = true;
 				runner.report();
 				const paying = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as {
 					e2ePaying(paying: boolean): Promise<void>;
@@ -2458,8 +2453,7 @@ async function main(): Promise<void> {
 					assert(relays.closed === before.closed + 1 && relays.leases.size === 0, "the relay was not closed once");
 					return `turn ${taken.number} kept with its relay through SIGTERM`;
 				} finally {
-					runner.planRelay = false;
-					delete runner.fake.report.planRelay;
+					runner.paying = false;
 					runner.report();
 					await paying.e2ePaying(false);
 					await forceSleep(main.id);

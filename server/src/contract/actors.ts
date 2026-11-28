@@ -4,7 +4,6 @@ import type {
 	ChatgptStatus,
 	ContinueSessionInput,
 	CreateSessionInput,
-	HarnessId,
 	HarnessOptions,
 	IdempotencyKey,
 	LinkedLogin,
@@ -56,7 +55,7 @@ import type {
 	SecretRequest,
 	SetRequestedSecretInput,
 } from "./items.js";
-import type { CredentialSource, MachineClaim, MachineDetails, MachineHostUpdate, MachineSummary } from "./machines.js";
+import type { MachineClaim, MachineDetails, MachineHostUpdate, MachineSummary } from "./machines.js";
 import type { PendingQuestion, SessionServers } from "./questions.js";
 import type {
 	EnvironmentPlace,
@@ -334,11 +333,6 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	setCredentialSource(input: {
-		machineId: string;
-		harness: Exclude<HarnessId, "windlass">;
-		source: CredentialSource;
-	}): Promise<MachineSummary[]>;
 	/** Unpaged calls return every item, newest first. A short page is the last one. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */

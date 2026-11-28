@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
 	anyAgentConnected,
 	cellId,
-	choosableKeys,
 	connectAction,
 	type ConnectionInputs,
 	hostedCell,
@@ -122,13 +121,7 @@ describe("a machine's cell", () => {
 			label: "Own sign-in",
 		});
 		expect(
-			machineCell(
-				"claude",
-				machine([
-					{ ...entry, signIn: "token", platformKeys: ["anthropic"], source: "key", machineSignIns: ["anthropic"] },
-				]),
-				hosted,
-			),
+			machineCell("claude", machine([{ ...entry, signIn: "token", platformKeys: ["anthropic"] }]), hosted),
 		).toMatchObject({ state: "key", label: "Your key", detail: "Anthropic" });
 		expect(machineCell("claude", machine([{ ...entry, signIn: "none" }]), hosted)).toMatchObject({
 			state: "none",
@@ -139,44 +132,25 @@ describe("a machine's cell", () => {
 		).toMatchObject({ state: "unknown", detail: "timed out" });
 	});
 
-	it("follows Pay with as Hosted on a runner with a plan relay, unless the machine's own sign-in or the key was chosen", () => {
+	it("follows Pay with as Hosted for an agent with no login of its own on the machine; a login kept there wins", () => {
 		const claudeHosted = hostedCell("claude", inputs({ plans: { allowed: true, plans: [plan("anthropic")] } }));
-		const relayed = (entry: NonNullable<MachineSummary["harnesses"]>[number]) =>
-			({ ...machine([entry]), planRelay: true }) as MachineSummary;
 		const entry = { id: "claude" as const, adapter: "a", image: "i" };
-		expect(machineCell("claude", relayed({ ...entry, signIn: "none" }), claudeHosted)).toMatchObject({
-			id: "claude-m_mac",
-			state: claudeHosted.state,
-			label: claudeHosted.label,
-			detail: "Same as Hosted",
-			action: null,
-		});
+		for (const signIn of ["token", "none"] as const)
+			expect(machineCell("claude", machine([{ ...entry, signIn, paysWith: true }]), claudeHosted)).toMatchObject({
+				id: "claude-m_mac",
+				state: claudeHosted.state,
+				label: claudeHosted.label,
+				detail: "Same as Hosted",
+				action: null,
+			});
 		// A Claude login kept on the machine wins there.
-		expect(machineCell("claude", relayed({ ...entry, signIn: "token" }), claudeHosted)).toMatchObject({
+		expect(machineCell("claude", machine([{ ...entry, signIn: "token" }]), claudeHosted)).toMatchObject({
 			state: "machine",
 		});
 		// No plan pays for OpenCode: its machine logins, as before.
-		expect(machineCell("opencode", relayed({ ...entry, id: "opencode", signIn: "none" }), claudeHosted)).toMatchObject({
-			state: "none",
-			label: "Sign in needed",
-		});
-		// Without the relay (an older runner) the machine's sign-in is still asked for.
-		expect(machineCell("claude", machine([{ ...entry, signIn: "none" }]), claudeHosted)).toMatchObject({
-			label: "Sign in needed",
-		});
-	});
-
-	it("offers the choice of payer only where the runner relays keys and a key of its sign-in's provider is saved", () => {
-		const entry = {
-			id: "claude" as const,
-			adapter: "a",
-			image: "i",
-			signIn: "token" as const,
-			machineSignIns: ["anthropic" as const],
-		};
-		expect(choosableKeys({ ...entry, keyRelay: true }, [key("anthropic")])).toEqual(["anthropic"]);
-		expect(choosableKeys(entry, [key("anthropic")])).toEqual([]);
-		expect(choosableKeys({ ...entry, keyRelay: true }, [key("openai")])).toEqual([]);
+		expect(
+			machineCell("opencode", machine([{ ...entry, id: "opencode", signIn: "none" }]), claudeHosted),
+		).toMatchObject({ state: "none", label: "Sign in needed" });
 	});
 });
 

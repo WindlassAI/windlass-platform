@@ -17,7 +17,6 @@ import { checkRunPlace, changesPlace, changedPlace, hasRoom, placeProblem } from
 import type {
 	AccountDefaultsPatch,
 	ContinueSessionInput,
-	CredentialSource,
 	ItemPlaceDefaults,
 	RepositoryDefaultsPatch,
 } from "../contract.js";
@@ -41,7 +40,6 @@ import {
 	machineActions,
 	machineSecrets,
 	machineTables,
-	credentialSource,
 } from "./user-machines.js";
 import { keptFull, makeSandboxRoom } from "./user/kept-sandboxes.js";
 import {
@@ -1252,7 +1250,7 @@ async function makeSession(
 
 	let summary: SessionSummary;
 	try {
-		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, c.key[0]!, place.machineId) : null;
 		if (size > 1 && !machine?.slots)
 			throw new UserError("Choose a machine reporting slots for a large sandbox.", { code: "bad_input" });
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
@@ -1261,10 +1259,6 @@ async function makeSession(
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (acp && machine && !offered)
 			throw new UserError(`This machine does not offer ${acp.name}.`, { code: "bad_input" });
-		if (item?.payer && offered && item.payer !== (offered.source ?? "machine"))
-			throw new UserError("The selected payer changed before launch. Restore it or choose a new placement.", {
-				code: "bad_input",
-			});
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
 		const signedOut =
 			item && acp && offered ? itemSignInMessage(acp, machine?.name ?? "your machine", offered.signIn) : null;
@@ -1402,8 +1396,8 @@ async function makeSession(
 							...(size > 1 && { size }),
 							...(item.effort && { effort: item.effort }),
 							...(offered && {
-								payer: offered.source ?? "machine",
-								payerSource: offered.source ? ("account" as const) : ("deployment" as const),
+								payer: "machine" as const,
+								payerSource: "deployment" as const,
 							}),
 							...(itemSignIn && { signIn: itemSignIn }),
 						},
@@ -1927,7 +1921,7 @@ async function loadUserState(c: { key: string[]; db: RawAccess }): Promise<UserV
 		checkout: new AccountCheckout(),
 		keptGeneration: 0,
 		listed: null,
-		machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])),
+		machines: new Map((await listMachines({ db: c.db, key: c.key, vars: { sessions } })).map(m => [m.machineId, m])),
 		items,
 	};
 }
@@ -2300,12 +2294,6 @@ export const user = actor({
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) =>
 			machineActions.setMachineDetails(c, input),
 		setMachineSecrets: machineActions.setMachineSecrets,
-		setCredentialSource: async (c, input: { machineId: string; harness: string; source: CredentialSource }) => {
-			const machines = await machineActions.setCredentialSource(c, input);
-			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
-			return machines;
-		},
 		internalMachineCreated: machineActions.internalMachineCreated,
 		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {
 			requireServiceFor(c, "call");
@@ -3737,10 +3725,6 @@ export const user = actor({
 			await credentialsChanged(c);
 		},
 		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
-		internalCredentialSource: async (c, machineId: string, harness: string): Promise<CredentialSource | null> => {
-			requireServiceFor(c, modelKeyCaller(c.key[0]!));
-			return credentialSource(c.db, machineId, harness);
-		},
 		internalHostedCredentials: c => credentialActions.internalHostedCredentials(c),
 		internalCredentialGeneration: (c, ref: unknown, onMachine?: boolean) =>
 			credentialActions.internalCredentialGeneration(c, ref, onMachine === true),

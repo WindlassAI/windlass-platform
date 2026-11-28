@@ -15,12 +15,11 @@ import {
 	type PlanProvider,
 	type WhenLimited,
 } from "@contract";
-import { type ReactNode, useCallback, useState } from "react";
+import { useCallback, useState } from "react";
 import { payWithFor } from "../../../server/src/pay-with.js";
 import { keyProviders, machineHarness } from "../../../server/src/sandbox/harnesses.js";
 import { ChatgptPlan } from "../components/ChatgptPlan";
 import { ClaudePlan } from "../components/ClaudePlan";
-import { CredentialChoice } from "../components/CredentialChoice";
 import { Dialog } from "../components/Dialog";
 import { CloudIcon, MachineIcon, WarnIcon } from "../components/Icons";
 import { KeyDialog, ModelProviders } from "../components/ModelProviders";
@@ -33,7 +32,6 @@ import {
 	type CellAction,
 	type ConnectionCell,
 	type ConnectionInputs,
-	choosableKeys,
 	hostedCell,
 	machineCell,
 } from "../lib/connections";
@@ -82,12 +80,10 @@ function Cell({
 	cell,
 	target,
 	onAct,
-	choice,
 }: {
 	cell: ConnectionCell;
 	target: boolean;
 	onAct(action: CellAction, state: ConnectionCell["state"]): void;
-	choice?: ReactNode;
 }) {
 	const { action } = cell;
 	return (
@@ -119,7 +115,6 @@ function Cell({
 					{actionWords(action, cell.state)}
 				</button>
 			) : null}
-			{choice}
 		</div>
 	);
 }
@@ -127,12 +122,10 @@ function Cell({
 function Grid({
 	inputs,
 	machines,
-	onMachines,
 	onAct,
 }: {
 	inputs: ConnectionInputs;
 	machines: readonly MachineSummary[];
-	onMachines(list: MachineSummary[]): void;
 	onAct(action: CellAction, state: ConnectionCell["state"]): void;
 }) {
 	const hash = decodeURIComponent(useHash().slice(1));
@@ -174,25 +167,9 @@ function Grid({
 								</td>
 								{machines.map(machine => {
 									const cell = machineCell(harness, machine, hosted);
-									const entry = machine.harnesses?.find(one => one.id === harness);
-									const providers = entry ? choosableKeys(entry, inputs.keys) : [];
 									return (
 										<td key={machine.machineId} data-place={machineLabel(machine)}>
-											<Cell
-												cell={cell}
-												target={hash === cell.id}
-												onAct={onAct}
-												choice={
-													entry && providers.length > 0 ? (
-														<CredentialChoice
-															machine={machine}
-															harness={entry}
-															providers={providers}
-															onChanged={onMachines}
-														/>
-													) : undefined
-												}
-											/>
+											<Cell cell={cell} target={hash === cell.id} onAct={onAct} />
 										</td>
 									);
 								})}
@@ -353,7 +330,7 @@ export function Connections() {
 							</p>
 						)
 					) : (
-						<Grid inputs={inputs} machines={list} onMachines={machines.replace} onAct={act} />
+						<Grid inputs={inputs} machines={list} onAct={act} />
 					)}
 				</SettingsGroup>
 

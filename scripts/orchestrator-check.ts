@@ -1497,7 +1497,7 @@ function machineReport(
 	};
 }
 import { plannerMachines, machineDetails } from "../server/src/machines/details.js";
-import { choosePlacement, reviewPart } from "../server/src/factory/placement.js";
+import { choosePlacement } from "../server/src/factory/placement.js";
 import type { MachineSummary, PlacementNeeds, SubtaskAgent } from "../server/src/contract.js";
 function placementFeature(
 	machines: MachineSummary[],
@@ -2945,7 +2945,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 		event: { status: "allowed", window: { ...event.window, usedPct: 0, observedAt: at + 2 } },
 	});
 	for (const table of (await import("../server/src/credentials/index.js")).CREDENTIAL_TABLES) raw.exec(table);
-	const [machine] = await listMachines({ db, vars: { sessions: new Map() } });
+	const [machine] = await listMachines({ db, key: ["u_orch"], vars: { sessions: new Map() } });
 	assert.equal(machine?.providerAccounts?.[0].limitedUntil, reset * 1000 + 60_000);
 	assert.doesNotMatch(JSON.stringify([machine, raw.prepare("SELECT * FROM provider_usage").all()]), /canary/);
 	raw.prepare("UPDATE machines SET facts=? WHERE id=?").run(facts(next), macId);
@@ -4174,88 +4174,6 @@ test("a part asks for Hosted when its machine is offline and the owner allowed H
 		choice: "use_hosted",
 	});
 	assert.equal(chosen.item.jobs![0].route?.preferred.kind, "hosted");
-});
-
-test("machine overflow asks before changing payer and dispatch keeps the accepted pair", async () => {
-	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
-	const mac = machineReport("Mac", macId, { harnesses: [...signedIn], turns: { max: 1, running: 1, queued: 0 } });
-	const linux = machineReport("Linux", linuxId, {
-		harnesses: [{ ...signedIn[0], source: "key", keyRelay: true, platformKeys: ["anthropic"] }],
-	});
-	const machines = [mac, linux];
-	const feature = placementFeature(machines, {}, ["Linux"], true, "Mac", { harness: "claude" });
-	feature.jobs![0].task.resolved = resolveRun({ account: { harness: "claude", place: { machine: macId } } }, "part");
-	feature.context = { machinePayers: { [macId]: { claude: "machine" }, [linuxId]: { claude: "key" } } };
-	reviewPart(feature.jobs![0].task, feature.context, feature.place, true, {
-		machines: plannerMachines(machines),
-		hostedProfiles: ["docker-hardened"],
-	});
-	const switched = dispatch(feature, [mac, { ...linux, harnesses: [...signedIn] }]);
-	assert.match(
-		switched.question!.choices.find(c => c.id === "use_machine_payer")!.label,
-		/Linux.*machine’s own sign-in/,
-	);
-	const confirmed = advance(switched, {
-		kind: "answer",
-		at: 7,
-		by: "owner",
-		question: switched.question!.id,
-		choice: "use_machine_payer",
-	}).item;
-	assert.equal(dispatch(confirmed, [mac, { ...linux, harnesses: [...signedIn] }]).jobs![0].placement?.payer, "machine");
-	const asked = dispatch(feature, machines);
-	assert.equal(asked.jobs![0].placement, undefined);
-	assert.match(asked.question!.choices.find(c => c.id === "use_machine_payer")!.label, /Linux.*Settings key/);
-	const accepted = advance(asked, {
-		kind: "answer",
-		at: 7,
-		by: "owner",
-		question: asked.question!.id,
-		choice: "use_machine_payer",
-	}).item;
-	assert.deepEqual(accepted.jobs![0].task.resolved?.place, { machine: linuxId });
-	assert.equal(accepted.jobs![0].task.resolved?.payer, "key");
-	assert.equal(dispatch(accepted, machines).jobs![0].placement?.payer, "key");
-	assert.equal(dispatch(accepted, [mac, { ...linux, harnesses: [...signedIn] }]).jobs![0].placement, undefined);
-});
-
-test("any-machine filing keeps the resolved payer until the owner accepts a named change", async () => {
-	const { machinePayers, resolveRun } = await import("../server/src/factory/resolve-run.js");
-	const { checkRunPlace } = await import("../server/src/factory/default-place.js");
-	const account = { harness: "claude", place: "any-machine" } as const;
-	const mac = machineReport("Mac", macId, {
-		harnesses: [{ ...signedIn[0], method: "subscription" }],
-		turns: { max: 1, running: 1, queued: 0 },
-	});
-	const linux = machineReport("Linux", linuxId, {
-		harnesses: [{ ...signedIn[0], source: "key", method: "api-key", keyRelay: true, platformKeys: ["anthropic"] }],
-	});
-	const machines = [mac, linux],
-		context = { account, machinePayers: machinePayers(machines) };
-	const run = resolveRun(context, "builder");
-	const result = checkRunPlace(run, machines);
-	assert.ok(result.wait);
-	assert.equal(result.offerPayer?.payer, "key");
-	const item = createItem({
-		id: "i_payer",
-		task,
-		place: result.place,
-		budget: single,
-		reviewer: { off: "deployment" },
-	});
-	Object.assign(item, { awaitingPlace: result.wait, offerPayer: result.offerPayer, context, resolved: run });
-	const asked = advance(item, { kind: "start", at: 1, by: "owner" }).item;
-	const accepted = advance(asked, {
-		kind: "answer",
-		at: 2,
-		by: "owner",
-		question: asked.question!.id,
-		choice: "use_machine_payer",
-	}).item;
-	assert.deepEqual(accepted.resolved?.place, { machine: linuxId });
-	assert.equal(accepted.resolved?.payer, "key");
-	assert.equal(checkRunPlace(accepted.resolved!, machines).wait, undefined);
-	assert.equal(resolveRun({ account, machinePayers: machinePayers([linux, mac]) }, "builder").payer, "key");
 });
 
 test("a Hosted fallback uses its own isolation while an explicit part profile stays required", async () => {

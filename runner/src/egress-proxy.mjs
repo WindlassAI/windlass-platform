@@ -421,46 +421,11 @@ if (process.argv[1] === "wlp-egress-broker")
 	);
 // Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
 // connecting the agent byte stream so even a second HTTP request has the same identity.
-export function forward(port, path, nonce, signedOutOnDisconnect = false) {
-	const marker = path.replace(/[^/]+$/, "signed-out");
+export function forward(port, path, nonce) {
 	const server = net.createServer(client => {
-		// The pinned Codex adapter uses one fixed port for both credentials.
-		const keySocket = signedOutOnDisconnect && existsSync("/run/wlp-relay/" + nonce + ".key");
-		const upstream = net.connect(keySocket ? "/run/wlp-relay/keys.sock" : path);
-		if (signedOutOnDisconnect) {
-			// The login volume and relay disappear at logout; the local endpoint survives. A relay that is
-			// replaced (update, re-pair, new login) also goes away for a moment: only a logout leaves the marker.
-			const signedOut = () =>
-				client.end(
-					existsSync(marker)
-						? "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-						: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-				);
-			client.on("error", () => upstream.destroy());
-			client.on("close", () => upstream.destroy());
-			upstream.once("error", signedOut);
-			upstream.once("connect", () => {
-				upstream.write(nonce);
-				client.pipe(upstream);
-				// If logout closes an outstanding request before its HTTP response,
-				// the CLI can still receive the authentication status. The relay closes each connection after
-				// one reply, so no reply on this connection means none to the request on it.
-				let started = false;
-				upstream.on("data", () => {
-					started = true;
-				});
-				upstream.pipe(client, { end: false });
-				upstream.off("error", signedOut);
-				upstream.on("error", () => {});
-				upstream.on("close", () => {
-					if (started) client.end();
-					else signedOut();
-				});
-			});
-		} else {
-			if (nonce) upstream.write(nonce);
-			pipes(client, upstream);
-		}
+		const upstream = net.connect(path);
+		if (nonce) upstream.write(nonce);
+		pipes(client, upstream);
 	});
 	server.maxConnections = 128;
 	return server.listen(port, "127.0.0.1");
@@ -468,8 +433,12 @@ export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 if (process.argv[1] === "wlp-egress-forward") {
 	if (process.argv[2] === "restricted") forward(17891, socket);
 	if (process.argv[3]) {
-		forward(17892, "/run/wlp-relay/relay.sock", process.argv[3], process.argv[4] === "codex");
-		if (process.argv[4] !== "codex") forward(17894, "/run/wlp-relay/keys.sock", process.argv[3]);
+		// The pinned Codex adapter takes its key on the relay's port: Codex has only a key relay on a machine.
+		if (process.argv[4] === "codex") forward(17892, "/run/wlp-relay/keys.sock", process.argv[3]);
+		else {
+			forward(17892, "/run/wlp-relay/relay.sock", process.argv[3]);
+			forward(17894, "/run/wlp-relay/keys.sock", process.argv[3]);
+		}
 	}
 }
 // Windlass's model relay (docs/model-relay.md): one forwarder per turn, in the session's network namespace,

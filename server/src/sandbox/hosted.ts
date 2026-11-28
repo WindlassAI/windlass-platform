@@ -129,7 +129,7 @@ export function hostedLayer(
 ) {
 	return {
 		sandboxes: new HostedSandboxes(provider),
-		windlass: new SandboxWindlass(tokens, { version, problem: async () => null }, turn),
+		windlass: new SandboxWindlass({ version, problem: async () => null }, turn),
 		tokens,
 		backups: backups ?? null,
 		logins: {

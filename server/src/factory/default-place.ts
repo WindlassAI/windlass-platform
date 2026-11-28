@@ -161,9 +161,8 @@ export function checkRunPlace(
 		const profile = run.profile ?? profiles[0]?.id;
 		const offered = machine.harnesses?.find(h => h.id === harness);
 		const runner = runnerProblem(machine.warnings);
-		const source = offered?.source ?? "machine";
-		const payer =
-			offered && machinePayerProblem(offered, run.model ?? undefined, source, offered.platformKeys ?? [], label);
+		const source = "machine";
+		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, offered.platformKeys ?? [], label);
 		// Given lists are judged as given: one not read yet is not judged, rather than held to the summary's "default" only.
 		const list =
 			harness === "windlass"

@@ -23,7 +23,6 @@
  */
 
 import assert from "node:assert/strict";
-import { SandboxWindlass } from "../server/src/sandbox/turn.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -3158,43 +3157,6 @@ if (withDocker) {
 						);
 					}
 				}
-
-				// A turn that is not scripted is handed its user's token in a file. A stand-in for the engine says what it found and exits.
-				const standIn = new SandboxWindlass(tokens, layer.windlass, {
-					engineCommand: [
-						"sh",
-						"-c",
-						'echo "file=$WINDLASS_ACCESS_TOKEN_FILE mode=$(stat -c %a "$WINDLASS_ACCESS_TOKEN_FILE") holds=$(grep -c accessToken "$WINDLASS_ACCESS_TOKEN_FILE") $(cat "$WINDLASS_ACCESS_TOKEN_FILE")" >&2; exit 7',
-					],
-					tokenFile: { log: line => lines.push(line) },
-				});
-				await handle.run("setsid env -i /bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > /tmp/prior-turn-pid");
-				const handed = await turn(handle, "Hello", undefined, { windlass: standIn });
-				expect(
-					"the guest sweep removes the previous turn's agent process and preserves the supervisor",
-					(await handle.run('! kill -0 "$(cat /tmp/prior-turn-pid)" 2>/dev/null')).exitCode === 0,
-				);
-				const tail = handed.result.stderrTail;
-				expect(
-					"a turn that is not scripted finds its user's access token in its sandbox's own file, readable by its owner only",
-					asked === 1 &&
-						tail.includes(`file=${tokenFilePath(id, DATA_DIR)} mode=600 holds=1`) &&
-						handed.result.failure?.reason === "engine",
-					tail.replace(TOKEN, "<the token>"),
-				);
-				expect(
-					"the token itself is taken out of what the turn gives back",
-					!tail.includes(TOKEN) &&
-						tail.includes("[access token removed]") &&
-						!JSON.stringify(handed.result).includes(TOKEN) &&
-						!lines.join("\n").includes(TOKEN),
-					`in the tail: ${tail.includes(TOKEN)}, marked: ${tail.includes("[access token removed]")}, in the result: ${JSON.stringify(handed.result).includes(TOKEN)}, in the log: ${lines.join("\n").includes(TOKEN)}`,
-				);
-				expect(
-					"and the file is gone when the turn has ended",
-					!(await handle.run(`ls ${DATA_DIR}`)).stdout.includes("access-token") &&
-						(await stray(container)).length === 0,
-				);
 
 				// Suspend, resume: E2B keeps the disk; here the container is paused and unpaused.
 				await layer.sandboxes.suspend(id);

@@ -1,5 +1,5 @@
 // The relay binds the session's placeholder to its forwarder's nonce and checks its private lease file.
-// ChatGPT tokens stay in relay tmpfs. Settings-key requests carry a scoped proof to the platform.
+// Every lease is forwarded to the platform's route (a Settings key, or hosted a plan): a machine's carries a scoped proof.
 const { timingSafeEqual } = require("node:crypto");
 const { readFile, readdir, unlink } = require("node:fs/promises");
 const { rmSync, watch } = require("node:fs");
@@ -208,11 +208,9 @@ function windlassProvider({
 		)
 			return;
 		const forward = record.forward;
-		if (forward) {
-			if (!Object.hasOwn(wires, forward.provider) || forward.provider === "chatgpt") return;
-			if (!forwardHost(forward.host) || !forwardPlaceholder(forward.placeholder)) return;
-			if (machine && !validProofKey(forward.proofKey)) return;
-		} else if (typeof record.accessToken !== "string" || !/^[\x21-\x7e]{16,16384}$/.test(record.accessToken)) return;
+		if (!forward || !Object.hasOwn(wires, forward.provider)) return;
+		if (!forwardHost(forward.host) || !forwardPlaceholder(forward.placeholder)) return;
+		if (machine && !validProofKey(forward.proofKey)) return;
 		if (record.user !== undefined && (typeof record.user !== "string" || !/^[\x21-\x7e]{1,256}$/.test(record.user)))
 			return;
 		return record;
@@ -274,24 +272,21 @@ function windlassProvider({
 				watcher?.close?.();
 			});
 		},
-		// Read again here: a token replaced while the request waited for a slot is the one sent.
+		// Read again here: a lease ended while the request waited for a slot is not sent.
 		async target(url, headers, nonce) {
 			const record = await lease(nonce);
 			if (!record) return;
 			const forward = record.forward;
-			const secret = forward?.placeholder ?? record.accessToken;
-			const target = wireTarget(forward?.provider ?? "chatgpt", url, headers, secret);
+			const target = wireTarget(forward.provider, url, headers, forward.placeholder);
 			if (!target) return { refused: true };
-			const secrets = [secret];
-			if (forward) {
-				if (machine) {
-					const proof = forwardProof(forward.proofKey, machine, methodFor(forward.provider, url), url, now());
-					target.headers[proofHeader] = proof;
-					secrets.push(proof);
-				}
-				target.hostname = forward.host;
-				target.path = "/model-relay" + url;
+			const secrets = [forward.placeholder];
+			if (machine) {
+				const proof = forwardProof(forward.proofKey, machine, methodFor(forward.provider, url), url, now());
+				target.headers[proofHeader] = proof;
+				secrets.push(proof);
 			}
+			target.hostname = forward.host;
+			target.path = "/model-relay" + url;
 			return { ...target, ...upstream, secrets };
 		},
 		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),

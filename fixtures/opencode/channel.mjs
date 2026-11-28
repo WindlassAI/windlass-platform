@@ -9,7 +9,7 @@ import { turnCredential } from '../../server/src/actors/agent-session.ts';
 import { OPENCODE, CODEX } from '../../server/src/sandbox/harnesses.ts';
 import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model, expectedFailure, codex, { providers = [], source = null } = {}) {
+export async function channelTurn(owner, session, id, model, expectedFailure, codex, { providers = [] } = {}) {
 	if (providers.length) {
 		const { config } = await import('../../server/src/config.ts');
 		config.modelRelay.on = true;
@@ -49,7 +49,6 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 			let reply = '', selected;
 			const ctx = {vars:{runner:link}, client:() => ({user:{get:() => ({
 				internalModelKeys:async () => providers.map(provider => ({provider, generation:'fixture'})),
-				internalCredentialSource:async () => source,
 			})}})};
 			const credential = await turnCredential(ctx, {uid:owner.identity.uid, harness:harness.id, place:{kind:'machine', machineId:owner.identity.machineId}},
 				{...offered, keyRelay:owner.harnessKeyRelays}, model);

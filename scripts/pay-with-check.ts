@@ -364,23 +364,21 @@ test("the user actor counts a plan's turns by session for its cap, and a key cho
 	assert.equal(kind((await payer.turnPayer(c, "s4", "sonnet", false))!.decision), "wait");
 });
 
-test("on a machine whose runner has a plan relay, Pay with decides a plan agent's turn as hosted; the machine's own sign-in wins where it is in use", async () => {
+test("on a machine Pay with decides a plan agent's turn as hosted; only Claude Code's login kept on the machine wins", async () => {
 	const payer = await import("../server/src/actors/user-payer.js");
 	const { machinePaysWith } = await import("../server/src/actors/agent-session.js");
 	const onMachine = { harness: "claude" as const, place: { kind: "machine" as const, machineId: "desk" } };
-	assert.equal(payer.paysWithRule(onMachine), false, "an older runner: the machine's own sign-in or a forwarded key");
 	assert.equal(payer.paysWithRule(onMachine, true), true);
 	assert.equal(payer.paysWithRule({ ...onMachine, harness: "opencode" }, true), false, "no plan pays for OpenCode");
 	assert.equal(payer.paysWithRule({ harness: "claude", place: { kind: "hosted" } }), true);
-	// Signed in on the machine (Claude Code's login kept there) and the owner left Machines on the machine: that wins.
-	assert.equal(machinePaysWith("claude", { signIn: "token" }, null, true), false);
-	assert.equal(machinePaysWith("claude", { signIn: "token" }, "machine", true), false);
-	assert.equal(machinePaysWith("claude", { signIn: "none" }, null, true), true);
-	assert.equal(machinePaysWith("codex", { signIn: "unknown" }, "machine", true), true);
-	// The owner chose the Settings key for this machine's agent: a forwarded key, as before.
-	assert.equal(machinePaysWith("claude", { signIn: "none" }, "key", true), false);
-	assert.equal(machinePaysWith("claude", { signIn: "none" }, null, false), false, "no plan relay on this runner");
-	assert.equal(machinePaysWith("opencode", { signIn: "none" }, null, true), false);
+	// Claude Code's own login kept on the machine (`windlass-runner login claude`) wins there.
+	assert.equal(machinePaysWith("claude", { signIn: "token" }), false);
+	assert.equal(machinePaysWith("claude", { signIn: "none" }), true);
+	assert.equal(machinePaysWith("claude", { signIn: "unknown" }), true);
+	// Codex keeps no login on a machine: Pay with always decides.
+	assert.equal(machinePaysWith("codex", { signIn: "none" }), true);
+	assert.equal(machinePaysWith("codex", undefined), true);
+	assert.equal(machinePaysWith("opencode", { signIn: "none" }), false, "OpenCode signs in on the machine");
 });
 
 test("on a machine the ChatGPT plan can pay with plans off for the account; a Claude plan cannot", async () => {

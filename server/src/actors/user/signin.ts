@@ -1,7 +1,7 @@
 // All sessions for one user share this sign-in holder. It persists a refreshed credential before returning a token sealed for the caller.
 // The sign-in is the user's ChatGPT plan: the holder keeps it in the plan's `model_plan` row (credentials/plans.ts).
 
-import { changed as machinesChanged, logoutMachines } from "../user-machines.js";
+import { changed as machinesChanged } from "../user-machines.js";
 import { type ItemsCtx, notifyProviderWaits, queueChanged } from "../user-items.js";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
@@ -192,7 +192,6 @@ async function adopted(c: SignInActionCtx): Promise<void> {
 async function forgetSignIn(c: SignInActionCtx, uid: string) {
 	await (await signIn(c)).logout();
 	await c.vars.models.forget(c.db);
-	await logoutMachines(c);
 	console.log(`[wlp] sign-in.forgotten uid=${uid}`);
 }
 
@@ -227,10 +226,7 @@ export const signinActions = {
 	},
 	forgetChatgpt: async (c: SignInActionCtx): Promise<void> => {
 		const profile = requireUser(c);
-		if (profile.demo) {
-			await logoutMachines(c);
-			return;
-		}
+		if (profile.demo) return;
 		try {
 			await forgetSignIn(c, profile.uid);
 		} catch (error) {

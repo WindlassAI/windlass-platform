@@ -13,8 +13,7 @@ Plans, one `model_plan` row each:
 - `anthropic`, the Claude plan: the token `claude setup-token` prints, sealed here. Hosted Claude Code pays with it.
 - `openai`, the ChatGPT plan: the user's ChatGPT sign-in. Hosted, Windlass's unqualified models and Codex pay with it
   as a pinned plan (`turnCredential` in `server/src/actors/agent-session.ts`) where `WLP_PLAN_USERS` allows; on a
-  paired machine it pays ungated (`planAllowed`): through a plan relay on the machine where its runner names
-  `plan-relay`, else Windlass's token is handed per turn (`TokenFile`). Its `sealed` and `short_noted` columns belong to
+  paired machine it pays ungated (`planAllowed`), through the plan relay on the machine. Its `sealed` and `short_noted` columns belong to
   the user actor's `SignInHolder` (`server/src/signin/holder.ts`), which alone opens it, refreshes it one at a time
   and keeps the refresh token. It is connected with the CLI's `connect codex` (`cli/`): Windlass signs in on the
   user's computer and the command uploads its files (`SignInUpload`), which the holder adopts under a new generation. A relay asks for its current access token (the `token` of a `ChatgptPlan`, `./index.ts`).

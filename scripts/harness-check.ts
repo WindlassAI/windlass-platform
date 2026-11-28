@@ -45,10 +45,8 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			calls.push("keys");
 			return [...keys, ...plans];
 		},
-		internalCredentialSource: async () => source,
 	};
 	const plans: { provider: string; generation: string; plan: true }[] = [];
-	let source: "machine" | "key" | null = null;
 	const ctx = {
 		client: () => ({ user: { get: () => keyActor } }),
 		vars: {
@@ -72,27 +70,25 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.deepEqual(await resolve(hosted, "google/gemini"), { model: "google/gemini", key: keys[1] });
 	await assert.rejects(resolve(hosted, "anthropic/removed"), /Add an Anthropic key/);
 	assert.deepEqual(calls.splice(0), ["keys", "keys", "keys", "keys"]);
-	source = "key";
-	await assert.rejects(resolve(machine, "default"), /relay/);
+	// OpenCode on a machine with no login there: a Settings key pays, through a runner that relays keys.
+	await assert.rejects(resolve(machine, "default"), /Sign in to OpenCode on the machine or add a Settings key/);
 	assert.deepEqual(await resolve(machine, "default", true), { model: "google/gemini", key: keys[1] });
-	await assert.rejects(resolve(machine, "opencode/free", true), /key on the Connections page/);
-	const claude = (signIn: "token" | "none", payer?: "key" | "machine") =>
+	await assert.rejects(resolve(machine, "opencode/free", true), /cannot run opencode\/free/);
+	const claude = (signIn: "token" | "none") =>
 		turnCredential(
 			ctx as never,
-			{ place: machine, uid: "owner", harness: "claude", origin: payer && { payer } } as never,
+			{ place: machine, uid: "owner", harness: "claude" } as never,
 			{ id: "claude", keyRelay: true, signIn } as never,
 			"opus",
 		);
 	keys.splice(0, keys.length, { provider: "anthropic", generation: "a" });
-	assert.deepEqual(await claude("none", "key"), { model: "opus", key: keys[0] });
-	await assert.rejects(claude("token", "machine"), /payer changed/);
-	source = "machine";
-	await assert.rejects(claude("none"), /Sign in/);
+	// Claude Code's own login kept on the machine wins over the key; without it Pay with decides (nothing here).
 	assert.deepEqual(await claude("token"), { model: "opus", key: undefined });
-	await assert.rejects(resolve(machine, "openai/gpt", true), /Sign in/);
-	source = "key";
+	await assert.rejects(
+		claude("none"),
+		/Nothing can pay for Claude Code on “your machine” yet\. Connect a plan or add a key/,
+	);
 	keys.length = 0;
-	await assert.rejects(claude("token", "key"), /key on the Connections page/);
 	// Hosted Claude Code pays with the connected plan first, then the key; a machine turn never takes the plan.
 	const hostedClaude = () =>
 		turnCredential(ctx as never, { place: hosted, uid: "owner", harness: "claude" } as never, undefined, "opus");
@@ -115,7 +111,6 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 		assert.equal(item.agent.subscriptionTokens, 12);
 		assert.match(tokenWords({ tokens: 8, rawTokens: 8 }, { tokens: 100 }, item.agent), /12 subscription tokens/);
 	}
-	source = null;
 	calls.length = 0;
 	for (const place of [hosted, machine]) {
 		const meta = { place, uid: "owner", harness: "windlass" } as never;
@@ -125,7 +120,8 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 				turnCredential(ctx as never, meta, undefined, "gpt-5"),
 				/ChatGPT plan isn't enabled for hosted runs/,
 			);
-		else assert.deepEqual(await turnCredential(ctx as never, meta, undefined, "gpt-5"), { model: "gpt-5" });
+		// On a machine it pins the ChatGPT plan too, with no login of its own there: none is connected here.
+		else await assert.rejects(turnCredential(ctx as never, meta, undefined, "gpt-5"), /Connect your ChatGPT plan/);
 		for (const provider of MODEL_PROVIDERS) {
 			const model = provider + "/vendor/model";
 			const key = { provider, generation: provider + "-generation" };
@@ -1673,8 +1669,11 @@ async function clientCheck(state: string) {
 	variant = "codex-signed-out";
 	const codex = await harnessOf(machine, "codex").runTurn(handle, { prompt: "signed out" });
 	assert.equal(codex.failure?.reason, "harness_signed_out");
-	assert.match(codex.failure.message, /Bench.*Run windlass-runner login codex/);
-	ok("Codex -32000 names the machine and its terminal sign-in command");
+	assert.match(
+		codex.failure.message,
+		/Nothing can pay for Codex on “Bench” yet\. Connect a plan or add a key on Connections\./,
+	);
+	ok("Codex -32000 names the machine and where to make a plan or key pay");
 
 	// Codex runs Quick items, not Plan-first subtasks. Its sign-in method decides how its tokens count; items take ChatGPT only for now.
 	{
@@ -1714,13 +1713,13 @@ async function clientCheck(state: string) {
 		);
 		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "chatgpt"), null);
 		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "api-key"), null);
-		assert.match(itemSignInMethodProblem(CODEX, "Bench", undefined) ?? "", /signs in with a method it did not report/);
+		assert.match(itemSignInMethodProblem(CODEX, "Bench", undefined) ?? "", /pays with a method it did not report/);
 		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", "subscription"), null);
 		assert.equal(itemTokensOf(CLAUDE, "subscription"), "subscription");
 		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "chatgpt"), null);
 		assert.equal(
 			itemSignInChanged(CODEX, "Bench", "chatgpt", "api-key"),
-			"Codex on “Bench” now signs in with an API key, not ChatGPT as when this item was filed. File the work again.",
+			"Codex on “Bench” now pays with an API key, not ChatGPT as when this item was filed. File the work again.",
 		);
 		assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, undefined), null);
 		const params = {

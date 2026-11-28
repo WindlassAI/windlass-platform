@@ -92,25 +92,6 @@ h3.conn-agent {
 	text-decoration: underline;
 	text-underline-offset: 3px;
 }
-/* A machine's choice between its own sign-in and the owner's key: stacked, as small as the cell. */
-.conn-cell .machine-credential {
-	width: 100%;
-	margin: 8px 0 0;
-}
-.conn-cell .machine-credential > .label {
-	font-size: var(--text-12);
-	font-weight: var(--weight-medium);
-	color: var(--ink-faint);
-}
-.conn-cell .machine-credential-choice {
-	display: grid;
-	width: 100%;
-}
-.conn-cell .machine-credential-choice .segment {
-	padding: 5px 9px;
-	font-size: var(--text-12);
-	line-height: 1.35;
-}
 
 /* On a phone each agent is a block, each place a line in it: the place on the left, its state on the right. */
 @media (max-width: 560px) {

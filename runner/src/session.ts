@@ -5,7 +5,7 @@ import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { containerName } from "../../server/src/sandbox/sandboxes.js";
-import type { KeyTurnRelay, TurnModelRelay } from "../../server/src/sandbox/provider.js";
+import type { KeyTurnRelay } from "../../server/src/sandbox/provider.js";
 import type { ModelProvider, RelaySeen } from "../../server/src/contract.js";
 import { MAX_PLAN_SEEN } from "../../server/src/runner/protocol.js";
 import type { DockerPlanRelay } from "../../server/src/sandbox/model-relay.js";
@@ -61,7 +61,7 @@ class Conversation {
 		string,
 		{
 			operation: string;
-			relay: KeyTurnRelay | TurnModelRelay | DockerPlanRelay;
+			relay: KeyTurnRelay | DockerPlanRelay;
 			provider?: ModelProvider;
 			/** A plan relay's: what the provider said of the plan since the server last asked (`planRelaySeen`). */
 			plan?: { seen: RelaySeen[] };
@@ -347,15 +347,13 @@ class Conversation {
 				case "modelRelay": {
 					abort?.signal.throwIfAborted();
 					const forward = op.args.forward;
-					if (box.harness ? !o.harnessKeyRelays || !forward : !o.modelRelays || !o.modelRelayReady)
+					if (box.harness ? !o.harnessKeyRelays : !o.modelRelayReady)
 						throw new Refusal("This sandbox's turns cannot use the model relay.");
-					if (!box.harness && forward && !o.windlassKeyRelays)
-						throw new Refusal("Windlass Settings keys were not negotiated.");
 					// A plan never goes through the platform from a machine: its relay here sends it (`planRelay`).
-					if (forward?.provider === "claude-plan" || forward?.provider === "chatgpt-plan")
+					if (forward.provider === "claude-plan" || forward.provider === "chatgpt-plan")
 						throw new Refusal("A plan pays through this machine's plan relay, not the platform's.");
 					const relay = box.harness
-						? await o.openTurnKey(box.raw, box.harness, forward!)
+						? await o.openTurnKey(box.raw, box.harness, forward)
 						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, forward);
 					if (!this.active || abort?.signal.aborted) {
 						await relay.close();
@@ -367,12 +365,11 @@ class Conversation {
 						this.relays.delete(lease);
 						await relay.close();
 					});
-					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: forward?.provider });
+					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: forward.provider });
 					return { lease, placeholder: relay.placeholder, env: relay.env };
 				}
 				case "planRelay": {
 					abort?.signal.throwIfAborted();
-					if (!o.planRelays) throw new Refusal("This sandbox's turns cannot use a plan relay.");
 					const { wire, harness, token, expiresAt } = op.args;
 					if ((harness === "windlass") !== !box.harness || (box.harness && harness !== box.harness))
 						throw new Refusal("This plan relay is for another agent.");
@@ -409,13 +406,6 @@ class Conversation {
 					const held = this.relays.get(op.args.lease);
 					if (held?.id !== id || !held.plan) return [];
 					return held.plan.seen.splice(0);
-				}
-				case "modelRelayToken": {
-					const held = this.relays.get(op.args.lease);
-					if (held?.id !== id || held.plan || !("hand" in held.relay))
-						throw new Refusal("This model relay lease is not this sandbox's, or it has ended.");
-					await (held.relay as TurnModelRelay).hand({ accessToken: op.args.accessToken, expiresAt: op.args.expiresAt });
-					return null;
 				}
 				case "modelRelayClose": {
 					const held = this.relays.get(op.args.lease);

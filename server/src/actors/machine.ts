@@ -7,7 +7,6 @@ import {
 	platformWelcome,
 	type FrameAuth,
 } from "../runner/frame-auth.js";
-import { OLD_RUNNER } from "../runner/protocol.js";
 import { NAME } from "../sandbox/provider.js";
 import { compactReport, optionsDigest, type CatalogFrame, type CatalogId } from "../runner/catalog.js";
 import { actor, UserError } from "rivetkit";
@@ -33,7 +32,6 @@ import {
 	CONTROL_DEAD_MS,
 	CONTROL_HEARTBEAT_MS,
 	MACHINE_ID,
-	LEGACY_MIN_RUNNER_VERSION,
 	MAX_REPORT_BYTES,
 	MIN_RUNNER_VERSION,
 	REFUSED_RETRY_MS,
@@ -49,7 +47,6 @@ import {
 } from "../runner/control.js";
 import { grantIsValid, isSessionGone, sessionActor, type ActorClient } from "./internal.js";
 
-const minimum = () => (config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION);
 const SEEN_INTERVAL = 3 * 60_000;
 // A refused copy has no open socket. Give it time to retry before retiring the warning.
 const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
@@ -222,7 +219,7 @@ function update(c: Ctx, row: Row): MachineUpdate {
 	const report: Report | null = row.report ? JSON.parse(row.report) : null;
 	const warnings: MachineWarning[] = [];
 	if (!config.machines?.identity && row.protocol === 2) warnings.push({ kind: "signing-disabled" });
-	if ((config.machines?.identity && row.protocol === 1) || !versionAtLeast(row.version, minimum()))
+	if ((config.machines?.identity && row.protocol === 1) || !versionAtLeast(row.version, MIN_RUNNER_VERSION))
 		warnings.push({ kind: "outdated" });
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS)
@@ -585,21 +582,19 @@ export const machine = actor({
 						return;
 					}
 					const foreign = (frame.protocol === 2) !== !!identity;
-					if (foreign || !versionAtLeast(frame.runnerVersion, minimum())) {
+					if (foreign || !versionAtLeast(frame.runnerVersion, MIN_RUNNER_VERSION)) {
 						const [changed] = await c.db.execute<Row>(
 							"UPDATE machine SET version = ?, protocol = ? WHERE removed_at IS NULL RETURNING *",
 							frame.runnerVersion,
 							frame.protocol ?? 1,
 						);
-						if (identity)
-							decline({ kind: "refused", reason: "outdated", minimum: MIN_RUNNER_VERSION, message: OLD_RUNNER });
-						else if (foreign)
+						if (foreign && !identity)
 							decline({
 								kind: "refused",
 								reason: "signing-disabled",
 								message: "This platform has signed runner connections disabled.",
 							});
-						else decline(refuse("outdated", { ...frame, minimum: minimum() }));
+						else decline(refuse("outdated", foreign ? {} : frame));
 						await tell(c, changed);
 						return;
 					}
@@ -821,12 +816,6 @@ export const machine = actor({
 				if (!r || r.removed_at !== null) return;
 				await c.db.execute("INSERT OR IGNORE INTO pending_backups (session) VALUES (?)", sessionId);
 				if (c.vars.live?.backups) c.vars.live.ws.send({ kind: "forget-backup", sessionId });
-			});
-		},
-		internalLogout: async c => {
-			requireServiceFor(c, "call");
-			await ordered(c, async () => {
-				if (c.vars.live) c.vars.live.ws.send({ kind: "logout" });
 			});
 		},
 		internalRevoke: async (c, removeSandboxes: boolean) => {

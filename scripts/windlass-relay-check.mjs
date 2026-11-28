@@ -1,7 +1,7 @@
-// Windlass's model relay (sandbox/relay/windlass.cjs, docs/model-relay.md) with a recording upstream:
-// the placeholder is swapped for the turn's token, only that turn's connections count, a token replaced
-// while requests run is the one the next request carries, the relay's caps hold, and the provider's error
-// codes reach Windlass without anything else of the body.
+// Windlass's model relay (sandbox/relay/windlass.cjs, docs/model-relay.md) with a recording upstream in place of the
+// platform's route: the turn's placeholder is swapped for its forwarded lease's, only that turn's connections count, a
+// lease replaced while requests run is the one the next request carries, the relay's caps hold, and the provider's
+// error codes reach Windlass without anything else of the body.
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,8 +14,13 @@ import { errorBody, HOST, windlassProvider } from "../sandbox/relay/windlass.cjs
 import { forward } from "../runner/src/egress-proxy.mjs";
 
 const hex = c => c.repeat(32);
-const REAL_A = "real-token-of-turn-a-" + "x".repeat(40);
-const REAL_B = "real-token-of-turn-b-" + "y".repeat(40);
+const REAL_A = "wlpm1.real-lease-of-turn-a-" + "x".repeat(40);
+const REAL_B = "wlpm1.real-lease-of-turn-b-" + "y".repeat(40);
+/** The record the server writes for a turn: a lease forwarded to the platform's route (here the recorder). */
+const forwarded = (placeholder, expiresAt) => ({
+	forward: { provider: "chatgpt-plan", host: "relay.example.com", placeholder, expiresAt },
+	expiresAt,
+});
 const WINDLASS_HEADERS = {
 	"content-type": "application/json",
 	accept: "text/event-stream",
@@ -35,6 +40,8 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 			if (!res.writableFinished) closed.push(req.url);
 		});
 		req.on("end", () => {
+			// Every lease is forwarded to the platform's route; its path is the one Windlass asked for, under /model-relay.
+			req.url = req.url.replace(/^\/model-relay/, "");
 			seen.push({
 				method: req.method,
 				url: req.url,
@@ -90,9 +97,9 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 	const forwarders = [];
 	const agents = [];
 	/** A turn: its lease, its forwarder, and a client as Windlass is one. */
-	async function turn(nonce, accessToken, expiresAt = Date.now() + 3_600_000, user) {
+	async function turn(nonce, placeholder, expiresAt = Date.now() + 3_600_000, user) {
 		const lease = "wlp-model." + nonce.slice(0, 31) + "f";
-		leases.set(nonce, { accessToken, expiresAt, lease, ...(user && { user }) });
+		leases.set(nonce, { ...forwarded(placeholder, expiresAt), lease, ...(user && { user }) });
 		const fwd = forward(0, socket, nonce);
 		await once(fwd, "listening");
 		forwarders.push(fwd);
@@ -124,7 +131,7 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 			nonce,
 			lease,
 			call,
-			replace: (token, at = Date.now() + 3_600_000) => leases.set(nonce, { accessToken: token, expiresAt: at, lease }),
+			replace: (token, at = Date.now() + 3_600_000) => leases.set(nonce, { ...forwarded(token, at), lease }),
 			end: () => leases.delete(nonce),
 		};
 	}
@@ -140,7 +147,7 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 	return { turn, seen, held, closed, leases };
 }
 
-test("the placeholder is swapped for the turn's token on the two routes, and nothing else is passed on", async t => {
+test("the placeholder is swapped for the turn's forwarded one on the two routes, and nothing else is passed on", async t => {
 	const { turn, seen } = await stack(t);
 	const a = await turn(hex("a"), REAL_A);
 	const models = await a.call("GET", "/v1/models");
@@ -188,7 +195,7 @@ test("a Claude plan's lease forwards Claude Code's bearer to the platform as a b
 	const sent = await a.call("POST", "/v1/messages?beta=true", { headers: claude });
 	assert.equal(sent.status, 200, sent.text);
 	assert.ok(!sent.text.includes(platform));
-	assert.equal(seen[0].url, "/model-relay/v1/messages?beta=true");
+	assert.equal(seen[0].url, "/v1/messages?beta=true");
 	assert.equal(seen[0].authorization, "Bearer " + platform);
 	assert.equal(seen[0].headers["x-api-key"], undefined);
 	assert.equal(seen[0].headers["anthropic-version"], "2023-06-01");
@@ -217,12 +224,12 @@ test("a bearer counts only on its own turn's connections, and not after the turn
 	assert.equal(seen.length, 1);
 });
 
-test("a token replaced while a request streams: that one keeps its token, the next carries the new one", async t => {
+test("a lease replaced while a request streams: that one keeps its placeholder, the next carries the new one", async t => {
 	const { turn, seen, held } = await stack(t);
 	const a = await turn(hex("a"), REAL_A);
 	const running = a.call("POST", "/v1/responses", { body: '{"hold":true}' });
 	while (!held.length) await new Promise(r => setTimeout(r, 5));
-	const NEW = "replacement-token-" + "z".repeat(40);
+	const NEW = "wlpm1.replacement-lease-" + "z".repeat(40);
 	a.replace(NEW);
 	const next = await a.call("POST", "/v1/responses");
 	assert.equal(next.status, 200);
@@ -424,8 +431,8 @@ test("a lease that ends stops its requests still running, and a request that sta
 
 test("the relay deletes the files of expired tokens and of no lease, and leaves live ones and writes in progress", async t => {
 	const files = new Map([
-		[hex("1") + ".json", { accessToken: REAL_A, expiresAt: Date.now() + 60_000, lease: "wlp-model." + hex("9") }],
-		[hex("2") + ".json", { accessToken: REAL_A, expiresAt: Date.now() - 1, lease: "wlp-model." + hex("9") }],
+		[hex("1") + ".json", { ...forwarded(REAL_A, Date.now() + 60_000), lease: "wlp-model." + hex("9") }],
+		[hex("2") + ".json", { ...forwarded(REAL_A, Date.now() - 1), lease: "wlp-model." + hex("9") }],
 		[hex("3") + ".json", { nonsense: true }],
 		[hex("4") + ".json.tmp", null],
 		["stray", null],

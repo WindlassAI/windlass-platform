@@ -7,7 +7,6 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
 import { type KeyWire, wires } from "../../../sandbox/relay/wires.cjs";
 import type { HarnessId, RelaySeen } from "../contract.js";
@@ -21,7 +20,6 @@ import {
 	type SandboxProcess,
 	type StartOptions,
 	type TakeRelayRequest,
-	type TurnModelRelay,
 } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
@@ -117,8 +115,6 @@ export interface DockerKeyRelay extends KeyTurnRelay {
 	/** The turn's nonce: what its forwarder writes, and its token file's name in the relay. */
 	readonly nonce: string;
 }
-
-export type DockerTurnRelay = DockerKeyRelay & TurnModelRelay;
 
 /** A machine's plan relay for one turn: its token can be replaced (`hand`), and it ends with `close`. */
 export type DockerPlanRelay = DockerKeyRelay & Pick<LocalModelRelay, "hand">;
@@ -363,64 +359,43 @@ export class DockerModelRelay {
 		);
 	}
 
-	/** Start the turn's forwarder before handing credentials to the relay. */
-	open(container: string, sandbox: string, user?: string): Promise<DockerTurnRelay>;
-	open(
-		container: string,
-		sandbox: string,
-		user: string | undefined,
-		forward: ForwardedKeyLease | undefined,
-	): Promise<DockerKeyRelay | DockerTurnRelay>;
+	/** A Settings key's lease for one turn: the turn's forwarder first, then the forwarded lease in the relay. */
 	async open(
 		container: string,
 		sandbox: string,
-		user?: string,
-		forward?: ForwardedKeyLease,
-	): Promise<DockerKeyRelay | DockerTurnRelay> {
+		user: string | undefined,
+		forward: ForwardedKeyLease,
+	): Promise<DockerKeyRelay> {
 		const relay = await this.ensure();
 		const nonce = randomBytes(16).toString("hex");
 		const placeholder = `wlp-model.${randomBytes(16).toString("hex")}`;
 		await this.endSandbox(sandbox);
 		const id = await this.startForwarder(container, sandbox, nonce);
 		const file = `${TOKENS}/${nonce}.json`;
-		let closed = false;
-		const write = async (record: object) => {
-			const content = JSON.stringify({ ...record, lease: placeholder, user });
-			const result = await docker(
-				["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file],
-				{ stdin: content, timeoutMs: 30_000 },
-			);
-			if (result.code !== 0) throw new Error("Could not write the turn's model relay lease.");
-		};
 		const lease: DockerKeyRelay = {
 			nonce,
 			placeholder,
-			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + wires[forward?.provider ?? "chatgpt"].base },
+			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + wires[forward.provider].base },
 			// The file first: the relay then stops the turn's requests still running, and the forwarder's removal ends its connections.
 			close: async () => {
-				closed = true;
 				if (this.openLeases.get(sandbox) === lease) this.openLeases.delete(sandbox);
 				await this.removeFiles(relay, [nonce]);
 				await docker(["rm", "-f", id], { timeoutMs: 30_000 }).catch(() => undefined);
 			},
 		};
-		if (forward) {
-			try {
-				await write({ forward, expiresAt: forward.expiresAt });
-			} catch (error) {
-				await lease.close();
-				throw error;
-			}
+		try {
+			const content = JSON.stringify({ forward, expiresAt: forward.expiresAt, lease: placeholder, user });
+			const result = await docker(
+				["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file],
+				{ stdin: content, timeoutMs: 30_000 },
+			);
+			if (result.code !== 0) throw new Error("Could not write the turn's model relay lease.");
+		} catch (error) {
+			await lease.close();
+			throw error;
 		}
 		this.openLeases.set(sandbox, lease);
-		if (forward) return lease;
-		return {
-			...lease,
-			hand: async (token: AccessToken) => {
-				if (closed) throw new Error("This relay lease has ended.");
-				await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
-			},
-		};
+		return lease;
 	}
 
 	/** The turn's forwarder in the session's network namespace, on 127.0.0.1:17893: to the relay, or to a plan relay's own socket. */

@@ -18,7 +18,7 @@ import { META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { DATA_DIR, shellQuote } from "../server/src/sandbox/provider.js";
 import { GUEST_NODE } from "../server/src/sandbox/plan-relay.js";
-import { TokenFile, turnTokenFilePath, writePlanPlaceholder } from "../server/src/sandbox/token-file.js";
+import { turnTokenFilePath, writePlanPlaceholder } from "../server/src/sandbox/token-file.js";
 
 type CreateSandbox = Parameters<DaytonaClient["create"]>[0];
 
@@ -200,20 +200,7 @@ try {
 	await release();
 	assert.equal(fake.activity, 2);
 	await guest.writeTextFile("nested/file", "disk contents");
-	const token = "stand-in-real-access-token";
-	// Windlass here pays with the ChatGPT plan: the sandbox is never handed an access token, only a placeholder file.
-	const refused = await new TokenFile(
-		guest,
-		{ current: async () => ({ accessToken: token, expiresAt: Date.now() + 3_600_000 }) },
-		{ log() {} },
-	)
-		.start()
-		.then(
-			() => null,
-			(error: unknown) => error,
-		);
-	assert.ok(refused instanceof Error && /takes no access token/.test(refused.message));
-	assert.ok(!inputs.join("").includes(token) && !inputs.join("").includes(Buffer.from(token).toString("base64")));
+	// Windlass here pays with the ChatGPT plan: the sandbox gets only a placeholder file.
 	const file = { path: turnTokenFilePath(guest) };
 	await writePlanPlaceholder(guest, file.path, "wlp-plan." + "p".repeat(43), Date.now() + 3_600_000);
 	const stored = JSON.parse(await guest.readTextFile(file.path));

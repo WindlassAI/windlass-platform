@@ -526,7 +526,6 @@ export function createRivetClient(
 			removeMachine: input => act("removeMachine", input),
 			setMachineDetails: input => act("setMachineDetails", input),
 			setMachineSecrets: input => act("setMachineSecrets", input),
-			setCredentialSource: input => act("setCredentialSource", input),
 			listItems: (...args) => act("listItems", ...args),
 			itemFeed: () => act("itemFeed"),
 			item: id => act("item", id),

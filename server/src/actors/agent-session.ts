@@ -45,7 +45,6 @@ import {
 	SESSION_HOSTED_SIZE,
 	PLAN_ASK,
 	PLAN_LIMITED,
-	type CredentialSource,
 	type HarnessId,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
@@ -112,6 +111,7 @@ import {
 	harnessName,
 	machineHarness,
 	machineHarnesses,
+	listedHarness,
 	initialHarnessModels,
 	machineLoginMessage,
 } from "../sandbox/harnesses.js";
@@ -267,8 +267,6 @@ export {
 export { recordPushHead } from "./agent-session/publish.js";
 export { noteTurnMemory } from "./agent-session/turn.js";
 
-/** How long a positive ChatGPT sign-in check is trusted before a prompt asks again. */
-const SIGNED_IN_FRESH_MS = 5 * 60 * 1000;
 /** How long shutdown waits for a stopped turn to wind down. */
 const STOP_WAIT_MS = 10_000;
 /** A slow machine actor may delay profile availability, but the session timeline must still open. */
@@ -366,9 +364,8 @@ function payerCredential(meta: SessionMeta, answer: PayerAnswer, model: string):
 }
 
 /**
- * Windlass's unqualified models on a machine whose runner has a plan relay: the ChatGPT plan, pinned like a hosted
- * turn's, its token handed to the relay on the machine. Not behind `WLP_PLAN_USERS` (`planAllowed`): the requests leave
- * from the user's machine, with the sign-in Windlass there has always used.
+ * Windlass's unqualified models on a machine: the ChatGPT plan, pinned like a hosted turn's, its token handed to the
+ * plan relay on the machine. Not behind `WLP_PLAN_USERS` (`planAllowed`): the requests leave from the user's machine.
  */
 async function machineChatgptPlan(c: Ctx, meta: SessionMeta, model: string): Promise<TurnCredential> {
 	if (meta.demo || meta.environmentBuild) return { model };
@@ -379,24 +376,17 @@ async function machineChatgptPlan(c: Ctx, meta: SessionMeta, model: string): Pro
 }
 
 /**
- * Whether Pay with decides a plan agent's turn on a machine (`planRelay`: its runner hands a plan's token to a relay
- * there), as it does hosted. The machine's own sign-in still wins where it is in use: the owner chose it on Machines
- * (the default) and the agent is signed in there, as Claude Code's login kept on the machine is.
+ * Whether Pay with decides a plan agent's turn on a machine, as it does hosted: a plan's token goes to the plan relay
+ * there. Only a login of the agent's own kept on the machine wins (Claude Code's `windlass-runner login claude`).
  */
-export function machinePaysWith(
-	harness: HarnessId,
-	offered: Pick<OfferedHarness, "signIn"> | undefined,
-	source: CredentialSource | null,
-	planRelay: boolean,
-): boolean {
-	if (!planRelay || !PAY_WITH_HARNESSES.includes(harness) || source === "key") return false;
-	return offered?.signIn !== "token";
+export function machinePaysWith(harness: HarnessId, offered: Pick<OfferedHarness, "signIn"> | undefined): boolean {
+	return PAY_WITH_HARNESSES.includes(harness) && offered?.signIn !== "token";
 }
 
 /**
- * `planRelay`: the session's machine's runner hands a plan's token to a relay there (its report's `planRelay`); a
- * plan pays for its turns as hosted (Pay with, and Windlass's ChatGPT plan). Without it a machine's turns use its own
- * sign-ins or a forwarded key, and Windlass the ChatGPT access token handed to its model relay.
+ * What pays for a turn. Hosted and on a machine alike, a plan pays as Pay with says (and Windlass's ChatGPT models
+ * pay with the ChatGPT plan); on a machine a plan's token goes to the plan relay there. On a machine, Claude Code's own
+ * login kept there wins, and OpenCode pays with its own logins there and a Settings key for any other provider.
  */
 export async function turnCredential(
 	c: Ctx,
@@ -406,7 +396,6 @@ export async function turnCredential(
 	signal?: AbortSignal,
 	pinned?: TurnCredential,
 	keyOnce?: boolean,
-	planRelay = false,
 ): Promise<TurnCredential> {
 	const hosted = meta.place.kind === "hosted";
 	const harness = meta.harness ?? "windlass";
@@ -415,10 +404,6 @@ export async function turnCredential(
 		return chatgptPlanCredential(c, meta, pinned.model);
 	if (pinned) {
 		const key = pinned.key;
-		if (key?.plan && meta.place.kind === "machine" && !planRelay)
-			throw new UserError("This machine's runner can no longer pay with the plan for the paused turn.", {
-				code: "harness_signed_out",
-			});
 		if (key && !key.plan && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
 			throw new UserError("This runner cannot relay the Settings key for the paused turn.", {
 				code: "harness_signed_out",
@@ -438,7 +423,7 @@ export async function turnCredential(
 		const provider = windlassProvider(model);
 		if (!provider) {
 			if (hosted) return chatgptPlanCredential(c, meta, model, keyOnce);
-			return planRelay ? machineChatgptPlan(c, meta, model) : { model };
+			return machineChatgptPlan(c, meta, model);
 		}
 		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
@@ -462,22 +447,8 @@ export async function turnCredential(
 		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key };
 	}
-	const [keys, source] = await Promise.all([
-		keyActor.internalModelKeys(),
-		meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null,
-	]);
-	const payer = source ?? "machine";
-	const providers = payer === "key" ? keys.map(k => k.provider) : [];
-	if (meta.origin && !meta.origin.payer)
-		throw new UserError(
-			"This item did not record who pays for its agent. Choose the payer on Machines and file a new item to use it.",
-			{ code: "harness_signed_out" },
-		);
-	if (meta.origin && meta.origin.payer !== payer)
-		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", {
-			code: "harness_signed_out",
-		});
-	if (machinePaysWith(harness, offered, source, planRelay)) {
+	const machineName = c.vars.runner?.known?.name || meta.machineName || "your machine";
+	if (machinePaysWith(harness, offered)) {
 		const answer = await userActor(c, meta.uid).internalTurnPayer({
 			sessionId: meta.sessionId,
 			model,
@@ -485,18 +456,33 @@ export async function turnCredential(
 			machine: true,
 		});
 		if (answer) return payerCredential(meta, answer, model);
+		throw new UserError(machineLoginMessage(machineHarnesses[harness as keyof typeof machineHarnesses], machineName), {
+			code: "harness_signed_out",
+		});
 	}
-	const itemMachine =
-		meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
-	const problem = offered
-		? machinePayerProblem(offered, model, payer, providers, itemMachine)
+	// Its own login on the machine pays; OpenCode's Settings keys pay for the providers it has no login for there.
+	const keys = offered?.keyRelay ? await keyActor.internalModelKeys() : [];
+	const listed =
+		offered &&
+		listedHarness(
+			offered,
+			keys.map(k => k.provider),
+		);
+	const providers = listed?.platformKeys ?? [];
+	const problem = listed
+		? machinePayerProblem(listed, model, providers, meta.origin?.kind === "item" ? machineName : undefined)
 		: "The selected machine agent is unavailable.";
 	if (problem) throw new UserError(problem, { code: "harness_signed_out" });
-	if (harness === "opencode" && model === "default" && meta.place.kind === "machine" && providers.length)
+	// Without a login of its own there, its default model is one a key can run.
+	if (
+		harness === "opencode" &&
+		model === "default" &&
+		meta.place.kind === "machine" &&
+		offered?.signIn !== "token" &&
+		providers.length
+	)
 		model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
 	const provider = selectedKey(harness, model, providers);
-	if (payer === "key" && !provider)
-		throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 	const key = keys.find(k => k.provider === provider);
 	return { model, key };
 }
@@ -1233,15 +1219,9 @@ async function startPrompt(
 		let model = meta.model;
 		const requested = input.model || model;
 		let credential: ActiveTurn["credential"];
-		// A Settings key, or hosted the ChatGPT plan: refused here, before anything is taken.
-		if (caps.events === "windlass" && (windlassProvider(requested) || meta.place.kind === "hosted"))
+		// A Settings key, or the ChatGPT plan, hosted or on a machine: refused here, before anything is taken.
+		if (caps.events === "windlass")
 			credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, input.payWith === "key");
-		// On a machine whose runner has a plan relay, Windlass's ChatGPT models pin the plan: refused here, as hosted.
-		else if (caps.events === "windlass" && meta.place.kind === "machine" && !meta.demo && !meta.environmentBuild) {
-			const known = await runnerLink(c, meta.place.machineId).facts();
-			if (known.report?.planRelay === true)
-				credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, undefined, true);
-		}
 		if (
 			caps.events === "windlass" &&
 			meta.windlassSessionId &&
@@ -1292,14 +1272,9 @@ async function startPrompt(
 				throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, { code: "bad_input" });
-			const planRelay = facts.report?.planRelay === true;
-			const source =
-				planRelay && meta.place.kind === "machine"
-					? await modelKeyActor(c, meta.uid).internalCredentialSource(meta.place.machineId, offered.id)
-					: null;
 			// Pay with decides here as hosted: what pays, or the prompt waits or asks.
-			if (machinePaysWith(offered.id, offered, source, planRelay))
-				credential = await turnCredential(c, meta, offered, model, undefined, undefined, input.payWith === "key", true);
+			if (machinePaysWith(offered.id, offered))
+				credential = await turnCredential(c, meta, offered, model, undefined, undefined, input.payWith === "key");
 			else if (offered.signIn === "none") {
 				const keys = offered.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
 				if (
@@ -1315,14 +1290,6 @@ async function startPrompt(
 			}
 		} else if (meta.place.kind === "hosted" && caps.events === "acp") {
 			credential = await turnCredential(c, meta, undefined, model, undefined, undefined, input.payWith === "key");
-		} else if (!credential?.key && !meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
-			const { logins } = await layerOf(c, meta);
-			if (!(await logins.status(meta.uid))) {
-				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", {
-					code: "chatgpt_required",
-				});
-			}
-			c.vars.signedInUntil = Date.now() + SIGNED_IN_FRESH_MS;
 		}
 
 		// The user row and default title are published before the agent starts, for every agent. Scrub them with the same secrets as its output.
@@ -2119,7 +2086,6 @@ export const agentSession = actor({
 			stopping: false,
 			reporting: null,
 			reportAgain: false,
-			signedInUntil: 0,
 			idling: null,
 			sandboxOps: 0,
 			workspace: undefined,

@@ -23,7 +23,6 @@ Object.assign(globalThis, {
 	SHOTS_IMAGE_PIN: "",
 	HARNESS_IMAGES: { claude: "claude@sha256:" + "2".repeat(64) },
 	CLAUDE_RELAY_SCRIPT: "",
-	CODEX_RELAY_SCRIPT: "",
 	OPENCODE_RELAY_SCRIPT: "",
 	EGRESS_SOURCE: "",
 });

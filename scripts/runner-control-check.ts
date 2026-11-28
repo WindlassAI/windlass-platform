@@ -139,8 +139,7 @@ expect(
 );
 expect(
 	"the actor names capabilities only to a runner that reads them",
-	!("capabilities" in welcomeCapabilities(MIN_RUNNER_VERSION)) &&
-		!("capabilities" in welcomeCapabilities("0.2.1")) &&
+	!("capabilities" in welcomeCapabilities("0.2.1")) &&
 		welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes("git-mirrors") === true &&
 		welcomeCapabilities("1.0.0").capabilities?.includes("git-mirrors") === true,
 );
@@ -184,32 +183,26 @@ expect(
 		);
 	})(),
 );
-// Windlass's model relay (docs/model-relay.md): named to every runner that reads capabilities; runners 0.3.0 and 0.3.1
-// ignore the name, say nothing, and their turns get the token in the sandbox as before.
+// Every supported runner has the machine's model relay and the plan relay: neither is negotiated any more.
 const relayReport = { ...mirrorReport, modelRelay: true };
 expect(
-	"this server's checks take a report with modelRelay, and name model-relay to a runner that reads capabilities",
+	"this server's checks take a report with modelRelay, which every server reads, and name neither relay",
 	parseRunnerFrame(JSON.stringify(relayReport))?.kind === "report" &&
-		welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes("model-relay") === true &&
-		welcomeCapabilities("0.3.1").capabilities?.includes("model-relay") === true &&
-		!("capabilities" in welcomeCapabilities("0.2.1")),
+		reportFor(relayReport as unknown as Report, []).modelRelay === true &&
+		!["model-relay", "plan-relay", "windlass-key-relay"].some(name =>
+			welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes(name),
+		) &&
+		parseRunnerFrame(JSON.stringify({ ...relayReport, planRelay: true })) === null,
 );
 expect(
-	"modelRelay goes only with its own capability",
-	!("modelRelay" in reportFor(relayReport as unknown as Report, ["git-mirrors", "session-volumes"])) &&
-		reportFor(relayReport as unknown as Report, ["model-relay"]).modelRelay === true,
-);
-expect(
-	"the three relay operations take only a lease, a placeholder of the relay's form and a token, and a connect may say modelRelay",
-	validArgs("modelRelay", { id: "x" }) &&
+	"a relay lease is only a forwarded key's, takes a placeholder of the relay's form, and a connect may say modelRelay",
+	!validArgs("modelRelay", { id: "x" }) &&
 		validValue("modelRelay", {
 			lease: "a".repeat(32),
 			placeholder: "wlp-model." + "b".repeat(32),
 			env: { WINDLASS_MODEL_BASE_URL: "http://127.0.0.1:17893/v1" },
 		}) &&
 		!validValue("modelRelay", { lease: "a".repeat(32), placeholder: "sk-real-token", env: {} }) &&
-		validArgs("modelRelayToken", { id: "x", lease: "a".repeat(32), accessToken: "t".repeat(40), expiresAt: 5 }) &&
-		!validArgs("modelRelayToken", { id: "x", lease: "a".repeat(32), accessToken: "short", expiresAt: 5 }) &&
 		validArgs("modelRelayClose", { id: "x", lease: "a".repeat(32) }) &&
 		!validArgs("modelRelayClose", { id: "x", lease: "nope" }) &&
 		validValue("connect", { cwd: "/workspace", profile: "docker-hardened", modelRelay: true }) &&
@@ -351,6 +344,14 @@ expect(
 	newer?.kind === "refused" && newer.reason === "other" && newer.message === "Your account is suspended.",
 );
 
+expect(
+	"a runner below 0.3.13 is told to update to 0.3.13 or later, with its own version",
+	MIN_RUNNER_VERSION === "0.3.13" &&
+		!versionAtLeast("0.3.12", MIN_RUNNER_VERSION) &&
+		refuse("outdated", { runnerVersion: "0.3.12" }).message ===
+			"This runner is 0.3.12. Update your runner to 0.3.13 or later with the command on the Machines page." &&
+		(refuse("outdated") as { minimum?: string }).minimum === "0.3.13",
+);
 expect(
 	"a newer runner is served, an older one is not",
 	versionAtLeast("0.10.0", "0.9.9") &&
@@ -573,7 +574,6 @@ async function withControl(
 			gitMirrors: true,
 			sessionVolumes: true,
 			modelRelay: true,
-			planRelay: true,
 		}),
 		requestedRemoval: async (id: string) => {
 			if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox.");
@@ -1147,54 +1147,32 @@ try {
 		}
 	});
 	await checkControl(
-		"a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay",
+		"a runner sends modelRelay and takes plan relays whatever its server names, and says planRelay nowhere",
 		async () => {
-			for (const [capabilities, sent] of [
-				[undefined, false],
-				[[], false],
-				[["git-mirrors", "session-volumes"], false],
-				[["git-mirrors", "model-relay"], true],
-				[["model-relay", "windlass-key-relay"], true],
-			] as const) {
+			for (const capabilities of [undefined, [], ["git-mirrors", "session-volumes"]] as const) {
 				await withControl([lease()], async r => {
 					const ws = await r.online(0, capabilities && [...capabilities]);
 					const report = ws.sent.find(f => f.kind === "report");
-					assert.equal(
-						Object.hasOwn(report ?? {}, "modelRelay"),
-						sent,
-						`welcome capabilities ${JSON.stringify(capabilities)}`,
-					);
-					assert.equal(r.owner.windlassKeyRelays, capabilities?.some(c => c === "windlass-key-relay") === true);
-					assert.equal(
-						r.owner.modelRelays,
-						sent,
-						`owner.modelRelays after welcome capabilities ${JSON.stringify(capabilities)}`,
-					);
+					assert.equal(Object.hasOwn(report ?? {}, "modelRelay"), true, JSON.stringify(capabilities));
+					assert.equal(Object.hasOwn(report ?? {}, "planRelay"), false, JSON.stringify(capabilities));
 				});
 			}
 		},
 	);
 	await checkControl(
-		"a connect says modelRelay only to a server that named model-relay, only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.6.0 or later",
+		"a connect says modelRelay only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.6.0 or later",
 		async () => {
 			const { Executor } = await import("../runner/src/docker-executor.js");
-			for (const [named, windlass, said] of [
-				[false, "0.7.1", false],
-				[true, "0.7.1", true],
-				[true, "0.6.0", true],
-				[true, "0.5.0", false],
-				[true, null, false],
+			for (const [windlass, said] of [
+				["0.7.1", true],
+				["0.6.0", true],
+				["0.5.0", false],
+				[null, false],
 			] as const) {
 				const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
-				owner.modelRelays = named;
-				owner.windlassKeyRelays = named;
 				// What `welcome` probes from the pinned sandbox image.
 				(owner as unknown as { sandboxWindlass: string | null }).sandboxWindlass = windlass;
-				assert.equal(
-					owner.report().modelRelay,
-					windlass === "0.7.1" || windlass === "0.6.0",
-					`the report says modelRelay for Windlass ${windlass}`,
-				);
+				assert.equal(owner.report().modelRelay, said, `the report says modelRelay for Windlass ${windlass}`);
 				owner.discover = async () => {
 					(owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true };
 				};
@@ -1205,53 +1183,11 @@ try {
 				owner.provider.connect = async () => ({ cwd: "/workspace" }) as unknown as DockerSandboxHandle;
 				const id = await owner.create("s_relay", "docker-hardened");
 				const found = await owner.lifecycle("connect", id, "s_relay");
-				assert.equal(
-					found && typeof found === "object" && "modelRelay" in found,
-					said,
-					`named ${named}, Windlass ${windlass}`,
-				);
-				assert.equal(found && typeof found === "object" && "windlassKeyRelay" in found, named);
+				assert.equal(found && typeof found === "object" && "modelRelay" in found, said, `Windlass ${windlass}`);
+				assert.equal(found && typeof found === "object" && "planRelay" in found, false);
+				assert.equal(found && typeof found === "object" && "windlassKeyRelay" in found, false);
 				assert.ok(validValue("connect", found));
 			}
-		},
-	);
-	await checkControl(
-		"a runner says planRelay in its report and each connect, and takes plan relay operations, only for a server whose welcome names plan-relay",
-		async () => {
-			for (const [capabilities, named] of [
-				[undefined, false],
-				[["model-relay", "harness-key-relay"], false],
-				[["plan-relay"], true],
-			] as const) {
-				await withControl([lease()], async r => {
-					const ws = await r.online(0, capabilities && [...capabilities]);
-					const report = ws.sent.find(f => f.kind === "report");
-					assert.equal(Object.hasOwn(report ?? {}, "planRelay"), named, JSON.stringify(capabilities));
-					assert.equal(r.owner.planRelays, named);
-				});
-			}
-			const { Executor } = await import("../runner/src/docker-executor.js");
-			for (const named of [false, true]) {
-				const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
-				owner.planRelays = named;
-				owner.discover = async () => {
-					(owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true };
-				};
-				Object.assign(owner, { disk: async () => 10_000_000_000 });
-				owner.network.prepare = async () => {};
-				owner.network.attach = async () => {};
-				owner.provider.create = async () => "0123456789ab";
-				owner.provider.connect = async () => ({ cwd: "/workspace" }) as unknown as DockerSandboxHandle;
-				const id = await owner.create("s_plan", "docker-hardened");
-				const found = await owner.lifecycle("connect", id, "s_plan");
-				assert.ok(validValue("connect", found));
-				assert.equal(found && typeof found === "object" && "planRelay" in found, named);
-			}
-			// An older server's checks: the report it reads has no planRelay.
-			const { reportFor } = await import("../server/src/runner/control.js");
-			const full = { planRelay: true as const } as unknown as Parameters<typeof reportFor>[0];
-			assert.equal("planRelay" in reportFor(full, ["model-relay"]), false);
-			assert.equal("planRelay" in reportFor(full, ["plan-relay"]), true);
 		},
 	);
 	await checkControl(

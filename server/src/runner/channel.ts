@@ -77,10 +77,9 @@ export interface Unsaved {
 // Persist a cancel with the same id in place of secret-bearing frames. After restart the caller supplies fresh credentials.
 export function carriesSecret(body: Body): boolean {
 	if (body.kind !== "op") return false;
-	if (body.name === "modelRelay" && body.args.forward) return true;
 	if (
+		body.name === "modelRelay" ||
 		body.name === "writeSecretFile" ||
-		body.name === "modelRelayToken" ||
 		body.name === "planRelay" ||
 		body.name === "planRelayToken"
 	)

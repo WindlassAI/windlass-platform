@@ -9,7 +9,7 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { openSavedCredential } from "./credentials/transit.js";
 import { isModelProvider, isPlanProvider, type CredentialRef, type RelaySeen } from "./contract.js";
-import { credentialWire, harnessMethod, proofHeader, type Wire } from "../../sandbox/relay/wires.cjs";
+import { credentialWire, harnessMethod, proofHeader, type KeyWire } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
 import { serviceParams } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
@@ -45,7 +45,7 @@ const { errorBody, limitFacts, LEASE_ENDED, wireTarget, anyMethod, placeholderOf
 		limitFacts: (text: string, secrets?: string[]) => { code: string | null; resetsAt: number | null };
 		LEASE_ENDED: string;
 		wireTarget(
-			wire: Wire,
+			wire: KeyWire,
 			path: string,
 			headers: Record<string, string>,
 			secret: string,
@@ -436,7 +436,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		}
 		// After reading the body and waiting for a slot, resolve the lease and the saved generation afresh.
 		let secret: string | null = null;
-		let wire: Wire | null = null;
+		let wire: KeyWire | null = null;
 		try {
 			token = await lookup();
 			if (token) {

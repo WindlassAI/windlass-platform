@@ -6,10 +6,8 @@ import { validMachineName } from "../../server/src/runner/control.js";
 import { docker } from "../../server/src/sandbox/docker.js";
 import { parseStoreSize } from "../../server/src/sandbox/store-limits.js";
 import { pair } from "./control.js";
-import { codexLogin, changeCodexLogin } from "./codex-login.js";
 import { Executor, retirePairingRelays } from "./docker-executor.js";
 import { domainList } from "./egress-policy.js";
-import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
 import { resolveMachineName } from "./machine-name.js";
 import { importOpenCode } from "./opencode-import.js";
 import { changeProviderLogin, installedProvider, storeProvider, terminalQuestion } from "./opencode-login.js";
@@ -46,8 +44,8 @@ export async function signInForSetup(
 	signal: AbortSignal,
 	importFile?: string,
 ) {
-	if (agent === "codex") return changeCodexLogin(machine, true, signal);
-	if (agent === "claude") return changeClaudeLogin(machine, true, signal);
+	// Claude Code and Codex pay with the account's plans and keys: setup signs neither in.
+	if (agent !== "opencode") return;
 	const login = (provider?: string) => changeProviderLogin(machine, true, signal, provider);
 	if (
 		importFile &&
@@ -217,13 +215,9 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			}
 		},
 		async signInState(agent) {
+			if (agent !== "opencode") return "unknown";
 			try {
-				const m = machine();
-				if (agent === "codex") return codexLogin(m) ? "signed-in" : "signed-out";
-				if (agent === "opencode") return (await installedProvider(m)) ? "signed-in" : "signed-out";
-				// Docker Desktop cannot stat the file in a stopped container, so setup also runs the check.
-				const state = await claudeSignIn(m, { start: true });
-				return state === "token" ? "signed-in" : state === "none" ? "signed-out" : "unknown";
+				return (await installedProvider(machine())) ? "signed-in" : "signed-out";
 			} catch {
 				return "unknown";
 			}

@@ -162,7 +162,6 @@ export interface TurnHooks {
 		signal?: AbortSignal,
 		pinned?: TurnCredential,
 		keyOnce?: boolean,
-		planRelay?: boolean,
 	): Promise<TurnCredential>;
 	takeTurnRequest(c: Ctx, meta: SessionMeta, run: TurnRun, active: ActiveTurn): Promise<boolean>;
 	itemTurnStarted(
@@ -458,10 +457,10 @@ function itemSignInRefusal(
 	credential: TurnCredential,
 ) {
 	const machine = machineHarness(meta.harness);
-	// A plan pays through the machine's plan relay: the machine's own sign-in is not asked for.
-	if (!machine || !facts.report || credential.key?.plan) return null;
+	// A plan or a key pays: the machine's own sign-in is not asked for.
+	if (!machine || !facts.report || credential.key) return null;
 	if (!offered) return `This machine does not offer ${machine.name}.`;
-	const effective = withSettingsKeys(offered, credential.key ? [credential.key.provider] : []);
+	const effective = withSettingsKeys(offered, []);
 	return (
 		itemSignInMessage(machine, facts.name, effective.signIn) ??
 		itemSignInChanged(machine, facts.name, credential.itemSignIn ?? meta.origin?.signIn, effective.method)
@@ -731,18 +730,14 @@ export async function takeCredential(
 	// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
 	const facts = meta.place.kind === "machine" ? await runnerLink(c, meta.place.machineId).facts() : null;
 	const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
-	// Its runner hands a plan's token to a relay on the machine: a plan pays there as hosted.
-	const planRelay = facts?.report?.planRelay === true;
 	const credential =
 		active.credential ??
-		(await t.hooks
-			.turnCredential(c, meta, offered, meta.model, signal, run?.credential, false, planRelay)
-			.catch(error => {
-				if (error instanceof PlanWaitError) return planWait(active.item, error);
-				if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
-					throw error;
-				return refuseItemPolicy(active.item, error.message);
-			}));
+		(await t.hooks.turnCredential(c, meta, offered, meta.model, signal, run?.credential, false).catch(error => {
+			if (error instanceof PlanWaitError) return planWait(active.item, error);
+			if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
+				throw error;
+			return refuseItemPolicy(active.item, error.message);
+		}));
 	const { key } = credential;
 	t.itemSignIn = credential.itemSignIn ?? meta.origin?.signIn;
 	t.credential = credential;
@@ -2076,8 +2071,6 @@ function turnOutcome(
 			// No sign-in, one that could not be refreshed, or an access token the provider rejected: the remedy is the same.
 			outcome = "error";
 			message = `ChatGPT did not accept the saved sign-in. ${SIGN_IN_REMEDY}`;
-			// The next prompt asks the sandbox layer about the sign-in instead of trusting an earlier answer.
-			c.vars.signedInUntil = 0;
 		} else if (failure?.reason === "session_not_found") {
 			outcome = "error";
 			meta.windlassSessionId = null;

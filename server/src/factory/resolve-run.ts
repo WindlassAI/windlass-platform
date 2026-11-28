@@ -105,7 +105,7 @@ export const runPlace = (place: SandboxPlace): DefaultPlace =>
 
 export function machinePayers(machines: readonly MachineSummary[]) {
 	return Object.fromEntries(
-		machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).map(h => [h.id, h.source ?? "machine"]))]),
+		machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).map(h => [h.id, "machine" as const]))]),
 	);
 }
 

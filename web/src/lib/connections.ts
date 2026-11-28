@@ -1,8 +1,8 @@
 /**
  * The Connections page's grid (screens/Connections.tsx): for each agent and each place it runs (Hosted, each paired
  * machine), what pays for it now and the one action that connects it. Hosted follows the turn resolver as it is
- * (`hostedPayer`: a connected plan first, then a key); a machine follows its runner's report and the owner's
- * per-machine choice (`MachineSummary.harnesses[].source`). Pure: no React, no client.
+ * (`hostedPayer`: a connected plan first, then a key); a machine follows its runner's report: an agent a plan can pay
+ * for with no login of its own there (`paysWith`) pays as hosted, Pay with deciding. Pure: no React, no client.
  */
 import {
 	type HarnessId,
@@ -19,7 +19,6 @@ import {
 	hostedPayer,
 	keyProviders,
 	machineHarness,
-	planProviders,
 	WINDLASS_KEY_PROVIDERS,
 } from "../../../server/src/sandbox/harnesses.js";
 import type { ReportedHarness } from "./acp";
@@ -191,15 +190,6 @@ function machineMethodWords(entry: ReportedHarness): string | null {
 	return entry.id === "claude" ? "Claude account" : null;
 }
 
-/**
- * The providers whose saved key could pay for a machine's agent instead of its own sign-in: where both could, the
- * owner chooses which one is used (`setCredentialSource`), in that agent's cell.
- */
-export function choosableKeys(entry: ReportedHarness, keys: readonly ModelProviderStatus[]): ModelProvider[] {
-	if (!entry.keyRelay) return [];
-	return (entry.machineSignIns ?? []).filter(provider => keys.some(key => key.provider === provider));
-}
-
 /** An agent on a machine, from its runner's report: its own sign-in, the owner's key, or what to do there. */
 export function machineCell(harness: HarnessId, machine: MachineSummary, hosted: ConnectionCell): ConnectionCell {
 	const id = cellId(harness, machine.machineId);
@@ -208,10 +198,9 @@ export function machineCell(harness: HarnessId, machine: MachineSummary, hosted:
 	if (harness === "windlass") return { ...hosted, id, detail: "Same as Hosted", action: null };
 	const entry = machine.harnesses?.find(one => one.id === harness);
 	if (!entry) return { id, state: "absent", label: "Not on this machine", detail: null, action: { kind: "machines" } };
-	// A runner with a plan relay: Pay with decides here as hosted, unless the machine's own sign-in or the key was chosen
-	// (agent-session.ts `machinePaysWith`).
-	if (machine.planRelay && planProviders(harness).length && entry.source !== "key" && entry.signIn !== "token")
-		return { ...hosted, id, detail: "Same as Hosted", action: null };
+	// No login of its own there: Pay with decides as hosted (agent-session.ts `machinePaysWith`). A login kept on the
+	// machine wins for that machine.
+	if (entry.paysWith) return { ...hosted, id, detail: hosted.state === "none" ? null : "Same as Hosted", action: null };
 	if (entry.signIn === "none")
 		return { id, state: "none", label: "Sign in needed", detail: null, action: { kind: "machines" } };
 	if (entry.signIn === "unknown")
@@ -222,7 +211,7 @@ export function machineCell(harness: HarnessId, machine: MachineSummary, hosted:
 			detail: entry.signInReason ?? null,
 			action: { kind: "machines" },
 		};
-	if (entry.platformKeys?.length && (entry.source === "key" || !entry.machineSignIns?.length))
+	if (entry.platformKeys?.length && !entry.machineSignIns?.length)
 		return { id, state: "key", label: "Your key", detail: keyNames(entry.platformKeys), action: null };
 	return { id, state: "machine", label: "Own sign-in", detail: machineMethodWords(entry), action: null };
 }

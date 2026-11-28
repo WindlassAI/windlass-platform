@@ -1454,11 +1454,18 @@ export function StartComposer({
 				) : null}
 				{other && chosenMachine ? (
 					<p className="ui-menu-note">
-						Choose whose sign-in it uses on the{" "}
-						<a className="link" {...linkProps({ name: "machines" })}>
-							Machines
-						</a>{" "}
-						page.{onPullRequest(harness)}
+						{machineEntry?.paysWith ? (
+							<>
+								It pays with your plan or key, as{" "}
+								<a className="link" {...linkProps({ name: "connections" })}>
+									Connections
+								</a>{" "}
+								sets.
+							</>
+						) : (
+							"It uses its own sign-in on this machine."
+						)}
+						{onPullRequest(harness)}
 					</p>
 				) : null}
 				{!other && modelList && modelList.source !== "account" ? (
@@ -1466,7 +1473,7 @@ export function StartComposer({
 				) : null}
 				{other && chosenMachine && machineEntry && machineEntry.signIn !== "token" ? (
 					<details className="agent-commands">
-						<summary>Sign-in command</summary>
+						<summary>{machineEntry.paysWith ? "What pays" : "Sign-in command"}</summary>
 						<HarnessStatus harness={machineEntry} />
 					</details>
 				) : null}

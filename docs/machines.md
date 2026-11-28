@@ -87,23 +87,28 @@ the `windlass-runner` volume.
 
 `windlass-runner setup` without `--harness` is a wizard ([setup-wizard.ts](../runner/src/setup-wizard.ts)): full-screen
 prompts ([@clack/prompts](https://github.com/bombshell-dev/clack)) on a terminal, numbered lines with `--no-tui` or
-without one. It pairs (or keeps the pairing), asks the machine's name, the agents to offer and signs each in
-through the same code as `login`, then the profiles, the network mode and the limits. A failed or skipped
-sign-in is shown and setup carries on. At the end it starts the service itself through the Docker socket
+without one. It pairs (or keeps the pairing), asks the machine's name and the agents to offer, signs OpenCode in
+through the same code as `login` (Claude Code and Codex pay with the account's plans and keys and are not signed in
+here), then the profiles, the network mode and the limits. A failed or skipped sign-in is shown and setup carries on. At the end it starts the service itself through the Docker socket
 it was given, using the setup container's image and mounts, rotated logs and the `unless-stopped` restart
 policy. It replaces an existing `windlass-runner` container when the user
 agrees (the volume stays). It lets go of the state lock first, then waits until the service writes
 `Online` to `status.json`. Its answers are kept in `setup.json` in the state volume and are the defaults
 the next time; `setup --quick` asks only what is missing and `setup <section>` one part (`name`, `agents`,
-`claude`, `codex`, `opencode`, `profile`, `network`, `limits`). With `--harness`, setup is the earlier flow:
-it signs the given agents in and prints the start command.
+`opencode`, `profile`, `network`, `limits`). With `--harness`, setup is the earlier flow:
+it signs OpenCode in when it is given and prints the start command.
 
 ### Signed runner connections
 
-`WLP_REQUIRE_SIGNED_RUNNER` defaults to `0`. In this mode the server continues to accept protocol 1,
-advertises its original minimum of 0.1.0 and requires no platform identity key. Keep the current runner
-image advertised until cutover. With `WLP_REQUIRE_SIGNED_RUNNER=1` the minimum is 0.2.0. Both sockets
-require protocol 2. Update and re-pair each runner to obtain a new pairing with the platform root and
+`WLP_REQUIRE_SIGNED_RUNNER` defaults to `0`. In this mode the server continues to accept protocol 1
+and requires no platform identity key. Keep the current runner image advertised until cutover. With
+`WLP_REQUIRE_SIGNED_RUNNER=1` both sockets require protocol 2.
+
+In either mode the oldest runner served is 0.3.13 (`MIN_RUNNER_VERSION` in `server/src/runner/protocol.ts`): the
+first whose turns pay with a plan through a relay on the machine and that keeps no ChatGPT or Codex sign-in of its
+own. An older runner's control socket is refused with "This runner is 0.3.12. Update your runner to 0.3.13 or later
+with the command on the Machines page." (`outdatedRunner`); the Machines page says the same, and the launch form
+refuses the machine with "Update your runner on “nas” to 0.3.13 or later, then start the agent again." Update and re-pair each runner to obtain a new pairing with the platform root and
 gateway origin. Compare the fingerprint printed by the runner with the owner's offline copy.
 
 Pairing establishes initial trust over TLS. A signed runner checks the online certificate against the
@@ -234,11 +239,10 @@ the owner allows it and bubblewrap starts in a container there.
 ### Claude Code sessions
 
 When the machine reports Claude Code, `createSession` accepts
-`harness: "claude"` with `docker-hardened`. On a runner that names `plan-relay`, its turns pay as hosted ones do,
-through Connections → Pay with: the connected Claude plan through a relay on the machine
-([Plans on this machine](#plans-on-this-machine)), or a Settings key. A login kept on the machine with
-`windlass-runner login claude` wins for that machine. On an older runner the runner owns the sign-in: run
-`windlass-runner login claude` on that machine when it needs a login. The platform clones the
+`harness: "claude"` with `docker-hardened`. Its turns pay as hosted ones do, through Connections → Pay with: the
+connected Claude plan through a relay on the machine ([Plans on this machine](#plans-on-this-machine)), or a
+Settings key. A login kept on the machine with `windlass-runner login claude` wins for that machine
+([Claude Code's own login on this machine](#claude-codes-own-login-on-this-machine)). The platform clones the
 repository and runs its setup command before starting the adapter. The first prompt uses the
 adapter's default model. Later prompts can select a model and reasoning effort it offered.
 
@@ -261,7 +265,7 @@ whose server names `session-backups` keeps a copy of the conversation on the mac
 for these agents ([Work items](work-items.md#checks-and-steps-for-claude-code-opencode-and-codex)):
 `sandbox/platform-checks.ts` runs the checks in the sandbox between the agent's prompts of a turn, and
 `sandbox/platform-steps.ts` counts tool calls. A personal session's reported tokens are recorded, not
-counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Hosted sessions use Windlass. Machine reviewers use the builder's agent and profile. Claude Code and OpenCode can build Quick items or approved feature parts. Codex can build Quick items with a machine ChatGPT sign-in. See
+counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Hosted sessions use Windlass. Machine reviewers use the builder's agent and profile. Claude Code and OpenCode can build Quick items or approved feature parts. Codex can build Quick items, paid with the ChatGPT plan or an OpenAI key as Pay with says. See
 [Work items](work-items.md#the-items-agent).
 
 ### Warm spares
@@ -314,7 +318,7 @@ docker run -it --rm \
 ```
 
 Enter the pairing code on the Machines page and choose **Connect**. Setup asks about each selected agent;
-answer **n** to skip its sign-in. For OpenCode, enter a provider ID or search by name. Pick **opencode-go**
+answer **n** to skip OpenCode's sign-in (setup signs in no other agent). For OpenCode, enter a provider ID or search by name. Pick **opencode-go**
 for a Go subscription key or **opencode** for a Zen pay-as-you-go key, and paste the key at the hidden
 prompt. **chatgpt** starts a separate OpenAI device login, and **free** enables OpenCode's public models.
 Public sessions use OpenCode’s anonymous catalog and carry their own ACP client identity. If the
@@ -335,8 +339,9 @@ Add a provider or renew a key with `docker exec -it windlass-runner windlass-run
 `logout opencode`. ChatGPT and the OpenAI API key share the native `openai` slot; public access and a Zen
 key share the `opencode` slot; signing into a slot replaces its previous method. Go has its own slot.
 
-OpenCode runs in personal hardened Docker sessions. The machine's relay holds the credentials, refreshes
-ChatGPT tokens and checks each session's signed placeholder; agent commands can use the quota of the
+OpenCode runs in personal hardened Docker sessions. Its own logins on the machine pay for its turns, and a Settings
+key pays for each provider it has no login for there. The machine's relay holds the credentials, refreshes the
+ChatGPT tokens of OpenCode's own ChatGPT login and checks each session's signed placeholder; agent commands can use the quota of the
 configured providers. Adding a provider or changing a key keeps existing sessions working, because the
 relay looks up the current key on each request. A full `logout opencode` or a new pairing invalidates the
 placeholders, and affected sessions must be recreated. Open and restricted sessions both send inference
@@ -349,8 +354,7 @@ provider's own body on: 401 "Provider sign-in is missing or the session placehol
 403 "This request is not allowed by the relay.", 429 "The provider's usage or rate limit was reached.",
 5xx "The provider failed or couldn't be reached." and any other status "The provider rejected the request."
 A successful answer passes only as an event stream or JSON. chatgpt.com answers a ChatGPT sign-in's stream
-with no content type or as text/plain, so on that route alone (Codex's `/codex/v1/responses`, OpenCode's
-ChatGPT `/openai/responses`) such an answer passes as an event stream; anywhere else it is refused with 502.
+with no content type or as text/plain, so on that route alone (OpenCode's ChatGPT `/openai/responses`) such an answer passes as an event stream; anywhere else it is refused with 502.
 
 On a machine, `docker logs <relay-container>` shows diagnostics. Docker retains up to two 4 MiB files per relay. Each relay notes, without bodies, credentials or query strings, every
 answer it did not pass on as the provider gave it: an upstream error status, a refused or retyped 200, a
@@ -373,13 +377,15 @@ Machines report each agent's models, efforts and modes at startup, after each lo
 six hours. The composer fetches a catalog by digest only when it changes; host load and memory travel
 separately.
 
-### Claude Code on this machine
+### Claude Code's own login on this machine
 
-Build the runner with `WLP_RUNNER_HARNESSES=claude scripts/runner-build.sh`
-and add `--harness claude` after the runner image in the pairing command. Only the hardened Docker
-profile offers Claude Code. To sign in, run `docker exec -it windlass-runner windlass-runner login claude`.
-Anthropic's `claude setup-token` opens its browser sign-in flow and prints a token in your attached
-terminal. Paste it at the hidden prompt. A token minted on another computer works there too.
+A machine's owner can keep Claude Code's own login on the machine: `docker exec -it windlass-runner windlass-runner
+login claude`. It is not shown in setup or onboarding; it is the fallback for when plans are off for the account, and
+a user's own Claude login on their own machine is always allowed. When present it wins for that machine's Claude Code:
+Pay with is not asked (`machinePaysWith` in `server/src/actors/agent-session.ts`), and the machine's listing has no
+`paysWith` for it. Build the runner with `WLP_RUNNER_HARNESSES=claude scripts/runner-build.sh`; only the hardened
+Docker profile offers Claude Code. Anthropic's `claude setup-token` opens its browser sign-in flow and prints a token in
+the attached terminal; paste it at the hidden prompt. A token minted on another computer works there too.
 
 The runner stores the token in `wlp-harness-claude-<machine id>`. The local login helper writes it.
 A per-machine relay reads this volume for each request. Each hardened Claude session gets a
@@ -395,72 +401,54 @@ placeholder before reading the token. The relay uses its own outbound HTTPS rout
 Anthropic. The agent keeps its original interfaces and mounts.
 [Relay verification and Docker checks](../sandbox/relay/README.md)
 
-`docker exec windlass-runner windlass-runner status` shows the local sign-in state.
+`docker exec windlass-runner windlass-runner status` shows whether a login is kept on the machine.
 `docker exec windlass-runner windlass-runner logout claude` removes the relay and token for each
-pairing. The runner's `prune` also removes the socket and login volumes.
-
-Update the server first. Stop the previous runner and its Claude sessions, archive any needed
-workspaces locally, then install the runner with its pinned Claude image. The runner stops legacy
-sessions with credential mounts and refuses to reopen them. Recreate those sessions, revoke
-the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
-Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.
+pairing, and Claude Code pays through Pay with again. The runner's `prune` also removes the socket and login volumes.
 
 ### Plans on this machine
 
-A runner whose server names `plan-relay` (`SERVER_CAPABILITIES` in `server/src/runner/control.ts`) says `planRelay` in
-its report and in each `connect`. A plan-paid turn on it hands the plan's token to a relay on the machine for that
-turn only, kept in the relay's memory, never in a file or a volume, and the plan's requests leave from the machine
-([model-relay.md](model-relay.md#plan-requests-from-a-machine)). Who pays:
+Every runner the platform serves (0.3.13 and later) runs a plan-paid turn's relay on the machine: the plan's token is
+handed to that relay for the turn only, kept in its memory, never in a file or a volume, and the plan's requests leave
+from the machine ([model-relay.md](model-relay.md#plan-requests-from-a-machine)). No sandbox and no machine is ever
+handed a ChatGPT access token. Who pays:
 
 - **Windlass**: its unqualified (ChatGPT) models pay with the ChatGPT plan, the sign-in connected with
   `npx @windlassai/cli connect codex`. On a machine this is not behind `WLP_PLAN_USERS`.
 - **Claude Code and Codex**: Connections → Pay with decides, as for hosted turns: the plan, the key, or the plan then
-  the key, and what a limited plan does. Two things win over it on that machine: the owner chose the Settings key for
-  that machine's agent (its Paid by cell on Connections), or the agent is signed in on the machine itself (Claude Code's login kept with
-  `windlass-runner login claude`, the fallback while plans are off for the account). A Claude plan is behind
-  `WLP_PLAN_USERS` on machines as hosted.
-- **OpenCode**: its own logins on the machine, or a Settings key, as before.
+  the key, and what a limited plan does. Codex has no login of its own on a machine. Claude Code's own login kept with
+  `windlass-runner login claude` wins on that machine. A Claude plan is behind `WLP_PLAN_USERS` on machines as hosted.
+  The machine's listing (`listedHarness` in `server/src/sandbox/harnesses.ts`) marks such an agent `paysWith`, and
+  its `signIn` is "token" when a connected plan usable there or a saved key can pay; the factory and the launch form
+  read that.
+- **OpenCode**: its own logins on the machine, and a Settings key for each provider it has no login for.
 
-Runners without the capability keep what they did: their own sign-ins, keys forwarded through the platform, and for
-Windlass the ChatGPT access token handed to the machine's model relay each turn (`TokenFile`, `modelRelayToken`,
-the `chatgpt` wire), or written into the sandbox on runners 0.3.0 and 0.3.1. A turn paused on the plan cannot go on
-on a runner that lost the capability since; it asks for a new turn.
+There is no per-machine payer choice any more; the per-user Pay with rule decides on machines too.
 
 ### Windlass's model relay on this machine
 
-A runner that knows the `model-relay` capability runs Windlass's model relay
-([model-relay.md](model-relay.md)) as `wlp-model-relay-<machine id>`, with the socket volume
-`wlp-model-socket-<machine id>`. It uses the pinned base image and carries the pairing's labels, so `prune`
-removes it. The relay's ceiling for the machine is 24 requests in flight, the same as the other relays. It
-is used only when both sides know it:
+The runner runs Windlass's model relay ([model-relay.md](model-relay.md)) as `wlp-model-relay-<machine id>`, with
+the socket volume `wlp-model-socket-<machine id>`. It uses the pinned base image and carries the pairing's labels, so
+`prune` removes it. The relay's ceiling for the machine is 24 requests in flight, the same as the other relays. It
+carries only Settings-key leases, forwarded to the platform's route: Windlass's ChatGPT turns use the plan relay.
 
-- The server names `model-relay` in its welcome (`SERVER_CAPABILITIES` in `server/src/runner/control.ts`).
-  The runner then sets `Executor.modelRelays`. Its report carries `modelRelay`, and each `connect` of a
-  Windlass sandbox (never a harness one) answers `modelRelay: true`. A server that did not name the
-  capability gets neither, because its checks refuse keys they do not know. Both say true only when the
-  pinned sandbox image's Windlass is 0.7.1 or later, which the runner reads once the image is there (at
-  its first welcome). An older Windlass would send the placeholder to `api.openai.com`.
-- The server's `RunnerHandle` offers `TurnSandbox.modelRelay` only for a sandbox whose connect said so.
-  The turn then sends `modelRelay` (a lease, with a forwarder in the sandbox's network namespace),
-  `modelRelayToken` for each token, and `modelRelayClose` at the end (`server/src/runner/protocol.ts`). A
-  conversation that is lost ends its leases on the runner (`Conversation.orphan`). Suspending or removing
-  the sandbox ends its leases: the relay's file of each, its forwarder and the conversation's `relays`
-  entry. At its first welcome the runner removes every forwarder and relay file a runner that died left,
-  and the relay itself deletes files whose token has expired.
+- The runner's report carries `modelRelay`, and each `connect` of a Windlass sandbox (never a harness one) answers
+  `modelRelay: true`, when the pinned sandbox image's Windlass is 0.7.1 or later, which the runner reads once the image
+  is there (at its first welcome).
+- The server's `RunnerHandle` offers `TurnSandbox.modelKeyRelay` only for a sandbox whose connect said so. The turn
+  sends `modelRelay` (a forwarded lease, with a forwarder in the sandbox's network namespace) and `modelRelayClose` at
+  the end (`server/src/runner/protocol.ts`). A conversation that is lost ends its leases on the runner
+  (`Conversation.orphan`). Suspending or removing the sandbox ends its leases: the relay's file of each, its forwarder
+  and the conversation's `relays` entry. At its first welcome the runner removes every forwarder and relay file a
+  runner that died left, and the relay itself deletes files whose lease has expired.
 
-Runners 0.3.0 and 0.3.1 ignore the name and say neither. Their turns get the token in a file, as before. On a runner
-that also names `plan-relay`, Windlass's ChatGPT turns use the plan relay instead, and this relay carries only
-Settings keys.
-If the relay cannot be had on a runner that offers it, the turn fails, and the token is never written into
-the container. `WLP_MODEL_RELAY=off` on the server turns it off for every machine.
+If the relay cannot be had, a key-paid turn fails. `WLP_MODEL_RELAY=off` on the server turns it off for every machine.
 
 ### What the runner cannot do, and what the platform cannot do
 
 The runner cannot start a container of
 another image, run anything on the machine outside the containers it made, touch a container or a volume
-it did not make, or reach a session that did not hand it a ticket. A plan-paid turn's token (a Claude plan's, or a
-ChatGPT access token) is handed to a relay on the machine for that turn: the plan relay with a current runner, the
-machine's model relay with an older one, or a file in the container with runners 0.3.0 and 0.3.1. The platform, for its part, cannot reach the
+it did not make, or reach a session that did not hand it a ticket. A plan-paid turn's token (a Claude plan's, or the
+ChatGPT plan's access token) is handed to the plan relay on the machine for that turn only. The platform, for its part, cannot reach the
 machine except through its runner, and does not control it: whoever runs the machine can change what
 runs there and what it reports. The launch form, the profiles and a pull request's section say so.
 
@@ -568,10 +556,9 @@ SQLite: the conversation's id, both sides' counts, and the frames the runner has
 - **Acknowledged after it is stored.** What the server received is counted as received in the same
   transaction as the timeline rows it produced and the turn's checkpoint, and only that count is
   acknowledged. The runner holds everything past it and sends it again: each message is taken once.
-- **No secrets.** A frame that carries a token (`writeSecretFile`, `modelRelayToken`, `planRelay`,
-  `planRelayToken`, a start or run with secret variables) is stored as a cancel of its id, which a runner that never
-  had it ignores. The restarted turn writes the token file again at once, through the same relay lease; a plan-paid
-  turn hands its plan relay on the machine a fresh token through the same lease (`resumePlanRelay`).
+- **No secrets.** A frame that carries a secret (`writeSecretFile`, `modelRelay`, `planRelay`, `planRelayToken`, a
+  start or run with secret variables) is stored as a cancel of its id, which a runner that never had it ignores. A
+  plan-paid turn hands its plan relay on the machine a fresh token through the same lease (`resumePlanRelay`).
 - **The turn checkpoint** (`turn_checkpoint`, `TurnCheckpoint` in `sandbox/api.ts`) holds the runner's id
   of the agent process, the ACP ids, the requests of the agent's not answered yet, the part of a line
   not ended, and the turn's own counts. It is plain JSON, written with the timeline.
@@ -623,21 +610,8 @@ key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes ar
 
 ### Forgetting the ChatGPT sign-in
 
-Each machine whose runner is connected at that moment is told, and
-its runner removes each running turn’s token from the container’s private tmpfs and clears old copies on its data volume. A machine that is offline then
-is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
-turn cut off by the machine going away can leave, expires about an hour after issue. To remove such files sooner, the machine's owner removes the runner's
-sandboxes and its data volume there with `prune`. It refuses to run while the runner does ("The runner
-service or another command is using this state volume. Stop the runner container or finish the command,
-then run prune in a one-off runner container with the same state volume and Docker socket."), so the
-runner is stopped first, and started again afterwards:
-
-```sh
-docker stop windlass-runner
-docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock \
-  -v windlass-runner:/var/lib/windlass-runner <WLP_RUNNER_IMAGE> prune
-docker start windlass-runner
-```
+Nothing is sent to the machines: none of them holds a ChatGPT token. A plan relay running a turn keeps the token it
+was handed until the turn ends or the token expires, and its next replacement is refused (the plan is gone).
 
 ### Pull requests, and the machine's name
 

@@ -777,13 +777,8 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`,
 				});
 				assert.equal(login?.code, 0);
 				assert.ok(login?.stdout.includes(path));
-				srv.send({ kind: "logout" });
-				await until(
-					async () => (await handoff.request("ask", { id, argv: ["test", "!", "-e", path] }))?.code === 0,
-					"Logout left the private file.",
-				);
 				await handoff.request("destroy", { id });
-				ok(profile + " passes the private tmpfs file to Windlass and removes it on logout.");
+				ok(profile + " passes the private tmpfs file to Windlass.");
 			}
 
 			// A hardened Windlass session has a data volume of its own; the Windlass sandbox profile keeps the machine's.
@@ -2135,13 +2130,6 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.equal(hash.digest("hex"), expected.digest("hex"));
 		ok("Withheld receipts block the container writer. After a real TCP cut all 20 MiB arrive once and in order.");
 
-		const tokenPath = tokenFilePath(id);
-		await ch.request("writeTextFile", { id, path: tokenPath, content: "fixture" });
-		srv.send({ kind: "logout" });
-		await until(
-			async () => (await ch.request("ask", { id, argv: ["test", "!", "-e", tokenPath] }))?.code === 0,
-			"Logout left the token file.",
-		);
 		let running = false;
 		const oldRun = ch.request(
 			"run",

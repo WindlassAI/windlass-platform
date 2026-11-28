@@ -2,7 +2,6 @@ import {
 	MODEL_PROVIDERS,
 	isModelProvider,
 	type CredentialRef,
-	type CredentialSource,
 	type ModelProvider,
 	type ModelProviderStatus,
 	type PlanProvider,
@@ -377,38 +376,47 @@ function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
 	return (entry.machineProviders ?? []).map(p => (p === "chatgpt" ? "openai" : p)).filter(isModelProvider);
 }
 
+/**
+ * Why nothing on the machine can pay for this agent's turns with `model`, from its listing (`listedHarness`): its
+ * `keys` are the Settings keys it can use there. Null where something can.
+ */
 export function machinePayerProblem(
-	entry: ReportedSignIn & { keyRelay?: true },
+	entry: ReportedSignIn & { keyRelay?: true; paysWith?: true },
 	model: string | undefined,
-	source: CredentialSource,
 	keys: readonly ModelProvider[],
 	itemMachine?: string,
 ) {
-	if (source === "key") {
-		if (!entry.keyRelay) return "The selected Settings key needs a runner with key relay support.";
-		if (!hostedProvider(entry.id, model, keys)) return hostedKeyMessage(entry.id, model);
-	} else {
-		if (entry.signIn !== "token")
-			return itemMachine
-				? itemSignInMessage(machineHarnesses[entry.id], itemMachine, entry.signIn)
-				: `Sign in to ${harnessName(entry.id)} on the machine or choose a Settings key.`;
-		if (
-			entry.id === "opencode" &&
-			model &&
-			model !== "default" &&
-			!(entry.machineProviders ?? []).some(p =>
-				model.startsWith((p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p) + "/"),
-			)
+	const profile = machineHarnesses[entry.id];
+	if (entry.signIn !== "token")
+		return itemMachine
+			? itemSignInMessage(profile, itemMachine, entry.signIn)
+			: entry.paysWith
+				? `Nothing can pay for ${profile.name} yet. ${PAY_WITH_HINT}`
+				: `Sign in to ${profile.name} on the machine or add a Settings key.`;
+	if (
+		entry.id === "opencode" &&
+		model &&
+		model !== "default" &&
+		!keys.some(provider => model.startsWith(provider + "/")) &&
+		!(entry.machineProviders ?? []).some(p =>
+			model.startsWith((p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p) + "/"),
 		)
-			return `The machine sign-in cannot run ${model}. Sign in to its provider or choose a Settings key.`;
-	}
+	)
+		return `The machine sign-in cannot run ${model}. Sign in to its provider or add a Settings key.`;
 	return null;
 }
+
+/** Where a person makes a plan or a key pay for an agent that has no login of its own on the machine. */
+export const PAY_WITH_HINT = "Connect a plan or add a key on Connections.";
 
 /** Combine a runner report with the owner's Settings keys its turns may use. */
 export function withSettingsKeys<
 	T extends KeyHarness & { signIn: "token" | "none" | "unknown"; method?: SignInMethod },
->(entry: T, saved: readonly ModelProvider[], model?: string) {
+>(
+	entry: T,
+	saved: readonly ModelProvider[],
+	model?: string,
+): T & { signIn: "token" | "none" | "unknown"; method?: SignInMethod; platformKeys?: ModelProvider[] } {
 	const keys = keyProviders(entry.id).filter(
 		provider =>
 			entry.keyRelay &&
@@ -419,28 +427,40 @@ export function withSettingsKeys<
 	return entry.id === "claude" && entry.signIn === "token" ? { ...entry, method: "subscription" as const } : entry;
 }
 
-/** A machine's agent as the Machines page lists it: its own sign-in, the owner's choice, and the keys that choice leaves. */
-export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?: SignInMethod }>(
+/**
+ * A machine's agent as the Machines page lists it, with what pays for its turns there. Claude Code with its own login
+ * kept on the machine (`windlass-runner login claude`) pays with that login. Any other agent a plan can pay for (Claude
+ * Code, Codex) pays as hosted, through Connections → Pay with (`paysWith`): its `signIn` is "token" when one of the
+ * account's plans usable on a machine (`plans`) or a saved key can pay, with the plan's method first. OpenCode pays with
+ * its own logins on the machine, and a saved key for each provider it has no login for.
+ */
+export function listedHarness<T extends KeyHarness & ReportedSignIn>(
 	entry: T,
 	saved: readonly ModelProvider[],
-	source?: CredentialSource,
-): T & {
-	platformKeys?: ModelProvider[];
-	machineSignIns?: ModelProvider[];
-	machineMethod?: "api-key" | "chatgpt";
-	source?: CredentialSource;
-} {
+	plans: readonly PlanProvider[] = [],
+): T & { method?: SignInMethod; platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; paysWith?: true } {
 	const own = machineSignIns(entry);
-	const effective = withSettingsKeys(entry, source === "key" ? saved : []);
+	const planned = machineHarnesses[entry.id].planProviders;
+	if (planned.length && entry.signIn !== "token") {
+		const keyed = withSettingsKeys({ ...entry, signIn: "none" }, saved);
+		const plan = planned.find(provider => plans.includes(provider));
+		if (plan)
+			return {
+				...keyed,
+				signIn: "token",
+				method: plan === "openai" ? "chatgpt" : "subscription",
+				paysWith: true,
+			};
+		return keyed.platformKeys ? { ...keyed, paysWith: true } : { ...entry, paysWith: true };
+	}
+	const effective = withSettingsKeys(
+		entry,
+		saved.filter(provider => !own.includes(provider)),
+	);
 	return {
 		...effective,
-		...(source === "key" && !("platformKeys" in effective) && { signIn: "none" as const }),
-		...(source === "key" && entry.machineProviders && { machineProviders: [] }),
 		...(entry.machineProviders && entry.signIn !== "token" && { machineProviders: [] }),
 		...(own.length && { machineSignIns: own }),
-		...(entry.id === "codex" &&
-			(entry.method === "chatgpt" || entry.method === "api-key") && { machineMethod: entry.method }),
-		...(source && { source }),
 	};
 }
 
@@ -642,7 +662,7 @@ export function itemSignInMethodProblem(
 ): string | null {
 	if (profile.itemTokens !== "sign-in" || (method && profile.itemSignIns?.includes(method))) return null;
 	const allowed = (profile.itemSignIns ?? []).map(signInWords);
-	return `${profile.name} on “${machine}” signs in with ${signInWords(method)}, and its work items run only with ${anyOf(allowed)} sign-in for now. Run windlass-runner login ${profile.id} there and choose ${anyOf(allowed)}, or start a ${profile.name} session instead.`;
+	return `${profile.name} on “${machine}” pays with ${signInWords(method)}, and its work items run only on ${anyOf(allowed)} for now. ${PAY_WITH_HINT}`;
 }
 
 /**
@@ -660,7 +680,7 @@ export function itemSignInChanged(
 		now ??= "subscription";
 	}
 	if (profile.itemTokens !== "sign-in" || filed === undefined || filed === now) return null;
-	return `${profile.name} on “${machine}” now signs in with ${signInWords(now)}, not ${signInWords(filed)} as when this item was filed. File the work again.`;
+	return `${profile.name} on “${machine}” now pays with ${signInWords(now)}, not ${signInWords(filed)} as when this item was filed. File the work again.`;
 }
 
 /** How an item counts its agent's tokens, by the sign-in method it was filed with where that decides. */
@@ -726,7 +746,9 @@ export function initialHarnessModels(options?: HarnessOptions): ModelList {
 	};
 }
 
+/** Why an agent cannot run a turn on the machine: nothing pays for it. A plan's agent pays through Pay with; OpenCode signs in there. */
 export function machineLoginMessage(profile: AcpProfile, machine: string): string {
+	if (profile.planProviders.length) return `Nothing can pay for ${profile.name} on “${machine}” yet. ${PAY_WITH_HINT}`;
 	return `${profile.name} on “${machine}” is not signed in. Run windlass-runner login ${profile.id} there.`;
 }
 
@@ -738,6 +760,8 @@ export function itemSignInMessage(
 ): string | null {
 	if (signIn === "token") return null;
 	if (signIn === "none") return machineLoginMessage(profile, machine);
+	if (profile.planProviders.length)
+		return `“${machine}” could not say whether ${profile.name} has a login of its own there, and nothing else can pay for it. ${PAY_WITH_HINT}`;
 	return `“${machine}” could not say whether ${profile.name} is signed in there, and a work item runs only where it is. Check that Docker runs there, or run windlass-runner login ${profile.id} there.`;
 }
 

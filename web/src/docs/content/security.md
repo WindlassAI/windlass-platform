@@ -1,10 +1,10 @@
 ## The rule that holds everywhere
 
-Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, the sandbox gets a file for that turn. On this platform, and on machines where the [model relay](#the-model-relay) runs, the file holds only a placeholder for the turn, and the access token stays where the agent cannot read it. On a machine without the relay the file holds a short-lived access token, as described [without the relay](#without-the-relay). A demo turn receives neither. Each sandbox row of the **where** menu says which applies.
+Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, the sandbox gets a file for that turn. The file holds only a placeholder for the turn, and the access token stays in a [relay](#the-model-relay) where the agent cannot read it. A demo turn receives neither.
 
 ### The model relay
 
-Where Windlass's model requests go through a relay, the sandbox never holds the access token at all. On this platform every Windlass turn on your ChatGPT plan does, and so do machines whose runner offers it. Windlass gets the relay's address and a placeholder in its token file. The placeholder is good only for this turn's model requests through the relay. The relay checks it on every request and sends the request on to OpenAI with your real token. Commands, approved MCP servers and anything left running from setup can read only the placeholder.
+Where Windlass's model requests go through a relay, the sandbox never holds the access token at all. Every Windlass turn on your ChatGPT plan does, here and on your machines. Windlass gets the relay's address and a placeholder in its token file. The placeholder is good only for this turn's model requests through the relay. The relay checks it on every request and sends the request on to OpenAI with your real token. Commands, approved MCP servers and anything left running from setup can read only the placeholder.
 
 - **Docker, here or on your machine.** The placeholder works only on the session's own `127.0.0.1:17893`. A helper in the session's network namespace takes it to the relay. Taken anywhere else, it is of no use. Here, the platform's relay asks for your plan's current token at every request.
 - **E2B and Daytona.** The relay runs inside the microVM, as another user than the agent's: the agent cannot read its memory or what it was handed. Your plan's requests leave from the microVM's own address. The placeholder works only on that relay's loopback port, only while its turn runs, and only for the agent's own model requests. A fresh token is handed to the relay before the old one expires.
@@ -13,13 +13,7 @@ Hosted runs on your ChatGPT plan are enabled per account by the operator. Where 
 
 When the turn ends, the relay forgets the token, stops the turn's requests still running, and the placeholder stops working. Anything in the sandbox can still make model requests on your plan through the relay while a turn runs, within the limits: 8 requests at once per session, with up to 32 more waiting, and 16 at once per hosted user. On a machine the relay allows 24 at once across sessions. These limits bound how many requests run at once, not how much of your plan they use.
 
-If the relay cannot be started, the turn fails. The platform never falls back to putting the token in the sandbox. If the relay refuses a turn's placeholder (the turn ended, or the relay restarted), the turn fails with "send the prompt again". Your sign-in is untouched. Machines with an older runner (0.3.0 or 0.3.1), or whose sandbox image has an older Windlass, don't offer the relay. Their turns get the token in a file, as described below.
-
-### Without the relay
-
-Only on such a machine, the platform hands the sandbox a short-lived access token in a file. Each token expires about an hour after issue. The platform replaces it during a long turn and removes the file when the turn ends. A copy remains usable until its own expiry. A process that can read the file during the turn can read each replacement.
-
-Whether the agent's commands can read that token depends on the sandbox. Setup runs before handoff. The platform clears leftover processes after setup and before handing the next turn a token. Docker keeps the file on the container's private tmpfs. Other sessions cannot open that file. An approved MCP server started locally by Windlass runs outside the command sandbox and can read it. If the server runs code from the workspace, changes to that code can take effect under the existing approval.
+If the relay cannot be started, the turn fails. The platform never falls back to putting the token in the sandbox. If the relay refuses a turn's placeholder (the turn ended, or the relay restarted), the turn fails with "send the prompt again". Your sign-in is untouched.
 
 ## Signing out on all devices
 

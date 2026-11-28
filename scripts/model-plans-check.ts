@@ -655,7 +655,7 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 			},
 		};
 		const ctx = { client: () => ({ user: { get: () => actor } }), vars: {} };
-		return (model: string, extra: object = {}, pinned?: object, planRelay = false, keyOnce?: boolean) =>
+		return (model: string, extra: object = {}, pinned?: object, keyOnce?: boolean) =>
 			turnCredential(
 				ctx as never,
 				{ place: { kind: "hosted" }, uid, sessionId: "s1", harness: "windlass", ...extra } as never,
@@ -664,7 +664,6 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 				undefined,
 				pinned as never,
 				keyOnce,
-				planRelay,
 			);
 	};
 	const turn = resolver(a, "plan-check-a");
@@ -703,7 +702,7 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 		rule,
 		keyModel: "openai/gpt-5.5",
 	};
-	assert.deepEqual(await turn("gpt-5.5", {}, undefined, false, true), {
+	assert.deepEqual(await turn("gpt-5.5", {}, undefined, true), {
 		model: "openai/gpt-5.5",
 		key: { provider: "openai", generation: "key-g" },
 	});
@@ -725,10 +724,14 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 	// A turn paused before this pinned nothing: it pins the plan when it resumes.
 	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5" }), { model: "gpt-5.5", key: plan });
 	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5", key: plan }), { model: "gpt-5.5", key: plan });
-	// A demo calls no model and an environment build runs no agent; a machine's Windlass uses the machine's sign-in.
+	// A demo calls no model and an environment build runs no agent; a machine's Windlass pins the ChatGPT plan, with no
+	// login of its own on the machine: the plan relay there is handed the token.
 	assert.deepEqual(await turn("gpt-5.5", { demo: true }), { model: "gpt-5.5" });
 	assert.deepEqual(await turn("gpt-5.5", { environmentBuild: true }), { model: "gpt-5.5" });
-	assert.deepEqual(await turn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), { model: "gpt-5.5" });
+	assert.deepEqual(await turn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), {
+		model: "gpt-5.5",
+		key: plan,
+	});
 	await writeChatgptSignIn(a.context.db, { sealed: "sealed-2", generation: "g2", shortNoted: false });
 	await assert.rejects(
 		turn("gpt-5.5", {}, { model: "gpt-5.5", key: plan }),
@@ -749,18 +752,15 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 		model: "openai/gpt-5.5",
 		key: { provider: "openai", generation: "key-g" },
 	});
-	assert.deepEqual(await offTurn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), { model: "gpt-5.5" });
-	// A machine whose runner has a plan relay pins the ChatGPT plan too, whatever WLP_PLAN_USERS says: it pays from there.
+	// A machine pins the ChatGPT plan too, whatever WLP_PLAN_USERS says: it pays from there.
 	const desk = { place: { kind: "machine", machineId: "desk" } };
 	const offPlan = { provider: "openai", plan: true, generation: "g1" };
-	assert.deepEqual(await offTurn("gpt-5.5", desk, undefined, true), { model: "gpt-5.5", key: offPlan });
-	assert.deepEqual(await offTurn("gpt-5.5", desk, { model: "gpt-5.5", key: offPlan }, true), {
+	assert.deepEqual(await offTurn("gpt-5.5", desk), { model: "gpt-5.5", key: offPlan });
+	assert.deepEqual(await offTurn("gpt-5.5", desk, { model: "gpt-5.5", key: offPlan }), {
 		model: "gpt-5.5",
 		key: offPlan,
 	});
-	// A runner that lost its plan relay since the turn was paused cannot go on with the plan.
-	await assert.rejects(offTurn("gpt-5.5", desk, { model: "gpt-5.5", key: offPlan }), /can no longer pay with the plan/);
-	assert.deepEqual(await offTurn("openai/gpt-5.5", desk, undefined, true), {
+	assert.deepEqual(await offTurn("openai/gpt-5.5", desk), {
 		model: "openai/gpt-5.5",
 		key: { provider: "openai", generation: "key-g" },
 	});

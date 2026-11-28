@@ -75,7 +75,7 @@ To file it without starting it, choose **File as a draft** in the **File** menu,
 
 ### From a repository
 
-Choose the repository in the rail of **Agents**, open **Work items** and choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. For a Quick item on a machine, choose a signed-in agent under **Agent**. Codex items need the machine’s ChatGPT sign-in. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
+Choose the repository in the rail of **Agents**, open **Work items** and choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. For a Quick item on a machine, choose an agent that can run there under **Agent**: Claude Code and Codex need a connected plan or key, OpenCode a login on the machine or a key. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
 
 ### From a GitHub issue
 
@@ -138,7 +138,7 @@ An item's builder runs **Windlass** by default. For a hosted **Quick** item, you
 
 An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code, OpenCode and Codex alike. The composer offers it in the **agent** menu, under the models, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
-**Codex** can run Quick items too, on a machine that offers it signed in with **ChatGPT**. It is not offered for **Plan first** or as a subtask's agent. See [Codex items](#codex-items).
+**Codex** can run Quick items too, on a machine that offers it, paid with your ChatGPT plan or OpenAI key. It is not offered for **Plan first** or as a subtask's agent. See [Codex items](#codex-items).
 
 What changes with Claude Code or OpenCode:
 
@@ -159,7 +159,7 @@ A Codex item runs the way a Claude Code or OpenCode item does above, with these 
 
 - **Where.** Hosted Codex uses hardened Docker or the E2B microVM-only profile. On your machine, choose one of two sandboxes. **Docker + Windlass sandbox** is the default: Codex runs every command in its own sandbox without network, and may change files only in the workspace (not `.git`, `.agents`, `.codex` or `.aws`) and the temporary directories. The machine offers it once its runner's check of Codex's sandbox passed. **Docker, hardened** runs only when you choose it: commands run in the container without asking, with the machine's network, as Claude Code's do.
 - **Leaving the sandbox.** On **Docker + Windlass sandbox**, Codex asks before a command outside its sandbox or an edit outside the paths it may write, and every such request is refused. Most are refused inside Codex, which is told and goes on. One that reaches the platform ends the step: the timeline notes the request, and the item asks you to file the work again on **Docker, hardened**, or to give up. Work that needs the network in its commands, such as adding a package or running tests against a service, suits **Docker, hardened** better. The repository's setup command runs before the turns, with network, so dependencies it installs are there.
-- **Tokens.** Codex items run only with a ChatGPT sign-in for now. A ChatGPT plan is a subscription, so the tokens Codex reports are shown, not counted. The sign-in method is kept with the item. If the machine's Codex later signs in another way, the next turn does not start and the item asks you to file the work again. A machine signed in with an API key can't take Codex items yet.
+- **Tokens.** **Connections → Pay with** decides what pays for each turn. A ChatGPT plan is a subscription, so the tokens Codex reports on it are shown, not counted. Turns your OpenAI key pays count toward the item's budget.
 - **Checks.** On **Docker, hardened** the platform runs your repository's checks for Codex as for the other agents. On **Docker + Windlass sandbox** it runs none: a check would run what Codex changed outside Codex's sandbox, with the network Codex has no access to there. Each check that applies is recorded as not started, with that reason, and CI decides.
 - **Asking and reporting.** Codex gets `report`, `ask_person`, `push` and `fetch_base` like the other agents (see [When the agent asks you](#when-the-agent-asks-you)), and calls them without asking on both profiles.
 

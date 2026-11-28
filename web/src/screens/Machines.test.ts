@@ -172,38 +172,28 @@ describe("adding a machine", () => {
 	});
 });
 
-it("chooses whose credential an agent uses on Connections, and Machines says which one and links there", async () => {
+it("offers no payer choice on Connections: an agent the account pays for follows Pay with, and Machines links there", async () => {
 	history.replaceState(null, "", "/connections");
 	client = createMockClient({ pace: 0, machine: "sources", keys: true });
 	saveAuth("mock", ada);
 	root = createRoot(host);
 	act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
 	await settle();
-	const [first] = await client.user(ada).machines();
-	const cell = host.querySelector<HTMLElement>(`#claude-${first!.machineId}`)!;
-	const choice = cell.querySelector('[role="radiogroup"]:has(label[data-source="key"])') as HTMLElement;
-	expect(choice.textContent).toContain("Use this Mac's Claude subscription");
-	expect(choice.querySelector<HTMLInputElement>('label[data-source="machine"] input')?.checked).toBe(true);
-	await act(async () => choice.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
-	await settle();
 	const [mac] = await client.user(ada).machines();
-	expect(mac!.harnesses?.find(h => h.id === "claude")).toMatchObject({
-		source: "key",
-		platformKeys: ["anthropic"],
-		method: "api-key",
-	});
-	expect(host.querySelector(`#claude-${mac!.machineId} .conn-state`)?.textContent).toBe("Your key");
-	const codex = host.querySelector<HTMLElement>(`#codex-${mac!.machineId}`)!;
-	expect(codex.textContent).toContain("Use this Mac's ChatGPT plan");
+	expect(host.querySelector('[role="radiogroup"] label[data-source]')).toBeNull();
+	// Codex keeps no login on the machine: it pays as hosted does.
+	expect(mac!.harnesses?.find(h => h.id === "codex")).toMatchObject({ paysWith: true });
+	expect(host.querySelector(`#codex-${mac!.machineId} .conn-detail`)?.textContent).toBe("Same as Hosted");
 
-	// The Machines page no longer chooses: it says who pays and links to the cell.
 	act(() => root.unmount());
 	history.replaceState(null, "", "/machines");
 	root = createRoot(host);
 	act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
 	await settle();
-	expect(host.querySelector('label[data-source="key"]')).toBeNull();
 	const paid = [...host.querySelectorAll<HTMLElement>(".machine-agent-paid")];
-	expect(paid.map(line => line.textContent)).toContain("Paid by your key · Change on Connections");
+	expect(paid.map(line => line.textContent)).toContain("Paid with your plan or key · Change on Connections");
 	expect(paid[0]?.querySelector("a")?.getAttribute("href")).toMatch(/^\/connections\?mock=|^\/connections#/);
+	// Only OpenCode keeps logins of its own on a machine: no other agent is given a login command.
+	for (const command of host.querySelectorAll(".machine-agent-command code"))
+		expect(command.textContent).toContain("login opencode");
 });

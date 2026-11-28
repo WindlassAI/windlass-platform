@@ -183,7 +183,7 @@ function machine(
 const run = (p: Script, fx: WizardEffects, mode: Mode = { kind: "full" }) => runWizard(p, fx, mode, { platform });
 
 test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on, and the runner starts with the answers", async () => {
-	const { fx, did } = machine({ failSignIn: ["claude"] });
+	const { fx, did } = machine({ failSignIn: ["opencode"] });
 	const p = new Script([
 		select(/Set up this machine/, "go"),
 		text(/Machine name/, BACK, q => {
@@ -192,14 +192,14 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 		}),
 		select(/^Pairing$/, "keep"),
 		text(/Machine name/, "Studio Mac"),
-		multi(/Which agents/, ["claude", "codex"], q => assert.deepEqual(q.initial, [])),
-		select(/Claude Code: sign in now/, "now"),
-		select(/Codex: sign in now/, "skip"),
+		// Only OpenCode signs in: Claude Code and Codex pay with the account's plans and keys.
+		multi(/Which agents/, ["claude", "opencode"], q => assert.deepEqual(q.initial, [])),
+		select(/OpenCode: sign in now/, "now"),
 		select(/Docker profiles/, BACK, q => assert.equal(q.initial, true)),
-		multi(/Which agents/, ["claude", "codex"], q => assert.deepEqual(q.initial, ["claude", "codex"])),
-		select(/Claude Code: sign in now/, BACK),
-		multi(/Which agents/, ["codex"]),
-		select(/Codex: sign in now/, "skip"),
+		multi(/Which agents/, ["claude", "opencode"], q => assert.deepEqual(q.initial, ["claude", "opencode"])),
+		select(/OpenCode: sign in now/, BACK),
+		multi(/Which agents/, ["codex", "opencode"]),
+		select(/OpenCode: sign in now/, "skip"),
 		select(/Docker profiles/, false),
 		select(/network/, "domains", q => assert.equal(q.initial, "restricted")),
 		text(/Public hosts/, BACK, q => {
@@ -223,13 +223,13 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 	p.done();
 	assert.ok(
 		p.logs.includes(
-			"error: Claude Code was not signed in: Choose 1 or 2. Setup carries on. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude",
+			"error: OpenCode was not signed in: Choose 1 or 2. Setup carries on. Sign it in later with: docker exec -it windlass-runner windlass-runner login opencode",
 		),
 		p.logs.join("\n"),
 	);
 	assert.ok(
 		p.logs.includes(
-			"info: Codex is not signed in. Sign it in later with: docker exec -it windlass-runner windlass-runner login codex",
+			"info: OpenCode is not signed in. Sign it in later with: docker exec -it windlass-runner windlass-runner login opencode",
 		),
 	);
 	assert.ok(p.logs.includes("success: Paired with octocat. If that is not you, run setup again and pair again."));
@@ -240,24 +240,24 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 		"3. Check     the page shows machine key K7Q2M-XR4TD",
 	]);
 	const summary = p.notes.find(n => n.title === "Summary")!.lines.join("\n");
-	assert.match(summary, /Agents {7}Windlass, Codex \(not signed in\)/);
+	assert.match(summary, /Agents {7}Windlass, Codex, OpenCode \(not signed in\)/);
 	assert.match(summary, /Limits {7}4 slots, 20GB snapshots, keep 0GB free/);
 	const choices = {
-		agents: ["codex"],
+		agents: ["codex", "opencode"],
 		windlassSandbox: false,
 		network: { mode: "restricted", domains: ["@npm", "example.com"] },
 		limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" },
 	};
-	const flags = `--platform ${platform} --harness codex --allow-profile docker-hardened --egress restricted --egress-domains @npm,example.com --slots 4 --snapshot-disk 20GB --keep-free 0GB`;
+	const flags = `--platform ${platform} --harness codex --harness opencode --allow-profile docker-hardened --egress restricted --egress-domains @npm,example.com --slots 4 --snapshot-disk 20GB --keep-free 0GB`;
 	assert.deepEqual(did, [
 		"prepare ",
 		"lock true",
 		`pair ${platform} docker-desktop`,
 		"name Studio Mac",
-		"prepare claude,codex",
-		"sign in claude",
-		"prepare claude,codex",
-		"prepare codex",
+		"prepare claude,opencode",
+		"sign in opencode",
+		"prepare claude,opencode",
+		"prepare codex,opencode",
 		"save " + JSON.stringify(choices),
 		"unlock",
 		"start " + flags,
@@ -290,25 +290,24 @@ test("Escape cancels: nothing more starts, and a runner setup stopped to pair ag
 
 test("a re-run offers the saved answers, keeps the pairing and replaces the runner only when asked", async () => {
 	const saved: SetupChoices = {
-		agents: ["claude", "codex"],
+		agents: ["claude", "opencode"],
 		windlassSandbox: false,
 		network: { mode: "restricted", allow: ["git.internal"], domains: ["@npm", "example.com"] },
 		limits: { slots: 4, snapshotDisk: "20GB", keepFree: "0GB" },
 	};
-	const { fx, did } = machine({ paired: true, saved, service: "running", signedIn: ["claude"] });
+	const { fx, did } = machine({ paired: true, saved, service: "running" });
 	const p = new Script([
 		select(/Go through/, "go"),
 		select(/^Pairing$/, "keep", q => assert.equal(q.initial, "keep")),
 		text(/Machine name/, "Studio Mac", q => assert.equal(q.initial, "Studio Mac")),
-		multi(/Which agents/, ["claude", "codex"], q => {
-			assert.deepEqual(q.initial, ["claude", "codex"]);
+		multi(/Which agents/, ["claude", "opencode"], q => {
+			assert.deepEqual(q.initial, ["claude", "opencode"]);
 			assert.deepEqual(
 				q.options.map((o: Choice<string>) => o.hint),
-				["signed in", "not signed in", "not signed in"],
+				["uses your plans and keys", "not signed in", "uses your plans and keys"],
 			);
 		}),
-		select(/Claude Code: signed in on this machine/, "keep", q => assert.equal(q.initial, "keep")),
-		select(/Codex: sign in now/, "now"),
+		select(/OpenCode: sign in now/, "now"),
 		select(/Docker profiles/, false, q => assert.equal(q.initial, false)),
 		select(/network/, "domains", q => assert.equal(q.initial, "domains")),
 		text(/Public hosts/, "@npm,example.com", q => assert.equal(q.initial, "@npm,example.com")),
@@ -325,24 +324,24 @@ test("a re-run offers the saved answers, keeps the pairing and replaces the runn
 });
 
 test("stopping a sign-in with Ctrl+C stops setup", async () => {
-	const { fx, did } = machine({ paired: true, saved: { agents: ["codex"] }, stopSignIn: ["codex"] });
-	const p = new Script([select(/Codex: sign in now/, "now")]);
-	assert.deepEqual(await run(p, fx, { kind: "section", section: "codex" }), { outcome: "cancelled" });
+	const { fx, did } = machine({ paired: true, saved: { agents: ["opencode"] }, stopSignIn: ["opencode"] });
+	const p = new Script([select(/OpenCode: sign in now/, "now")]);
+	assert.deepEqual(await run(p, fx, { kind: "section", section: "opencode" }), { outcome: "cancelled" });
 	p.done();
 	assert.ok(!did.some(d => d.startsWith("save") || d.startsWith("start")), did.join("\n"));
 });
 
 test("--quick asks only what is missing", async () => {
 	const saved: SetupChoices = {
-		agents: ["claude", "codex"],
+		agents: ["claude", "opencode"],
 		windlassSandbox: true,
 		network: { mode: "open" },
 		limits: {},
 	};
-	const { fx, did } = machine({ paired: true, saved, service: "stopped", signedIn: ["claude"] });
+	const { fx, did } = machine({ paired: true, saved, service: "stopped" });
 	const p = new Script([
 		select(/Go through/, "go"),
-		select(/Codex: sign in now/, "now"),
+		select(/OpenCode: sign in now/, "now"),
 		select(/Start the runner/, "start"),
 		select(/A windlass-runner container exists\. Replace it/, "replace"),
 	]);
@@ -350,23 +349,23 @@ test("--quick asks only what is missing", async () => {
 	p.done();
 	assert.deepEqual(did, [
 		"prepare ",
-		"prepare codex",
-		"sign in codex",
+		"prepare opencode",
+		"sign in opencode",
 		"save " + JSON.stringify(saved),
-		`start replace --platform ${platform} --harness claude --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress open`,
+		`start replace --platform ${platform} --harness claude --harness opencode --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress open`,
 		"wait online",
 	]);
 });
 
 test("a section asks only its own questions, and needs a pairing", async () => {
-	const saved: SetupChoices = { agents: ["opencode"], windlassSandbox: true, network: { mode: "restricted" } };
+	const saved: SetupChoices = { agents: ["codex"], windlassSandbox: true, network: { mode: "restricted" } };
 	const { fx, did } = machine({ paired: true, saved, service: "absent" });
-	const p = new Script([select(/Codex: sign in now/, "now"), select(/Start the runner/, "start")]);
-	assert.deepEqual(await run(p, fx, { kind: "section", section: "codex" }), { outcome: "done" });
+	const p = new Script([select(/OpenCode: sign in now/, "now"), select(/Start the runner/, "start")]);
+	assert.deepEqual(await run(p, fx, { kind: "section", section: "opencode" }), { outcome: "done" });
 	p.done();
 	assert.ok(
 		did.includes(
-			`start --platform ${platform} --harness opencode --harness codex --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress restricted`,
+			`start --platform ${platform} --harness codex --harness opencode --allow-profile docker-hardened --allow-profile docker-windlass-sandbox --egress restricted`,
 		),
 		did.join("\n"),
 	);

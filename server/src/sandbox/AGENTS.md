@@ -57,7 +57,7 @@ Docker provider
 
 Credentials, network and data
 
-- `./token-file.ts` opens Settings-key and plan relays (`openModelKeyRelay`), writes hosted Windlass's plan placeholder file (`writePlanPlaceholder`), keeps a ChatGPT plan's token fresh in a relay in the sandbox (`rotatePlanToken`), and writes a machine turn's access-token file (`TokenFile`, machines only).
+- `./token-file.ts` opens Settings-key and plan relays (`openModelKeyRelay`), writes Windlass's plan placeholder file (`writePlanPlaceholder`), and keeps a ChatGPT plan's token fresh in a turn's relay (`rotatePlanToken`). No sandbox is handed an access token.
 - `./relay-leases.ts` holds the platform route's leases (a credential reference each, never a secret), signed placeholders and route limits (`RelayLimiter`).
 - `./plan-relay.ts` starts a plan's relay (Claude or ChatGPT) inside an E2B or Daytona sandbox as the transport user, its source and token on stdin (`localPlanRelay` of `TurnSandbox`). Its base URL is the wire's (`/v1` for ChatGPT).
 - `./handoff.ts` describes the ChatGPT sign-in hand-off in words and numbers.
@@ -84,7 +84,7 @@ Credentials, network and data
 - Put common turn behaviour behind `TurnSandbox`. Check the [Docker](./sandboxes.ts), [E2B](./e2b/sandboxes.ts), [Daytona](./daytona/guest.ts) and runner implementations when changing it.
 - Stopping a process client does not stop guest processes. Signal and sweep by run tag (`SWEEP_SCRIPT`) before detaching.
 - Model relay token files in sessions contain a per-turn placeholder. Refresh the real credential at the relay and revoke access when the turn closes.
-- Hosted Windlass on a ChatGPT model is a plan turn: it arrives with `modelKey` (`plan: true`), never through `TokenFile`. Hosted sandboxes offer no `modelRelay`; it is a machine's, and a microVM refuses a token file.
+- Windlass on a ChatGPT model is a plan turn, hosted or on a machine: it arrives with `modelKey` (`plan: true`). A Windlass turn without `modelKey` must be scripted (the demo).
 - A signed E2B placeholder can reach another server process. The process hosting the session actor owns the live lease.
 - Throw `SandboxUserError` (or a subclass) for a failure the person should read; `isSandboxUserError` in `server/src/auth.ts` maps it to a `UserError` with code `sandbox_error` (`clientError`).
 

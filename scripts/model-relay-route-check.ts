@@ -26,7 +26,7 @@ import { openSavedCredential, sealCredentialTransit } from "../server/src/creden
 import { hostedKeyEnv, windlassPlanEnv } from "../server/src/sandbox/hosted-keys.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 import { serverSealer } from "../server/src/signin/seal.js";
-import { TokenFile, TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
+import { TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
 import {
 	BodyBudget,
 	RelayLimiter,
@@ -59,7 +59,6 @@ import { E2bSandboxHandle, E2bProvider } from "../server/src/sandbox/e2b/sandbox
 import { DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import type { DockerModelRelay } from "../server/src/sandbox/model-relay.js";
 import { RELAY_REFUSED, relayRefused } from "../server/src/sandbox/handoff.js";
-import type { AccessToken } from "../server/src/sandbox/api.js";
 import { keyedDigest, signedPayload } from "../server/src/signatures.js";
 import { randomBytes } from "node:crypto";
 import { OkReport } from "./check-report.js";
@@ -256,146 +255,6 @@ if (process.argv.includes("--plan-wire")) {
 }
 await machineKeyChecks();
 if (process.argv.some(arg => arg.startsWith("--machine-key="))) process.exit(0);
-
-// ---- the token file of a relayed turn ---------------------------------------------------------
-
-{
-	const written: { path: string; content: string }[] = [];
-	const handed: AccessToken[] = [];
-	let closed = 0;
-	const relay = {
-		placeholder: "wlp-model." + "c".repeat(32),
-		env: { WINDLASS_MODEL_BASE_URL: "http://127.0.0.1:17893/v1" },
-		hand: async (token: AccessToken) => {
-			handed.push(token);
-		},
-		close: async () => {
-			closed += 1;
-		},
-	};
-	const sandbox = {
-		id: "abcdefabcdef",
-		uid: "u1",
-		profile: "docker-hardened",
-		modelRelay: async () => relay,
-		writeSecretFile: async (path: string, content: string) => {
-			written.push({ path, content });
-		},
-	};
-	let next: AccessToken = { accessToken: REAL_A, expiresAt: Date.now() + 25 * 60_000 };
-	const tokens = { current: async () => next };
-	const file = new TokenFile(sandbox as never, tokens as never, {
-		leadMs: 25 * 60_000 - 300,
-		retryMs: 50,
-		log: () => {},
-	});
-	await file.start();
-	expect(
-		"a relayed turn's token goes to the relay, and the sandbox's file holds only the placeholder",
-		handed[0]?.accessToken === REAL_A &&
-			written.length === 1 &&
-			JSON.parse(written[0].content).accessToken === relay.placeholder &&
-			!written.some(w => w.content.includes(REAL_A)),
-		JSON.stringify(written),
-	);
-	expect(
-		"the placeholder carries the real token's expiry, so Windlass still refuses an expired one",
-		JSON.parse(written[0].content).expiresAt === next.expiresAt,
-	);
-	expect(
-		"Windlass is started with the relay's address",
-		file.env.WINDLASS_MODEL_BASE_URL === "http://127.0.0.1:17893/v1" && file.relayed,
-	);
-	// The replacement: the next token goes to the relay too, never into the sandbox.
-	next = { accessToken: REAL_B, expiresAt: Date.now() + 50 * 60_000 };
-	for (let i = 0; i < 100 && handed.length < 2; i++) await sleep(20);
-	expect(
-		"a replaced token goes to the relay while the turn runs, and the file gets the placeholder again",
-		handed[1]?.accessToken === REAL_B &&
-			written.length === 2 &&
-			!written.some(w => w.content.includes(REAL_B)) &&
-			JSON.parse(written[1].content).accessToken === relay.placeholder,
-		JSON.stringify({ handed: handed.length, written: written.length }),
-	);
-	expect(
-		"a token printed by a command is still taken out of the engine's output",
-		file.scrub(`x ${REAL_A} ${relay.placeholder}`) === "x [access token removed] [access token removed]",
-	);
-	await file.stop();
-	expect("the lease ends with the turn", closed === 1);
-}
-{
-	// Fail closed: a relay that cannot be had fails the turn, and nothing goes into the sandbox.
-	const written: string[] = [];
-	const sandbox = {
-		id: "abcdefabcdef",
-		uid: "u1",
-		profile: "docker-hardened",
-		modelRelay: async () => {
-			throw new Error("docker is gone");
-		},
-		writeSecretFile: async (_: string, content: string) => {
-			written.push(content);
-		},
-	};
-	const file = new TokenFile(
-		sandbox as never,
-		{ current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never,
-		{ log: () => {} },
-	);
-	const error = await file.start().then(
-		() => null,
-		(e: unknown) => e,
-	);
-	expect(
-		"a relay that cannot be started fails the turn, with no fallback to writing the token into the sandbox",
-		error instanceof TokenFileError &&
-			/model relay could not be started: docker is gone/.test(String((error as Error).message)) &&
-			written.length === 0,
-		String(error),
-	);
-	const handFails = {
-		id: "abcdefabcdef",
-		uid: "u1",
-		profile: "docker-hardened",
-		writeSecretFile: sandbox.writeSecretFile,
-		modelRelay: async () => ({
-			placeholder: "wlp-model." + "d".repeat(32),
-			env: {},
-			hand: async () => {
-				throw new Error("relay refused");
-			},
-			close: async () => {},
-		}),
-	};
-	const second = new TokenFile(
-		handFails as never,
-		{ current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never,
-		{ log: () => {} },
-	);
-	const refused = await second.start().then(
-		() => null,
-		(e: unknown) => e,
-	);
-	expect(
-		"a relay that refuses the token fails the turn too, and the sandbox gets nothing",
-		refused instanceof TokenFileError && written.length === 0,
-		String(refused),
-	);
-	// Without a relay (a runner before model-relay, or WLP_MODEL_RELAY=off for machines): the file holds the token.
-	const plain = { id: "abcdefabcdef", uid: "u1", profile: "docker-hardened", writeSecretFile: sandbox.writeSecretFile };
-	const old = new TokenFile(
-		plain as never,
-		{ current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never,
-		{ log: () => {} },
-	);
-	await old.start();
-	await old.stop();
-	expect(
-		"without a relay the token goes into the file, as on runners before model-relay",
-		written.length === 1 && JSON.parse(written[0]).accessToken === REAL_A && !old.relayed,
-	);
-}
 
 // ---- the E2B route ----------------------------------------------------------------------------
 
@@ -1000,28 +859,6 @@ const code = async (res: Response) =>
 		error instanceof Error && /names no session/.test(String(error)),
 		String(error),
 	);
-	// A hosted microVM never takes the ChatGPT token: its Windlass turns pay with the plan, so a token file is refused.
-	const written: string[] = [];
-	handle.writeSecretFile = async (_p, c) => {
-		written.push(c);
-	};
-	const file = new TokenFile(
-		handle,
-		{ current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never,
-		{ log: () => {} },
-	);
-	const refused = await file.start().then(
-		() => null,
-		(e: unknown) => e,
-	);
-	expect(
-		"an E2B sandbox offers no access-token relay, and a token file is refused there rather than written",
-		!("modelRelay" in handle && handle.modelRelay) &&
-			refused instanceof TokenFileError &&
-			/takes no access token/.test(String(refused)) &&
-			written.length === 0,
-		String(refused),
-	);
 }
 {
 	// Hosted Docker: the relay only with the image's Windlass 0.6.0 or later.
@@ -1183,17 +1020,15 @@ const code = async (res: Response) =>
 			},
 		};
 		const machine = machineLayer(link as never, {} as never);
-		const handle = (await machine.sandboxes.connect("box"))!;
-		await assert.rejects(
-			openModelKeyRelay(handle as never, "s", key),
-			/Update the runner to use Settings keys with Windlass on this machine/,
-		);
+		const handle = (await machine.sandboxes.connect("box")) as import("../server/src/sandbox/provider.js").TurnSandbox;
+		// Every supported runner has the plan relay; Settings keys need the connect's `modelRelay` (its Windlass reads the relay).
+		assert.equal(typeof handle.localPlanRelay, "function");
+		assert.equal(!!handle.modelKeyRelay, !!modelRelay && config.modelRelay.on);
 		assert.deepEqual(calls, []);
-		if (modelRelay) {
-			await (handle as import("../server/src/sandbox/provider.js").TurnSandbox).modelRelay!();
-			assert.deepEqual(calls, ["modelRelay"]);
-		}
 	}
+	console.log(
+		"PASS  a machine's sandbox always has the plan relay, and Settings keys where its connect says modelRelay",
+	);
 	for (const version of ["0.6.0", "0.7.0"]) {
 		const sandbox = {
 			ask: async () => ({ code: 0, stdout: "Windlass " + version }),

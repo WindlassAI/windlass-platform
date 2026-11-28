@@ -259,10 +259,10 @@ export class StandInRunner {
 	/** How many create replies to lose by restarting before answering or reporting the container. */
 	loseCreates = 0;
 	/**
-	 * Whether it offers a plan relay (`plan-relay`): its connects say so, its Windlass reports 0.7.1, and what the
-	 * server asks of the relay is counted here. The report's `planRelay` is the caller's to set on `fake.report`.
+	 * Whether the session's turns pay (a plan): its Windlass reports 0.7.1 and its leftover sweep finds nothing. Every
+	 * runner has the plan relay; what the server asks of it is counted here.
 	 */
-	planRelay = false;
+	paying = false;
 	readonly planRelays = { opened: 0, tokens: 0, seen: 0, closed: 0, leases: new Set<string>() };
 	creates = 0;
 	offline = false;
@@ -498,7 +498,6 @@ export class StandInRunner {
 				return channel.respond(op, {
 					cwd: "/workspace",
 					profile: box.profile,
-					...(this.planRelay && { planRelay: true as const }),
 				});
 			case "state":
 				return channel.respond(op, mine ? box.state : "none");
@@ -567,10 +566,10 @@ export class StandInRunner {
 				return channel.respond(op, null);
 			case "ask":
 				// The plan turn's check of the sandbox's Windlass (token-file.ts `openModelKeyRelay`).
-				if (this.planRelay && op.args.argv.join(" ") === "windlass --version")
+				if (this.paying && op.args.argv.join(" ") === "windlass --version")
 					return channel.respond(op, { code: 0, stdout: "Windlass 0.7.1\n", stderr: "" });
 				// A paying turn's sweep of leftover processes before its token file (provider.ts `sweepSessionProcesses`): none here.
-				if (this.planRelay && op.args.argv[0] === "/usr/bin/python3")
+				if (this.paying && op.args.argv[0] === "/usr/bin/python3")
 					return channel.respond(op, { code: 0, stdout: "", stderr: "" });
 				// No shell here: an answer of a program that is not there, which the turn reads as "nothing to read".
 				return channel.respond(op, { code: 127, stdout: "", stderr: "stand-in runner: no shell" });
@@ -589,7 +588,7 @@ export class StandInRunner {
 				return channel.respond(op, 0);
 			// The relay itself is the runner's (model-relay.ts `openPlan`): here only what it was asked is counted.
 			case "planRelay": {
-				if (!mine || !this.planRelay) return channel.refuse(op, { kind: "refused", message: "No plan relay." });
+				if (!mine) return channel.refuse(op, { kind: "refused", message: "No such sandbox." });
 				const lease = randomBytes(16).toString("hex");
 				this.planRelays.opened += 1;
 				this.planRelays.leases.add(lease);

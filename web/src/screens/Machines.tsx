@@ -29,7 +29,7 @@ import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "
 import { linkProps, navigate } from "../lib/router";
 import { cellId } from "../lib/connections";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useHostedCredentials, useNow } from "../state/hooks";
+import { useAccount, useNow } from "../state/hooks";
 import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
 import {
@@ -110,8 +110,8 @@ function Warning({
 				<WarnIcon />
 				<div>
 					<p className="callout-text">
-						This machine's runner is {machine.runnerVersion}; the platform needs {info.minRunnerVersion} or later, so it
-						cannot connect.{" "}
+						This machine's runner is {machine.runnerVersion}, so it cannot connect. Update your runner to{" "}
+						{info.minRunnerVersion} or later.{" "}
 						{install
 							? info.platformFingerprint
 								? "Update it on the machine and pair again to pin the platform key."
@@ -295,15 +295,11 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 
 function MachineAgents({ machine }: { machine: MachineSummary }) {
 	const harnesses = machine.harnesses ?? [];
-	const saved = useHostedCredentials(harnesses.some(harness => harness.machineSignIns?.length));
 	if (harnesses.length === 0) return null;
 	return (
 		<ul className="machine-agents" aria-label="Agents on this machine">
 			{harnesses.map(harness => {
-				const command = loginCommand(harness);
-				const both = harness.keyRelay
-					? (harness.machineSignIns ?? []).filter(provider => saved?.some(key => key.provider === provider))
-					: [];
+				const command = harness.signIn === "none" ? loginCommand(harness) : null;
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
 						<span className="machine-agent-name">
@@ -315,9 +311,6 @@ function MachineAgents({ machine }: { machine: MachineSummary }) {
 								{" "}
 								<CheckIcon size={13} />
 								{signInWords(harness)}
-								{!harness.platformKeys?.length && harness.id === "codex" && harness.method
-									? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}`
-									: ""}
 							</span>
 						) : harness.signIn === "none" ? (
 							<span className="machine-agent-state">: {signInWords(harness)}</span>
@@ -328,20 +321,20 @@ function MachineAgents({ machine }: { machine: MachineSummary }) {
 								{harness.signInReason ? ` (${harness.signInReason})` : ""}
 							</span>
 						)}
-						{harness.signIn !== "none" ? null : (
+						{command ? (
 							<span className="machine-agent-command">
 								<code>{command}</code>
 								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
 							</span>
-						)}
-						{both.length > 0 ? (
+						) : null}
+						{harness.paysWith ? (
 							<span className="machine-agent-paid">
-								Paid by {harness.source === "key" ? "your key" : "its own sign-in"} ·{" "}
+								Paid with your plan or key ·{" "}
 								<a
 									className="link"
 									{...linkProps({ name: "connections", section: cellId(harness.id, machine.machineId) })}
 								>
-									Change on Connections
+									{harness.signIn === "none" ? "Connect on Connections" : "Change on Connections"}
 								</a>
 							</span>
 						) : null}

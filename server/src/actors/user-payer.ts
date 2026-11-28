@@ -1,5 +1,5 @@
 /**
- * Pay with at a turn's start (hosted, or on a machine with a plan relay), in the user's actor (pay-with.ts
+ * Pay with at a turn's start (hosted, or on a machine), in the user's actor (pay-with.ts
  * `decidePayer` is the rule): which of the connected plan and the saved key pays for a turn of an agent a plan can
  * pay for, or why the turn waits. Hosted Windlass's ChatGPT models too: the plan pays, and the OpenAI key, where it
  * offers the same model, runs its `openai/` version for one turn while the plan is limited.
@@ -137,8 +137,8 @@ function filerOf(c: ItemsCtx, session: SessionSummary): ItemFiler | undefined {
 
 /**
  * Whether Pay with decides this session's turns of `model`: hosted, of an agent a plan can pay for or of Windlass's
- * ChatGPT models (`planPays`); or on a machine whose runner hands a plan's token to a relay there (`onMachine`, which
- * the session knows from its runner's report), of a plan agent. Windlass on a machine keeps its own plan rule.
+ * ChatGPT models (`planPays`); or on a machine (`onMachine`, from the session's turn), of a plan agent with no login of
+ * its own there. Windlass on a machine keeps its own plan rule.
  */
 export function paysWithRule(
 	session: Pick<SessionSummary, "place" | "harness">,

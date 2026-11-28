@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import type { CredentialRef, HarnessId } from "../contract.js";
 import type { KeyWire } from "../../../sandbox/relay/wires.cjs";
-import type { AccessToken, ExecResult, SandboxHandle } from "./api.js";
+import type { ExecResult, SandboxHandle } from "./api.js";
 import type { LocalModelRelay, LocalPlanRelayOptions } from "./plan-relay.js";
 
 export const DATA_DIR = "/home/agent/.local/share/windlass";
@@ -125,12 +125,6 @@ export interface TurnSandbox extends SandboxHandle {
 	removeFiles(paths: string[]): Promise<void>;
 	/** Keep the sandbox running until the returned release is called. May reject if the lease cannot be maintained. */
 	holdForTurn(): Promise<() => Promise<void>>;
-	/**
-	 * A paired machine's relay for Windlass on the user's ChatGPT sign-in: a lease replaces the token with a per-turn
-	 * placeholder. Hosted sandboxes have none: their ChatGPT turns pay with the plan (`modelKeyRelay`,
-	 * `localPlanRelay`). Failure must abort the turn before any credential is written.
-	 */
-	modelRelay?(): Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
 	modelKeyRelay?(
 		sessionId: string,
@@ -144,8 +138,6 @@ export interface TurnSandbox extends SandboxHandle {
 	 * relay. Rejects, with the relay stopped and nothing written, when it cannot start.
 	 */
 	localPlanRelay?(token: string, options: LocalPlanRelayOptions): Promise<LocalModelRelay>;
-	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
-	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
 	/**
 	 * Takes up a plan relay the runner kept on the machine through a server's restart (a durable link): its token is
 	 * handed again with `hand`, and `close` ends it. `onSeen` gets what it saw of the plan from here on.
@@ -158,7 +150,7 @@ export type TakeRelayRequest = () => Promise<boolean>;
 /** What pays for a key-backed turn, and the harness whose routes its lease allows. */
 export type KeyReference = CredentialRef & { harness: HarnessId };
 
-export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close" | "lease">;
+export type KeyTurnRelay = TurnModelRelay;
 
 /** A machine's plan relay as a turn's checkpoint records it, for a restarted server to take up (`resumePlanRelay`). No credential. */
 export interface PlanRelayLease {
@@ -181,13 +173,11 @@ export interface ForwardedKeyLease {
 export interface TurnModelRelay {
 	/** Model URL and allowed origin for the sandbox process. These fields contain no secret. */
 	readonly env: Record<string, string>;
-	/** What the sandbox's token file holds in place of the token: a bearer only this relay takes, for this turn. */
+	/** What the agent sends in place of the credential: a bearer only this relay takes, for this turn. */
 	readonly placeholder: string;
-	/** Gives the relay the turn's current token; a request that starts after it carries the new one. */
-	hand(token: AccessToken): Promise<void>;
-	/** Ends the lease: the relay forgets the turn's token and refuses its placeholder. Never rejects. */
+	/** Ends the lease: the relay refuses its placeholder. Never rejects. */
 	close(): Promise<void>;
-	/** The lease's name where a restarted server can take it up again (`TurnSandbox.resumeRelay`): no credential. */
+	/** The lease's name where a restarted server can take it up again (a plan relay on a machine): no credential. */
 	readonly lease?: string;
 }
 

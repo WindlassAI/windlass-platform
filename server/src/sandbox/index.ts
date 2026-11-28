@@ -110,7 +110,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			dropDataVolume: dropSessionVolume,
 			ownVolumeName: sessionVolume,
 		}),
-		windlass: new DockerWindlass(signIns.tokens, { image }),
+		windlass: new DockerWindlass({ image }),
 		logins: signIns.logins,
 		tokens: signIns.tokens,
 		signIns: signIns.directory,

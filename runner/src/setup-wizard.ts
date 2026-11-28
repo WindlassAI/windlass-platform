@@ -58,7 +58,9 @@ export interface WizardEffects {
 	reportLogin(): Promise<void>;
 }
 
-export const SECTIONS = ["name", "agents", "claude", "codex", "opencode", "profile", "network", "limits"] as const;
+export const SECTIONS = ["name", "agents", "opencode", "profile", "network", "limits"] as const;
+/** The agents setup signs in: OpenCode's own logins. Claude Code and Codex pay with the account's plans and keys. */
+const SIGNS_IN: readonly MachineHarness[] = ["opencode"];
 export type Section = (typeof SECTIONS)[number];
 /** `connect`: `npx @windlassai/cli connect --machine`, with nobody to answer: every default, every agent the image has and no sign-in. */
 export type Mode = { kind: "full" } | { kind: "quick" } | { kind: "connect" } | { kind: "section"; section: Section };
@@ -222,7 +224,7 @@ export async function runWizard(
 	if (mode.kind === "section" && !paired) return { outcome: "failed", message: "Pair this machine first: run setup." };
 	const steps: Step[] =
 		mode.kind === "section"
-			? [["claude", "codex", "opencode"].includes(mode.section) ? "agents" : (mode.section as Step), "summary", "start"]
+			? [mode.section === "opencode" ? "agents" : (mode.section as Step), "summary", "start"]
 			: ["welcome", "pair", "name", "agents", "profile", "network", "limits", "summary", "start"];
 
 	const ask = async <T>(answer: Promise<Answer<T>>, then: (value: T) => Move | Promise<Move>): Promise<Move> => {
@@ -451,7 +453,7 @@ export async function runWizard(
 			);
 			return "next";
 		}
-		for (const id of offered) states.set(id, await fx.signInState(id));
+		for (const id of offered.filter(id => SIGNS_IN.includes(id))) states.set(id, await fx.signInState(id));
 		const stateLine = (id: MachineHarness) =>
 			states.get(id) === "signed-in" ? "signed in" : states.get(id) === "unknown" ? "sign-in unknown" : "not signed in";
 		for (;;) {
@@ -462,19 +464,25 @@ export async function runWizard(
 				const picked = await p.multiselect({
 					message: "Which agents should this machine offer? Windlass is always offered.",
 					initial: (draft.agents ?? []).filter(id => offered.includes(id)),
-					options: offered.map(id => ({ value: id, label: HARNESS_LABELS[id], hint: stateLine(id) })),
+					options: offered.map(id => ({
+						value: id,
+						label: HARNESS_LABELS[id],
+						hint: SIGNS_IN.includes(id) ? stateLine(id) : "uses your plans and keys",
+					})),
 				});
 				if (picked === BACK) return "back";
 				if (picked === CANCEL) return "cancel";
 				agents = picked;
 			}
-			const asked = quick ? agents.filter(id => states.get(id) !== "signed-in") : agents;
+			const signing = agents.filter(id => SIGNS_IN.includes(id));
+			const asked = quick ? signing.filter(id => states.get(id) !== "signed-in") : signing;
 			if (quick && !asked.length && draft.agents !== undefined) return "skip";
 			draft.agents = only ? [...new Set([...(draft.agents ?? []), only])].filter(id => offered.includes(id)) : agents;
+			const fetched = quick ? asked : agents;
 			if (
-				asked.length &&
+				fetched.length &&
 				(await p.wait("Fetching the agents' images (the first time takes a few minutes)", (_, update) =>
-					fx.prepare(asked, update),
+					fx.prepare(fetched, update),
 				)) === CANCEL
 			)
 				return "cancel";
@@ -518,10 +526,11 @@ export async function runWizard(
 
 	const flags = () => startFlags(platform!, draft);
 	const summaryStep = async (): Promise<Move> => {
-		for (const id of connect ? [] : (draft.agents ?? []))
+		for (const id of connect ? [] : (draft.agents ?? []).filter(id => SIGNS_IN.includes(id)))
 			if (!signIns.has(id) && !states.has(id)) states.set(id, await fx.signInState(id));
 		const agentLine = (draft.agents ?? []).map(id => {
 			const s = signIns.get(id) ?? states.get(id);
+			if (!SIGNS_IN.includes(id)) return HARNESS_LABELS[id];
 			return (
 				HARNESS_LABELS[id] +
 				(s === "signed-in" || s === "kept"

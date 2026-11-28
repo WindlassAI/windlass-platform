@@ -177,7 +177,7 @@ describe("the picker's model names and credentials", () => {
 		expect(sourceOf("opencode", "xai/grok-4")).toBe("other");
 	});
 
-	it("says whose credential serves a provider: the machine's sign-in first, the key where chosen, keys when hosted", () => {
+	it("says whose credential serves a provider: the machine's sign-in first, the key where it pays, keys when hosted", () => {
 		const claude = {
 			id: "claude" as const,
 			adapter: "",
@@ -186,9 +186,12 @@ describe("the picker's model names and credentials", () => {
 			machineSignIns: ["anthropic" as const],
 		};
 		expect(credentialWords("claude", "anthropic", claude, "mac-mini")).toBe("Claude subscription · mac-mini");
+		expect(credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"] }, "mac-mini")).toBe(
+			"Anthropic key",
+		);
 		expect(
-			credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"], source: "key" }, "mac-mini"),
-		).toBe("Anthropic key");
+			credentialWords("claude", "anthropic", { ...claude, machineSignIns: undefined, paysWith: true }, "mac-mini"),
+		).toBe("Claude plan");
 		expect(credentialWords("claude", "anthropic", null, null)).toBe("Anthropic key");
 		const opencode = {
 			id: "opencode" as const,

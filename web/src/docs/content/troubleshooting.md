@@ -134,7 +134,13 @@ The runner was started without that agent's `--harness`. The runner does not sav
 
 **"OpenCode on “…” is not signed in. Run windlass-runner login opencode there."**\
 **"Run windlass-runner login opencode on this machine."**\
-Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-runner login opencode`. Claude Code says the same with `login claude`. See [Sign agents in](/docs/machines#sign-agents-in).
+Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-runner login opencode`. See [Sign OpenCode in](/docs/machines#sign-opencode-in).
+
+**"Nothing can pay for … on “…” yet. Connect a plan or add a key on Connections."**\
+Claude Code and Codex on a machine pay with your plan or key. Connect a plan or add a key on **Connections**.
+
+**"Update your runner to 0.3.13 or later."**\
+The machine's runner is older than this platform serves, so it cannot connect. Run the update command on the Machines page.
 
 **"Add an Anthropic key in Settings to run Claude Code here."**
 

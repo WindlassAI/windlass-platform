@@ -121,7 +121,7 @@ Switch every server node together when the owner is ready to update and re-pair 
    `platform-online.env` through the deployment's secret channel. Install its single `WLP_PLATFORM_KEY`
    line in the mode-600 optional server env file (`SELFHOST_SERVER_ENV_FILE`).
    Keep both the env file and generated key material outside Git, images, logs and chat.
-3. Stage the **0.2.0** runner at a new immutable digest. Keep the old setup command available until cutover. Set the new pinned `WLP_RUNNER_IMAGE` and matching
+3. Stage a runner of **0.3.13** or later (the oldest the server serves) at a new immutable digest. Keep the old setup command available until cutover. Set the new pinned `WLP_RUNNER_IMAGE` and matching
    `WLP_RUNNER_CAPABILITIES` in that server env file. To obtain the capabilities JSON, export the new
    `WLP_RUNNER_IMAGE` digest reference and run `docker run --rm --network none -e WLP_RUNNER_IMAGE "$WLP_RUNNER_IMAGE" capabilities`.
    Set `WLP_REQUIRE_SIGNED_RUNNER=1` in

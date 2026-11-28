@@ -436,8 +436,8 @@ const MOCK_OPENCODE_MODES = [
 ];
 
 /** What the mock's runners say they are, and what its platform asks of them. */
-const MOCK_RUNNER_VERSION = "0.3.3";
-const MOCK_MIN_RUNNER_VERSION = "0.2.0";
+const MOCK_RUNNER_VERSION = "0.3.13";
+const MOCK_MIN_RUNNER_VERSION = "0.3.13";
 const MOCK_RUNNER_IMAGE =
 	"registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
@@ -4918,11 +4918,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return machinesOf(auth).list.map(machine => ({
 			...machine,
 			harnesses: machine.harnesses?.map(({ options, ...entry }) =>
-				listedHarness(
-					options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry,
-					[...world.account.providers.keys()],
-					entry.source,
-				),
+				listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [
+					...world.account.providers.keys(),
+				]),
 			),
 			warnings: machine.warnings.map(warning => ({ ...warning })),
 			sandboxes: machine.sandboxes.map(sandbox => {
@@ -5056,8 +5054,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			id: "codex",
 			image: MOCK_CLAUDE.image,
 			adapter: "codex-acp 2.9.0",
-			signIn: "token",
-			method: "api-key",
+			// No login of its own: the account's key pays (Connections → Pay with).
+			signIn: "none",
 			modes: ["agent-full-access"],
 			options: {
 				defaultModel: MOCK_CODEX_MODELS.defaultModel,
@@ -5159,7 +5157,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						...MOCK_CLAUDE,
 						id: "codex" as const,
 						adapter: "codex-acp 2.9.0",
-						method: "chatgpt" as const,
+						signIn: "none" as const,
 						modes: ["agent-full-access"],
 						options: { ...options(MOCK_CODEX_MODELS), modes: codexModes("docker-hardened") },
 					},
@@ -5220,7 +5218,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					nas({
 						status: "offline",
 						since: at - 12 * MINUTE,
-						runnerVersion: "0.1.0",
+						runnerVersion: "0.3.12",
 						slots: undefined,
 						warnings: [{ kind: "outdated" }],
 					}),
@@ -5391,7 +5389,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		| "removeMachine"
 		| "setMachineDetails"
 		| "setMachineSecrets"
-		| "setCredentialSource"
 	> {
 		return {
 			async machineCatalog({ machineId, id, digest }) {
@@ -5508,15 +5505,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machinesOn();
 				await latency(240);
 				machineOf(auth, machineId).sendSecrets = send;
-				machinesChanged(auth);
-				return machinesView(auth);
-			},
-			async setCredentialSource({ machineId, harness, source }) {
-				machinesOn();
-				await latency(240);
-				const entry = machineOf(auth, machineId).harnesses?.find(one => one.id === harness);
-				if (!entry) throw new PlatformError("user", "Unknown agent.", { reason: "bad_input" });
-				entry.source = source;
 				machinesChanged(auth);
 				return machinesView(auth);
 			},
@@ -6713,7 +6701,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (unreachable === null && offered?.signIn === "none")
 						throw new PlatformError(
 							"user",
-							`${name} on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login ${harness} there.`,
+							offered.paysWith
+								? `Nothing can pay for ${name} on “${machine?.name ?? "your machine"}” yet. Connect a plan or add a key on Connections.`
+								: `${name} on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login ${harness} there.`,
 							{ reason: "harness_signed_out" },
 						);
 					const listed = session.summary.harnessModels ?? null;

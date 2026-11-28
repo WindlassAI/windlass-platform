@@ -74,10 +74,7 @@ const uid = "key-check",
 const id = randomBytes(6).toString("hex");
 const bridge = "wlp-key-check-" + id;
 const box = new DockerSandboxHandle(id, "docker-hardened", uid);
-const agent = new SandboxWindlass(
-	{ current: async () => assert.fail("requested ChatGPT credentials") },
-	{ version: async () => null, problem: async () => null },
-);
+const agent = new SandboxWindlass({ version: async () => null, problem: async () => null });
 const keys = Object.fromEntries(MODEL_PROVIDERS.map(p => [p, randomBytes(24).toString("hex")]));
 const origin = "http://127.0.0.1:17893";
 let provider: ModelProvider = "openai",

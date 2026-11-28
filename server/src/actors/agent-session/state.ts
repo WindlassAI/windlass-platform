@@ -351,7 +351,6 @@ export interface SessionVars {
 	reportAgain: boolean;
 	/** Still closing this inbox row after the agent itself went idle. */
 	closingItem?: string;
-	signedInUntil: number;
 	/** A suspend or removal of the idle sandbox under way; a prompt or a read of the workspace waits for it. */
 	idling: Promise<void> | null;
 	// Idle cleanup waits for all operations on this sandbox, including reads and pushes.

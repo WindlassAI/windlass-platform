@@ -236,11 +236,13 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 	if (profile) {
 		const offered = machine.harnesses?.find(h => h.id === harness);
 		if (!offered) return `it does not offer ${profile.name}`;
-		const source = offered.source ?? "machine";
-		const payer = machinePayerProblem(offered, task.agent?.model, source, offered.platformKeys ?? []);
-		if (source === "key" && payer) return payer;
+		// What pays on a machine: its own login, or the account's plans and keys through Pay with (`listedHarness`).
+		const source = "machine";
+		const payer = machinePayerProblem(offered, task.agent?.model, offered.platformKeys ?? []);
 		if (offered.signIn === "none")
-			return `${profile.name} is not signed in there (run windlass-runner login ${profile.id} on it)`;
+			return offered.paysWith
+				? `nothing can pay for ${profile.name} there (connect a plan or add a key on Connections)`
+				: `${profile.name} is not signed in there (run windlass-runner login ${profile.id} on it)`;
 		if (offered.signIn !== "token")
 			return `it could not say whether ${profile.name} is signed in there, and a subtask runs only where it is`;
 		const chosen = task.resolved;
@@ -293,12 +295,7 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 
 /** The terms shown for an allowed destination are the terms a child receives there. */
 function destinationTerms(place: SandboxPlace, machine: Machine | undefined, harness: HarnessId) {
-	const payer =
-		harness === "windlass"
-			? "windlass"
-			: place.kind === "hosted"
-				? "key"
-				: (machine?.harnesses?.find(h => h.id === harness)?.source ?? "machine");
+	const payer = harness === "windlass" ? "windlass" : place.kind === "hosted" ? "key" : "machine";
 	return {
 		place,
 		name: machine?.name ?? placeKey(place),

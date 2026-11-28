@@ -1,13 +1,17 @@
 const { createHmac } = require("node:crypto");
 
 const wires = {
-	chatgpt: {
+	// A ChatGPT plan's access token, the one Windlass's own sign-in refreshes. OpenAI takes it as a bearer at
+	// api.openai.com for Responses and for its model catalog, as it does for Windlass's ChatGPT models. Codex sends
+	// headers of its own besides; only these are passed on.
+	"chatgpt-plan": {
 		base: "/v1",
 		host: "api.openai.com",
 		models: "/v1/models",
 		posts: ["/v1/responses"],
 		passed: ["content-type", "session-id"],
 		dropUnknown: true,
+		zstd: true,
 	},
 	openai: {
 		base: "/v1",
@@ -84,11 +88,6 @@ wires["claude-plan"] = {
 	betas: [...wires.anthropic.betas, "oauth-2025-04-20"],
 };
 
-// A ChatGPT plan's access token, the one Windlass's own sign-in refreshes. OpenAI takes it as a bearer at
-// api.openai.com for Responses and for its model catalog, as it does for Windlass's ChatGPT models. Codex sends
-// headers of its own besides; only the chatgpt wire's are passed on.
-wires["chatgpt-plan"] = { ...wires.chatgpt, zstd: true };
-
 const PLAN_WIRES = { anthropic: "claude-plan", openai: "chatgpt-plan" };
 
 /** The wire a saved credential's requests take: a plan has its own, a Settings key its provider's. */
@@ -150,7 +149,7 @@ function harnessMethod(harness, provider, path) {
 	}
 	if (catalogPage(provider, path)) return;
 	if (harness === "codex") {
-		if (provider === "openai") return wireMethod("chatgpt", wirePath(provider, path));
+		if (provider === "openai") return wireMethod("chatgpt-plan", wirePath(provider, path));
 		// codex-acp narrows its models by the bare listing's `data[]`, which ChatGPT's catalog (`models[]`) may not have:
 		// refused, codex-acp leaves the list as Codex has it. Codex's own catalog request carries its client version.
 		if (provider === "chatgpt-plan") return CODEX_CATALOG.test(path) ? "GET" : path === "/v1/responses" && "POST";

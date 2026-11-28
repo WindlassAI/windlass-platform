@@ -5360,8 +5360,8 @@ async function machineChecks(): Promise<void> {
 					id: "codex",
 					adapter: "codex-acp 0.15.0",
 					image: "sha256:fake",
-					signIn: "token",
-					method: "chatgpt",
+					// No login of its own on the machine: the connected ChatGPT plan pays for it there.
+					signIn: "none",
 					modes: ["agent-full-access", "read-only", "workspace-write"],
 				},
 			];
@@ -5417,7 +5417,7 @@ async function machineChecks(): Promise<void> {
 						() => user.createItem({ ...task, title: "Claude, sign-in unknown", harness: "claude" }),
 						"harness_signed_out",
 					);
-					assert(/could not say whether Claude Code is signed in/.test(unknown), unknown);
+					assert(/could not say whether Claude Code has a login of its own there/.test(unknown), unknown);
 					await reported("token");
 					const draft = await user.createItem({
 						...task,
@@ -5435,9 +5435,7 @@ async function machineChecks(): Promise<void> {
 						view => view.question?.kind === "turn_refused",
 					);
 					assert(
-						/Claude Code on “Test machine” is not signed in\. Run windlass-runner login claude there\./.test(
-							asked.question!.text,
-						),
+						/Connections/.test(asked.question!.text) && !/windlass-runner login/.test(asked.question!.text),
 						asked.question!.text,
 					);
 					assert(
