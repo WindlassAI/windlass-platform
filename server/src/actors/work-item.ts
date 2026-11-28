@@ -4049,6 +4049,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 							...(wait !== undefined ? { inSeconds: wait / 1000 } : { handedToPerson: true }),
 							error: said,
 						});
+						// Asked before the count is stored: a server stopped in between asks again rather than never.
+						if (wait === undefined) await take(c, { kind: "pr_ready_read", at: Date.now(), pr: n, refused: said });
 						const data = JSON.stringify(current);
 						await queued(c, () =>
 							c.db.execute(
@@ -4068,7 +4070,6 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 							);
 							return "deferred" as const;
 						}
-						await take(c, { kind: "pr_ready_read", at: Date.now(), pr: n, refused: said });
 					}
 				}
 				await handoffOnGithub(c, meta, latest.pr.number, current, row);
@@ -4124,11 +4125,22 @@ async function markFeatureReady(c: Ctx, meta: ItemMeta, id: string, pr: number):
 		);
 		return null;
 	} catch (error) {
-		if (error instanceof GraphqlRefusal) return error.said ?? error.message;
-		if (error instanceof GithubError && !error.rateLimited && !error.unreachable)
-			return `GitHub answered ${error.status}${error.said ? ` (${error.said})` : ""}`;
-		throw error;
+		const said = readyRefused(error);
+		if (said === null) throw error;
+		return said;
 	}
+}
+
+/**
+ * GitHub's reason when marking the PR ready failed because GitHub refused it, counted toward the hand-over to the person;
+ * null for anything else (unreachable, rate-limited, a fault of the platform's own), left to the effect's ordinary retry.
+ */
+export function readyRefused(error: unknown): string | null {
+	// GitHub's GraphQL rate limit also answers 200 with `errors`.
+	if (error instanceof GraphqlRefusal) return error.type === "RATE_LIMITED" ? null : (error.said ?? error.message);
+	if (error instanceof GithubError && !error.rateLimited && !error.unreachable)
+		return `GitHub answered ${error.status}${error.said ? ` (${error.said})` : ""}`;
+	return null;
 }
 
 const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400 } as const;
