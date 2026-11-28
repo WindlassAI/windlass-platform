@@ -385,6 +385,10 @@
 .mapping-form-from {
 	min-width: 0;
 }
+.mapping-form-submit {
+	display: flex;
+	gap: 6px;
+}
 .mapping-form-submit .button {
 	min-height: var(--h-lg);
 	white-space: nowrap;
@@ -542,4 +546,53 @@
 .source-name > .provider-icon {
 	flex: none;
 	align-self: center;
+}
+
+/* ---- API tokens (ApiTokens.tsx): the integrations' head, and its tokens as rows like the mappings ---- */
+
+.api-tokens .integration-mark {
+	color: var(--ink-dim);
+}
+.token-line {
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	gap: 4px 16px;
+}
+.token-main {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+.token-meta,
+.token-used {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+	overflow-wrap: anywhere;
+}
+.token-used {
+	white-space: nowrap;
+}
+.token-revoke {
+	color: var(--ink-dim);
+}
+.token-revoke:hover:not(:disabled) {
+	color: var(--bad);
+	background: var(--bad-wash);
+}
+@container (max-width: 620px) {
+	.token-line {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			"main actions"
+			"used actions";
+	}
+	.token-main {
+		grid-area: main;
+	}
+	.token-used {
+		grid-area: used;
+	}
+	.token-line > .mapping-actions {
+		grid-area: actions;
+	}
 }

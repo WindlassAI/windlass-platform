@@ -335,6 +335,15 @@ describe("Integrations in Settings", () => {
 		const third = await open(mock(), "", "google");
 		try {
 			expect(card(third.host).querySelector('[role="status"]')?.textContent).toContain("acme/tools/harbor");
+			// A chosen project folds the picker away behind its row's Change; Cancel folds it again.
+			expect(card(third.host).querySelector("#gitlab-project")).toBeNull();
+			await press(card(third.host), "Change the project");
+			await third.settle();
+			expect(card(third.host).querySelector("#gitlab-project")).not.toBeNull();
+			expect(card(third.host).textContent).toMatch(/webhook.*Maintainer/);
+			expect(document.activeElement?.id).toBe("gitlab-query");
+			await press(card(third.host), "Cancel");
+			expect(card(third.host).querySelector("#gitlab-project")).toBeNull();
 			vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
 			await pressMore(card(third.host), "GitLab", "Disconnect…");
 			expect(card(third.host).textContent).toContain("Selected project");

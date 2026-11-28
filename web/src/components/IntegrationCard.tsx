@@ -3,7 +3,8 @@
  * next read the same way (styles/integrations.css):
  *
  * - `IntegrationCard`: the service's mark, its name and whether it is connected, one line on what it does, one
- *   primary action at the end, the rest in a ⋯ menu, and the body under it.
+ *   primary action at the end, the rest in a ⋯ menu, and the body under it. Its head (`CardHead`) also serves the
+ *   cards beside the integrations, such as API tokens.
  * - `IntegrationFacts`: who and where it is connected, as short labelled values.
  * - `IntegrationSteps`: what connecting it gets you, in three short steps, while it is not connected.
  * - `MappingList` and `MappingRow`: "this channel, team or project → that repository" rows, each with its options and
@@ -60,46 +61,80 @@ export function IntegrationCard({
 			aria-labelledby={titleId}
 			data-testid={testId}
 		>
-			<div className="integration-head">
-				<span className="integration-mark">
-					<ProviderIcon id={provider} tone="brand" size={20} />
-				</span>
-				<div className="integration-heading">
-					<h3 className="integration-name" id={titleId}>
-						{name}
-						{state === "loading" ? null : (
-							<span className={`integration-state integration-state-${state}`}>
-								<span className="integration-state-dot" aria-hidden="true" />
-								<span className="visually-hidden">: </span>
-								{STATE_WORDS[state]}
-							</span>
-						)}
-					</h3>
-					<p className="integration-what">{what}</p>
-				</div>
-				{action ? <div className="integration-actions">{action}</div> : null}
-				{more.length > 0 ? (
-					<div className="integration-more-slot">
-						<Menu
-							align="end"
-							spec={{ label: `More ${name} actions`, groups: [{ id: "more", items: more }], hints: false, width: 220 }}
-							trigger={props => (
-								<button
-									type="button"
-									className="icon-button integration-more"
-									aria-label={`More ${name} actions`}
-									title="More actions"
-									{...props}
-								>
-									<span aria-hidden="true">⋯</span>
-								</button>
-							)}
-						/>
-					</div>
-				) : null}
-			</div>
+			<CardHead
+				titleId={titleId}
+				mark={<ProviderIcon id={provider} tone="brand" size={20} />}
+				name={name}
+				badge={
+					state === "loading" ? null : (
+						<span className={`integration-state integration-state-${state}`}>
+							<span className="integration-state-dot" aria-hidden="true" />
+							<span className="visually-hidden">: </span>
+							{STATE_WORDS[state]}
+						</span>
+					)
+				}
+				what={what}
+				action={action}
+				more={more}
+			/>
 			{children ? <div className="integration-body">{children}</div> : null}
 		</section>
+	);
+}
+
+/**
+ * A Settings card's head, for an integration and for what sits beside them (API tokens): the mark on its tile, the
+ * name with a badge (a connection state, a count), one line on what it is, one action, and the rest behind ⋯.
+ */
+export function CardHead({
+	titleId,
+	mark,
+	name,
+	badge,
+	what,
+	action,
+	more = [],
+}: {
+	titleId: string;
+	mark: ReactNode;
+	name: string;
+	badge?: ReactNode;
+	what: ReactNode;
+	action?: ReactNode;
+	more?: MenuItem[];
+}) {
+	return (
+		<div className="integration-head">
+			<span className="integration-mark">{mark}</span>
+			<div className="integration-heading">
+				<h3 className="integration-name" id={titleId}>
+					{name}
+					{badge}
+				</h3>
+				<p className="integration-what">{what}</p>
+			</div>
+			{action ? <div className="integration-actions">{action}</div> : null}
+			{more.length > 0 ? (
+				<div className="integration-more-slot">
+					<Menu
+						align="end"
+						spec={{ label: `More ${name} actions`, groups: [{ id: "more", items: more }], hints: false, width: 220 }}
+						trigger={props => (
+							<button
+								type="button"
+								className="icon-button integration-more"
+								aria-label={`More ${name} actions`}
+								title="More actions"
+								{...props}
+							>
+								<span aria-hidden="true">⋯</span>
+							</button>
+						)}
+					/>
+				</div>
+			) : null}
+		</div>
 	);
 }
 
@@ -239,6 +274,7 @@ export function MappingForm({
 	from,
 	to,
 	submit,
+	cancel,
 	note,
 	onSubmit,
 }: {
@@ -247,6 +283,8 @@ export function MappingForm({
 	/** Null for a single choice (a site, a project), with no source to map from. */
 	to: ReactNode | null;
 	submit: ReactNode;
+	/** A way back, beside the submit, while changing something already chosen. */
+	cancel?: ReactNode;
 	note?: ReactNode;
 	onSubmit?(event: FormEvent<HTMLFormElement>): void;
 }) {
@@ -260,12 +298,18 @@ export function MappingForm({
 						→
 					</span>
 					<div className="mapping-form-to">{to}</div>
-					<div className="mapping-form-submit">{submit}</div>
+					<div className="mapping-form-submit">
+						{submit}
+						{cancel}
+					</div>
 				</div>
 			) : (
 				<div className="mapping-form-fields mapping-form-fields-single">
 					<div className="mapping-form-to">{from ?? to}</div>
-					<div className="mapping-form-submit">{submit}</div>
+					<div className="mapping-form-submit">
+						{submit}
+						{cancel}
+					</div>
 				</div>
 			)}
 			{note ? <div className="mapping-form-note">{note}</div> : null}

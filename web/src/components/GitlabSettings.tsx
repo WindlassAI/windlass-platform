@@ -1,5 +1,5 @@
 import type { GitlabProjectList, GitlabStatus } from "@contract";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { WarnIcon } from "./Icons";
 import {
@@ -8,8 +8,11 @@ import {
 	IntegrationSteps,
 	MappedRepository,
 	MappingForm,
+	MappingList,
+	MappingRow,
 	useReturnRound,
 } from "./IntegrationCard";
+import { BranchName } from "./BranchName";
 
 const RETURN = /^#gitlab(?:-error)?=/;
 
@@ -70,9 +73,16 @@ export function GitlabSettings({ connection }: { connection: ReturnType<typeof u
 	const [listError, setListError] = useState<string | null>(null);
 	const [attempt, retry] = useState(0);
 	const [busy, setBusy] = useState(false);
+	// A chosen project is a row with a Change action; the picker opens only to choose one or to change it.
+	const [changing, setChanging] = useState(false);
+	const search = useRef<HTMLInputElement>(null);
 	const connected = status?.state === "connected";
+	const picking = connected && (!status.project || changing);
 	useEffect(() => {
-		if (!connected) return;
+		if (changing) search.current?.focus();
+	}, [changing]);
+	useEffect(() => {
+		if (!picking) return;
 		let live = true;
 		setList(null);
 		setListError(null);
@@ -93,7 +103,7 @@ export function GitlabSettings({ connection }: { connection: ReturnType<typeof u
 			live = false;
 			clearTimeout(timer);
 		};
-	}, [api, connected, query, explain, attempt]);
+	}, [api, picking, query, explain, attempt]);
 	async function run(work: () => Promise<void>) {
 		setBusy(true);
 		setError(null);
@@ -178,85 +188,112 @@ export function GitlabSettings({ connection }: { connection: ReturnType<typeof u
 					<IntegrationFacts
 						facts={[
 							["Instance", <span className="mono">{status.baseUrl.replace(/^https?:\/\//, "")}</span>],
-							[
-								"Project",
-								<span role="status">
-									{status.project ? (
-										<>
-											<span className="visually-hidden">Selected project: </span>
-											<MappedRepository host="gitlab" owner={status.project.owner} name={status.project.name} />{" "}
-											<span className="faint">into</span> <code>{status.project.branch}</code>
-										</>
-									) : (
-										<span className="faint">No project selected</span>
-									)}
-								</span>,
-							],
+							!status.project && ["Project", <span className="faint">No project selected</span>],
 						]}
 					/>
-					<MappingForm
-						title={status.project ? "Change the project" : "Choose the project"}
-						to={
-							<>
-								<label className="visually-hidden" htmlFor="gitlab-query">
-									Search GitLab projects
-								</label>
-								<input
-									className="input"
-									type="search"
-									maxLength={256}
-									id="gitlab-query"
-									placeholder="Search projects"
-									value={query}
-									onChange={e => setQuery(e.target.value)}
-									disabled={busy}
+					{status.project ? (
+						<div role="status">
+							<MappingList label="Selected project">
+								<MappingRow
+									from={
+										<>
+											<span className="visually-hidden">Selected project: </span>
+											<MappedRepository host="gitlab" owner={status.project.owner} name={status.project.name} />
+										</>
+									}
+									to={<BranchName branch={status.project.branch} />}
+									busy={busy}
+									onChange={changing ? undefined : () => setChanging(true)}
+									changeLabel="Change the project"
 								/>
-								<label className="visually-hidden" htmlFor="gitlab-project">
-									GitLab project
-								</label>
-								<select
-									className="select"
-									id="gitlab-project"
-									value={selected}
-									onChange={e => setSelected(e.target.value)}
-									disabled={busy || !list?.projects.length}
-								>
-									<option value="">
-										{listError
-											? "Projects unavailable"
-											: !list
-												? "Loading projects…"
-												: !list.projects.length
-													? "No matching projects"
-													: "Choose a project"}
-									</option>
-									{list?.projects.map(p => (
-										<option key={p.id} value={String(p.id)}>
-											{p.owner}/{p.name}
+							</MappingList>
+						</div>
+					) : null}
+					{picking ? (
+						<MappingForm
+							title={status.project ? "Change the project" : "Choose the project"}
+							to={
+								<>
+									<label className="visually-hidden" htmlFor="gitlab-query">
+										Search GitLab projects
+									</label>
+									<input
+										ref={search}
+										className="input"
+										type="search"
+										maxLength={256}
+										id="gitlab-query"
+										placeholder="Search projects"
+										value={query}
+										onChange={e => setQuery(e.target.value)}
+										disabled={busy}
+									/>
+									<label className="visually-hidden" htmlFor="gitlab-project">
+										GitLab project
+									</label>
+									<select
+										className="select"
+										id="gitlab-project"
+										value={selected}
+										onChange={e => setSelected(e.target.value)}
+										disabled={busy || !list?.projects.length}
+									>
+										<option value="">
+											{listError
+												? "Projects unavailable"
+												: !list
+													? "Loading projects…"
+													: !list.projects.length
+														? "No matching projects"
+														: "Choose a project"}
 										</option>
-									))}
-								</select>
-							</>
-						}
-						submit={
-							<button
-								className="button button-outline"
-								aria-describedby="gitlab-hook-note"
-								disabled={busy || !selected || selected === String(status.project?.id)}
-								onClick={() => void run(async () => setStatus(await api.gitlabPickProject(selected)))}
-							>
-								Save project
-							</button>
-						}
-						note={
-							<>
-								<p className="field-note" id="gitlab-hook-note">
-									Saving registers a webhook on the selected GitLab project. You need Maintainer access or higher.
-								</p>
-								{list?.more && <p className="field-note">Search by project name to narrow the list.</p>}
-							</>
-						}
-					/>
+										{list?.projects.map(p => (
+											<option key={p.id} value={String(p.id)}>
+												{p.owner}/{p.name}
+											</option>
+										))}
+									</select>
+								</>
+							}
+							submit={
+								<button
+									className="button button-outline"
+									aria-describedby="gitlab-hook-note"
+									disabled={busy || !selected || selected === String(status.project?.id)}
+									onClick={() =>
+										void run(async () => {
+											setStatus(await api.gitlabPickProject(selected));
+											setChanging(false);
+										})
+									}
+								>
+									Save project
+								</button>
+							}
+							cancel={
+								changing ? (
+									<button
+										className="button button-quiet"
+										disabled={busy}
+										onClick={() => {
+											setChanging(false);
+											setQuery("");
+										}}
+									>
+										Cancel
+									</button>
+								) : undefined
+							}
+							note={
+								<>
+									<p className="field-note" id="gitlab-hook-note">
+										Saving registers a webhook on the selected GitLab project. You need Maintainer access or higher.
+									</p>
+									{list?.more && <p className="field-note">Search by project name to narrow the list.</p>}
+								</>
+							}
+						/>
+					) : null}
 					{listError && (
 						<p className="callout callout-warn" role="alert">
 							<WarnIcon />
