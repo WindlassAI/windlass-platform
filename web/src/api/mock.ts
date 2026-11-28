@@ -3823,6 +3823,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			13 * HOUR,
 			[{ text: "Hand the dark mode feature over.", script: "checks" }],
 			{
+				sandbox: "none",
 				repository: sessionRepository("acme", "harbor"),
 				pull: { number: 81, state: "draft", hoursAgo: 12, branch: FEATURE_BRANCH },
 			},
@@ -3834,6 +3835,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			15 * HOUR,
 			[{ text: "Add the dark theme's tokens.", script: "checks" }],
 			{
+				sandbox: "none",
 				repository: sessionRepository("acme", "harbor", FEATURE_BRANCH),
 				pull: {
 					number: 79,
