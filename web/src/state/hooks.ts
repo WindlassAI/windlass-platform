@@ -1,13 +1,15 @@
-import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
+import { availableCatalog, type HostedCredential } from "../../../server/src/sandbox/harnesses.js";
 import { monthState } from "../lib/hosted";
 import type {
 	AccountSettings,
 	ChatgptStatus,
+	CostRates,
 	FactoryLimits,
+	FinishedItems,
 	MachineSummary,
-	ModelProviderStatus,
 	ModelList,
 	SessionSummary,
+	SummaryDays,
 	UsageNumbers,
 } from "@contract";
 import type { HarnessOptions } from "@contract";
@@ -20,7 +22,7 @@ import { createSessionStore, type SessionState } from "./sessionStore";
 /** Refresh the checked model catalogs when returning from Settings. */
 export const PROVIDERS_CHANGED = "wlp-model-providers-changed";
 
-function watchModelChanges(read: (isCurrent: () => boolean) => void) {
+export function watchModelChanges(read: (isCurrent: () => boolean) => void) {
 	// Ignore replies superseded by a refresh or by unmounting.
 	let version = 0;
 	const refresh = () => {
@@ -37,27 +39,36 @@ function watchModelChanges(read: (isCurrent: () => boolean) => void) {
 	};
 }
 
-export function useHostedProviders(enabled = true) {
+/** What hosted agents can pay with: the saved keys and the connected plans (`HostedCredential`). */
+export function useHostedCredentials(enabled = true) {
 	const { client } = useApp();
 	const auth = useAuth();
-	const [providers, setProviders] = useState<ModelProviderStatus[] | null>(null);
+	const [credentials, setCredentials] = useState<HostedCredential[] | null>(null);
 	useEffect(() => {
 		if (!enabled) return;
 		return watchModelChanges(isCurrent => {
-			client
-				.user(auth)
-				.modelProviders()
-				.then(
-					rows => {
-						if (isCurrent()) setProviders(rows);
-					},
-					() => {
-						if (isCurrent()) setProviders([]);
-					},
-				);
+			const user = client.user(auth);
+			Promise.all([user.modelProviders(), user.modelPlans().catch(() => ({ allowed: false, plans: [] }))]).then(
+				([keys, plans]) => {
+					if (!isCurrent()) return;
+					const connected = plans.allowed ? plans.plans.filter(p => p.ok) : [];
+					setCredentials([
+						...keys,
+						...connected.map(p => ({
+							provider: p.provider,
+							plan: true as const,
+							checkedAt: p.checkedAt,
+							models: p.models,
+						})),
+					]);
+				},
+				() => {
+					if (isCurrent()) setCredentials([]);
+				},
+			);
 		});
 	}, [client, auth, enabled]);
-	return providers;
+	return credentials;
 }
 
 export function useNow(intervalMs: number, active = true): number {
@@ -226,6 +237,62 @@ export function useFactoryLimits(enabled = true): { value: FactoryLimits | null;
 		};
 	}, [client, auth, explain, enabled]);
 	return limits;
+}
+
+/** The items that ended in the last `days`, read whenever the period changes (`FinishedItems`). Null until read. */
+export function useFinishedItems(days: SummaryDays): { value: FinishedItems | null; error: string | null } {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [read, setRead] = useState<{ value: FinishedItems | null; error: string | null }>({ value: null, error: null });
+	useEffect(() => {
+		let current = true;
+		setRead(held => (held.value?.days === days ? held : { value: null, error: null }));
+		client
+			.user(auth)
+			.finishedItems(days)
+			.then(
+				value => current && setRead({ value, error: null }),
+				(failure: unknown) => current && setRead({ value: null, error: explain(failure) }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain, days]);
+	return read;
+}
+
+const RATES_FRESH_MS = 3_600_000;
+const heldRates = new WeakMap<object, { at: number; value: Promise<CostRates> }>();
+
+/**
+ * What prices items' cost (`CostRates`), read at most once an hour and shared by every screen. Null until read, or
+ * where it could not be. An answer without model prices yet (the server's first read of the catalog) is not kept.
+ */
+export function useCostRates(): CostRates | null {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [rates, setRates] = useState<CostRates | null>(null);
+	useEffect(() => {
+		let current = true;
+		let held = heldRates.get(client);
+		if (!held || Date.now() - held.at > RATES_FRESH_MS) {
+			const value = client.user(auth).costRates();
+			held = { at: Date.now(), value };
+			heldRates.set(client, held);
+			value.then(
+				read => read.models === null && heldRates.get(client)?.value === value && heldRates.delete(client),
+				() => heldRates.get(client)?.value === value && heldRates.delete(client),
+			);
+		}
+		held.value.then(
+			value => current && setRates(value),
+			() => undefined,
+		);
+		return () => {
+			current = false;
+		};
+	}, [client, auth]);
+	return rates;
 }
 
 export function useSession(sessionId: string): SessionState {

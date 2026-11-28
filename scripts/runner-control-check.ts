@@ -573,6 +573,7 @@ async function withControl(
 			gitMirrors: true,
 			sessionVolumes: true,
 			modelRelay: true,
+			planRelay: true,
 		}),
 		requestedRemoval: async (id: string) => {
 			if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox.");
@@ -1212,6 +1213,45 @@ try {
 				assert.equal(found && typeof found === "object" && "windlassKeyRelay" in found, named);
 				assert.ok(validValue("connect", found));
 			}
+		},
+	);
+	await checkControl(
+		"a runner says planRelay in its report and each connect, and takes plan relay operations, only for a server whose welcome names plan-relay",
+		async () => {
+			for (const [capabilities, named] of [
+				[undefined, false],
+				[["model-relay", "harness-key-relay"], false],
+				[["plan-relay"], true],
+			] as const) {
+				await withControl([lease()], async r => {
+					const ws = await r.online(0, capabilities && [...capabilities]);
+					const report = ws.sent.find(f => f.kind === "report");
+					assert.equal(Object.hasOwn(report ?? {}, "planRelay"), named, JSON.stringify(capabilities));
+					assert.equal(r.owner.planRelays, named);
+				});
+			}
+			const { Executor } = await import("../runner/src/docker-executor.js");
+			for (const named of [false, true]) {
+				const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+				owner.planRelays = named;
+				owner.discover = async () => {
+					(owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true };
+				};
+				Object.assign(owner, { disk: async () => 10_000_000_000 });
+				owner.network.prepare = async () => {};
+				owner.network.attach = async () => {};
+				owner.provider.create = async () => "0123456789ab";
+				owner.provider.connect = async () => ({ cwd: "/workspace" }) as unknown as DockerSandboxHandle;
+				const id = await owner.create("s_plan", "docker-hardened");
+				const found = await owner.lifecycle("connect", id, "s_plan");
+				assert.ok(validValue("connect", found));
+				assert.equal(found && typeof found === "object" && "planRelay" in found, named);
+			}
+			// An older server's checks: the report it reads has no planRelay.
+			const { reportFor } = await import("../server/src/runner/control.js");
+			const full = { planRelay: true as const } as unknown as Parameters<typeof reportFor>[0];
+			assert.equal("planRelay" in reportFor(full, ["model-relay"]), false);
+			assert.equal("planRelay" in reportFor(full, ["plan-relay"]), true);
 		},
 	);
 	await checkControl(

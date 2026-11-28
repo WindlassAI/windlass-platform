@@ -102,6 +102,8 @@ export interface CiProgress extends BaseFailureDecision {
 }
 
 export interface Run extends ItemRun {
+	/** The person started this run again after one that failed or was given up (Retry): what it uses is retry spend. */
+	retry?: true;
 	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
 	confirmFeatureCi?: true;
 	/** Read CI once before the owner takes the branch. */
@@ -239,6 +241,8 @@ export interface FeatureJob {
 	placement?: ChildPlacement;
 	failure?: string | null;
 	cancelRequested?: boolean;
+	/** Dispatched in a run the person started again: all it uses is retry spend. */
+	retry?: true;
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
@@ -385,6 +389,8 @@ export interface FactoryItem {
 	workingSince: number | null;
 	/** When it last entered done, failed or cancelled; absent while it is not ended, and on items that ended before this was kept. */
 	endedAt?: number;
+	/** When its first run began. */
+	startedAt?: number;
 	run: Run | null;
 	pr: { number: number; url: string } | null;
 	/** The commit pushed last. */
@@ -478,6 +484,12 @@ export interface TurnSpend {
 	hostedSeconds: number;
 	/** What a machine harness reported of the turn. Absent for Windlass. */
 	agent?: AgentTurn;
+	/** The turn's model, payer, tokens and sandbox size, for its cost (cost.ts). Absent from the platform's own spend facts. */
+	meter?: import("./cost.js").TurnMeter;
+	/** A key-paid turn's model dollars, priced when it ended (budget.ts `turnUsd`); null where they could not be priced. */
+	usd?: number | null;
+	/** A plan-paid turn's share of the plan's windows, in percentage points (budget.ts `windowShare`); null where unseen. */
+	plan?: { fiveHour: number | null; week: number | null };
 }
 
 /** What a machine harness (Claude Code, OpenCode) reported of one turn. */
@@ -692,6 +704,8 @@ export type StepFact =
 	| {
 			kind: "turn_ended";
 			taskKind?: import("./readiness-track.js").TaskKind;
+			/** What the work's changed paths are (usage-summary.ts `workType`); absent where git named none. */
+			workType?: import("../contract.js").WorkType;
 			autoApprovePlans?: boolean;
 			at: number;
 			key: string;
@@ -722,6 +736,8 @@ export type StepFact =
 			sandboxFailed?: string;
 			/** Measured hosted memory and limit in MiB, plus the sandbox size. */
 			outOfMemory?: OutOfMemory;
+			/** Its session stopped the turn at the delivery's `budget` (#100a): the item asks its budget question. */
+			budgetStopped?: true;
 			spend: TurnSpend;
 	  }
 	| {
@@ -740,6 +756,8 @@ export type StepFact =
 			providerRefusal?: ItemProviderRefusal /** As `turn_ended`'s. */;
 			sandboxFailed?: string;
 			outOfMemory?: OutOfMemory;
+			/** Its session stopped the review at the delivery's `budget` (#100a). */
+			budgetStopped?: true;
 			spend: TurnSpend;
 	  }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
@@ -854,6 +872,8 @@ export type Effect =
 			untrusted?: string[] /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */;
 			unsandboxed?: true /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */;
 			fresh?: { text: string; untrusted: string[]; unsandboxed?: true };
+			/** Where the turn is stopped while it runs (budget.ts `turnBudget`); absent where nothing measurable holds the item. */
+			budget?: import("./budget.js").TurnBudget;
 	  }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }

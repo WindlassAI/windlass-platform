@@ -1833,7 +1833,7 @@ interface ChildOptions {
 	models?: import("../server/src/factory/placement.js").AgentModels;
 }
 async function childCreation(t: import("node:test").TestContext, overflow = false, options: ChildOptions = {}) {
-	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { DatabaseSync } = await import("node:sqlite");
@@ -1871,7 +1871,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		: first;
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
-	for (const sql of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) raw.exec(sql);
+	for (const sql of [...ITEM_TABLES, ...CREDENTIAL_TABLES]) raw.exec(sql);
 	raw.exec((await import("../server/src/repository-defaults.js")).DEFAULTS_TABLE);
 	raw.exec("INSERT INTO repository_defaults (project,label,updated_at,screenshots) VALUES ('github:42','fixture',1,1)");
 	const owner = "u_fixture",
@@ -2097,7 +2097,7 @@ test("provider placement rechecks at UTC rollover when the daily cap also holds"
 		machines: plannerMachines(machines),
 		hostedProfiles: [],
 		dailyTokenWait: "Daily tokens used.",
-		limited: [{ machineId: "*", harness: "windlass", limitedUntil: providerUntil }],
+		limited: [{ machineId: "plan/openai", harness: "windlass", limitedUntil: providerUntil }],
 	};
 	for (const result of [
 		advance(item, { kind: "place_child", key, at, inventory }),
@@ -2116,7 +2116,7 @@ test("provider placement rechecks at UTC rollover when the daily cap also holds"
 	}
 });
 
-test("shared Windlass cooldown covers hosted and every approved machine, in either order", () => {
+test("Windlass's ChatGPT plan cooldown covers hosted and every approved machine, in either order", () => {
 	const machines = [machineReport(), machineReport("Linux box", linuxId)];
 	for (const prefer of ["Mac", "hosted"]) {
 		const item = placementFeature(machines, {}, prefer === "Mac" ? ["Linux box", "hosted"] : ["Mac"], true, prefer);
@@ -2127,7 +2127,7 @@ test("shared Windlass cooldown covers hosted and every approved machine, in eith
 			inventory: {
 				machines: plannerMachines(machines),
 				hostedProfiles: ["docker-hardened"],
-				limited: [{ machineId: "*", harness: "windlass", limitedUntil: 1000 }],
+				limited: [{ machineId: "plan/openai", harness: "windlass", limitedUntil: 1000 }],
 			},
 		});
 		assert.equal(result.item.wait?.reason, "provider");
@@ -2314,7 +2314,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 		{ preferred: { kind: "hosted" }, alternatives: [] },
 		{ machines: [], hostedProfiles: ["docker-hardened"] },
 	);
-	assert.match(String(hosted.refused), /Add an Anthropic key in Settings to run Claude Code here/);
+	assert.match(String(hosted.refused), /Add an Anthropic key on the Connections page to run Claude Code here/);
 	const keyed = choosePlacement(
 		task({ harness: "claude" }),
 		{ preferred: { kind: "hosted" }, alternatives: [] },
@@ -2322,7 +2322,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 			machines: [],
 			hostedProfiles: ["e2b-open"],
 			keyProfiles: ["e2b-open"],
-			hostedKeys: [{ provider: "anthropic", checkedAt: null }],
+			hostedCredentials: [{ provider: "anthropic", checkedAt: null }],
 		},
 	);
 	assert.equal(keyed.decision?.harness, "claude");
@@ -2332,7 +2332,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 		machines: plannerMachines([agentMac()]),
 		hostedProfiles: ["e2b-open" as const],
 		keyProfiles: ["e2b-open" as const],
-		hostedKeys: [{ provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] }],
+		hostedCredentials: [{ provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] }],
 		models,
 	};
 	assert.equal(
@@ -2403,7 +2403,7 @@ test("usage-limit routing picks among accounts of the subtask's own agent", () =
 			inventory: { machines: plannerMachines(machines), hostedProfiles: [], limited },
 		}).item;
 	// Windlass's limit on the Mac (or everywhere) is not Claude Code's: the Mac takes it.
-	for (const machineId of [macId, "*"])
+	for (const machineId of [macId, "plan/openai"])
 		assert.deepEqual(place([{ machineId, harness: "windlass", limitedUntil: 1000 }]).jobs![0].placement?.place, {
 			kind: "machine",
 			machineId: macId,
@@ -2786,12 +2786,14 @@ test("5c.5 a Windlass limit still gates every approved machine at child creation
 	for (const overflow of [false, true]) {
 		const { raw, create, delivered, facts } = await childCreation(t, overflow);
 		const until = Date.now() + 3600_000;
-		raw.exec(
-			"CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER); CREATE TABLE signin(id INTEGER, generation INTEGER)",
-		);
+		raw.exec("CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER)");
 		raw.prepare("INSERT INTO machines VALUES(?, '{}', NULL)").run(macId);
 		raw.exec(
 			"CREATE TABLE IF NOT EXISTS provider_usage(place TEXT,harness TEXT,generation TEXT,data TEXT,PRIMARY KEY(place,harness))",
+		);
+		for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
+		raw.exec(
+			"INSERT INTO model_plan (provider, sealed, generation, added_at, check_ok) VALUES ('openai', 'x', '1', 0, 1)",
 		);
 		const { recordProviderUsage } = await import("../server/src/actors/provider-accounts.js");
 		type Db = Parameters<typeof recordProviderUsage>[0];
@@ -2799,10 +2801,11 @@ test("5c.5 a Windlass limit still gates every approved machine at child creation
 			execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args),
 			transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 		} as Db;
-		await recordProviderUsage(db, { place: macId, harness: "windlass" }, "0", {
+		// A machine's Windlass turn on the ChatGPT sign-in: the ChatGPT plan's limit, which holds every machine.
+		await recordProviderUsage(db, { place: macId, harness: "windlass" }, "1", {
 			kind: "refusal",
 			at: Date.now(),
-			resetsAt: until - 60_000,
+			resetsAt: until,
 		});
 		await create();
 		assert.equal(delivered.length, 0);
@@ -2810,7 +2813,7 @@ test("5c.5 a Windlass limit still gates every approved machine at child creation
 	}
 });
 
-test("5c.2 unknown resets back off per login, and only a successful real probe clears the streak", async t => {
+test("5c.2 unknown resets back off on the ChatGPT plan, and only a successful real probe clears the streak", async t => {
 	const { DatabaseSync } = await import("node:sqlite");
 	const { machineTables } = await import("../server/src/actors/user-machines.js");
 	const raw = new DatabaseSync(":memory:");
@@ -2821,10 +2824,9 @@ test("5c.2 unknown resets back off per login, and only a successful real probe c
 		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 	} as Db;
 	await machineTables(db);
-	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,1)");
-	assert.ok(
-		raw.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_usage'").get(),
-		"the user has no account cooldown ledger",
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
+	raw.exec(
+		"INSERT INTO model_plan (provider, sealed, generation, added_at, check_ok) VALUES ('openai', 'x', '1', 0, 1)",
 	);
 	const { recordProviderUsage, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
 	const location = { place: "hosted", harness: "windlass" as const };
@@ -2833,39 +2835,38 @@ test("5c.2 unknown resets back off per login, and only a successful real probe c
 		const refusal = { kind: "refusal" as const, at: now, resetsAt: null };
 		await recordProviderUsage(db, location, "1", refusal);
 		await recordProviderUsage(db, location, "1", refusal);
-		assert.deepEqual(
-			raw
-				.prepare("SELECT place FROM provider_usage WHERE harness='windlass'")
-				.all()
-				.map(r => r.place),
-			["*"],
-		);
-		const account = (await providerAccounts(db, now)).get("*")?.[0];
+		assert.equal(raw.prepare("SELECT count(*) AS n FROM provider_usage").get()?.n, 0, "kept on the plan's row");
+		const account = (await providerAccounts(db, now)).get("plan/openai")?.[0];
 		assert.equal(account?.state, "limited");
 		assert.equal(account.limitedUntil, now + minutes * 60_000);
 		now = account.limitedUntil!;
-		assert.equal((await providerAccounts(db, now)).get("*")?.[0].state, "ok");
 	}
 	await recordProviderUsage(db, location, "1", { kind: "success", startedAt: now, at: now + 1 });
 	await recordProviderUsage(db, location, "1", { kind: "refusal", at: now + 2, resetsAt: null });
-	assert.equal((await providerAccounts(db, now + 2)).get("*")?.[0].limitedUntil, now + 2 + 15 * 60_000);
+	assert.equal((await providerAccounts(db, now + 2)).get("plan/openai")?.[0].limitedUntil, now + 2 + 15 * 60_000);
 });
 
-test("legacy Windlass rows retain the longest cooldown for the latest sign-in on upgrade", async t => {
+test("legacy Windlass sign-in rows move their longest running cooldown onto the ChatGPT plan on upgrade", async t => {
 	const { DatabaseSync } = await import("node:sqlite");
 	const { machineTables } = await import("../server/src/actors/user-machines.js");
-	const { PROVIDER_TABLE, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
+	const { PROVIDER_TABLE, providerAccounts, moveWindlassLimits } = await import(
+		"../server/src/actors/provider-accounts.js"
+	);
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
 	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) } as Parameters<
 		typeof machineTables
 	>[0];
 	raw.exec(PROVIDER_TABLE);
-	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,2)");
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
+	raw.exec(
+		"INSERT INTO model_plan (provider, sealed, generation, added_at, check_ok) VALUES ('openai', 'x', '2', 0, 1)",
+	);
+	const now = Date.now();
 	for (const [place, generation, until] of [
-		[macId, "1", 900],
-		["hosted", "2", 200],
-		[linuxId, "2", 400],
+		[macId, "1", now + 900_000],
+		["hosted", "2", now + 200_000],
+		[linuxId, "2", now + 400_000],
 	] as const) {
 		const account = {
 			key: `${place}/windlass/${generation}`,
@@ -2879,11 +2880,12 @@ test("legacy Windlass rows retain the longest cooldown for the latest sign-in on
 			.run(place, "windlass", generation, JSON.stringify({ account, backoff: 1, lastRefusal: 1, lastSuccess: -1 }));
 	}
 	await machineTables(db);
-	await machineTables(db);
-	const accounts = await providerAccounts(db, 100);
-	assert.equal(accounts.get("*")?.[0]?.key, "*/windlass/2");
-	assert.equal(accounts.get("*")?.[0]?.limitedUntil, 400);
-	assert.equal(raw.prepare("SELECT count(*) AS n FROM provider_usage").get()?.n, 1);
+	await moveWindlassLimits(db, now);
+	await moveWindlassLimits(db, now);
+	const accounts = await providerAccounts(db, now);
+	assert.equal(accounts.get("plan/openai")?.[0]?.key, "plan/openai/2");
+	assert.equal(accounts.get("plan/openai")?.[0]?.limitedUntil, now + 400_000);
+	assert.equal(raw.prepare("SELECT count(*) AS n FROM provider_usage").get()?.n, 0);
 });
 
 test("5c.7 new machine login ignores a stale refusal; page and stored reading contain only public window data", async t => {
@@ -2897,6 +2899,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 	} as Db;
 	await machineTables(db);
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
 	const generation = "a".repeat(32),
 		next = "b".repeat(32),
 		at = Date.now();
@@ -2941,7 +2944,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 		kind: "event",
 		event: { status: "allowed", window: { ...event.window, usedPct: 0, observedAt: at + 2 } },
 	});
-	for (const table of (await import("../server/src/model-providers.js")).MODEL_PROVIDER_TABLES) raw.exec(table);
+	for (const table of (await import("../server/src/credentials/index.js")).CREDENTIAL_TABLES) raw.exec(table);
 	const [machine] = await listMachines({ db, vars: { sessions: new Map() } });
 	assert.equal(machine?.providerAccounts?.[0].limitedUntil, reset * 1000 + 60_000);
 	assert.doesNotMatch(JSON.stringify([machine, raw.prepare("SELECT * FROM provider_usage").all()]), /canary/);

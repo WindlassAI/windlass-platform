@@ -6,7 +6,9 @@ import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../.
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { containerName } from "../../server/src/sandbox/sandboxes.js";
 import type { KeyTurnRelay, TurnModelRelay } from "../../server/src/sandbox/provider.js";
-import type { ModelProvider } from "../../server/src/contract.js";
+import type { ModelProvider, RelaySeen } from "../../server/src/contract.js";
+import { MAX_PLAN_SEEN } from "../../server/src/runner/protocol.js";
+import type { DockerPlanRelay } from "../../server/src/sandbox/model-relay.js";
 import { randomBytes } from "node:crypto";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
@@ -14,6 +16,7 @@ import { cleanClaudeOutput, claudeStream } from "./claude-output.js";
 import { readMemoryEvents } from "./memory-events.js";
 import { shotsImage } from "./policy.js";
 import { Refusal } from "./state.js";
+import { MACHINE_HARNESSES } from "./machine-harnesses.js";
 
 // run() uses this same start() internally. Capture its pipes without reimplementing the
 // Docker provider's stdin handling, cancellation, signal escalation or output truncation.
@@ -58,8 +61,10 @@ class Conversation {
 		string,
 		{
 			operation: string;
-			relay: KeyTurnRelay | TurnModelRelay;
+			relay: KeyTurnRelay | TurnModelRelay | DockerPlanRelay;
 			provider?: ModelProvider;
+			/** A plan relay's: what the provider said of the plan since the server last asked (`planRelaySeen`). */
+			plan?: { seen: RelaySeen[] };
 			id: string;
 			untrack: () => void;
 		}
@@ -244,15 +249,18 @@ class Conversation {
 						let argv = op.args.argv;
 						const options = { ...op.args.options, ...streams };
 						if (acp && box.harness) {
+							const held = [...this.relays.values()].filter(one => one.id === id);
 							const keys = Object.fromEntries(
-								[...this.relays.values()]
-									.filter(held => held.id === id && held.provider)
-									.map(held => [held.provider!, held.relay.placeholder]),
+								held.filter(one => one.provider).map(one => [one.provider!, one.relay.placeholder]),
 							);
+							const plan = held.find(one => one.plan);
 							const { WLP_TURN_KEY_LEASES: expected = "", ...secrets } = options.secretEnv ?? {};
-							if (Object.values(keys).sort().join(",") !== expected)
-								throw new Refusal("The turn's provider key leases changed.");
-							const credentials = await o.turnCredentials(box.raw, box.harness, keys);
+							const leases = plan ? [plan.relay.placeholder] : Object.values(keys);
+							if (leases.sort().join(",") !== expected) throw new Refusal("The turn's provider key leases changed.");
+							// A plan pays through its relay on this machine: neither the machine's own sign-in nor a key.
+							const credentials = plan
+								? { env: MACHINE_HARNESSES[box.harness].planEnv(plan.relay.placeholder) }
+								: await o.turnCredentials(box.raw, box.harness, keys);
 							if (credentials.close) {
 								const end = credentials.close;
 								let closed: Promise<void> | undefined;
@@ -270,7 +278,12 @@ class Conversation {
 							options.secretEnv = { ...secrets, ...credentials.env };
 							if (box.harness === "opencode") argv = ["env", "-u", "WLP_SESSION_BEARER", ...argv];
 							if (box.harness === "claude")
-								argv = ["env", "-u", keys.anthropic ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY", ...argv];
+								argv = [
+									"env",
+									"-u",
+									keys.anthropic && !plan ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY",
+									...argv,
+								];
 						}
 						p = h.start(argv, options, op.args.tag);
 					} catch (error) {
@@ -333,13 +346,17 @@ class Conversation {
 					return await h.sweep(op.args.tag, op.args.options);
 				case "modelRelay": {
 					abort?.signal.throwIfAborted();
-					if (box.harness ? !o.harnessKeyRelays || !op.args.forward : !o.modelRelays || !o.modelRelayReady)
+					const forward = op.args.forward;
+					if (box.harness ? !o.harnessKeyRelays || !forward : !o.modelRelays || !o.modelRelayReady)
 						throw new Refusal("This sandbox's turns cannot use the model relay.");
-					if (!box.harness && op.args.forward && !o.windlassKeyRelays)
+					if (!box.harness && forward && !o.windlassKeyRelays)
 						throw new Refusal("Windlass Settings keys were not negotiated.");
+					// A plan never goes through the platform from a machine: its relay here sends it (`planRelay`).
+					if (forward?.provider === "claude-plan" || forward?.provider === "chatgpt-plan")
+						throw new Refusal("A plan pays through this machine's plan relay, not the platform's.");
 					const relay = box.harness
-						? await o.openTurnKey(box.raw, box.harness, op.args.forward!)
-						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
+						? await o.openTurnKey(box.raw, box.harness, forward!)
+						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, forward);
 					if (!this.active || abort?.signal.aborted) {
 						await relay.close();
 						throw new Refusal("The session conversation ended.");
@@ -350,14 +367,54 @@ class Conversation {
 						this.relays.delete(lease);
 						await relay.close();
 					});
-					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: op.args.forward?.provider });
+					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: forward?.provider });
 					return { lease, placeholder: relay.placeholder, env: relay.env };
+				}
+				case "planRelay": {
+					abort?.signal.throwIfAborted();
+					if (!o.planRelays) throw new Refusal("This sandbox's turns cannot use a plan relay.");
+					const { wire, harness, token, expiresAt } = op.args;
+					if ((harness === "windlass") !== !box.harness || (box.harness && harness !== box.harness))
+						throw new Refusal("This plan relay is for another agent.");
+					const plan = { seen: [] as RelaySeen[] };
+					const relay = await o.modelRelay.openPlan(containerName(box.raw), box.raw, token, {
+						wire,
+						harness,
+						expiresAt,
+						onSeen: seen => {
+							plan.seen.push(seen);
+							if (plan.seen.length > MAX_PLAN_SEEN) plan.seen.shift();
+						},
+					});
+					if (!this.active || abort?.signal.aborted) {
+						await relay.close();
+						throw new Refusal("The session conversation ended.");
+					}
+					const lease = randomBytes(16).toString("hex");
+					const untrack = o.trackRelay(id, async () => {
+						this.relays.delete(lease);
+						await relay.close();
+					});
+					this.relays.set(lease, { operation: op.id, relay, id, untrack, plan });
+					return { lease, placeholder: relay.placeholder, env: relay.env };
+				}
+				case "planRelayToken": {
+					const held = this.relays.get(op.args.lease);
+					if (held?.id !== id || !held.plan || !("hand" in held.relay))
+						throw new Refusal("This plan relay lease is not this sandbox's, or it has ended.");
+					await (held.relay as DockerPlanRelay).hand(op.args.token);
+					return null;
+				}
+				case "planRelaySeen": {
+					const held = this.relays.get(op.args.lease);
+					if (held?.id !== id || !held.plan) return [];
+					return held.plan.seen.splice(0);
 				}
 				case "modelRelayToken": {
 					const held = this.relays.get(op.args.lease);
-					if (held?.id !== id || !("hand" in held.relay))
+					if (held?.id !== id || held.plan || !("hand" in held.relay))
 						throw new Refusal("This model relay lease is not this sandbox's, or it has ended.");
-					await held.relay.hand({ accessToken: op.args.accessToken, expiresAt: op.args.expiresAt });
+					await (held.relay as TurnModelRelay).hand({ accessToken: op.args.accessToken, expiresAt: op.args.expiresAt });
 					return null;
 				}
 				case "modelRelayClose": {
@@ -372,7 +429,8 @@ class Conversation {
 		}
 	}
 	async serve(op: Operation, orphaned: Promise<void>) {
-		const abort = op.name === "run" || op.name === "modelRelay" ? new AbortController() : undefined;
+		const abort =
+			op.name === "run" || op.name === "modelRelay" || op.name === "planRelay" ? new AbortController() : undefined;
 		if (abort) this.runs.set(op.id, abort);
 		let id = "id" in op.args && this.owner.boxes.has(op.args.id) ? op.args.id : null;
 		let outcome = "done";

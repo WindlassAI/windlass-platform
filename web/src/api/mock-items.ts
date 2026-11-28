@@ -27,6 +27,8 @@ import {
 	validatePlan,
 } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { addSandbox, addTurn, mergeUsage, noUsage, tokensUsd, turnMeter } from "../../../server/src/factory/cost.js";
+import { finishedItems, itemSize } from "../../../server/src/factory/usage-summary.js";
 import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
@@ -48,6 +50,12 @@ import {
 	type ApiToken,
 	type ApiTokenScope,
 	type AuthResult,
+	type CostRates,
+	type FinishedItem,
+	SUMMARY_DAYS,
+	type SpendUsage,
+	type SummaryDays,
+	type WorkType,
 	type ChoiceId,
 	type CreateItemInput,
 	type CreateSessionInput,
@@ -112,7 +120,7 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 export interface MockItemsDeps {
 	hosted(
 		auth: AuthResult,
-	): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys" | "hostedSizes" | "hostedRates">;
+	): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedCredentials" | "hostedSizes" | "hostedRates">;
 	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
 	/** The settings layers a new item resolves over, as the server reads them (user-items.ts, `makeItem`). */
 	runContext(auth: AuthResult, repo: GithubId): RunContext;
@@ -4016,6 +4024,157 @@ function seededBlocked(at: number): NonNullable<ItemView["blockedNetwork"]> {
 	};
 }
 
+/** A slice of models.dev's catalog as server/src/model-prices.ts keeps it (November 2026): the models the seeded items ran. */
+export const MOCK_MODEL_PRICES: Pick<CostRates, "models" | "source"> = {
+	models: {
+		"anthropic/claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3 },
+		"anthropic/claude-opus-4-5": { input: 5, output: 25, cacheRead: 0.5 },
+		"openai/gpt-5.3-codex": { input: 1.75, output: 14, cacheRead: 0.175 },
+		"openai/gpt-5": { input: 1.25, output: 10, cacheRead: 0.125 },
+	},
+	source: { name: "models.dev", url: "https://models.dev/api.json", fetchedAt: Date.UTC(2026, 10, 27) },
+};
+
+const SEEDED_KEY_MODEL = "anthropic/claude-sonnet-4-5";
+
+/**
+ * What a seeded item's own turns used, as its agents would have reported them: almost all input, most of it reread
+ * from the cache. One Windlass item in three ran on a Settings key (dollars); the others on the ChatGPT plan. Claude
+ * Code reports its own dollars where it runs on an API key. A feature's own share is what its parts did not use.
+ */
+function seededUsage(item: ItemView, index: number, parts: readonly ItemView[]): SpendUsage {
+	const usage = noUsage();
+	const raw = Math.max(
+		0,
+		(item.spent.rawTokens ?? item.spent.tokens) - parts.reduce((n, p) => n + (p.spent.rawTokens ?? p.spent.tokens), 0),
+	);
+	const turns = Math.max(1, item.spent.turns - parts.reduce((n, p) => n + p.spent.turns, 0));
+	const agent = item.agent;
+	const keyed = !agent && index % 3 === 0;
+	const harness = agent?.harness ?? "windlass";
+	const model = keyed ? SEEDED_KEY_MODEL : (agent?.model ?? "default");
+	const size = item.place.kind === "hosted" ? "standard" : null;
+	const perTurn = Math.round(raw / turns);
+	for (let turn = 0; raw > 0 && turn < turns; turn++) {
+		const input = Math.round(perTurn * 0.95);
+		const tokens = { inputTokens: input, cachedInputTokens: Math.round(input * 0.85), outputTokens: perTurn - input };
+		const reported = harness === "claude" && agent?.signIn === "api-key";
+		addTurn(
+			usage,
+			turnMeter({
+				harness,
+				model,
+				key: keyed ? { provider: "anthropic", generation: "mock" } : undefined,
+				signIn: agent?.signIn,
+				usage: { ...tokens, reasoningTokens: 0 },
+				cost: reported
+					? { amount: tokensUsd(tokens, { input: 5, output: 25, cacheRead: 0.5 }), currency: "USD" }
+					: null,
+				size,
+			}),
+		);
+	}
+	const seconds = item.spent.hostedSeconds - parts.reduce((n, p) => n + p.spent.hostedSeconds, 0);
+	if (size) addSandbox(usage, size, seconds);
+	return usage;
+}
+
+/** What a seeded item's changes would be, from its title's words, as a turn's changed paths would say. */
+function seededWorkType(title: string): WorkType {
+	if (/\b(?:readme|docs?|document)/i.test(title)) return "docs";
+	if (/\btests?\b/i.test(title)) return "tests";
+	if (/\b(?:bump|upgrade|dependenc)/i.test(title)) return "deps";
+	return "feature";
+}
+
+/** Gives the seeded items their usage, and each feature its parts'. */
+function withSeededUsage(items: readonly ItemView[]): void {
+	const byId = new Map(items.map(item => [item.id, item]));
+	items.forEach((item, index) => {
+		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
+		item.spent.usage ??= seededUsage(item, index, parts);
+		if (item.mode !== "orchestrate") item.workType ??= seededWorkType(item.title);
+	});
+	for (const item of items) {
+		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
+		if (parts.length) item.partsUsage = mergeUsage(parts.map(part => part.spent.usage));
+	}
+}
+
+/** The kinds of finished work the seeded history draws from, with how often each comes, its tokens and minutes. */
+const HISTORY_TYPES: { type: WorkType; weight: number; tokens: number; minutes: number; title: string }[] = [
+	{ type: "docs", weight: 3, tokens: 400_000, minutes: 9, title: "Document the setup steps" },
+	{ type: "tests", weight: 3, tokens: 900_000, minutes: 16, title: "Cover the parser's edge cases" },
+	{ type: "deps", weight: 2, tokens: 300_000, minutes: 7, title: "Bump the test runner" },
+	{ type: "feature", weight: 7, tokens: 2_400_000, minutes: 38, title: "Add retry to the webhook client" },
+	{ type: "other", weight: 2, tokens: 700_000, minutes: 12, title: "Tidy the CI workflow" },
+];
+
+/**
+ * Ninety days of ended items for the Usage summary, the same on every load: mostly single items, some features,
+ * one in five not finished; one in three on the ChatGPT plan, a few retried.
+ */
+function seededHistory(at: number): FinishedItem[] {
+	let seed = 20261127;
+	const next = () => {
+		seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+		return seed / 2_147_483_648;
+	};
+	const weights = HISTORY_TYPES.reduce((sum, kind) => sum + kind.weight, 0);
+	const pick = () => {
+		let roll = next() * weights;
+		return HISTORY_TYPES.find(kind => (roll -= kind.weight) < 0) ?? HISTORY_TYPES[0]!;
+	};
+	const items: FinishedItem[] = [];
+	for (let n = 0; n < 72; n++) {
+		const kind = pick();
+		const sizeRoll = next();
+		const parts = sizeRoll < 0.78 ? 0 : sizeRoll < 0.93 ? 2 + Math.floor(next() * 2) : 4 + Math.floor(next() * 3);
+		const scale = (parts || 1) * (0.5 + next() * 1.4);
+		const stateRoll = next();
+		const state = stateRoll < 0.8 ? "done" : stateRoll < 0.9 ? "cancelled" : "failed";
+		const onPlan = next() < 0.33;
+		const turns = Math.max(1, Math.round(scale * 4));
+		const usage = noUsage();
+		const retryUsage = noUsage();
+		const retried = state !== "cancelled" && next() < 0.22;
+		const perTurn = Math.round((kind.tokens * scale * (state === "done" ? 1 : 0.6)) / turns);
+		for (let turn = 0; turn < turns; turn++) {
+			const input = Math.round(perTurn * 0.95);
+			const meter = turnMeter({
+				harness: "windlass",
+				model: onPlan ? "gpt-5.3-codex" : SEEDED_KEY_MODEL,
+				key: onPlan ? undefined : { provider: "anthropic", generation: "mock" },
+				usage: {
+					inputTokens: input,
+					cachedInputTokens: Math.round(input * 0.85),
+					outputTokens: perTurn - input,
+					reasoningTokens: 0,
+				},
+				size: "standard",
+			});
+			addTurn(usage, meter);
+			if (retried && turn >= turns - Math.max(1, Math.round(turns / 3))) addTurn(retryUsage, meter);
+		}
+		const seconds = Math.round(kind.minutes * 60 * scale * (0.7 + next() * 0.8));
+		addSandbox(usage, "standard", Math.round(seconds * 0.6));
+		const endedAt = at - Math.round(next() * 90 * 24 * HOUR);
+		items.push({
+			id: `i_history${String(n).padStart(3, "0")}`,
+			title: parts ? `${kind.title}, in ${parts} parts` : kind.title,
+			state,
+			size: itemSize(parts ? "orchestrate" : "single", parts),
+			parts,
+			type: kind.type,
+			endedAt,
+			seconds,
+			usage,
+			retryUsage,
+		});
+	}
+	return items;
+}
+
 const summaryOf = ({
 	blockedNetwork: _blocked,
 	feedback: _feedback,
@@ -4100,6 +4259,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				.map(view => (deps.blocked && view.report ? { ...view, blockedNetwork: seededBlocked(at) } : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
+			withSeededUsage(items);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
 			const machines = (deps.machines(auth)?.list ?? []).map(m => ({ name: m.name, machineId: m.machineId }));
@@ -5092,10 +5252,12 @@ export function createMockItems(deps: MockItemsDeps) {
 		UserApi,
 		| "listItems"
 		| "itemFeed"
+		| "finishedItems"
 		| "item"
 		| "itemAttachmentLinks"
 		| "createItem"
 		| "actOnItem"
+		| "useKeyNow"
 		| "factoryLimits"
 		| "apiTokens"
 		| "createApiToken"
@@ -5118,6 +5280,19 @@ export function createMockItems(deps: MockItemsDeps) {
 			async itemFeed() {
 				await answer(240);
 				return itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
+			},
+			async finishedItems(days: SummaryDays) {
+				await answer(260);
+				if (!SUMMARY_DAYS.includes(days))
+					throw new PlatformError("user", "Choose 7, 30 or 90 days.", { reason: "bad_input" });
+				const at = deps.now();
+				const since = at - days * 24 * HOUR;
+				const history = ["all", "many", "full", "features"].includes(state) ? seededHistory(at) : [];
+				const items = [
+					...finishedItems(keptOf(auth).items.map(summaryOf), since),
+					...history.filter(item => item.endedAt >= since),
+				].sort((a, b) => b.endedAt - a.endedAt);
+				return { days, since, items };
 			},
 			async item(id) {
 				await answer(220);
@@ -5323,6 +5498,16 @@ export function createMockItems(deps: MockItemsDeps) {
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
 				return withPartScreenshots(auth, pageOf(auth, item));
+			},
+			// As the user actor's: an item waiting for its plan, where a key can pay, takes its next turn on the key.
+			async useKeyNow(id) {
+				await answer(240);
+				const item = itemOf(auth, id);
+				if (item.state !== "waiting" || !item.wait?.plan?.keyNow)
+					throw new PlatformError("user", "This item is not waiting for a plan that a saved key could stand in for.", {
+						reason: "bad_input",
+					});
+				change(auth, item, { state: "working", wait: null }, ["Paid with your key this time."], "person");
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {

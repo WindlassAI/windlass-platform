@@ -24,11 +24,9 @@ import {
 } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, validModelKey, type MachineSummary, type ModelProvider } from "../server/src/contract.js";
-import {
-	MODEL_PROVIDER_TABLES,
-	openModelKeyTransit,
-	modelProviderActions as actions,
-} from "../server/src/model-providers.js";
+import { modelProviderActions as actions } from "../server/src/credentials/keys.js";
+import { CREDENTIAL_TABLES, credentialActions as credentials } from "../server/src/credentials/index.js";
+import { openCredentialTransit } from "../server/src/credentials/transit.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
@@ -43,7 +41,7 @@ const makeKeys = () => ({
 
 function account(uid: string) {
 	const sql = new DatabaseSync(":memory:");
-	for (const table of MODEL_PROVIDER_TABLES) sql.exec(table);
+	for (const table of CREDENTIAL_TABLES) sql.exec(table);
 	const db: DefaultsDb = {
 		async execute<Row>(query: string, ...args: unknown[]) {
 			return sql.prepare(query).all(...(args as SQLInputValue[])) as Row[];
@@ -163,10 +161,13 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 
 	const save = (provider: ModelProvider, key: string) => actions.saveModelProvider(c, { provider, key });
 	const nonce = hex();
-	await assert.rejects(actions.internalModelKeyGeneration(c, "openai"), /internal/);
-	await assert.rejects(actions.internalModelKey(c, "openai", nonce), /internal/);
+	await assert.rejects(credentials.internalCredentialGeneration(c, { provider: "openai" }), /internal/);
+	await assert.rejects(credentials.internalCredential(c, { provider: "openai" }, nonce), /internal/);
 	for (const token of [issueServiceToken(), b.internal.conn.params.token]) {
-		await assert.rejects(actions.internalModelKey({ ...c, conn: { params: { token } } }, "openai", nonce), /internal/);
+		await assert.rejects(
+			credentials.internalCredential({ ...c, conn: { params: { token } } }, { provider: "openai" }, nonce),
+			/internal/,
+		);
 	}
 	for (const call of [
 		() => actions.modelProviders(a.internal),
@@ -183,6 +184,8 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		});
 		// Anthropic issues more than the apiNN- shape; the check call decides, not the prefix.
 		if (provider === "anthropic") assert.ok(validModelKey(provider, "sk-ant-xyz-a-" + "b".repeat(40)));
+		// A Claude plan's setup token is not an API key: it is connected as a plan.
+		if (provider === "anthropic") assert.ok(!validModelKey(provider, "sk-ant-oat01-" + "b".repeat(40)));
 		const saved = await save(provider, keys[provider]);
 		clean(saved);
 		assert.equal(saved.last4, keys[provider].slice(-4));
@@ -205,7 +208,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		assert.ok(!failed.ok && failed.message?.includes("check the key") && !failed.models);
 		assert.deepEqual(await actions.modelProviders(c), [checked]);
 		await actions.removeModelProvider(c, provider);
-		assert.equal(await actions.internalModelKey(a.internal, provider, nonce), null);
+		assert.equal(await credentials.internalCredential(a.internal, { provider }, nonce), null);
 	}
 	assert.deepEqual(await actions.modelProviders(c), []);
 
@@ -225,28 +228,28 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	const owner = JSON.stringify([c.key[0], "openai"]);
 	const oldBlob = old.seal("model-key", owner, keys.openai);
 	a.sql.prepare("UPDATE model_provider SET sealed = ? WHERE provider = 'openai'").run(oldBlob);
-	const sealed = await actions.internalModelKey(a.internal, "openai", nonce);
+	const sealed = await credentials.internalCredential(a.internal, { provider: "openai" }, nonce);
 	assert.ok(sealed);
 	clean(sealed);
 	now += 59_999;
-	const payload = openModelKeyTransit(c.key[0], "openai", nonce, sealed);
+	const payload = openCredentialTransit(c.key[0], { provider: "openai" }, nonce, sealed);
 	const [row] = await c.db.execute<{ sealed: string; generation: string }>(
 		"SELECT sealed, generation FROM model_provider WHERE provider = 'openai'",
 	);
-	assert.equal(await actions.internalModelKeyGeneration(a.internal, "openai"), row.generation);
+	assert.equal(await credentials.internalCredentialGeneration(a.internal, { provider: "openai" }), row.generation);
 	assert.ok(
-		serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation,
+		serverSealer().isCurrent(row.sealed) && payload.secret === keys.openai && payload.generation === row.generation,
 	);
 	assert.ok(serverSealer().open("model-key", owner, row.sealed) === keys.openai);
 	for (const subject of [JSON.stringify([b.context.key[0], "openai"]), JSON.stringify([c.key[0], "google"])]) {
 		assert.throws(() => serverSealer().open("model-key", subject, row.sealed));
 	}
 	assert.throws(() => serverSealer().open("secret", owner, row.sealed));
-	assert.throws(() => openModelKeyTransit(c.key[0], "openai", hex(), sealed));
-	assert.throws(() => openModelKeyTransit(b.context.key[0], "openai", nonce, sealed));
-	assert.throws(() => openModelKeyTransit(c.key[0], "google", nonce, sealed));
+	assert.throws(() => openCredentialTransit(c.key[0], { provider: "openai" }, hex(), sealed));
+	assert.throws(() => openCredentialTransit(b.context.key[0], { provider: "openai" }, nonce, sealed));
+	assert.throws(() => openCredentialTransit(c.key[0], { provider: "google" }, nonce, sealed));
 	now++;
-	assert.throws(() => openModelKeyTransit(c.key[0], "openai", nonce, sealed), /expired/);
+	assert.throws(() => openCredentialTransit(c.key[0], { provider: "openai" }, nonce, sealed), /expired/);
 
 	mode = "hold";
 	const started = once(gate, "started");

@@ -32,7 +32,7 @@ import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
-import { savedModelKeys } from "../model-providers.js";
+import { savedModelKeys } from "../credentials/keys.js";
 import { availableCatalog, initialHarnessModels, listedHarness, machineHarness } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
@@ -78,14 +78,6 @@ export function launchPlace(raw: unknown): SandboxPlace {
 
 export async function machineTables(db: RawAccess) {
 	await db.execute(PROVIDER_TABLE);
-	// Consolidate pre-account Windlass rows before per-machine cleanup can remove them.
-	// Repeating either statement after an interrupted migration keeps the same strongest cooldown.
-	await db.execute(`INSERT OR REPLACE INTO provider_usage (place,harness,generation,data)
-		SELECT '*', harness, generation, json_set(data, '$.account.key', '*/windlass/' || generation)
-		FROM provider_usage WHERE harness='windlass' AND EXISTS (SELECT 1 FROM provider_usage WHERE harness='windlass' AND place<>'*')
-		ORDER BY CAST(generation AS INTEGER) DESC, json_extract(data, '$.account.limitedUntil') DESC,
-			json_extract(data, '$.lastRefusal') DESC, place LIMIT 1`);
-	await db.execute("DELETE FROM provider_usage WHERE harness='windlass' AND place<>'*'");
 	await db.execute(`CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, facts TEXT NOT NULL,
 		send INTEGER NOT NULL DEFAULT 1, login TEXT, expires INTEGER)`);
 	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machines)")).some(column => column.name === "host"))
@@ -202,6 +194,7 @@ export async function listMachines(c: {
 			}),
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
+			...(report?.planRelay && { planRelay: true as const }),
 			...(harnesses && { harnesses }),
 			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
@@ -432,6 +425,15 @@ export const machineActions = {
 		const summary = (await listMachines(c)).find(row => row.machineId === id);
 		if (!summary) throw pairingGone();
 		return summary;
+	},
+	async denyMachine(c: Ctx, input: { code: string }): Promise<void> {
+		const { uid } = requireUser(c);
+		enabled();
+		const handle = await pairing(c, input);
+		const { machineId } = await handle.internalClaimed(uid).catch(asPairingError);
+		// Once confirmed, the machine is this user's to remove on Machines, not to deny here.
+		if ((await c.db.execute("SELECT 1 FROM machines WHERE id = ?", machineId)).length) return;
+		await handle.internalDeny(uid).catch(asPairingError);
 	},
 	async removeMachine(c: Ctx, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> {
 		requireUser(c);

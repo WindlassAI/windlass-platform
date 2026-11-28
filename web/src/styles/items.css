@@ -432,6 +432,15 @@
 .item-now-when {
 	margin-top: 4px;
 }
+/* An item waiting for its plan: its next turn on the key, or the rule. */
+.plan-wait {
+	margin-top: 10px;
+}
+.plan-wait-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
 
 /* The facts under it, and in a verdict: the usage page's rows, with room for words. */
 .item-facts {
@@ -3365,6 +3374,25 @@ a.subtask-chip:hover {
 		border-left: 0;
 		border-top: 1px solid var(--line);
 	}
+}
+/* The item's dollars (components/ItemCost.tsx) above its budget meters. */
+.item-dollars {
+	border-bottom: 1px solid var(--line);
+}
+.item-dollars > .item-dollars-table {
+	border-top: 1px solid var(--line);
+}
+.item-dollars-table {
+	width: 100%;
+	margin: 0;
+}
+.item-dollars-models,
+.item-dollars-wait {
+	margin: 0;
+	padding: 10px 18px;
+}
+.item-dollars-models > .item-dollars-table {
+	margin-top: 8px;
 }
 /* A plan question's way to the plan below it, and what a re-plan changed. */
 .plan-jump {

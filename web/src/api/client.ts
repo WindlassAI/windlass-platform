@@ -17,6 +17,9 @@ import type {
 	AuthResult,
 	ChatgptStatus,
 	ContinueSessionInput,
+	CostRates,
+	FinishedItems,
+	SummaryDays,
 	CreateItemInput,
 	CreateSessionInput,
 	FactoryLimits,
@@ -178,6 +181,15 @@ export interface UserApi
 		| "saveModelProvider"
 		| "checkModelProvider"
 		| "removeModelProvider"
+		| "modelPlans"
+		| "approvePlanConnect"
+		| "denyPlanConnect"
+		| "removeModelPlan"
+		| "recheckModelPlan"
+		| "payWith"
+		| "savePayWith"
+		| "useKeyNow"
+		| "githubStarterIssues"
 		| "addSetupNotes"
 		| "deleteSetupNote"
 		| "setGuideCheck"
@@ -187,8 +199,6 @@ export interface UserApi
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
-	startChatgpt(): Promise<LoginStart>;
-	finishChatgpt(callback: string): Promise<void>;
 	forgetChatgpt(): Promise<void>;
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */
 	models(): Promise<ModelList>;
@@ -302,6 +312,8 @@ export interface UserApi
 	claimMachine(input: { code: string }): Promise<MachineClaim>;
 	/** Pairs the machine of a code this user looked up. Throws as `claimMachine` does. */
 	confirmMachine(input: { code: string; keyConfirmed: true }): Promise<MachineSummary>;
+	/** Ends the pairing of a code this user looked up, so its runner stops; nothing once its machine is paired. Throws with reason `pairing_not_found` for a code this user did not look up. */
+	denyMachine(input: { code: string }): Promise<void>;
 	/** Removes a machine; with `removeSandboxes` its runner also removes the agents' sandboxes on it. Throws with reason `machine_not_found`. */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
@@ -333,6 +345,10 @@ export interface UserApi
 	actOnItem(id: string, action: ItemAction): Promise<ItemView>;
 	/** The factory's limits for this user, which the deployment's owner sets. */
 	factoryLimits(): Promise<FactoryLimits>;
+	/** What prices items' usage: the model catalog's prices and the hosted sandbox rates (`CostRates`). */
+	costRates(): Promise<CostRates>;
+	/** The items that ended in the last 7, 30 or 90 days with what each used, for the Usage summary (`FinishedItems`). */
+	finishedItems(days: SummaryDays): Promise<FinishedItems>;
 	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
 	linear(): Promise<LinearStatus>;
 	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=<ticket>` or `#linear-error=<code>`. */

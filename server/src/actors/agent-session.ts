@@ -42,6 +42,11 @@ import {
 	WIDE_HOSTS,
 	type HostedSize,
 	isHostedSize,
+	SESSION_HOSTED_SIZE,
+	PLAN_ASK,
+	PLAN_LIMITED,
+	type CredentialSource,
+	type HarnessId,
 } from "../contract.js";
 import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
@@ -72,7 +77,9 @@ import { setupProjectOf } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { agentTurn } from "../factory/budget.js";
+import { agentTurn, turnUsd, windowShare } from "../factory/budget.js";
+import { modelPrices } from "../model-prices.js";
+import { turnMeter } from "../factory/cost.js";
 import { cutTurnUsage, cutTurnUsageNote, usesPlatformModel, freedNote, hostedLimitsApply } from "../usage.js";
 import { type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import {
@@ -91,13 +98,14 @@ import { recentSubject } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import type { Fact } from "../factory/types.js";
 import { remoteLease, type RemoteLease } from "../sandbox/relay-leases.js";
+import { plansAllowed } from "../credentials/plans.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import {
 	windlassProvider,
 	hostedKeyMessage,
-	hostedProvider,
+	hostedPayer,
 	selectedKey,
 	machinePayerProblem,
 	withSettingsKeys,
@@ -168,7 +176,10 @@ import {
 	takeSandbox,
 	sandboxChanged,
 	busy,
+	PlanWaitError,
 } from "./agent-session/common.js";
+import { PAY_WITH_HARNESSES } from "../pay-with.js";
+import type { PayerAnswer } from "./user-payer.js";
 import { readSecrets, sessionRedactor } from "./agent-session/secrets.js";
 import { childSetupSeed } from "./agent-session/setup.js";
 import {
@@ -223,6 +234,7 @@ import {
 	endSegment,
 	closeTurn,
 	settleAfterTurn,
+	planWindows,
 	type ItemTurnEnd,
 	type OfferedHarness,
 	type TurnHooks,
@@ -306,6 +318,86 @@ function liveMeta(c: Ctx): SessionMeta {
 	return meta;
 }
 
+/** `WLP_PLAN_USERS` leaves this user out: hosted Windlass on the ChatGPT plan is refused. */
+export const CHATGPT_PLAN_OFF =
+	"Your ChatGPT plan isn't enabled for hosted runs on this account. Run this agent on your own machine, or choose a model of a Settings key (such as openai/…).";
+const CHATGPT_PLAN_MISSING =
+	"Connect your ChatGPT plan to run Windlass here: run npx @windlassai/cli connect codex, or choose a model of a Settings key (such as openai/…).";
+
+/**
+ * Hosted Windlass's unqualified models run on the ChatGPT plan, pinned like any plan and behind the same kill switch
+ * (`WLP_PLAN_USERS`, which `internalCredentialGeneration` applies too). A demo calls no model, and an environment
+ * build runs no agent: neither pins one. When the plan is limited, Pay with's "When limited" holds as for a plan agent
+ * (user-payer.ts): an item waits for the reset, a person is asked, and "use my key" (`keyOnce`) runs this one turn on
+ * the OpenAI key's version of the model (`openai/<model>`), where a saved key offers it.
+ */
+async function chatgptPlanCredential(
+	c: Ctx,
+	meta: SessionMeta,
+	model: string,
+	keyOnce?: boolean,
+): Promise<TurnCredential> {
+	if (meta.demo || meta.environmentBuild) return { model };
+	if (!plansAllowed(meta.uid)) throw new UserError(CHATGPT_PLAN_OFF, { code: "harness_signed_out" });
+	const ref = { provider: "openai", plan: true } as const;
+	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref);
+	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
+	const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
+	if (answer) return payerCredential(meta, answer, model);
+	return { model, key: { ...ref, generation } };
+}
+
+/**
+ * Pay with's answer as the turn's credential (user-payer.ts): what pays, or the refusal a person's prompt or an item's
+ * turn shows: `PLAN_ASK` (wait, or the key this time), `PLAN_LIMITED` (wait), or nothing can pay. A key paying for
+ * Windlass's ChatGPT model runs the key's version of it (`keyModel`), for this turn only.
+ */
+function payerCredential(meta: SessionMeta, answer: PayerAnswer, model: string): TurnCredential {
+	const { decision } = answer;
+	if ("pay" in decision && answer.ref) return { model: answer.keyModel ?? model, key: answer.ref };
+	if ("ask" in decision) throw new UserError(decision.ask.sentence, { code: PLAN_ASK });
+	if ("wait" in decision) {
+		if (meta.origin?.kind !== "item") throw new UserError(decision.wait.sentence, { code: PLAN_LIMITED });
+		throw new PlanWaitError(decision.wait.sentence, decision.wait.retryAt, answer.plan ?? undefined);
+	}
+	throw new UserError("refuse" in decision ? decision.refuse : "Nothing can pay for this turn.", {
+		code: "harness_signed_out",
+	});
+}
+
+/**
+ * Windlass's unqualified models on a machine whose runner has a plan relay: the ChatGPT plan, pinned like a hosted
+ * turn's, its token handed to the relay on the machine. Not behind `WLP_PLAN_USERS` (`planAllowed`): the requests leave
+ * from the user's machine, with the sign-in Windlass there has always used.
+ */
+async function machineChatgptPlan(c: Ctx, meta: SessionMeta, model: string): Promise<TurnCredential> {
+	if (meta.demo || meta.environmentBuild) return { model };
+	const ref = { provider: "openai", plan: true } as const;
+	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref, true);
+	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
+	return { model, key: { ...ref, generation } };
+}
+
+/**
+ * Whether Pay with decides a plan agent's turn on a machine (`planRelay`: its runner hands a plan's token to a relay
+ * there), as it does hosted. The machine's own sign-in still wins where it is in use: the owner chose it on Machines
+ * (the default) and the agent is signed in there, as Claude Code's login kept on the machine is.
+ */
+export function machinePaysWith(
+	harness: HarnessId,
+	offered: Pick<OfferedHarness, "signIn"> | undefined,
+	source: CredentialSource | null,
+	planRelay: boolean,
+): boolean {
+	if (!planRelay || !PAY_WITH_HARNESSES.includes(harness) || source === "key") return false;
+	return offered?.signIn !== "token";
+}
+
+/**
+ * `planRelay`: the session's machine's runner hands a plan's token to a relay there (its report's `planRelay`); a
+ * plan pays for its turns as hosted (Pay with, and Windlass's ChatGPT plan). Without it a machine's turns use its own
+ * sign-ins or a forwarded key, and Windlass the ChatGPT access token handed to its model relay.
+ */
 export async function turnCredential(
 	c: Ctx,
 	meta: SessionMeta,
@@ -313,59 +405,97 @@ export async function turnCredential(
 	model: string,
 	signal?: AbortSignal,
 	pinned?: TurnCredential,
+	keyOnce?: boolean,
+	planRelay = false,
 ): Promise<TurnCredential> {
+	const hosted = meta.place.kind === "hosted";
+	const harness = meta.harness ?? "windlass";
+	// A hosted Windlass turn paused before it paid with the ChatGPT plan pinned nothing: it pins the plan now.
+	if (pinned && !pinned.key && hosted && harness === "windlass" && !windlassProvider(pinned.model))
+		return chatgptPlanCredential(c, meta, pinned.model);
 	if (pinned) {
 		const key = pinned.key;
-		if (key && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
+		if (key?.plan && meta.place.kind === "machine" && !planRelay)
+			throw new UserError("This machine's runner can no longer pay with the plan for the paused turn.", {
+				code: "harness_signed_out",
+			});
+		if (key && !key.plan && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
 			throw new UserError("This runner cannot relay the Settings key for the paused turn.", {
 				code: "harness_signed_out",
 			});
-		if (key && (await modelKeyActor(c, meta.uid).internalModelKeyGeneration(key.provider)) !== key.generation)
-			throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", {
-				code: "harness_signed_out",
-			});
+		if (key) {
+			const ref = { provider: key.provider, ...(key.plan && { plan: true as const }) };
+			const onMachine = meta.place.kind === "machine";
+			if ((await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref, onMachine)) !== key.generation)
+				throw new UserError(
+					`The ${key.plan ? "plan" : "Settings key"} for this turn changed or was removed. Start a new turn.`,
+					{ code: "harness_signed_out" },
+				);
+		}
 		return pinned;
 	}
-	const hosted = meta.place.kind === "hosted";
-	const harness = meta.harness ?? "windlass";
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
-		if (!provider) return { model };
-		const generation = await modelKeyActor(c, meta.uid).internalModelKeyGeneration(provider);
+		if (!provider) {
+			if (hosted) return chatgptPlanCredential(c, meta, model, keyOnce);
+			return planRelay ? machineChatgptPlan(c, meta, model) : { model };
+		}
+		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
 	}
 	const keyActor = modelKeyActor(c, meta.uid);
+	if (hosted && PAY_WITH_HARNESSES.includes(harness)) {
+		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
+		const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
+		if (answer) return payerCredential(meta, answer, model);
+	}
+	if (hosted) {
+		const credentials = await keyActor.internalHostedCredentials();
+		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
+		const payer = hostedPayer(
+			harness,
+			model,
+			credentials.map(ref => ({ ...ref, checkedAt: null })),
+		);
+		const key = payer && credentials.find(ref => ref.provider === payer.provider && !!ref.plan === !!payer.plan);
+		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+		return { model, key };
+	}
 	const [keys, source] = await Promise.all([
 		keyActor.internalModelKeys(),
 		meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null,
 	]);
 	const payer = source ?? "machine";
-	const providers = hosted || payer === "key" ? keys.map(k => k.provider) : [];
-	if (!hosted && meta.origin && !meta.origin.payer)
+	const providers = payer === "key" ? keys.map(k => k.provider) : [];
+	if (meta.origin && !meta.origin.payer)
 		throw new UserError(
 			"This item did not record who pays for its agent. Choose the payer on Machines and file a new item to use it.",
 			{ code: "harness_signed_out" },
 		);
-	if (!hosted && meta.origin && meta.origin.payer !== payer)
+	if (meta.origin && meta.origin.payer !== payer)
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", {
 			code: "harness_signed_out",
 		});
-	if (!hosted) {
-		const itemMachine =
-			meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
-		const problem = offered
-			? machinePayerProblem(offered, model, payer, providers, itemMachine)
-			: "The selected machine agent is unavailable.";
-		if (problem) throw new UserError(problem, { code: "harness_signed_out" });
+	if (machinePaysWith(harness, offered, source, planRelay)) {
+		const answer = await userActor(c, meta.uid).internalTurnPayer({
+			sessionId: meta.sessionId,
+			model,
+			keyOnce,
+			machine: true,
+		});
+		if (answer) return payerCredential(meta, answer, model);
 	}
-	if (harness === "opencode" && model === "default") {
-		if (meta.place.kind === "machine" && providers.length)
-			model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
-		else if (hosted) model = meta.harnessModels?.defaultModel ?? model;
-	}
-	const provider = hosted ? hostedProvider(harness, model, providers) : selectedKey(harness, model, providers);
-	if ((hosted || payer === "key") && !provider)
+	const itemMachine =
+		meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
+	const problem = offered
+		? machinePayerProblem(offered, model, payer, providers, itemMachine)
+		: "The selected machine agent is unavailable.";
+	if (problem) throw new UserError(problem, { code: "harness_signed_out" });
+	if (harness === "opencode" && model === "default" && meta.place.kind === "machine" && providers.length)
+		model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
+	const provider = selectedKey(harness, model, providers);
+	if (payer === "key" && !provider)
 		throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 	const key = keys.find(k => k.provider === provider);
 	return { model, key };
@@ -1103,8 +1233,15 @@ async function startPrompt(
 		let model = meta.model;
 		const requested = input.model || model;
 		let credential: ActiveTurn["credential"];
-		if (caps.events === "windlass" && windlassProvider(requested))
-			credential = await turnCredential(c, meta, undefined, requested);
+		// A Settings key, or hosted the ChatGPT plan: refused here, before anything is taken.
+		if (caps.events === "windlass" && (windlassProvider(requested) || meta.place.kind === "hosted"))
+			credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, input.payWith === "key");
+		// On a machine whose runner has a plan relay, Windlass's ChatGPT models pin the plan: refused here, as hosted.
+		else if (caps.events === "windlass" && meta.place.kind === "machine" && !meta.demo && !meta.environmentBuild) {
+			const known = await runnerLink(c, meta.place.machineId).facts();
+			if (known.report?.planRelay === true)
+				credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, undefined, true);
+		}
 		if (
 			caps.events === "windlass" &&
 			meta.windlassSessionId &&
@@ -1155,7 +1292,15 @@ async function startPrompt(
 				throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, { code: "bad_input" });
-			if (offered.signIn === "none") {
+			const planRelay = facts.report?.planRelay === true;
+			const source =
+				planRelay && meta.place.kind === "machine"
+					? await modelKeyActor(c, meta.uid).internalCredentialSource(meta.place.machineId, offered.id)
+					: null;
+			// Pay with decides here as hosted: what pays, or the prompt waits or asks.
+			if (machinePaysWith(offered.id, offered, source, planRelay))
+				credential = await turnCredential(c, meta, offered, model, undefined, undefined, input.payWith === "key", true);
+			else if (offered.signIn === "none") {
 				const keys = offered.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
 				if (
 					withSettingsKeys(
@@ -1169,7 +1314,7 @@ async function startPrompt(
 					});
 			}
 		} else if (meta.place.kind === "hosted" && caps.events === "acp") {
-			credential = await turnCredential(c, meta, undefined, model);
+			credential = await turnCredential(c, meta, undefined, model, undefined, undefined, input.payWith === "key");
 		} else if (!credential?.key && !meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
@@ -1185,14 +1330,16 @@ async function startPrompt(
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
 		});
-		if (usesPlatformModel(meta.harness, model)) {
+		// A turn the key pays in place of the ChatGPT plan (`openai/<model>`) spends none of the daily ChatGPT allowance.
+		const runs = credential?.model ?? model;
+		if (usesPlatformModel(meta.harness, runs)) {
 			await settleTokenReceipts(c, meta.uid).catch(() => {
 				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", {
 					code: "usage_unavailable",
 				});
 			});
 		}
-		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId, model);
+		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId, runs);
 		if (!claim.known || c.vars.destroying)
 			throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
@@ -1621,7 +1768,13 @@ async function itemTurnStarted(
 			effort,
 			profile: meta.profile,
 			size: meta.place.kind === "machine" ? (meta.origin?.size ?? 1) : (meta.hostedSize ?? null),
-			payer: credential.key ? "key" : meta.harness && meta.harness !== "windlass" ? "machine" : "windlass",
+			// Windlass's ChatGPT models are the platform's, whether a machine's sign-in or the hosted plan pays.
+			payer:
+				credential.key && !usesPlatformModel(meta.harness, credential.model)
+					? "key"
+					: meta.harness && meta.harness !== "windlass"
+						? "machine"
+						: "windlass",
 			payerSource: meta.origin?.payerSource,
 		},
 	};
@@ -1710,6 +1863,32 @@ async function itemTurnEnded(
 			...(item.escaped && { escaped: item.escaped }),
 		};
 	}
+	// What the turn used, for its cost (factory/cost.ts). One that could not run ("error") and reported nothing cost nothing.
+	if (ended.credential && (ended.usage !== null || ended.acp?.usage || ended.outcome !== "error"))
+		fact.spend.meter = turnMeter({
+			harness: meta.harness ?? "windlass",
+			model: ended.credential.model,
+			key: ended.credential.key,
+			signIn: ended.itemSignIn,
+			usage: ended.usage,
+			cost: ended.acp?.usage?.cost,
+			size: meta.place.kind === "hosted" ? (meta.hostedSize ?? SESSION_HOSTED_SIZE) : null,
+		});
+	// The item's budget in real units (factory/budget.ts): a key's dollars at today's prices, a plan's share of its windows.
+	if (fact.spend.meter) {
+		const models = await modelPrices()
+			.then(rates => rates.models)
+			.catch(() => null);
+		const usd = turnUsd(fact.spend.meter, models);
+		if (usd !== undefined) fact.spend.usd = usd;
+	}
+	const key = ended.credential?.key;
+	if (key?.plan && item.planAtStart !== undefined) {
+		const end = await planWindows(c, meta.uid, key.provider);
+		const fiveHour = windowShare(item.planAtStart, end, "5h");
+		const week = windowShare(item.planAtStart, end, "7d");
+		if (fiveHour !== null || week !== null) fact.spend.plan = { fiveHour, week };
+	}
 	if (
 		fact.kind === "turn_ended" &&
 		meta.origin?.subtaskScreenshots &&
@@ -1725,6 +1904,8 @@ async function itemTurnEnded(
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
 	if (item.outOfMemory) fact.outOfMemory = item.outOfMemory;
+	// Stopped at its budget while it ran (budget-watch.ts), not by a person or a restart: the item asks for more.
+	if (item.budgetStopped && !item.providerRefusal) fact.budgetStopped = true;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () =>
@@ -1836,6 +2017,8 @@ export const agentSession = actor({
 				await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
 			// Rows from before it have no whole-task prompt: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "fresh")) await db.execute("ALTER TABLE inbox ADD COLUMN fresh TEXT");
+			if (!inboxColumns.some(col => col.name === "budget"))
+				await db.execute("ALTER TABLE inbox ADD COLUMN budget TEXT");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 			await migrateJournal(db);
 		},
@@ -2989,11 +3172,11 @@ export const agentSession = actor({
 			}
 		},
 
-		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
-		internalModelRelay: (c, input: { nonce: string; request: string; consume?: boolean }): Promise<RemoteLease> => {
+		/** Whether this actor's process holds a turn's relay lease, and its credential reference: not held, the turn has ended. */
+		internalModelRelay: (c, input: { nonce: string; consume?: boolean }): Promise<RemoteLease> => {
 			requireService(c);
 			const nonce = typeof input?.nonce === "string" ? input.nonce : "";
-			return remoteLease(nonce, c.key[0], c.key[1], input.request, input.consume);
+			return remoteLease(nonce, c.key[0], c.key[1], input.consume);
 		},
 
 		internalGrant: (c, input: { key: string; slot: string }): void => {

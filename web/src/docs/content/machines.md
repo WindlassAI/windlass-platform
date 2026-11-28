@@ -33,9 +33,26 @@ Where Hosted can be used, choose its size and isolation here too. The agent and 
 
 Open the account menu and choose **Machines**, then **Add a machine**.
 
+### Connect it with one command
+
+The dialog shows one command first. Copy it and run it in a terminal on the computer. It needs Docker and Node:
+
+```sh
+npx @windlassai/cli connect --machine
+```
+
+It checks that Docker is installed and running, and says what to do if it is not. Then it fetches the runner image, pairs the machine and opens a page here to approve it. The page and your terminal show the same pairing code and **machine key**: check that they match, then choose **Approve**. Choose **Deny** if they differ or you did not run the command yourself; nothing is connected and the terminal stops. The dialog on the Machines page notices the new machine by itself.
+
+After you approve, it starts the runner in the background with the defaults: every agent in the runner image offered, the recommended profiles (see [What you need](#what-you-need)), **Restricted** [network access](#network-access) and limits sized for the computer. It signs no agent in: the machine's agents use the plans and keys connected on **Connections**. To change the settings later, run setup on the machine:
+
+```sh
+docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner <runner image> setup
+```
+
 ### 1. Start the runner
 
-The dialog shows one line first. Copy it and run it in a terminal on the computer:
+Without Node, open **No Node?** in the dialog. It shows one line. Copy it and run it in a terminal on the computer:
 
 ```sh
 curl -fsSL <platform address>/install.sh | sh
@@ -108,7 +125,7 @@ When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the addre
 docker logs windlass-runner
 ```
 
-Choose **Enter the code**, type the code and choose **Check code**. Case, spaces and dashes do not matter. A code lasts ten minutes. It belongs to the first account that enters it.
+Under **No Node?** in the dialog, choose **Enter the code**, type the code and choose **Check code**. Case, spaces and dashes do not matter. A code lasts ten minutes. It belongs to the first account that enters it.
 
 ### 3. Connect it
 
@@ -138,7 +155,7 @@ A machine runs the agents you start on it. It receives what they need, and nothi
 
 - your repository's files;
 - the saved secrets each agent is allowed, while **Send saved secrets to this machine** is on;
-- a ChatGPT access token for each turn of a Windlass agent, which lasts about an hour. With a current runner, the token goes to the machine's model relay and never into the agent's container. See [The Windlass model relay](#the-windlass-model-relay).
+- a plan's token for each turn a plan pays for: a Claude plan's, or a ChatGPT access token, which lasts about an hour. With a current runner, it goes to a relay on the machine for that turn and never into the agent's container or onto the disk. See [Plans on your machine](#plans-on-your-machine).
 
 The platform does not control this machine. What a session there shows of checks and changes is what the machine reports. See [Sandboxes and security](/docs/security#on-your-machine) for what the platform can and cannot do there.
 
@@ -290,9 +307,11 @@ The choice is saved at once. A machine that is not on **Any feature** says so on
 
 On a machine of yours you can run three more agents, each with your own account:
 
-- **Claude Code** uses your Anthropic Settings key or Claude subscription.
+- **Claude Code** uses your connected Claude plan or your Anthropic Settings key, as **Connections → Pay with** says, or a Claude login kept on the machine.
 - **OpenCode** uses Settings keys for OpenAI, Anthropic, Google and OpenRouter alongside providers configured on the machine.
-- **Codex** uses your OpenAI Settings key or its machine login (ChatGPT or an OpenAI API key).
+- **Codex** uses your connected ChatGPT plan or your OpenAI Settings key, as **Connections → Pay with** says.
+
+With a current runner, a plan pays from your machine: at each turn's start the platform hands the plan's token to a relay on the machine for that turn only. The relay keeps it in memory, never on disk, and sends the agent's requests to Anthropic or OpenAI from your machine. See [Plans on your machine](#plans-on-your-machine). An older runner uses the agent's login on the machine instead, until you update it.
 
 An agent runs only on a machine whose runner was started with its flag: `--harness claude`, `--harness opencode` or `--harness codex`. Repeat `--harness` to offer more than one. The **Enable** boxes of the setup command add these flags, and the command setup prints keeps them. The runner must be a build that includes that agent's image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image.", "Use --harness opencode with a runner built with the pinned OpenCode image." or "Use --harness codex with a runner built with the pinned Codex image."
 
@@ -311,7 +330,7 @@ None of these agents has a tool to publish: open the pull request from the sessi
 
 ## Sign agents in
 
-An agent signed in on the machine uses that sign-in first: a Claude subscription, Codex's ChatGPT or API-key login, or OpenCode's provider logins. A key in **Settings → Model providers** serves the providers the machine is not signed in to. To use your key even where the machine is signed in, choose **Use your … key** under **Paid by**, beside the agent on its card. Only the payer you choose is used: if it can't be, the item stops and asks you. Hosted agents always use your keys. With a key, the machine receives a temporary relay credential. The saved key stays on the platform, and the provider bills the key owner. Claude Code and Codex work items count API-key tokens toward their budget. Subscription turns show token usage separately.
+With a current runner, Claude Code and Codex follow **Connections → Pay with** (see [Plans on your machine](#plans-on-your-machine)), unless the agent is signed in on the machine or you chose the key below. On an older runner, an agent signed in on the machine uses that sign-in first: a Claude subscription, Codex's ChatGPT or API-key login, or OpenCode's provider logins. A key in **Settings → Model providers** serves the providers the machine is not signed in to. To use your key even where the machine is signed in, choose **Use your … key** under **Paid by**, beside the agent on its card. Only the payer you choose is used: if it can't be, the item stops and asks you. Hosted agents always use your keys. With a key, the machine receives a temporary relay credential. The saved key stays on the platform, and the provider bills the key owner. Claude Code and Codex work items count API-key tokens toward their budget. Subscription turns show token usage separately.
 
 With a matching key, the Machines page shows **Settings key**. For a machine login it shows **signed in**, **sign in needed** or **couldn't check the sign-in**, with the runner's reason when it gives one. The last is the runner's check failing, not a sign-out: turns still run if the agent is signed in, and the runner checks again after 10 s, 30 s and 60 s, then every minute. Beside it is the command that signs it in, with a copy button:
 
@@ -408,9 +427,17 @@ docker exec windlass-runner windlass-runner logout opencode
 
 `logout` signs the agent out for this pairing and every earlier one. `logout opencode` removes all of its providers at once.
 
+## Plans on your machine
+
+Connect a plan once with `npx @windlassai/cli connect claude` or `npx @windlassai/cli connect codex`, and every machine of yours with a current runner can use it. For each turn the plan pays for, the runner starts a relay container on the machine, `wlp-plan-relay-<sandbox>`. The platform hands it the plan's token at the turn's start, and a fresh one before a ChatGPT token expires. The token stays in the relay's memory: it is never written to the machine's disk, a volume or the agent's container. The agent gets the relay's address, `http://127.0.0.1:17893`, and a placeholder that works only for that turn. When the turn ends, the relay and its token are gone.
+
+- **Windlass** pays for its ChatGPT models with your ChatGPT plan.
+- **Claude Code and Codex** follow **Connections → Pay with**, as hosted agents do: the plan, your key, or the plan and then your key, and what to do when the plan reaches its limit.
+- A Claude login you keep on the machine with `windlass-runner login claude` wins for that machine, and so does choosing **Use your … key** under **Paid by** for an agent on a machine.
+
 ## The Windlass model relay
 
-Windlass agents use your ChatGPT sign-in, which the platform keeps. A current runner has a model relay for them: a container on the machine, `wlp-model-relay-<machine id>`. The platform hands each turn's access token to the relay, not to the agent's container. Windlass in the container gets the relay's address, `http://127.0.0.1:17893/v1`, and a placeholder in its token file. A helper in the session's network namespace forwards that address to the relay. The relay checks the placeholder on every request and sends the request on to OpenAI with the real token. When the turn ends, the relay forgets the token, and the helper goes away.
+On a runner older than the plan relay, Windlass agents use your ChatGPT sign-in through the model relay: a container on the machine, `wlp-model-relay-<machine id>`. The platform hands each turn's access token to the relay, not to the agent's container. Windlass in the container gets the relay's address, `http://127.0.0.1:17893/v1`, and a placeholder in its token file. A helper in the session's network namespace forwards that address to the relay. The relay checks the placeholder on every request and sends the request on to OpenAI with the real token. When the turn ends, the relay forgets the token, and the helper goes away.
 
 So commands, MCP servers and anything left running from setup can read only the placeholder. While a turn runs, they can still use the relay to make model requests on your plan, within the limits below. The relay has the same limits as the other relays on the machine: 8 requests at once per turn, with up to 32 more waiting, and 24 at once on the machine. The relay works in every network mode, `none` included.
 

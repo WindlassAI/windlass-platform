@@ -31,7 +31,14 @@ import type { SnapshotSource } from "./snapshot-key.js";
 import { backupConfig, config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
-import { isolationName, type SandboxProfile, type SandboxProfileId, type SessionSnapshot } from "../contract.js";
+import {
+	isolationName,
+	type RelaySeen,
+	type SandboxProfile,
+	type SandboxProfileId,
+	type SessionSnapshot,
+} from "../contract.js";
+import type { LocalModelRelay } from "./plan-relay.js";
 import { harnessName, machineHarness } from "./harnesses.js";
 import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerChannel } from "../runner/channel.js";
@@ -608,6 +615,12 @@ class RunnerProcess implements SandboxProcess {
 // The provider
 // ---------------------------------------------------------------------------------------------
 
+/** How often a turn takes what its machine's plan relay saw of the plan. */
+const PLAN_SEEN_MS = 15_000;
+/** A plan turn on a sandbox whose runner offers no plan relay (an older runner). */
+export const PLAN_RELAY_MISSING =
+	"This machine's runner is too old to pay with your plan. Update it with the command on the Machines page.";
+
 class RunnerHandle implements TurnSandbox {
 	readonly approval: "auto" | "full";
 	readonly profile: SandboxProfileId;
@@ -648,6 +661,8 @@ class RunnerHandle implements TurnSandbox {
 			this.modelRelay = async () => this.relayOf(await link.request("modelRelay", { id }));
 			this.modelKeyRelay = (sessionId, key, signal) => {
 				if (sessionId !== link.who.sessionId) throw new Error("This model relay belongs to another session.");
+				// A plan's requests leave from the machine through its own plan relay, never through the platform's.
+				if (key.plan) throw new SandboxUserError(PLAN_RELAY_MISSING);
 				return forwardKeyLease(
 					this.uid,
 					sessionId,
@@ -659,6 +674,26 @@ class RunnerHandle implements TurnSandbox {
 			};
 			if (link.durable) this.resumeRelay = lease => this.relayOf(lease);
 		}
+		if (found.planRelay)
+			this.localPlanRelay = async (token, options) => {
+				if (options.wire !== "claude-plan" && options.wire !== "chatgpt-plan")
+					throw new Error("A plan relay takes only a plan's wire.");
+				const opened = await link.request(
+					"planRelay",
+					{
+						id,
+						wire: options.wire,
+						harness: options.harness,
+						token,
+						expiresAt: Date.now() + config.turnTimeoutMs + 60_000,
+					},
+					{ signal: options.signal },
+				);
+				return this.planRelayOf(opened, options.onSeen);
+			};
+		if (found.planRelay && link.durable)
+			this.resumePlanRelay = (relay, onSeen) =>
+				this.planRelayOf({ lease: relay.lease, placeholder: relay.placeholder, env: relay.env }, onSeen);
 		if (link.durable)
 			this.adopt = (process, tag, { onStdout, onStderr }) =>
 				link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
@@ -669,6 +704,11 @@ class RunnerHandle implements TurnSandbox {
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
+
+	/** `TurnSandbox.localPlanRelay`: a plan relay on the machine, on a runner whose connect said `planRelay`. */
+	readonly localPlanRelay?: TurnSandbox["localPlanRelay"];
+	/** `TurnSandbox.resumePlanRelay`: the runner keeps the plan relay with the conversation through the grace. */
+	readonly resumePlanRelay?: TurnSandbox["resumePlanRelay"];
 
 	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */
 	readonly resumeRelay?: TurnSandbox["resumeRelay"];
@@ -682,6 +722,39 @@ class RunnerHandle implements TurnSandbox {
 			close: async () => {
 				await this.link.again("modelRelayClose", { id: this.id, lease: opened.lease }).catch(() => undefined);
 			},
+		};
+	}
+
+	/**
+	 * The machine's plan relay as a turn holds it: its token replaced with `planRelayToken`, what it saw of the plan
+	 * taken every `PLAN_SEEN_MS` and once more before it is closed (the provider's answers reach plan health as a
+	 * microVM's relay's do).
+	 */
+	private planRelayOf(opened: Value<"planRelay">, onSeen?: (seen: RelaySeen) => void): LocalModelRelay {
+		const take = async () => {
+			const seen = await this.link
+				.request("planRelaySeen", { id: this.id, lease: opened.lease }, { signal: AbortSignal.timeout(10_000) })
+				.catch(() => []);
+			for (const one of seen) onSeen?.(one);
+		};
+		const timer = onSeen ? setInterval(() => void take(), PLAN_SEEN_MS) : undefined;
+		timer?.unref?.();
+		let closing: Promise<void> | undefined;
+		return {
+			placeholder: opened.placeholder,
+			env: opened.env,
+			// Where a restarted server takes it up again (`resumePlanRelay`).
+			lease: opened.lease,
+			hand: async token => {
+				if (closing) throw new Error("This relay has ended.");
+				await this.link.again("planRelayToken", { id: this.id, lease: opened.lease, token });
+			},
+			close: () =>
+				(closing ??= (async () => {
+					clearInterval(timer);
+					if (onSeen) await take();
+					await this.link.again("modelRelayClose", { id: this.id, lease: opened.lease }).catch(() => undefined);
+				})()),
 		};
 	}
 

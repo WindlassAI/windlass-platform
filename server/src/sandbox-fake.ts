@@ -1980,6 +1980,21 @@ class FakeSignInCommands implements SignInCommands {
 	}
 }
 
+/**
+ * The files the stand-in's sign-in saves for `code` (as its `finish` does): what a check hands the connect route the
+ * way `npx @windlassai/cli connect codex` would (scripts/chatgpt-connect.ts). "brief" lasts a minute.
+ */
+export function fakeSignInFiles(code: string): { "auth.json": string } {
+	const id = randomBytes(6).toString("hex");
+	const saved: FakeCredentials = {
+		account: { sub: `fake|${code}`, email: `${code}@example.com` },
+		accessToken: `FAKE-ACCESS-TOKEN-${id}-not-a-real-token`,
+		refreshToken: `FAKE-REFRESH-TOKEN-${id}-not-a-real-token`,
+		expiresAt: Date.now() + (code === "brief" ? 60_000 : 60 * 60 * 1000),
+	};
+	return { "auth.json": JSON.stringify(saved) };
+}
+
 /** The stand-in for Windlass's sign-in commands: what the server's sign-in machinery runs with WLP_SANDBOX=fake (signin/index.ts). */
 export function createFakeSignInCommands(): SignInCommands {
 	return new FakeSignInCommands();

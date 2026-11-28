@@ -29,7 +29,7 @@ The runner takes one command. With none, it runs `run`.
 | Command | What it does |
 | --- | --- |
 | `run` | Runs the runner's service. This is the default. |
-| `setup` | Sets the machine up in your terminal, one step at a time: pairs it, signs its agents in, asks for its profiles, network and limits, then starts the runner in the background and waits until it is online. See [Setup](#setup) and [Add a machine](/docs/machines#1-start-the-runner). With `--harness`, it asks line by line to sign in each agent given, then prints the command that starts the runner instead. |
+| `setup` | Sets the machine up in your terminal, one step at a time: pairs it, signs its agents in, asks for its profiles, network and limits, then starts the runner in the background and waits until it is online. See [Setup](#setup) and [Add a machine](/docs/machines#1-start-the-runner). `npx @windlassai/cli connect --machine` runs it for you with its defaults, and pairs the machine from a page you approve in the browser (see [Connect it with one command](/docs/machines#connect-it-with-one-command)). With `--harness`, it asks line by line to sign in each agent given, then prints the command that starts the runner instead. |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
 | `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing each enabled agent’s sign-in status, its sandboxes and its data volume. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
@@ -162,7 +162,7 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 
 | Message | What to do |
 | --- | --- |
-| "The pairing code expired, so restart the container or run `windlass-runner pair` to get a new code." | Restart the container, or run `pair`, and enter the new code. Setup says "re-run the setup command to get a new code." instead. |
+| "The pairing code expired or was denied, so restart the container or run `windlass-runner pair` to get a new code." | Restart the container, or run `pair`, and enter the new code. Setup says "re-run the setup command to get a new code." instead. |
 | "This runner needs signed runner connections enabled on the platform. Ask the operator to enable them, then pair again." | The platform does not sign runner connections yet. Ask whoever runs it to turn them on, then pair again. |
 | "The platform does not know this machine's key. Run `windlass-runner pair` to add the machine again." | The machine was removed, or its key was lost. Pair it again. |
 | "Another runner with this machine's key is connected. If you copied the key, stop the other runner; if you did not, remove the machine on the Machines page." | Stop the other runner, or remove the machine. |

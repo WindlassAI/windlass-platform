@@ -2,7 +2,9 @@ import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { FoldRows } from "./Fold";
 import { useItems } from "../state/items";
-import type { FactoryLimits } from "@contract";
+import { useCostRates } from "../state/hooks";
+import { costWords, summaryCost, usd } from "../lib/cost";
+import type { CostRates, FactoryLimits, ItemSummary } from "@contract";
 
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
@@ -13,8 +15,20 @@ function Of({ spent, budget, spell }: { spent: number; budget: number; spell(val
 	);
 }
 
+/** The listed items' dollars together, and whether some cost is unknown or carried by a plan. */
+function listedTotal(list: readonly ItemSummary[], rates: CostRates): string {
+	const costs = list.map(item => summaryCost(item, rates));
+	const total = costs.reduce((sum, cost) => sum + cost.usd, 0);
+	const notes = [
+		...(costs.some(cost => cost.plans.length) ? ["plus what your plans carried"] : []),
+		...(costs.some(cost => cost.unknown) ? ["some cost unknown"] : []),
+	];
+	return `${usd(total)}${notes.length ? `, ${notes.join(", ")}` : ""}`;
+}
+
 export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	const { feed, list, error } = useItems();
+	const rates = useCostRates();
 	// The feed carries the newest ended items only; the older ones are on the Factory page.
 	const older = feed ? feed.counts.ended - feed.ended.length : 0;
 	return (
@@ -70,48 +84,60 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					<p>No work items yet.</p>
 				</div>
 			) : (
-				<FoldRows items={list} shown={10}>
-					{(rows, id) => (
-						<table className="usage-table factory-cost" id={id}>
-							<thead>
-								<tr>
-									<th scope="col">Item, spent so far</th>
-									<th scope="col" className="usage-number">
-										Tokens
-									</th>
-									<th scope="col" className="usage-number usage-wide">
-										Working
-									</th>
-									<th scope="col" className="usage-number">
-										Hosted
-									</th>
-								</tr>
-							</thead>
-							<tbody>
-								{rows.map(item => (
-									<tr key={item.id}>
-										<th scope="row">
-											<a className="usage-agent" {...linkProps({ name: "item", id: item.id })}>
-												{item.title}
-											</a>
+				<>
+					{rates ? (
+						<p className="usage-note factory-cost-total">
+							Cost of the items listed here: <strong>{listedTotal(list, rates)}</strong>. Model tokens on an API key and
+							hosted sandbox time are priced; turns on a Claude or ChatGPT plan are part of your plan.
+						</p>
+					) : null}
+					<FoldRows items={list} shown={10}>
+						{(rows, id) => (
+							<table className="usage-table factory-cost" id={id}>
+								<thead>
+									<tr>
+										<th scope="col">Item, spent so far</th>
+										<th scope="col" className="usage-number">
+											Cost
 										</th>
-										<td className="usage-number">
-											<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
-										</td>
-										<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
-										<td className="usage-number">
-											{item.place.kind === "hosted" ? (
-												<Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} />
-											) : (
-												<span className="tone-faint">your machine</span>
-											)}
-										</td>
+										<th scope="col" className="usage-number">
+											Tokens
+										</th>
+										<th scope="col" className="usage-number usage-wide">
+											Working
+										</th>
+										<th scope="col" className="usage-number">
+											Hosted
+										</th>
 									</tr>
-								))}
-							</tbody>
-						</table>
-					)}
-				</FoldRows>
+								</thead>
+								<tbody>
+									{rows.map(item => (
+										<tr key={item.id}>
+											<th scope="row">
+												<a className="usage-agent" {...linkProps({ name: "item", id: item.id })}>
+													{item.title}
+												</a>
+											</th>
+											<td className="usage-number">{rates ? (costWords(summaryCost(item, rates)) ?? "—") : "…"}</td>
+											<td className="usage-number">
+												<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
+											</td>
+											<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
+											<td className="usage-number">
+												{item.place.kind === "hosted" ? (
+													<Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} />
+												) : (
+													<span className="tone-faint">your machine</span>
+												)}
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+						)}
+					</FoldRows>
+				</>
 			)}
 			{list !== null && older > 0 ? (
 				<p className="usage-note factory-cost-older">

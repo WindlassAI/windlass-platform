@@ -1,7 +1,8 @@
 /**
- * Windlass's model relay on hosted Docker with real containers (docs/model-relay.md). It repeats the
- * experiments of the token-exposure note in a hardened session container, where commands run directly
- * as the user Windlass runs as:
+ * The Docker model relay with real containers (docs/model-relay.md): the program a paired machine's relay runs for
+ * Windlass on the user's ChatGPT sign-in, opened here on the layer's relay as a runner opens it (hosted Windlass
+ * pays with the ChatGPT plan through the platform relay instead, `--hosted-keys`). It repeats the experiments of the
+ * token-exposure note in a hardened session container, where commands run directly as the user Windlass runs as:
  *
  *   1. what a command can read: the token file, /dev/shm, Windlass's data directory, /tmp, the
  *      workspace, every /proc/<pid>/environ and cmdline. The real token is in none of them.
@@ -35,7 +36,7 @@ import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { TokenFile, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
 import type { AccessToken } from "../server/src/sandbox/api.js";
 import { DATA_DIR } from "../server/src/sandbox/provider.js";
-import { DockerModelRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
+import { DockerModelRelay, type DockerTurnRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
 import { imageId } from "./check-image.js";
 import { sleep } from "./check-wait.js";
 
@@ -196,11 +197,16 @@ async function check() {
 		if (!box) throw new Error("the sandbox could not be connected");
 		return box;
 	};
-	const a = await make("s-relay-a");
-	const b = await make("s-relay-b");
+	/** The access-token lease a runner opens for a machine's ChatGPT turn (runner/src/session.ts), on this layer's relay. */
+	const machineStyle = (box: DockerSandboxHandle) =>
+		Object.assign(Object.create(box) as DockerSandboxHandle & { modelRelay: () => Promise<DockerTurnRelay> }, {
+			modelRelay: () => layer.modelRelay!.open(box.container, box.id, box.uid),
+		});
+	const a = machineStyle(await make("s-relay-a"));
+	const b = machineStyle(await make("s-relay-b"));
 	expect(
-		"the hosted sandbox offers its relay",
-		keyOnly ? typeof a.modelKeyRelay === "function" : typeof a.modelRelay === "function",
+		"the hosted sandbox offers only its key and plan relay, no access-token relay",
+		typeof a.modelKeyRelay === "function" && !Object.hasOwn(Object.getPrototypeOf(a), "modelRelay"),
 	);
 	const foreignSession = await openModelKeyRelay(a, "s-relay-b", {
 		provider: "google",
@@ -516,6 +522,66 @@ async function check() {
 		prepared + " / " + leftFiles.stdout,
 	);
 	await fileF.stop();
+
+	// 5b. A machine's plan relay (`openPlan`, `plan-relay`): a container of its own for the turn, the token only on its
+	// standard input, the session's forwarder on 127.0.0.1:17893 to its socket, and everything gone at close.
+	const p = await make("s-plan");
+	const PLAN_A = `REAL-PLAN-TOKEN-A-${randomBytes(16).toString("hex")}`;
+	const PLAN_B = `REAL-PLAN-TOKEN-B-${randomBytes(16).toString("hex")}`;
+	const planName = `wlp-plan-relay-${p.id}`;
+	cleanup.push(() => docker(["rm", "-f", planName]));
+	const plan = await layer.modelRelay!.openPlan(p.container, p.id, PLAN_A, {
+		wire: "chatgpt-plan",
+		harness: "windlass",
+		expiresAt: Date.now() + 5 * 60_000,
+	});
+	cleanup.push(() => plan.close());
+	const [planned] = await request(p, plan.placeholder, "/v1/models");
+	expect(
+		"a plan turn's request on a machine leaves from its relay with the plan's token",
+		planned?.status === 200 && (await seen()).at(-1)?.authorization === `Bearer ${PLAN_A}`,
+		JSON.stringify(planned),
+	);
+	expect("the plan relay refuses another bearer", (await request(p, PLAN_A, "/v1/models"))[0]?.status === 401);
+	const planInspected = await docker(["container", "inspect", planName], { timeoutMs: 20_000 });
+	const onDisk = await docker(
+		[
+			"exec",
+			planName,
+			"sh",
+			"-c",
+			'grep -rlsF -- "$1" /workspace /tmp /proc/1/environ /proc/1/cmdline; true',
+			"sh",
+			PLAN_A,
+		],
+		{ timeoutMs: 20_000 },
+	);
+	const inSession = await p.ask(
+		["sh", "-c", 'grep -rlsF -- "$1" /dev/shm /workspace /tmp /proc/*/environ; true', "sh", PLAN_A],
+		{ timeoutMs: 30_000 },
+	);
+	expect(
+		"the plan's token is in no file, argument or environment of the relay container, nor anywhere in the session",
+		planInspected.code === 0 &&
+			!planInspected.stdout.includes(PLAN_A) &&
+			onDisk.code === 0 &&
+			onDisk.stdout.trim() === "" &&
+			inSession?.code === 0 &&
+			inSession.stdout.trim() === "",
+		`inspect ${planInspected.code}, relay: ${onDisk.stdout}, session: ${inSession?.stdout}`,
+	);
+	await plan.hand(PLAN_B);
+	await request(p, plan.placeholder, "/v1/models");
+	expect("a token handed later is the next request's", (await seen()).at(-1)?.authorization === `Bearer ${PLAN_B}`);
+	await plan.close();
+	const afterClose = await request(p, plan.placeholder, "/v1/models");
+	expect(
+		"closing the plan relay removes its container and forwarder, and the session reaches nothing on 17893",
+		(await docker(["container", "inspect", planName])).code !== 0 &&
+			(await docker(["container", "inspect", `wlp-model-fwd-${p.id}`])).code !== 0 &&
+			afterClose[0]?.status === 0,
+		JSON.stringify(afterClose),
+	);
 
 	// 6. 64 streams at once through a relay of the hosted relay's memory, one session's forwarder carrying all of them.
 	const loadScope = `${scope}l`;

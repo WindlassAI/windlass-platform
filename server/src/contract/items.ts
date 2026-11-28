@@ -78,6 +78,11 @@ export type WaitReason =
 export interface Wait {
 	/** The sign-in whose cooldown holds this item, when known. */
 	accountKey?: string;
+	/**
+	 * A connected plan holds it (Pay with): at its limit (`limited`) or at its parallel-turn cap. `keyNow`: a saved key
+	 * could pay now (the user actor's `useKeyNow`).
+	 */
+	plan?: { provider: import("./connect.js").PlanProvider; limited: boolean; keyNow: boolean };
 	reason: WaitReason;
 	/** "Waiting for one of your 5 factory turns; 5 are running (…)." */
 	sentence: string;
@@ -157,9 +162,17 @@ export interface ItemTask {
 }
 
 /** Token budgets use cost-weighted input. The time limit applies to hosted sandboxes only. */
+/**
+ * An item's budget, in the units of what pays for its turns (factory/budget.ts `budgetStop`): dollars where an API key
+ * pays (`usd`), percentage points of the plan's 5-hour window where a plan pays (`planPct`). `tokens` (cost-weighted)
+ * is the fallback where neither can be measured: a turn whose price is unknown, an agent that reports no window.
+ * Items filed before the dollar and plan figures were kept have only tokens and hosted time.
+ */
 export interface ItemBudget {
 	tokens: number;
 	hostedSeconds: number;
+	usd?: number;
+	planPct?: number;
 }
 
 /** Raw tokens count cached input at full weight; use tokens when rawTokens is absent. Active time excludes waits. */
@@ -167,6 +180,14 @@ export interface ItemSpend extends ItemBudget {
 	rawTokens?: number;
 	turns: number;
 	activeSeconds: number;
+	/** Percentage points of the plan's weekly window its plan-paid turns used (shown; the 5-hour share is `planPct`). */
+	planWeekPct?: number;
+	/** A key-paid turn could not be priced: its dollars are not in `usd`, so the token budget holds too. */
+	usdUnknown?: boolean;
+	/** What the item's own turns used, by model, payer and sandbox size: what its cost is priced from (factory/cost.ts). */
+	usage?: import("./cost.js").SpendUsage;
+	/** The part of `usage` spent retrying: turns of a run the person started again, and turns fixing a failed CI. */
+	retryUsage?: import("./cost.js").SpendUsage;
 }
 
 /** A subtask's budget in a feature's plan: one token figure. At dispatch its token share also determines its share of hosted time. */
@@ -393,11 +414,23 @@ export interface ItemAgent {
 /** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
 export type ItemSource = "web" | "api" | "github" | "linear";
 
+/**
+ * Who filed an item from another surface (Slack, Linear, Jira), when that is not the owner at the web, the API or
+ * GitHub. `verified`: the surface's user is linked to this Windlass user. An item without one is the owner's. Only a
+ * verified filer's item may pay with the owner's plan (pay-with.ts `decidePayer`).
+ */
+export interface ItemFiler {
+	surface: string;
+	externalUserId: string;
+	verified: boolean;
+}
+
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
 	issue: { number: number; url: string; author: string; trusted: boolean };
 	sender: string;
 	linear?: undefined;
+	filer?: ItemFiler;
 }
 
 /** Linear provenance is separate from the GitHub PR binding. The event sender and issue author may differ. */
@@ -406,6 +439,7 @@ export interface LinearIssueOrigin {
 	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
 	sender: string;
 	issue?: undefined;
+	filer?: ItemFiler;
 }
 
 export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
@@ -449,6 +483,14 @@ export interface ItemSummary {
 	} | null;
 	budget: ItemBudget;
 	spent: ItemSpend;
+	/** A feature's: what all its parts used, retries among them. Its own turns are in `spent.usage`. */
+	partsUsage?: import("./cost.js").SpendUsage;
+	/** A feature's: the part of `partsUsage` spent retrying (factory/usage-summary.ts `partsRetryUsage`). */
+	partsRetryUsage?: import("./cost.js").SpendUsage;
+	/** What its changes are, from the paths its latest turn with changes left changed (factory/usage-summary.ts `workType`). Absent before any. */
+	workType?: WorkType;
+	/** When its first run began. Absent on a draft. */
+	startedAt?: number;
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;
@@ -571,6 +613,9 @@ export interface ItemView extends ItemSummary {
 }
 
 export type ItemMode = "single" | "orchestrate";
+
+/** What an item's changes are: only docs, only tests, only dependency manifests and lockfiles, any other code, or the rest (config, CI, assets). */
+export type WorkType = "docs" | "tests" | "deps" | "feature" | "other";
 
 export interface PlacementNeeds {
 	hostedSize?: HostedSize;

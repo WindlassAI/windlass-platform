@@ -7,6 +7,8 @@ import { changeClaudeLogin } from "./harness-login.js";
 import { changeProviderLogin, currentProvider } from "./opencode-login.js";
 import { providerHosts } from "./opencode-providers.js";
 import type { MachineDocker, MachineHarness } from "./policy.js";
+import { MODEL_RELAY_URL } from "../../server/src/sandbox/model-relay.js";
+import { Refusal } from "./state.js";
 import { HARNESSES } from "./setup-choices.js";
 
 type Keys = Partial<Record<ModelProvider, string>>;
@@ -33,6 +35,8 @@ export interface MachineHarnessRecord {
 	needsLogin: boolean;
 	/** A Settings key handed straight to the agent, bypassing the session relay. */
 	keyEnv: (keys: Keys) => Record<string, string> | undefined;
+	/** A plan-paid turn's env: the plan relay on this machine, behind the turn's forwarder on 127.0.0.1:17893 (`planRelay`). */
+	planEnv: (placeholder: string) => Record<string, string>;
 	/** The session relay's credentials for a turn. */
 	credentials: (m: MachineDocker, nonce: string, login: ProviderLogin | undefined, keys: Keys) => Promise<Credentials>;
 	/** `login` / `logout <agent>`. */
@@ -42,6 +46,9 @@ export interface MachineHarnessRecord {
 	/** The line after a successful logout. */
 	signedOut: string;
 }
+
+/** The model relay's forwarder in the sandbox, where a plan turn's forwarder listens too (egress-proxy.mjs `wlp-model-forward`). */
+const PLAN_RELAY_ORIGIN = new URL(MODEL_RELAY_URL).origin;
 
 const relayCredentials = (m: MachineDocker, nonce: string, login: ProviderLogin | undefined) =>
 	prepareRelay(m, login, nonce);
@@ -60,6 +67,7 @@ export const MACHINE_HARNESSES: Record<MachineHarness, MachineHarnessRecord> = {
 		needsLogin: false,
 		keyEnv: keys =>
 			keys.anthropic ? { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } : undefined,
+		planEnv: placeholder => ({ ANTHROPIC_BASE_URL: PLAN_RELAY_ORIGIN, CLAUDE_CODE_OAUTH_TOKEN: placeholder }),
 		credentials: relayCredentials,
 		changeLogin: changeClaudeLogin,
 		takesProvider: false,
@@ -75,6 +83,7 @@ export const MACHINE_HARNESSES: Record<MachineHarness, MachineHarnessRecord> = {
 		machineLogin: codexLogin,
 		needsLogin: true,
 		keyEnv: keys => (keys.openai ? { WLP_SESSION_BEARER: keys.openai } : undefined),
+		planEnv: placeholder => ({ WLP_CODEX_BASE_URL: `${PLAN_RELAY_ORIGIN}/v1`, WLP_SESSION_BEARER: placeholder }),
 		credentials: relayCredentials,
 		changeLogin: changeCodexLogin,
 		takesProvider: false,
@@ -90,6 +99,10 @@ export const MACHINE_HARNESSES: Record<MachineHarness, MachineHarnessRecord> = {
 		machineLogin: currentProvider,
 		needsLogin: true,
 		keyEnv: () => undefined,
+		// No plan pays for OpenCode (harnesses.ts `planProviders`).
+		planEnv: () => {
+			throw new Refusal("No plan pays for OpenCode.");
+		},
 		credentials: openCodeCredentials,
 		changeLogin: changeProviderLogin,
 		takesProvider: true,

@@ -33,14 +33,42 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
   account it joined ("Paired with ada. ..."; "an account without a GitHub login" where GitHub is not
   connected) and connects.
 - A code belongs to the first account that types it; for any other account it is not found.
+- **Deny** on the connect page (`denyMachine`) ends a pairing whose code this account looked up and has not
+  confirmed: the runner's next poll finds it gone and it stops ("The pairing code expired or was denied, ...").
 - A name given with `--name` is kept in the state volume. A paired runner restarted with a new name updates
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
 
+### Connecting from the CLI
+
+The Machines page shows `npx @windlassai/cli connect --machine` first ([cli/src/machine.ts](../cli/src/machine.ts)),
+`curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` under **No Node?**, and the Docker commands under **Other ways**.
+The command and install.sh run the same container: its arguments, the state volume and the messages for
+Docker's problems are defined once in [machine-setup.ts](../server/src/contract/machine-setup.ts)
+(`setupRunArgs`, `DOCKER_HELP`), which install-script.ts renders into the script and the CLI bundles. The CLI
+reads the image and the address from `GET /platform/info` (`machines.runnerImage`, `machines.platformUrl`),
+checks Docker with `docker info`, pulls the image and runs `docker run --rm --log-driver none -v
+/var/run/docker.sock:/var/run/docker.sock -v windlass-runner:/var/lib/windlass-runner <image> setup --platform
+<address> --connect --name <host name>` with no terminal.
+
+The pairing is the one above, unchanged: the runner in that container makes its key pair, asks
+`POST /runner/pair` and polls. `setup --connect` asks nothing ([setup-events.ts](../runner/src/setup-events.ts)): it
+writes one JSON line per event (`SetupEvent`), and the CLI shows them. For the `pairing` event (code and machine
+key) the CLI opens `<address>/connect?code=XXXX-XXXX&kind=machine`. That page looks the code up (`claimMachine`,
+so the code becomes this account's), shows the code, the machine key, name and system to compare with the
+terminal, and **Approve** is `confirmMachine` with `keyConfirmed`, **Deny** is `denyMachine`. The machine's key
+never leaves the container and its volume; the CLI sees only what install.sh's terminal shows. After the
+pairing the setup takes its defaults: every agent in the image (or the saved ones), both profiles, restricted
+network and automatic limits, signs no agent in (the agents pay with the account's plans and keys, see
+[Plans on this machine](#plans-on-this-machine)), starts the service and waits until it is online. A machine
+already paired with the platform keeps its pairing: with its runner running nothing is changed (its settings
+may come from flags this mode would not keep), else the runner is started with the saved settings; `setup`
+(Pair again) makes a new pairing. The host name is
+passed with `--name` because inside Docker Desktop the runner sees only the VM's name.
+
 ### The one-line install and the setup wizard
 
-The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` first, and the Docker commands under
-**Other ways**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
+The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` under **No Node?**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
 sh script, as `text/plain` with `cache-control: no-store`, with the platform's address and the pinned
 `WLP_RUNNER_IMAGE` written in. While no image is published the script says so and exits 1; with
 `WLP_MACHINES` off the path is a 404. The script:
@@ -206,7 +234,10 @@ the owner allows it and bubblewrap starts in a container there.
 ### Claude Code sessions
 
 When the machine reports Claude Code, `createSession` accepts
-`harness: "claude"` with `docker-hardened`. Its runner owns the sign-in. Run
+`harness: "claude"` with `docker-hardened`. On a runner that names `plan-relay`, its turns pay as hosted ones do,
+through Connections → Pay with: the connected Claude plan through a relay on the machine
+([Plans on this machine](#plans-on-this-machine)), or a Settings key. A login kept on the machine with
+`windlass-runner login claude` wins for that machine. On an older runner the runner owns the sign-in: run
 `windlass-runner login claude` on that machine when it needs a login. The platform clones the
 repository and runs its setup command before starting the adapter. The first prompt uses the
 adapter's default model. Later prompts can select a model and reasoning effort it offered.
@@ -374,6 +405,27 @@ sessions with credential mounts and refuses to reopen them. Recreate those sessi
 the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
 Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.
 
+### Plans on this machine
+
+A runner whose server names `plan-relay` (`SERVER_CAPABILITIES` in `server/src/runner/control.ts`) says `planRelay` in
+its report and in each `connect`. A plan-paid turn on it hands the plan's token to a relay on the machine for that
+turn only, kept in the relay's memory, never in a file or a volume, and the plan's requests leave from the machine
+([model-relay.md](model-relay.md#plan-requests-from-a-machine)). Who pays:
+
+- **Windlass**: its unqualified (ChatGPT) models pay with the ChatGPT plan, the sign-in connected with
+  `npx @windlassai/cli connect codex`. On a machine this is not behind `WLP_PLAN_USERS`.
+- **Claude Code and Codex**: Connections → Pay with decides, as for hosted turns: the plan, the key, or the plan then
+  the key, and what a limited plan does. Two things win over it on that machine: the owner chose the Settings key for
+  that machine's agent (its Paid by cell on Connections), or the agent is signed in on the machine itself (Claude Code's login kept with
+  `windlass-runner login claude`, the fallback while plans are off for the account). A Claude plan is behind
+  `WLP_PLAN_USERS` on machines as hosted.
+- **OpenCode**: its own logins on the machine, or a Settings key, as before.
+
+Runners without the capability keep what they did: their own sign-ins, keys forwarded through the platform, and for
+Windlass the ChatGPT access token handed to the machine's model relay each turn (`TokenFile`, `modelRelayToken`,
+the `chatgpt` wire), or written into the sandbox on runners 0.3.0 and 0.3.1. A turn paused on the plan cannot go on
+on a runner that lost the capability since; it asks for a new turn.
+
 ### Windlass's model relay on this machine
 
 A runner that knows the `model-relay` capability runs Windlass's model relay
@@ -396,7 +448,9 @@ is used only when both sides know it:
   entry. At its first welcome the runner removes every forwarder and relay file a runner that died left,
   and the relay itself deletes files whose token has expired.
 
-Runners 0.3.0 and 0.3.1 ignore the name and say neither. Their turns get the token in a file, as before.
+Runners 0.3.0 and 0.3.1 ignore the name and say neither. Their turns get the token in a file, as before. On a runner
+that also names `plan-relay`, Windlass's ChatGPT turns use the plan relay instead, and this relay carries only
+Settings keys.
 If the relay cannot be had on a runner that offers it, the turn fails, and the token is never written into
 the container. `WLP_MODEL_RELAY=off` on the server turns it off for every machine.
 
@@ -404,9 +458,9 @@ the container. `WLP_MODEL_RELAY=off` on the server turns it off for every machin
 
 The runner cannot start a container of
 another image, run anything on the machine outside the containers it made, touch a container or a volume
-it did not make, or reach a session that did not hand it a ticket. Each Windlass turn is
-handed a ChatGPT access token: to the machine's model relay with a current runner, or in a file in the
-container with runners 0.3.0 and 0.3.1. The platform, for its part, cannot reach the
+it did not make, or reach a session that did not hand it a ticket. A plan-paid turn's token (a Claude plan's, or a
+ChatGPT access token) is handed to a relay on the machine for that turn: the plan relay with a current runner, the
+machine's model relay with an older one, or a file in the container with runners 0.3.0 and 0.3.1. The platform, for its part, cannot reach the
 machine except through its runner, and does not control it: whoever runs the machine can change what
 runs there and what it reports. The launch form, the profiles and a pull request's section say so.
 
@@ -514,9 +568,10 @@ SQLite: the conversation's id, both sides' counts, and the frames the runner has
 - **Acknowledged after it is stored.** What the server received is counted as received in the same
   transaction as the timeline rows it produced and the turn's checkpoint, and only that count is
   acknowledged. The runner holds everything past it and sends it again: each message is taken once.
-- **No secrets.** A frame that carries a token (`writeSecretFile`, `modelRelayToken`, a start or run with
-  secret variables) is stored as a cancel of its id, which a runner that never had it ignores. The
-  restarted turn writes the token file again at once, through the same relay lease.
+- **No secrets.** A frame that carries a token (`writeSecretFile`, `modelRelayToken`, `planRelay`,
+  `planRelayToken`, a start or run with secret variables) is stored as a cancel of its id, which a runner that never
+  had it ignores. The restarted turn writes the token file again at once, through the same relay lease; a plan-paid
+  turn hands its plan relay on the machine a fresh token through the same lease (`resumePlanRelay`).
 - **The turn checkpoint** (`turn_checkpoint`, `TurnCheckpoint` in `sandbox/api.ts`) holds the runner's id
   of the agent process, the ACP ids, the requests of the agent's not answered yet, the part of a line
   not ended, and the turn's own counts. It is plain JSON, written with the timeline.

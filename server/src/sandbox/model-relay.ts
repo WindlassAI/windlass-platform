@@ -3,17 +3,23 @@
  * A request needs both the forwarder's nonce and a live lease. Closing a lease revokes it before removing the forwarder.
  */
 
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
-import { wires } from "../../../sandbox/relay/wires.cjs";
+import { type KeyWire, wires } from "../../../sandbox/relay/wires.cjs";
+import type { HarnessId, RelaySeen } from "../contract.js";
+import { type LocalModelRelay, startPlanRelay } from "./plan-relay.js";
 import {
 	SECRET_FILE_SCRIPT,
 	type ForwardedKeyLease,
 	type KeyTurnRelay,
 	type KeyReference,
+	type ProcessEnd,
+	type SandboxProcess,
+	type StartOptions,
 	type TakeRelayRequest,
 	type TurnModelRelay,
 } from "./provider.js";
@@ -39,6 +45,8 @@ export { MODEL_RELAY_WINDLASS } from "../model-relay-url.js";
 export const RELAY_MEMORY = "192m";
 /** The TCP-to-Unix forwarder also buffers data in its sockets during simultaneous uploads. */
 const FORWARDER_MEMORY = "128m";
+/** A machine's plan relay serves one turn (8 requests in flight, 32 waiting), as one in a microVM does. */
+const PLAN_RELAY_MEMORY = "160m";
 
 const root = () => join(import.meta.dirname, "..", "..", "..");
 /** Docker embeds the relay sources; the runner uses its bundled copy. */
@@ -112,6 +120,41 @@ export interface DockerKeyRelay extends KeyTurnRelay {
 
 export type DockerTurnRelay = DockerKeyRelay & TurnModelRelay;
 
+/** A machine's plan relay for one turn: its token can be replaced (`hand`), and it ends with `close`. */
+export type DockerPlanRelay = DockerKeyRelay & Pick<LocalModelRelay, "hand">;
+
+/** `docker <args>` as a process whose standard input stays open: a plan relay's control channel. */
+function dockerProcess(args: string[], name: string, options: StartOptions): SandboxProcess {
+	const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => options.onStdout?.(chunk));
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.onStderr?.(chunk));
+	child.stdin.on("error", () => {});
+	let hasEnded = false;
+	const ended = new Promise<ProcessEnd>(resolve => {
+		child.on("error", error => {
+			hasEnded = true;
+			resolve({ code: null, signal: null, error });
+		});
+		child.on("close", (code, signal) => {
+			hasEnded = true;
+			resolve({ code, signal, error: null });
+		});
+	});
+	return {
+		tag: name,
+		write: text => !hasEnded && child.stdin.writable && child.stdin.write(text),
+		closeStdin: () => child.stdin.end(),
+		ended,
+		get hasEnded() {
+			return hasEnded;
+		},
+		signal: async () => {
+			await docker(["rm", "-f", name], { timeoutMs: 30_000 }).catch(() => undefined);
+		},
+		killClient: () => child.kill("SIGKILL"),
+	};
+}
+
 export class DockerModelRelay {
 	private readonly suffix: string;
 	private ensuring: Promise<string> | null = null;
@@ -134,7 +177,12 @@ export class DockerModelRelay {
 		return `wlp-model-fwd-${sandbox}`;
 	}
 
-	private labels(role: "relay" | "forward" | "socket"): string[] {
+	planRelayName(sandbox: string): string {
+		if (!/^[A-Za-z0-9_-]+$/.test(sandbox)) throw new Error("invalid sandbox id");
+		return `wlp-plan-relay-${sandbox}`;
+	}
+
+	private labels(role: "relay" | "forward" | "socket" | "plan"): string[] {
 		return [
 			"--label",
 			LABEL_ARG,
@@ -332,73 +380,8 @@ export class DockerModelRelay {
 		const relay = await this.ensure();
 		const nonce = randomBytes(16).toString("hex");
 		const placeholder = `wlp-model.${randomBytes(16).toString("hex")}`;
-		const name = this.forwarderName(sandbox);
 		await this.endSandbox(sandbox);
-		const started = await docker(
-			[
-				"run",
-				"-d",
-				"--pull",
-				"never",
-				"--name",
-				name,
-				...this.labels("forward"),
-				"--label",
-				`${NONCE_LABEL}=${nonce}`,
-				"--network",
-				`container:${container}`,
-				"--user",
-				"agent",
-				"--cap-drop",
-				"ALL",
-				"--read-only",
-				"--security-opt",
-				"no-new-privileges",
-				"--pids-limit",
-				"32",
-				"--memory",
-				FORWARDER_MEMORY,
-				"--cpus",
-				"0.25",
-				"--restart",
-				"no",
-				...NO_LOGS,
-				"--mount",
-				`type=volume,src=${this.socketVolume},dst=/run/wlp-model/socket,readonly,volume-nocopy`,
-				"--tmpfs",
-				`${FORWARD_READY_DIR}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=16k`,
-				this.options.image,
-				"node",
-				"--input-type=module",
-				"-e",
-				forwarderScript(),
-				"--",
-				"wlp-model-forward",
-				nonce,
-			],
-			{ timeoutMs: 60_000 },
-		);
-		if (started.code !== 0)
-			throw new Error(
-				`could not start the model relay's forwarder: ${started.stderr.trim() || `exit ${started.code}`}`,
-			);
-		const id = started.stdout.trim();
-		try {
-			await waitForListener(id, "17893", FORWARD_READY);
-			// Require the forwarder's own readiness marker: a session process might hold the port.
-			const box = await this.inspect(id);
-			if (!box?.running)
-				throw new Error(
-					"the model relay's forwarder could not take 127.0.0.1:17893 in the session: a process in the sandbox may be holding that port. Stop it, or send the prompt again",
-				);
-		} catch (error) {
-			await docker(["rm", "-f", id], { timeoutMs: 30_000 });
-			if (error instanceof Error && /did not start listening/.test(error.message))
-				throw new Error(
-					`the model relay's forwarder did not start listening on 127.0.0.1:17893 in the session (a process in the sandbox may be holding that port): ${error.message}`,
-				);
-			throw error;
-		}
+		const id = await this.startForwarder(container, sandbox, nonce);
 		const file = `${TOKENS}/${nonce}.json`;
 		let closed = false;
 		const write = async (record: object) => {
@@ -440,6 +423,168 @@ export class DockerModelRelay {
 		};
 	}
 
+	/** The turn's forwarder in the session's network namespace, on 127.0.0.1:17893: to the relay, or to a plan relay's own socket. */
+	private async startForwarder(container: string, sandbox: string, nonce: string, socket?: string): Promise<string> {
+		const name = this.forwarderName(sandbox);
+		const started = await docker(
+			[
+				"run",
+				"-d",
+				"--pull",
+				"never",
+				"--name",
+				name,
+				...this.labels("forward"),
+				"--label",
+				`${NONCE_LABEL}=${nonce}`,
+				"--network",
+				`container:${container}`,
+				"--user",
+				"agent",
+				"--cap-drop",
+				"ALL",
+				"--read-only",
+				"--security-opt",
+				"no-new-privileges",
+				"--pids-limit",
+				"32",
+				"--memory",
+				FORWARDER_MEMORY,
+				"--cpus",
+				"0.25",
+				"--restart",
+				"no",
+				...NO_LOGS,
+				"--mount",
+				`type=volume,src=${this.socketVolume},dst=/run/wlp-model/socket,readonly,volume-nocopy`,
+				"--tmpfs",
+				`${FORWARD_READY_DIR}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=16k`,
+				this.options.image,
+				"node",
+				"--input-type=module",
+				"-e",
+				forwarderScript(),
+				"--",
+				"wlp-model-forward",
+				nonce,
+				...(socket ? [socket] : []),
+			],
+			{ timeoutMs: 60_000 },
+		);
+		if (started.code !== 0)
+			throw new Error(
+				`could not start the model relay's forwarder: ${started.stderr.trim() || `exit ${started.code}`}`,
+			);
+		const id = started.stdout.trim();
+		try {
+			await waitForListener(id, "17893", FORWARD_READY);
+			// Require the forwarder's own readiness marker: a session process might hold the port.
+			const box = await this.inspect(id);
+			if (!box?.running)
+				throw new Error(
+					"the model relay's forwarder could not take 127.0.0.1:17893 in the session: a process in the sandbox may be holding that port. Stop it, or send the prompt again",
+				);
+		} catch (error) {
+			await docker(["rm", "-f", id], { timeoutMs: 30_000 });
+			if (error instanceof Error && /did not start listening/.test(error.message))
+				throw new Error(
+					`the model relay's forwarder did not start listening on 127.0.0.1:17893 in the session (a process in the sandbox may be holding that port): ${error.message}`,
+				);
+			throw error;
+		}
+		return id;
+	}
+
+	/**
+	 * A plan-paid turn's relay on a paired machine (`plan-relay`): sandbox/relay/plan.cjs in a container of its own on
+	 * the bridge, so the plan's requests leave from the machine. The program and the token reach it on its standard
+	 * input, which this process holds: it keeps the token in memory only, never in a file, and ends when its input
+	 * closes (the turn's end, or this process's). It listens on a socket of its own in the socket volume, behind the
+	 * turn's forwarder, which the agent reaches on 127.0.0.1:17893 as Windlass reaches the model relay.
+	 */
+	async openPlan(
+		container: string,
+		sandbox: string,
+		token: string,
+		options: { wire: KeyWire; harness: HarnessId; expiresAt: number; onSeen?: (seen: RelaySeen) => void },
+	): Promise<DockerPlanRelay> {
+		await this.options.ensureImage?.();
+		await this.ensureVolume();
+		await this.endSandbox(sandbox);
+		const nonce = randomBytes(16).toString("hex");
+		const socket = `plan-${nonce}.sock`;
+		const name = this.planRelayName(sandbox);
+		await docker(["rm", "-f", name], { timeoutMs: 30_000 }).catch(() => undefined);
+		const relay = await startPlanRelay(
+			(argv, start) =>
+				dockerProcess(
+					[
+						"run",
+						"-i",
+						"--rm",
+						"--pull",
+						"never",
+						"--name",
+						name,
+						...this.labels("plan"),
+						"--label",
+						`${NONCE_LABEL}=${nonce}`,
+						"--user",
+						"1000:1000",
+						"--read-only",
+						"--cap-drop",
+						"ALL",
+						"--security-opt",
+						"no-new-privileges",
+						...NO_LOGS,
+						"--memory",
+						PLAN_RELAY_MEMORY,
+						"--pids-limit",
+						"32",
+						"--network",
+						this.options.network ?? "bridge",
+						"--mount",
+						// As the relay mounts it: a new volume takes the image's /workspace, which uid 1000 owns.
+						`type=volume,src=${this.socketVolume},dst=/workspace`,
+						this.options.image,
+						...argv,
+					],
+					name,
+					start,
+				),
+			token,
+			{
+				wire: options.wire,
+				harness: options.harness,
+				expiresAt: options.expiresAt,
+				socket: `/workspace/${socket}`,
+				upstream: this.options.upstream,
+				onSeen: options.onSeen,
+			},
+		);
+		let forwarder: string;
+		try {
+			forwarder = await this.startForwarder(container, sandbox, nonce, socket);
+		} catch (error) {
+			await relay.close();
+			throw error;
+		}
+		const lease: DockerPlanRelay = {
+			nonce,
+			placeholder: relay.placeholder,
+			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + wires[options.wire].base },
+			hand: token => relay.hand(token),
+			close: async () => {
+				if (this.openLeases.get(sandbox) === lease) this.openLeases.delete(sandbox);
+				await relay.close();
+				await docker(["rm", "-f", forwarder], { timeoutMs: 30_000 }).catch(() => undefined);
+				await docker(["rm", "-f", name], { timeoutMs: 30_000 }).catch(() => undefined);
+			},
+		};
+		this.openLeases.set(sandbox, lease);
+		return lease;
+	}
+
 	/** Removes the files of these nonces from the relay's tmpfs. Never rejects. */
 	private async removeFiles(relay: string, nonces: string[]): Promise<void> {
 		const paths = nonces
@@ -455,6 +600,8 @@ export class DockerModelRelay {
 	async endSandbox(sandbox: string): Promise<void> {
 		const held = this.openLeases.get(sandbox);
 		if (held) await held.close();
+		const plan = await this.inspect(this.planRelayName(sandbox)).catch(() => null);
+		if (plan && this.owned(plan.labels, "plan")) await docker(["rm", "-f", plan.id], { timeoutMs: 30_000 });
 		const box = await this.inspect(this.forwarderName(sandbox)).catch(() => null);
 		if (!box || !this.owned(box.labels, "forward")) return;
 		const relay = await this.inspect(this.relayName).catch(() => null);
@@ -465,19 +612,21 @@ export class DockerModelRelay {
 
 	/** One process owns each daemon scope. Keep its live leases when clearing orphaned files and forwarders. */
 	async sweep(): Promise<number> {
-		const listed = await docker(["ps", "-aq", "--no-trunc", "--filter", `label=${ROLE}=forward`], {
-			timeoutMs: 15_000,
-		});
 		let removed = 0;
-		for (const id of listed.code === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : []) {
-			const box = await this.inspect(id).catch(() => null);
-			if (
-				!box ||
-				!this.owned(box.labels, "forward") ||
-				[...this.openLeases.values()].some(lease => lease.nonce === box.labels[NONCE_LABEL])
-			)
-				continue;
-			if ((await docker(["rm", "-f", box.id], { timeoutMs: 30_000 })).code === 0) removed += 1;
+		for (const role of ["forward", "plan"] as const) {
+			const listed = await docker(["ps", "-aq", "--no-trunc", "--filter", `label=${ROLE}=${role}`], {
+				timeoutMs: 15_000,
+			});
+			for (const id of listed.code === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : []) {
+				const box = await this.inspect(id).catch(() => null);
+				if (
+					!box ||
+					!this.owned(box.labels, role) ||
+					[...this.openLeases.values()].some(lease => lease.nonce === box.labels[NONCE_LABEL])
+				)
+					continue;
+				if ((await docker(["rm", "-f", box.id], { timeoutMs: 30_000 })).code === 0) removed += 1;
+			}
 		}
 		const relay = await this.inspect(this.relayName).catch(() => null);
 		if (relay?.running && this.owned(relay.labels, "relay")) {
@@ -485,6 +634,12 @@ export class DockerModelRelay {
 			// Every file but those of the leases this process holds now.
 			const script = `cd ${TOKENS} && for f in *; do [ -e "$f" ] || continue; case " $* " in *" $f "*) ;; *) rm -f -- "$f" ;; esac; done`;
 			await docker(["exec", "-u", "1000:1000", relay.id, "sh", "-c", script, "sh", ...live], {
+				timeoutMs: 30_000,
+			}).catch(() => undefined);
+			// A plan relay that was killed left its socket behind.
+			const sockets = [...this.openLeases.values()].map(lease => `plan-${lease.nonce}.sock`);
+			const plans = `cd /workspace && for f in plan-*.sock; do [ -e "$f" ] || continue; case " $* " in *" $f "*) ;; *) rm -f -- "$f" ;; esac; done`;
+			await docker(["exec", "-u", "1000:1000", relay.id, "sh", "-c", plans, "sh", ...sockets], {
 				timeoutMs: 30_000,
 			}).catch(() => undefined);
 		}

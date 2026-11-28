@@ -1858,6 +1858,20 @@ button.output-more:hover {
 	flex: none;
 	margin-top: 3px;
 }
+/* The plan is limited and a key could pay: wait, or use the key this time. */
+.composer-plan-ask {
+	color: var(--ink);
+	flex-wrap: wrap;
+}
+.composer-plan-ask svg {
+	color: var(--warn);
+}
+.composer-plan-ask-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	width: 100%;
+}
 .composer-notice {
 	color: var(--warn);
 	animation: arrive 160ms var(--ease);

@@ -35,7 +35,13 @@ import {
 import { type DefaultDestination, checkRunPlace, placeMachines } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { SessionRepository } from "../contract.js";
-import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
+import {
+	windlassProvider,
+	hostedProvider,
+	hostedProviders,
+	selectedKey,
+	type HostedCredential,
+} from "../sandbox/harnesses.js";
 import {
 	accountFor,
 	accountKey,
@@ -54,8 +60,8 @@ import {
 	type PlacementRoute,
 } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
-import { providerStatuses, savedProviders } from "../model-providers.js";
+import type { ChildPlacement, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
+import { hostedCredentials } from "../credentials/index.js";
 import { itemHarnessProblem, knownHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
@@ -105,6 +111,7 @@ import {
 	type CreateItemInput,
 	type CreateSessionInput,
 	type FactoryLimits,
+	type FinishedItems,
 	type ItemAction,
 	type ItemSummary,
 	type ItemView,
@@ -117,12 +124,15 @@ import {
 	MAX_TITLE_CHARS,
 	type SandboxProfileId,
 	type SessionSummary,
+	SUMMARY_DAYS,
+	type SummaryDays,
 	USAGE_HISTORY_DAYS,
 	type UserProfile,
 	type Wait,
 	isHostedSize,
 } from "../contract.js";
 import { createItem, RULES } from "../factory/blueprint.js";
+import { finishedItems } from "../factory/usage-summary.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import {
 	keptFull,
@@ -131,7 +141,16 @@ import {
 	releaseAt,
 	releaseDueSandboxes,
 } from "./user/kept-sandboxes.js";
-import { admit, retryAt } from "../factory/budget.js";
+import { type Admission, admit, retryAt } from "../factory/budget.js";
+import {
+	holdPlanTurn,
+	type PayerAnswer,
+	type PayerContext,
+	payerContext,
+	payerOf,
+	paysWithRule,
+	sessionModel,
+} from "./user-payer.js";
 import { getLayer } from "../layer.js";
 import { REVIEW_OFF_REASON } from "../factory/review.js";
 import { readAccountDefaults, readDefaults } from "../repository-defaults.js";
@@ -430,6 +449,10 @@ function summaryFields(item: ItemSummary): ItemSummary {
 		review,
 		budget,
 		spent,
+		...(item.partsUsage && { partsUsage: item.partsUsage }),
+		...(item.partsRetryUsage && { partsRetryUsage: item.partsRetryUsage }),
+		...(item.workType && { workType: item.workType }),
+		...(item.startedAt !== undefined && { startedAt: item.startedAt }),
 		sessionId,
 		createdAt,
 		updatedAt,
@@ -1174,16 +1197,36 @@ export function plannerHostedCapacity(limits: UserLimits, sessions: Iterable<Que
 function sessionProvider(
 	session: SessionSummary,
 	machine: MachineSummary | undefined | null,
-	hostedKeys: readonly ModelProvider[],
+	hosted: readonly HostedCredential[],
 ) {
 	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
 	if (!session.harness || session.harness === "windlass") return windlassProvider(model);
-	if (session.place.kind === "hosted") return hostedProvider(session.harness, model, hostedKeys);
+	if (session.place.kind === "hosted")
+		return hostedProvider(session.harness, model, hostedProviders(session.harness, hosted));
 	return selectedKey(
 		session.harness,
 		model,
 		machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? [],
 	);
+}
+
+/** The wait of a turn its plan holds back (Pay with), with what the item's banner offers; null when it may go on. */
+function planHold(payer: PayerAnswer, context: PayerContext, attempt: number, now: number): Admission | null {
+	if (!("wait" in payer.decision) || !payer.plan) return null;
+	const { sentence, retryAt: reset, limited, keyNow } = payer.decision.wait;
+	const generation = context.plans.get(payer.plan)?.generation;
+	return {
+		ok: false,
+		wait: {
+			reason: "provider",
+			sentence,
+			retryAt: reset ?? retryAt(now, attempt),
+			...(generation && {
+				accountKey: accountKey({ place: "hosted", harness: "claude", provider: payer.plan, plan: true }, generation),
+			}),
+			plan: { provider: payer.plan, limited, keyNow },
+		},
+	};
 }
 
 /**
@@ -1194,7 +1237,16 @@ function sessionProvider(
  * not be told is taken back and tried again later.
  */
 async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
-	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
+	// Pay with is read only when a hosted turn of a plan agent waits here.
+	const paying = [...c.vars.items.requests.values()].some(request => {
+		const session = c.vars.sessions.get(request.session);
+		return session !== undefined && paysWithRule(session, false, sessionModel(session));
+	});
+	const [accounts, hosted, payers] = await Promise.all([
+		providerAccounts(c.db, Date.now()),
+		hostedCredentials(c.db, c.key[0]!),
+		paying ? payerContext(c) : null,
+	]);
 	const state = c.vars.items;
 	const now = Date.now();
 	const released: string[] = [];
@@ -1257,40 +1309,47 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		}
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
-		const answer = admit({
-			provider: accountFor(accounts, {
-				place: placeKey(session.place),
-				harness: session.harness ?? "windlass",
-				provider: sessionProvider(session, machine, hostedKeys),
-			}),
-			at: now,
-			limits,
-			dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
-			// The session's own sandbox, running already, is not one more for its turn.
-			place: machine
-				? {
-						kind: "machine",
-						name: machineLabel(machine),
-						online: machine.status === "online",
-						...(capacity &&
-							capacity.max !== null &&
-							placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
-						attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
-						running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
-						max: machine.maxRunning ?? Infinity,
-						keptFull: keptFull(c, session),
-					}
-				: {
-						kind: "hosted",
-						usage,
-						running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0),
-						needsSandbox:
-							session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id),
-						holders,
-						deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null,
-					},
-			attempt: request.attempt,
-		});
+		// Pay with (user-payer.ts): a hosted turn of a plan agent waits for its plan's reset or room under its cap, and
+		// counts against the limits of what pays for it, the plan's or the key's.
+		const model = sessionModel(session);
+		const payer = payers && paysWithRule(session, false, model) ? payerOf(c, payers, session, model) : null;
+		const answer: Admission =
+			(payer && payers && planHold(payer, payers, request.attempt, now)) ||
+			admit({
+				provider: accountFor(accounts, {
+					place: placeKey(session.place),
+					harness: session.harness ?? "windlass",
+					provider: payer?.ref?.provider ?? sessionProvider(session, machine, hosted),
+					...(payer?.ref?.plan && { plan: true as const }),
+				}),
+				at: now,
+				limits,
+				dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
+				// The session's own sandbox, running already, is not one more for its turn.
+				place: machine
+					? {
+							kind: "machine",
+							name: machineLabel(machine),
+							online: machine.status === "online",
+							...(capacity &&
+								capacity.max !== null &&
+								placement && { slots: { free: Math.max(0, capacity.max - capacity.busy), units: placement.units } }),
+							attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
+							running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
+							max: machine.maxRunning ?? Infinity,
+							keptFull: keptFull(c, session),
+						}
+					: {
+							kind: "hosted",
+							usage,
+							running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0),
+							needsSandbox:
+								session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id),
+							holders,
+							deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null,
+						},
+				attempt: request.attempt,
+			});
 		if (answer.ok) {
 			// The one asking now is told in its answer; any other is told below, and until it answers the grant stays recorded.
 			const slot: Slot = {
@@ -1306,6 +1365,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			state.requests.delete(request.key);
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
+			// Its plan's place under the cap is taken with the slot: the next request in this pass counts it.
+			if (payer?.ref?.plan && payer.plan && payer.capped) holdPlanTurn(c, payer.plan, session.id, now);
 			if (hostedLimitsApply(session.place)) hostedRunning.add(session.id);
 			continue;
 		}
@@ -1440,7 +1501,10 @@ export async function notifyProviderWaits(
 			(item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey)),
 	);
 	if (!waits.length) return;
-	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
+	const [accounts, hosted] = await Promise.all([
+		providerAccounts(c.db, Date.now()),
+		hostedCredentials(c.db, c.key[0]!),
+	]);
 	const active = new Set(limitedAccounts(accounts).map(a => a.accountKey));
 	for (const item of waits) {
 		// A placement wait belongs to the prospective child, which can use a different connection from its parent.
@@ -1451,7 +1515,7 @@ export async function notifyProviderWaits(
 			if (!session) continue;
 			const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
 			const harness = session.harness ?? "windlass";
-			const provider = sessionProvider(session, machine, hostedKeys);
+			const provider = sessionProvider(session, machine, hosted);
 			const location = { place: placeKey(session.place), harness, provider };
 			const generation = await loginGeneration(c.db, location);
 			if (generation === null ? !settingsChanged : item.wait!.accountKey === accountKey(location, generation)) continue;
@@ -1704,9 +1768,9 @@ export async function placementInventory(
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	for (const m of machines)
 		m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const [catalogs, hostedKeys, accounts, defaults, fresh] = await Promise.all([
+	const [catalogs, hosted, accounts, defaults, fresh] = await Promise.all([
 		models(),
-		providerStatuses(c.db),
+		hostedCredentials(c.db, c.key[0]!),
 		providerAccounts(c.db, Date.now()),
 		partDefaults(c, repositories),
 		snapshotRepository === undefined
@@ -1723,7 +1787,7 @@ export async function placementInventory(
 		defaults,
 		machines,
 		models: catalogs,
-		hostedKeys: hostedKeys.filter(k => k.ok),
+		hostedCredentials: hosted,
 		limited: limitedAccounts(accounts),
 		dailyTokenWait: accountTokenWait(c),
 		snapshotPlaces: fresh,
@@ -2119,6 +2183,14 @@ export const itemActions = {
 		requireUser(c);
 		enabled();
 		return feedOf(c.vars.items);
+	},
+	finishedItems: (c: ItemsCtx, days: unknown): FinishedItems => {
+		requireUser(c);
+		enabled();
+		if (!SUMMARY_DAYS.includes(days as SummaryDays))
+			throw new UserError("Choose 7, 30 or 90 days.", { code: "bad_input" });
+		const since = Date.now() - (days as SummaryDays) * 86_400_000;
+		return { days: days as SummaryDays, since, items: finishedItems(c.vars.items.items.values(), since) };
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {

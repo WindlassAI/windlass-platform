@@ -171,7 +171,7 @@ export interface TokenReceipt {
 	seq: number;
 	at: number;
 	tokens: number;
-	key?: import("./sandbox/provider.js").ModelKeyLease;
+	key?: import("./contract.js").CredentialRef;
 }
 
 export async function recordTurnTokens(db: Pick<RawAccess, "execute">, session: string, receipt: TokenReceipt) {

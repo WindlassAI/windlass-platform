@@ -1,11 +1,22 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
+import { ChatgptPlan } from "./ChatgptPlan";
+import { ClaudePlan } from "./ClaudePlan";
 import { ModelProviders } from "./ModelProviders";
+
+/** The keys and the plans' rows, as the Connections page has them. */
+const Rows = () =>
+	createElement(
+		Fragment,
+		null,
+		createElement("ul", null, createElement(ChatgptPlan), createElement(ClaudePlan)),
+		createElement(ModelProviders),
+	);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,10 +57,21 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		await press(document.querySelector("dialog")!, "Save key");
 	};
 	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Rows) })));
 		await settle();
-		expect(host.querySelectorAll(".provider-row:not(.chatgpt-plan)")).toHaveLength(4);
+		expect(host.querySelectorAll(".provider-row:not(.chatgpt-plan):not(.claude-plan)")).toHaveLength(4);
 		expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
+		expect(state("claude-plan")).toBe("not connected");
+		await press(row("claude-plan"), "Connect");
+		expect(row("claude-plan").querySelector(".plan-command code")?.textContent).toBe(
+			"npx @windlassai/cli connect claude",
+		);
+		// The terminal's code is approved on the connect page; the row turns green on its own once the plan arrives.
+		await client.user(auth).approvePlanConnect("KQ2M-8XF4", "anthropic");
+		for (let i = 0; i < 40 && state("claude-plan") !== "connected"; i++)
+			await act(async () => void (await new Promise(r => setTimeout(r, 200))));
+		expect(state("claude-plan")).toBe("connected");
+		expect(row("claude-plan").textContent).toContain("you@example.com · Max");
 		expect(state("openai")).toBe("no key");
 
 		await press(row("openai"), "Add key");
@@ -86,3 +108,70 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		localStorage.clear();
 	}
 }, 15_000);
+
+it("connects the ChatGPT plan from a terminal, and shows its Codex line only where plans are on", async () => {
+	const base = createMockClient({ pace: 0 });
+	const auth = {
+		token: "mock:user:u_chatgpt:ada@example.com",
+		profile: { uid: "u_chatgpt", email: "ada@example.com", demo: false },
+	};
+	saveAuth("mock", auth);
+	let allowed = true;
+	let rechecked = 0;
+	const client = {
+		...base,
+		user: (a: typeof auth) => ({
+			...base.user(a),
+			modelPlans: async () => ({ ...(await base.user(a).modelPlans()), allowed }),
+			recheckModelPlan: async (provider: "openai" | "anthropic") => {
+				rechecked++;
+				return base.user(a).recheckModelPlan(provider);
+			},
+		}),
+	} as typeof base;
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	const settle = async () => {
+		for (let i = 0; i < 6; i++) await act(async () => void (await new Promise(r => setTimeout(r, 2))));
+	};
+	const row = () => host.querySelector<HTMLElement>(".provider-row.chatgpt-plan")!;
+	const render = async () => {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Rows) })));
+		await settle();
+	};
+	const state = () => row().querySelector(".machine-used")?.textContent;
+	try {
+		await render();
+		expect(state()).toBe("not connected");
+		const connect = [...row().querySelectorAll("button")].find(b => b.textContent === "Connect")!;
+		await act(async () => connect.click());
+		await settle();
+		expect(row().querySelector(".plan-command code")?.textContent).toBe("npx @windlassai/cli connect codex");
+		// The terminal's code is approved on the connect page; the row turns green on its own once the sign-in arrives.
+		await base.user(auth).approvePlanConnect("KQ2M-8XF4", "openai");
+		for (let i = 0; i < 40 && state() !== "connected"; i++)
+			await act(async () => void (await new Promise(r => setTimeout(r, 200))));
+		expect(state()).toBe("connected");
+		expect(row().querySelector(".plan-command")).toBeNull();
+		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
+		expect(row().textContent).toContain("Also pays for hosted Codex · 2 models");
+		const check = [...row().querySelectorAll("button")].find(b => b.textContent === "Check again")!;
+		await act(async () => check.click());
+		await settle();
+		expect(rechecked).toBe(1);
+
+		act(() => root.unmount());
+		allowed = false;
+		const again = createRoot(host);
+		await act(async () => again.render(createElement(AppProvider, { client, children: createElement(Rows) })));
+		await settle();
+		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
+		expect(row().textContent).not.toContain("hosted Codex");
+		expect(row().textContent).not.toContain("Check again");
+		act(() => again.unmount());
+	} finally {
+		host.remove();
+		base.dispose();
+		localStorage.clear();
+	}
+}, 20_000);

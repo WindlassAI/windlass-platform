@@ -60,7 +60,8 @@ export interface WizardEffects {
 
 export const SECTIONS = ["name", "agents", "claude", "codex", "opencode", "profile", "network", "limits"] as const;
 export type Section = (typeof SECTIONS)[number];
-export type Mode = { kind: "full" } | { kind: "quick" } | { kind: "section"; section: Section };
+/** `connect`: `npx @windlassai/cli connect --machine`, with nobody to answer: every default, every agent the image has and no sign-in. */
+export type Mode = { kind: "full" } | { kind: "quick" } | { kind: "connect" } | { kind: "section"; section: Section };
 export type Outcome = { outcome: "done" | "cancelled" | "failed"; message?: string };
 
 type Step = "welcome" | "pair" | "name" | "agents" | "profile" | "network" | "limits" | "summary" | "start";
@@ -206,6 +207,7 @@ export async function runWizard(
 	const loaded = fx.choices();
 	const draft: SetupChoices = structuredClone(loaded.choices);
 	const quick = mode.kind === "quick";
+	const connect = mode.kind === "connect";
 	let paired = fx.pairing();
 	let platform = given.platform ?? paired?.platform;
 	let name = fx.savedName() ?? (await fx.defaultName());
@@ -257,6 +259,17 @@ export async function runWizard(
 	const pairStep = async (): Promise<Move> => {
 		const same = paired && paired.platform === platform;
 		if (same && quick) return "skip";
+		if (same && connect) {
+			// A running runner is left as it is: its settings may have come from flags this mode would not keep.
+			if ((await fx.service()) === "running") {
+				p.outro(
+					`This machine is already paired as ${paired!.machineId} and its runner is running, so nothing was changed. To change its settings or pair it again, run setup.`,
+				);
+				return { outcome: "done" };
+			}
+			p.log("info", `This machine is already paired as ${paired!.machineId}, so it keeps that pairing.`);
+			return "next";
+		}
 		if (same) {
 			const move = await ask(
 				p.select({
@@ -302,6 +315,7 @@ export async function runWizard(
 						name,
 						event => {
 							if (event.kind === "code") code = event;
+							else if (event.kind === "key" && code && p.pairing) p.pairing(code.code, event.key);
 							else if (event.kind === "key" && code)
 								p.note(
 									"Pair this machine",
@@ -421,6 +435,24 @@ export async function runWizard(
 			draft.agents = [];
 			return "next";
 		}
+		if (connect) {
+			// The agents pay with the account's plans and keys (Connections), so none signs in on the machine.
+			const agents =
+				loaded.saved && draft.agents !== undefined ? draft.agents.filter(id => offered.includes(id)) : offered;
+			draft.agents = [...agents];
+			if (
+				agents.length &&
+				(await p.wait("Fetching the agents' images (the first time takes a few minutes)", (_, update) =>
+					fx.prepare(agents, update),
+				)) === CANCEL
+			)
+				return "cancel";
+			p.log(
+				"info",
+				`Agents: ${["Windlass", ...agents.map(id => HARNESS_LABELS[id])].join(", ")}. They use the plans and keys connected to your account, so none signs in here.`,
+			);
+			return "next";
+		}
 		for (const id of offered) states.set(id, await fx.signInState(id));
 		const stateLine = (id: MachineHarness) =>
 			states.get(id) === "signed-in" ? "signed in" : states.get(id) === "unknown" ? "sign-in unknown" : "not signed in";
@@ -488,7 +520,7 @@ export async function runWizard(
 
 	const flags = () => startFlags(platform!, draft);
 	const summaryStep = async (): Promise<Move> => {
-		for (const id of draft.agents ?? [])
+		for (const id of connect ? [] : (draft.agents ?? []))
 			if (!signIns.has(id) && !states.has(id)) states.set(id, await fx.signInState(id));
 		const agentLine = (draft.agents ?? []).map(id => {
 			const s = signIns.get(id) ?? states.get(id);
@@ -604,7 +636,7 @@ export async function runWizard(
 		start: startStep,
 	};
 	p.intro(
-		`Windlass runner ${fx.version} · setup${mode.kind === "quick" ? " (only what is missing)" : mode.kind === "section" ? " · " + mode.section : ""}`,
+		`Windlass runner ${fx.version} · setup${mode.kind === "quick" ? " (only what is missing)" : mode.kind === "section" ? " · " + mode.section : connect ? " (connect)" : ""}`,
 	);
 	if ((await p.wait("Checking the runner's images", (_, update) => fx.prepare([], update))) === CANCEL)
 		return { outcome: "cancelled" };

@@ -176,14 +176,29 @@
 	margin: 0;
 }
 
-.chatgpt-plan-form {
+.plan-connect {
 	display: grid;
-	gap: 10px;
-	margin-top: 10px;
+	gap: 6px;
+	margin-top: 8px;
 }
-.chatgpt-plan-actions {
+
+.plan-command {
 	display: flex;
+	align-items: center;
 	gap: 8px;
+	padding: 6px 6px 6px 10px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-control);
+	background: var(--bg-sunk);
+}
+
+.plan-command code {
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
 }
 
 @media (max-width: 760px) {

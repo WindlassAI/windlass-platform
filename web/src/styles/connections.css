@@ -1,0 +1,327 @@
+/* The Connections page (screens/Connections.tsx) and the first-run setup (components/Onboarding.tsx). */
+
+/* ---- the grid: an agent per row, a place per column -------------------------------------------- */
+
+.conn-scroll {
+	overflow-x: auto;
+}
+.settings-card > .conn-scroll {
+	padding: 6px 0;
+}
+.conn-grid {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--text-13);
+}
+.conn-grid th,
+.conn-grid td {
+	padding: 10px var(--card-gutter, 20px);
+	border-top: 1px solid var(--line);
+	text-align: left;
+	vertical-align: top;
+}
+.conn-grid thead th {
+	border-top: 0;
+	padding-block: 6px;
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.conn-grid tbody th {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+	white-space: nowrap;
+}
+.conn-agent {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+h3.conn-agent {
+	font-size: var(--text-14);
+	font-weight: var(--weight-strong);
+}
+
+.conn-cell {
+	display: grid;
+	justify-items: start;
+	gap: 4px;
+	min-width: 150px;
+	margin: -4px -8px;
+	padding: 4px 8px;
+	border-radius: var(--r-item);
+	scroll-margin-top: calc(var(--topbar) + 80px);
+}
+.conn-cell-target {
+	box-shadow: 0 0 0 2px var(--accent-edge);
+	background: var(--accent-wash);
+}
+.conn-state {
+	display: inline-flex;
+	align-items: center;
+	min-height: 20px;
+	padding: 0 7px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-item);
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	white-space: nowrap;
+	color: var(--ink-dim);
+}
+.conn-state-good {
+	border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+	background: var(--ok-wash);
+	color: var(--ok);
+}
+.conn-state-warn {
+	border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+	color: var(--warn);
+}
+.conn-state-bad {
+	border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+	background: var(--bad-wash);
+	color: var(--bad);
+}
+.conn-state-quiet {
+	border-style: dashed;
+	color: var(--ink-faint);
+}
+.conn-detail {
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.conn-action {
+	margin-top: 2px;
+}
+.conn-cell .machine-credential {
+	margin: 4px 0 0;
+}
+
+/* On a phone each agent is a block, each place a line in it. */
+@media (max-width: 560px) {
+	.conn-grid thead {
+		display: none;
+	}
+	.conn-grid,
+	.conn-grid tbody,
+	.conn-grid tr,
+	.conn-grid th,
+	.conn-grid td {
+		display: block;
+		width: 100%;
+	}
+	.conn-grid td {
+		border-top: 0;
+		padding-top: 0;
+	}
+	.conn-grid td::before {
+		content: attr(data-place);
+		display: block;
+		margin-bottom: 4px;
+		font-size: var(--text-12);
+		color: var(--ink-faint);
+	}
+}
+
+/* ---- who pays ------------------------------------------------------------------------------------ */
+
+.conn-pays {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 12px;
+}
+.conn-pay {
+	display: grid;
+	align-content: start;
+	gap: 10px;
+	padding: 14px 16px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-control);
+	background: var(--bg-sunk);
+	scroll-margin-top: calc(var(--topbar) + 80px);
+}
+.conn-pay-fields {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 8px 12px;
+}
+.conn-pay .field-note {
+	margin: 0;
+}
+.conn-pay-what {
+	color: var(--ink-faint);
+}
+
+/* ---- the first-run setup -------------------------------------------------------------------------- */
+
+.onboard {
+	width: 100%;
+	max-width: 760px;
+	margin: 8px auto 0;
+	text-align: left;
+}
+.onboard-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 20px;
+}
+.onboard-step {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: var(--h-sm);
+	padding: 0 10px 0 4px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-pill);
+	background: transparent;
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-faint);
+}
+.onboard-step b {
+	display: inline-grid;
+	place-items: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	background: var(--bg-hover);
+	font-size: var(--text-11);
+}
+.onboard-step[aria-current="step"] {
+	border-color: var(--accent-edge);
+	color: var(--ink);
+}
+.onboard-step[aria-current="step"] b {
+	background: var(--accent-fill);
+	color: var(--accent-ink);
+}
+.onboard-step[data-done] {
+	color: var(--ink-dim);
+}
+.onboard-step[data-done] b {
+	background: var(--ok-wash);
+	color: var(--ok);
+}
+.onboard h2 {
+	font-size: var(--text-20);
+	font-weight: var(--weight-strong);
+	letter-spacing: var(--tracking-tight);
+}
+.onboard-sub {
+	margin-top: 4px;
+	font-size: var(--text-14);
+	color: var(--ink-dim);
+}
+.onboard-box {
+	display: grid;
+	justify-items: start;
+	gap: 8px;
+	margin-top: 16px;
+	padding: 16px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.onboard-done {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--text-14);
+	color: var(--ink);
+}
+.onboard-done svg {
+	color: var(--ok);
+}
+.onboard-choice,
+.onboard-box > .input,
+.onboard-box > .onboard-panel,
+.onboard-agent-head {
+	width: 100%;
+}
+.onboard-choice {
+	display: grid;
+	gap: 2px;
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-control);
+	background: transparent;
+	text-align: left;
+	font-size: var(--text-14);
+	color: var(--ink);
+	cursor: pointer;
+}
+.onboard-choice:hover {
+	background: var(--bg-hover);
+}
+.onboard-choice[aria-checked="true"] {
+	border-color: var(--accent-edge);
+	background: var(--accent-wash);
+}
+.onboard-choice small {
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.onboard-choice-mono {
+	font-family: var(--font-mono);
+	font-size: var(--text-13);
+}
+.onboard-agents {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+	gap: 12px;
+	margin-top: 16px;
+}
+.onboard-agents .onboard-box {
+	margin-top: 0;
+	align-content: start;
+}
+.onboard-agent-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.onboard-agent-head .conn-state {
+	margin-left: auto;
+}
+.onboard-panel {
+	display: grid;
+	gap: 8px;
+	padding-top: 4px;
+}
+.onboard-panel .field-note {
+	margin: 0;
+}
+.onboard-note {
+	margin-top: 12px;
+	font-size: var(--text-13);
+	color: var(--ink-faint);
+}
+.onboard textarea {
+	min-height: 72px;
+	resize: vertical;
+}
+.onboard-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-top: 20px;
+}
+.onboard-foot-end {
+	display: flex;
+	gap: 8px;
+	margin-left: auto;
+}
+.onboard-resume {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}

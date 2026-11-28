@@ -65,9 +65,18 @@ import {
 	isTurnSandbox,
 	randomId,
 } from "./provider.js";
-import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
+import { hostedKeyEnv, redactKeyLease, windlassPlanEnv } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
-import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import {
+	openModelKeyRelay,
+	rotatePlanToken,
+	TokenFile,
+	TokenFileError,
+	type TokenFileOptions,
+	turnTokenFilePath,
+	writePlanPlaceholder,
+} from "./token-file.js";
+import { config } from "../config.js";
 import { errorText, sleep } from "../util.js";
 
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
@@ -201,7 +210,10 @@ export class SandboxWindlass implements Windlass {
 				failure: null,
 			};
 		const provider = windlassProvider(input.model);
-		if (provider !== input.modelKey?.key.provider) throw new Error(hostedKeyMessage("windlass", input.model));
+		// A qualified model runs on its provider's Settings key; an unqualified one on the ChatGPT plan, or on a machine's sign-in.
+		const key = input.modelKey?.key;
+		if (provider !== (key?.plan ? undefined : key?.provider) || (key?.plan && key.provider !== "openai"))
+			throw new Error(hostedKeyMessage("windlass", input.model));
 		if (provider) input = { ...input, model: input.model!.slice(provider.length + 1) };
 		return new Turn(sandbox, input, this.options, this.tokens).run();
 	}
@@ -340,6 +352,10 @@ class Turn {
 	private promptId: number | null = null;
 	/** A turn a restarted server takes up (`RunTurnInput.reattach`) has its process again. */
 	private takenUp = false;
+	/** The turn's key or plan relay lease, closed when the turn ends. */
+	private keyLease: import("./provider.js").KeyTurnRelay | undefined;
+	/** A plan relay on a machine that a restarted server can take up (`TurnSandbox.resumePlanRelay`); null otherwise. */
+	private planLease: import("./provider.js").PlanRelayLease | null = null;
 	private processEnd: ProcessEnd | null = null;
 	private stderr = "";
 	private readonly notes: string[] = [];
@@ -491,15 +507,17 @@ class Turn {
 		const tokenFile = this.tokenFile;
 		const configHome = this.reviewerAgent && `/tmp/${this.reviewerAgent}`;
 		const agentFile = configHome && `${configHome}/windlass/agents/${this.reviewerAgent}.md`;
+		// A ChatGPT plan turn's file holds only its relay's placeholder.
+		const planFile = input.modelKey?.key.plan ? turnTokenFilePath(sandbox) : null;
 		// What the turn leaves in the sandbox besides its processes.
 		const files = [
 			...(scriptPath === null ? [] : [scriptPath]),
 			...(tokenFile === null ? [] : tokenFile.files),
+			...(planFile === null ? [] : [planFile, `${planFile}.tmp`]),
 			...(agentFile ? [agentFile] : []),
 		];
 		const onAbort = () => this.abort();
 		let release: (() => Promise<void>) | null = null;
-		let keyLease: import("./provider.js").KeyTurnRelay | undefined;
 		try {
 			// From the start: getting the token can take a while (a refresh), and a stop must not wait for it.
 			input.signal?.addEventListener("abort", onAbort, { once: true });
@@ -542,16 +560,27 @@ class Turn {
 				const ref = input.modelKey;
 				let keyEnv: Record<string, string> = {};
 				if (ref) {
-					keyLease = await openModelKeyRelay(
+					const keyLease = (this.keyLease = await openModelKeyRelay(
 						sandbox,
 						ref.sessionId,
 						{ ...ref.key, harness: "windlass" },
 						input.signal,
 						ref.takeRequest,
-					);
+						ref.openSecret,
+						ref.onSeen,
+					));
+					// A plan relay the runner keeps through a server's restart: the checkpoint names it.
+					if (ref.key.plan && keyLease.lease !== undefined && sandbox.resumePlanRelay !== undefined)
+						this.planLease = { lease: keyLease.lease, placeholder: keyLease.placeholder, env: keyLease.env };
 					input.signal?.throwIfAborted();
-					keyEnv = hostedKeyEnv("windlass", ref.key.provider, keyLease);
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);
+					if (planFile !== null) {
+						// Past the turn's end: the relay ends the placeholder with the turn, whatever the file says.
+						const expiresAt = Date.now() + config.turnTimeoutMs + 15 * 60_000;
+						await writePlanPlaceholder(sandbox, planFile, keyLease.placeholder, expiresAt);
+						input.signal?.throwIfAborted();
+						keyEnv = windlassPlanEnv(keyLease, planFile);
+					} else keyEnv = hostedKeyEnv("windlass", ref.key, keyLease);
 				}
 				const lines = this.lines;
 				const env = {
@@ -596,7 +625,7 @@ class Turn {
 			const run = this.process;
 			if (run !== null && !run.hasEnded) await this.stopProcess(true);
 			// No more replacements, and none in the middle of being written, before the token file is removed.
-			await keyLease?.close().catch(() => this.notes.push("[platform] could not close the model key relay"));
+			await this.keyLease?.close().catch(() => this.notes.push("[platform] could not close the model key relay"));
 			await tokenFile?.stop();
 			if (run !== null) {
 				// Whatever happened above, nothing of the turn stays behind in the sandbox. A process that ended on its own
@@ -646,7 +675,13 @@ class Turn {
 		// The relay's own refusal of the turn's placeholder: never the user's sign-in.
 		if ((tokenFile?.relayed || this.input.modelKey) && relayRefused(code, failure.message, this.stepFailureMessage))
 			return { ...RELAY_REFUSED };
-		if (tokenFile === null) return failure;
+		if (tokenFile === null) {
+			// On the ChatGPT plan the file holds a placeholder that outlasts the turn: a handed-in failure is the file's,
+			// or the provider turning down the plan's token.
+			const planProblem = this.input.modelKey?.key.plan && code !== null ? handedInProblem(code) : null;
+			if (planProblem === null) return failure;
+			return handedInFailure(planProblem, { expiresAt: Number.POSITIVE_INFINITY, problem: null, lapsed: false });
+		}
 		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
 		let state = tokenFile.state;
@@ -677,7 +712,9 @@ class Turn {
 			// Finish both cleanup steps before starting any file writer or requesting a token.
 			try {
 				await stopping;
-				await sweepSessionProcesses(this.sandbox, this.tokenFile?.path);
+				const tokenPath =
+					this.tokenFile?.path ?? (this.input.modelKey?.key.plan ? turnTokenFilePath(this.sandbox) : undefined);
+				await sweepSessionProcesses(this.sandbox, tokenPath);
 				if (this.abortRequested) return false;
 			} catch (error) {
 				this.failure = {
@@ -869,8 +906,9 @@ class Turn {
 
 	/** Checkpoint a live, prompted, durable process synchronously before its prompt settles. */
 	private checkpoint(): TurnCheckpoint | null {
-		// A platform key lease ends with its owning process. Start a fresh segment after a restart.
-		if (this.input.modelKey) return null;
+		// A platform key lease ends with its owning process: start a fresh segment after a restart. A plan relay the runner
+		// keeps on the machine is taken up with the process.
+		if (this.input.modelKey && this.planLease === null) return null;
 		// Until the process is taken up, what was stored stands: the output kept for it is not in the timeline yet.
 		if (this.input.reattach !== undefined && !this.takenUp) return this.input.reattach;
 		const run = this.process;
@@ -920,6 +958,7 @@ class Turn {
 				reviewerAgent: this.reviewerAgent,
 				scriptPath: (this.engineEnv.WINDLASS_ACP_SCRIPT as string | undefined) ?? null,
 				relay,
+				planRelay: this.planLease,
 			},
 		};
 	}
@@ -927,7 +966,14 @@ class Turn {
 	/** Adopt the runner's process and reconnect the pending prompt using its original request IDs. */
 	private async takeUp(checkpoint: TurnCheckpoint): Promise<boolean> {
 		const saved = checkpoint.state;
-		if (checkpoint.harness !== "windlass" || saved.v !== 1 || this.sandbox.adopt === undefined) {
+		const planLease = (saved.planRelay as import("./provider.js").PlanRelayLease | null | undefined) ?? null;
+		if (
+			checkpoint.harness !== "windlass" ||
+			saved.v !== 1 ||
+			this.sandbox.adopt === undefined ||
+			(this.input.modelKey !== undefined &&
+				(planLease === null || !this.input.modelKey.key.plan || this.sandbox.resumePlanRelay === undefined))
+		) {
 			this.failure = { reason: "engine", message: TAKE_UP_FAILED };
 			return false;
 		}
@@ -984,9 +1030,39 @@ class Turn {
 				return true;
 			}
 		}
+		if (planLease !== null && this.input.modelKey) {
+			try {
+				await this.resumePlan(planLease);
+			} catch (error) {
+				this.failure = {
+					reason: "engine",
+					message: `the engine's plan relay could not be handed its token again: ${errorText(error)}`,
+				};
+				this.abort();
+				return true;
+			}
+		}
 		for (const [id, method, params] of acp.incoming) this.peer.answerAgain(id, method, params);
 		this.controlled();
 		return true;
+	}
+
+	/**
+	 * Takes up the plan relay the runner kept on the machine (`resumePlanRelay`) and hands it the plan's current token
+	 * again, then keeps it fresh on the turn's schedule (`rotatePlanToken`). Closed with the turn, as when it was opened.
+	 */
+	private async resumePlan(planLease: import("./provider.js").PlanRelayLease): Promise<void> {
+		const ref = this.input.modelKey!;
+		const relay = this.sandbox.resumePlanRelay!(planLease, ref.onSeen);
+		this.keyLease = relay;
+		this.planLease = planLease;
+		this.redactor = redactKeyLease(this.redactor, relay.placeholder);
+		const opened = await ref.openSecret?.();
+		// A plan reconnected or removed meanwhile: the relay keeps the token it has, as a rotation would.
+		if (!opened) return;
+		await relay.hand(opened.secret);
+		if (opened.expiresAt !== undefined && ref.openSecret)
+			this.keyLease = rotatePlanToken(relay, opened.expiresAt, ref.openSecret);
 	}
 
 	private answered(request: Promise<PromptResult>): void {

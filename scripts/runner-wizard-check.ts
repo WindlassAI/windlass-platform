@@ -7,14 +7,17 @@
  * What it holds to: Back goes to the step before and keeps what was chosen; a failed or a skipped sign-in
  * is shown and setup carries on; Escape cancels, starts nothing and starts again a runner it stopped; the
  * start command is built from the answers; a re-run offers the saved answers; --quick asks only what is
- * missing; a section asks only its own questions; an expired code can be tried again.
+ * missing; a section asks only its own questions; an expired code can be tried again; `--connect` asks
+ * nothing, offers every agent without a sign-in and says what happens as events, stopping when pairing fails.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACK, CANCEL, type Answer, type Choice, type Prompter } from "../runner/src/setup-prompt.js";
-import { fromFlags, startFlags, validChoices, type SetupChoices } from "../runner/src/setup-choices.js";
+import { fromFlags, startFlags, storeDefaults, validChoices, type SetupChoices } from "../runner/src/setup-choices.js";
 import { runWizard, type Mode, type WizardEffects, type SignInState } from "../runner/src/setup-wizard.js";
 import type { MachineHarness } from "../runner/src/policy.js";
+import { EventPrompter } from "../runner/src/setup-events.js";
+import { parseSetupEvent, type SetupEvent } from "../server/src/contract/machine-setup.js";
 
 type Step = {
 	kind: "select" | "multiselect" | "text";
@@ -395,6 +398,78 @@ test("an expired code can be tried again; without a terminal it ends setup", asy
 	assert.deepEqual(await run(lines, quiet.fx), { outcome: "failed" });
 	assert.ok(lines.logs.includes("error: " + expired.message));
 	lines.done();
+});
+
+/** The connect mode's prompter, writing its events where the check reads them back. */
+function events() {
+	const lines: string[] = [];
+	const out = { write: (chunk: string) => lines.push(...chunk.split("\n").filter(Boolean)) };
+	const prompter = new EventPrompter(out as unknown as NodeJS.WritableStream);
+	const read = (): SetupEvent[] =>
+		lines.map(line => {
+			const event = parseSetupEvent(line);
+			assert.ok(event, `not an event: ${line}`);
+			return event;
+		});
+	return { prompter, read };
+}
+
+test("--connect asks nothing, offers every agent without a sign-in and starts the runner", async () => {
+	const { fx, did } = machine({ service: "running" });
+	const { prompter, read } = events();
+	assert.deepEqual(await runWizard(prompter, fx, { kind: "connect" }, { platform }), { outcome: "done" });
+	const said = read();
+	assert.deepEqual(
+		said.filter(e => e.event === "pairing"),
+		[{ event: "pairing", code: "WXYZ-1210", key: "K7Q2M-XR4TD" }],
+	);
+	assert.ok(!did.some(d => d.startsWith("sign in")));
+	assert.ok(did.includes("prepare claude,opencode,codex"));
+	assert.deepEqual(validChoices(JSON.parse(did.find(d => d.startsWith("save "))!.slice(5))), {
+		agents: ["claude", "opencode", "codex"],
+		windlassSandbox: true,
+		network: { mode: "restricted" },
+		limits: storeDefaults,
+	});
+	// The running runner is stopped to pair again, then replaced with the new settings.
+	const start = did.find(d => d.startsWith("start "));
+	assert.match(start ?? "", /^start replace --platform \S+ --harness claude --harness opencode --harness codex /);
+	assert.ok(did.indexOf("stop") < did.findIndex(d => d.startsWith("pair ")));
+	assert.ok(said.some(e => e.event === "log" && /none signs in here/.test(e.text)));
+	assert.equal(said.at(-1)?.event, "done");
+});
+
+test("--connect stops when the pairing is denied, keeps a pairing it has and leaves a running runner alone", async () => {
+	const denied = {
+		ok: false as const,
+		message: "The pairing code expired or was denied, so re-run the setup command to get a new code.",
+	};
+	const refused = machine({ pairResults: [denied] });
+	const first = events();
+	assert.deepEqual(await runWizard(first.prompter, refused.fx, { kind: "connect" }, { platform }), {
+		outcome: "failed",
+	});
+	assert.ok(first.read().some(e => e.event === "log" && e.level === "error" && e.text === denied.message));
+	assert.equal(refused.did.filter(d => d.startsWith("pair ")).length, 1);
+	assert.ok(!refused.did.some(d => /^(save|start|prepare \w)/.test(d)), refused.did.join("; "));
+	const kept = machine({ paired: true, saved: { agents: ["codex"], windlassSandbox: false } });
+	const again = events();
+	assert.deepEqual(await runWizard(again.prompter, kept.fx, { kind: "connect" }, { platform }), { outcome: "done" });
+	assert.ok(!kept.did.some(d => d.startsWith("pair ")));
+	assert.ok(again.read().some(e => e.event === "log" && /already paired/.test(e.text)));
+	assert.match(
+		kept.did.find(d => d.startsWith("start ")) ?? "",
+		/--harness codex --allow-profile docker-hardened --egress/,
+	);
+	// A paired machine whose runner runs is left alone.
+	const running = machine({ paired: true, service: "running" });
+	const quiet = events();
+	assert.deepEqual(await runWizard(quiet.prompter, running.fx, { kind: "connect" }, { platform }), {
+		outcome: "done",
+	});
+	assert.deepEqual(running.did, ["prepare "]);
+	const last = quiet.read().at(-1);
+	assert.ok(last?.event === "done" && /nothing was changed/.test(last.text));
 });
 
 test("the start flags come from the choices", () => {

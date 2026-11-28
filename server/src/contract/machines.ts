@@ -138,6 +138,8 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	commandSandbox: MachineProbe | null;
 	/** Free space where Docker keeps the sandboxes, as last reported; null when not known. */
 	freeDiskBytes: number | null;
+	/** Its runner hands a plan's token to a relay on the machine (`plan-relay`): plans pay there as hosted. */
+	planRelay?: true;
 	/** Runner-reported limits. Absent before the first report or when no cap is configured. */
 	readySandboxes?: number;
 	maxRunning?: number;

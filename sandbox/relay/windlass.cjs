@@ -75,8 +75,7 @@ function wireTarget(provider, path, incoming, credential) {
 		const values = allowedBetas(beta, wire.betas);
 		if (values) headers["anthropic-beta"] = values;
 	}
-	if (provider === "openai" && method === "POST" && incoming["content-encoding"] === "zstd")
-		headers["content-encoding"] = "zstd";
+	if (wire.zstd && method === "POST" && incoming["content-encoding"] === "zstd") headers["content-encoding"] = "zstd";
 	for (const [name, value] of Object.entries(incoming)) {
 		if (
 			(name === "accept" ||
@@ -142,6 +141,30 @@ function errorBody(status, text, secrets = []) {
 			.trim()
 			.slice(0, 1000) || `The provider answered HTTP ${status}.`;
 	return JSON.stringify({ error: { message, type, code, ...(param && { param }) } });
+}
+
+/**
+ * What a plan's health needs from a provider's error body (server/src/credentials/plan-health.ts): its code (or its
+ * type where it gives none), and for a ChatGPT usage limit that names it, the reset in unix ms. Nothing else of it.
+ */
+function limitFacts(text, secrets = []) {
+	let code = null,
+		resetsAt = null;
+	const fit = value =>
+		typeof value === "string" && CODE.test(value) && !secrets.some(secret => secret && value.includes(secret));
+	try {
+		const parsed = JSON.parse(text);
+		const error =
+			parsed && typeof parsed === "object" && parsed.error && typeof parsed.error === "object" ? parsed.error : {};
+		if (fit(error.code)) code = error.code;
+		else if (fit(error.type)) code = error.type;
+		if (code === "usage_limit_reached") {
+			if (Number.isSafeInteger(error.resets_at) && error.resets_at > 0) resetsAt = error.resets_at * 1000;
+			else if (Number.isSafeInteger(error.resets_in_seconds) && error.resets_in_seconds > 0)
+				resetsAt = Date.now() + error.resets_in_seconds * 1000;
+		}
+	} catch {}
+	return { code, resetsAt };
 }
 
 /** What a relay refusal of its own says, so that the platform tells it from the provider turning the token down. */
@@ -282,6 +305,7 @@ function windlassProvider({
 module.exports = {
 	windlassProvider,
 	errorBody,
+	limitFacts,
 	wireTarget,
 	anyMethod,
 	placeholderOf,

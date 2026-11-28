@@ -350,8 +350,15 @@ export const PLATFORM_RESTART = Symbol("platform restart");
 export interface RunTurnInput {
 	modelKey?: {
 		sessionId: string;
-		key: import("./provider.js").ModelKeyLease;
+		key: import("../contract.js").CredentialRef;
 		takeRequest?: import("./provider.js").TakeRelayRequest;
+		/**
+		 * Opens the credential's secret at its pinned generation, null when it changed: for a plan whose relay runs in
+		 * the sandbox (`TurnSandbox.localPlanRelay`). A token that expires (a ChatGPT plan's) comes with its expiry.
+		 */
+		openSecret?: () => Promise<{ secret: string; expiresAt?: number } | null>;
+		/** What a plan's relay inside the sandbox saw the provider say of the plan's health (credentials/plan-health.ts). */
+		onSeen?: (seen: import("../contract.js").RelaySeen) => void;
 	};
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;
@@ -509,6 +516,8 @@ export interface ChatgptAccount {
 	email: string | null;
 	/** When the saved access token expires, ms since the epoch. */
 	accessExpiresAt: number | null;
+	/** The ChatGPT plan's type as OpenAI's claims name it ("plus"), when they do. */
+	planType?: string | null;
 }
 
 /** Thrown for a failure the user can act on; `message` is fit to show. */
@@ -554,7 +563,7 @@ export interface ChatgptLogins {
 	/** The same callback can retry a completed attempt without a second exchange. Refuse a different callback or a mismatched sealed attempt. */
 	finish(attemptId: string, attempt: string, pastedUrl: string): Promise<{ account: ChatgptAccount; attempt: string }>;
 	/** Requires a finished attempt. Seal it for this user, invalidate earlier cached tokens and prepare the user's storage. */
-	adopt(attemptId: string, attempt: string, uid: string, pendingId?: string): Promise<void>;
+	adopt(attemptId: string, attempt: string, uid: string): Promise<void>;
 	/** The sign-in the user's actor holds: who signed in and when the saved access token expires. Null when there is none. */
 	status(uid: string): Promise<ChatgptAccount | null>;
 	/** Invalidate cached tokens and remove active token files. Previously disclosed access tokens last until expiry. */

@@ -220,6 +220,24 @@ describe("the mock's machines", () => {
 		mock.dispose();
 	});
 
+	it("denies a code it looked up, so it pairs nothing, and refuses to deny one it did not", async () => {
+		const mock = make("none");
+		const user = mock.user(auth);
+		await expect(user.denyMachine({ code: "WXYZ-1210" })).rejects.toMatchObject({ reason: "pairing_not_found" });
+		await user.claimMachine({ code: "WXYZ-1210" });
+		await user.denyMachine({ code: "wxyz 12lo" });
+		await expect(user.confirmMachine({ code: "WXYZ-1210", keyConfirmed: true })).rejects.toMatchObject({
+			reason: "pairing_not_found",
+		});
+		await expect(user.claimMachine({ code: "WXYZ-1210" })).rejects.toMatchObject({ reason: "pairing_not_found" });
+		// Once paired, denying changes nothing.
+		await user.claimMachine({ code: "WXYZ-1211" });
+		const made = await user.confirmMachine({ code: "WXYZ-1211", keyConfirmed: true });
+		await user.denyMachine({ code: "WXYZ-1211" });
+		expect((await user.machines()).map(machine => machine.machineId)).toEqual([made.machineId]);
+		mock.dispose();
+	});
+
 	it("refuses an unknown code, a sixth try in ten minutes, and a machine past the limit", async () => {
 		const mock = make("none");
 		const user = mock.user(auth);

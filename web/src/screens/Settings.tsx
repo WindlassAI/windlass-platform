@@ -7,12 +7,9 @@ import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
 import { LinearSettings } from "../components/LinearSettings";
 import { LoginMethods } from "../components/LoginMethods";
-import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
-import { machineLabel } from "../lib/machines";
 import { runOf } from "../lib/run";
-import { settingsKeyUpgrade } from "../lib/machines";
 import { useMachines } from "../state/machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -35,18 +32,6 @@ export function Settings() {
 		machines: machines.list,
 	}).profile;
 	const secretsProfile = info?.profiles.some(p => p.id === hostedProfile && p.available) ? hostedProfile : null;
-
-	const upgrades =
-		machines.list?.flatMap(machine => {
-			const note = settingsKeyUpgrade(machine);
-			return note
-				? [
-						<p className="field-note" key={machine.machineId}>
-							{machineLabel(machine)}: {note}
-						</p>,
-					]
-				: [];
-		}) ?? [];
 
 	return (
 		<main className="home usage repo settings">
@@ -78,9 +63,10 @@ export function Settings() {
 					title="Models"
 					lede={
 						<>
-							The agent and model your work uses, unless a repository or an item says otherwise. Keys stay on Windlass.{" "}
-							<a className="link" href="/docs/settings#model-providers">
-								How keys are used →
+							The agent and model your work uses, unless a repository or an item says otherwise. Plans and API keys that
+							pay for the agents are on{" "}
+							<a className="link" {...linkProps({ name: "connections" })}>
+								Connections →
 							</a>
 						</>
 					}
@@ -92,8 +78,14 @@ export function Settings() {
 							<DefaultAgent account={account} />
 						)}
 					</section>
-					<ModelProviders />
-					{upgrades.length > 0 && <div className="settings-row settings-row-notes">{upgrades}</div>}
+					<div className="settings-row">
+						<span className="settings-row-text">
+							Your Claude and ChatGPT plans and your API keys moved to Connections.
+						</span>
+						<a className="button button-outline button-small settings-row-end" {...linkProps({ name: "connections" })}>
+							Open Connections
+						</a>
+					</div>
 				</SettingsGroup>
 
 				{settings !== null ? (

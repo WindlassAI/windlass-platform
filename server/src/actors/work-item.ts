@@ -90,8 +90,11 @@ import {
 	type PartScreenshots,
 	type PlanSubtask,
 	type SessionSummary,
+	type WorkType,
 } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
+import { mergeUsage } from "../factory/cost.js";
+import { partsRetryUsage } from "../factory/usage-summary.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -167,6 +170,8 @@ import type { DefaultBuilder, ItemFacts } from "./user-items.js";
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
 	taskKind?: TaskKind;
+	/** What the work's latest changes are, for the Usage summary (factory/usage-summary.ts). */
+	workType?: WorkType;
 	flaky?: boolean;
 	ciCodeFailure?: boolean;
 	mergedDifferentHead?: true;
@@ -361,6 +366,12 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		review: secondReview(item, meta),
 		budget: item.budget,
 		spent: item.spent,
+		...(item.jobs?.length && {
+			partsUsage: mergeUsage(item.jobs.map(job => job.spent.usage)),
+			partsRetryUsage: partsRetryUsage(item.jobs),
+		}),
+		...(meta.workType && { workType: meta.workType }),
+		...(item.startedAt !== undefined && { startedAt: item.startedAt }),
 		agent: itemAgent(item),
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
@@ -743,6 +754,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 				...(fact.spend?.rawTokens !== undefined && { rawTokens: fact.spend.rawTokens }),
 				hostedSeconds,
 				...(fact.spend?.agent && { agent: fact.spend.agent }),
+				...(fact.spend?.meter && { meter: fact.spend.meter }),
 			},
 		});
 	} else {
@@ -840,8 +852,10 @@ async function take(
 	if (fact.kind === "pr_read" && fact.state === "merged" && fact.prHead && fact.prHead !== before.head)
 		stored.meta.mergedDifferentHead = true;
 	if (fact.kind === "published") delete stored.meta.ciCodeFailure;
-	if (fact.kind === "turn_ended" && fact.changes && currentKey(before) === fact.key)
+	if (fact.kind === "turn_ended" && fact.changes && currentKey(before) === fact.key) {
 		stored.meta.taskKind = fact.taskKind;
+		stored.meta.workType = fact.workType;
+	}
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
 		const failed = fact.reading.runs.filter(r => r.state === "failed");
 		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[rerunKey(fact)];
@@ -3712,7 +3726,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const hostedModels = Object.fromEntries(
 					(["claude", "opencode"] as const).map(id => [
 						id,
-						hostedCatalog(id, inventory.hostedKeys ?? [])?.models.map(m => m.id),
+						hostedCatalog(id, inventory.hostedCredentials ?? [])?.models.map(m => m.id),
 					]),
 				);
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({
@@ -3769,7 +3783,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						parent: parentName,
 						screenshotsEnabled: inventory.screenshotsEnabled,
 						repositoryScreenshots: inventory.repositoryScreenshots,
-						hostedKeys: inventory.hostedKeys?.map(k => k.provider),
+						hostedCredentials: inventory.hostedCredentials?.map(k => (k.plan ? `${k.provider} plan` : k.provider)),
 						hostedModels,
 						keyProfiles: inventory.keyProfiles,
 						hostedEgress: inventory.hostedEgress,
@@ -3798,6 +3812,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					...(effect.unsandboxed && { unsandboxed: true }),
 					...(effect.fresh && { fresh: effect.fresh }),
 					...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }),
+					...(effect.budget && { budget: effect.budget }),
 				})
 				.catch(onGone);
 			return true;
@@ -4046,7 +4061,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	}
 }
 
-const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400 } as const;
+const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400, usd: 100_000, planPct: 1000 } as const;
 
 /** The fact of a person's action, checked; throws a UserError for one that cannot be taken. */
 function factOf(action: ItemAction, by: string, at: number): Fact {

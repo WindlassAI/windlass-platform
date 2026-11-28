@@ -5,7 +5,7 @@
  * the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
-import type { GithubId, ItemSummary } from "@contract";
+import { type GithubId, type ItemSummary, isPlanProvider, type PlanProvider } from "@contract";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { routeLabel } from "./nav";
 
@@ -29,6 +29,11 @@ export type Route =
 	| { name: "settings"; section?: "settings-models" | "settings-github" }
 	/** Free and Pro side by side, with the way to upgrade: where the deployment has billing (`PlatformInfo.billing`). */
 	| { name: "plans" }
+	/**
+	 * Each agent and every place it can run, and what pays for it: plans, keys and machines' own sign-ins. `section`
+	 * names one agent's cell or card as the fragment (`connectionCell`), which the page scrolls to and marks.
+	 */
+	| { name: "connections"; section?: string }
 	/** The user's own machines. With `add`, the dialog that pairs one is open: the address a runner prints with its code. */
 	| { name: "machines"; add?: boolean }
 	| { name: "signin" }
@@ -37,8 +42,11 @@ export type Route =
 	| { name: "item"; id: string }
 	/** Every work item across repositories, by what its person must do: `repository` and `from` filter it (`?repository=`, `?from=`). */
 	| { name: "factory"; repository?: GithubId; from?: ItemSource }
-	/** The mock's stand-in for OpenAI's sign-in page. */
-	| { name: "mock-authorize" }
+	/**
+	 * Approves the connect command's request in a terminal: `code` is the one the terminal shows (`?code=`), `plan`
+	 * the plan it connects (`?plan=`), or `kind: "machine"` a machine it pairs (`?kind=machine`).
+	 */
+	| { name: "connect"; code?: string; plan?: PlanProvider; kind?: "machine" }
 	/** The public docs: `slug` names the page ("" for the overview), `section` one of its headings, as the fragment. */
 	| { name: "docs"; slug: string; section?: string }
 	| { name: "notfound" };
@@ -84,10 +92,21 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/usage") return { name: "usage" };
 	if (path === "/settings") return { name: "settings" };
 	if (path === "/plans") return { name: "plans" };
+	if (path === "/connections") return { name: "connections" };
 	if (path === "/machines") return { name: "machines" };
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
-	if (path === "/mock/authorize") return { name: "mock-authorize" };
+	if (path === "/connect") {
+		const query = new URLSearchParams(search);
+		const code = query.get("code");
+		const plan = query.get("plan");
+		return {
+			name: "connect",
+			...(code ? { code } : {}),
+			...(isPlanProvider(plan) ? { plan } : {}),
+			...(query.get("kind") === "machine" ? { kind: "machine" as const } : {}),
+		};
+	}
 	if (path === "/docs") return { name: "docs", slug: "" };
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
 	if (docs?.[1]) return { name: "docs", slug: docs[1] };
@@ -125,6 +144,8 @@ function pathOf(route: Route): string {
 			return "/settings";
 		case "plans":
 			return "/plans";
+		case "connections":
+			return "/connections";
 		case "machines":
 			return route.add ? "/machines/add" : "/machines";
 		case "signin":
@@ -135,8 +156,8 @@ function pathOf(route: Route): string {
 			return `/items/${encodeURIComponent(route.id)}`;
 		case "factory":
 			return "/factory";
-		case "mock-authorize":
-			return "/mock/authorize";
+		case "connect":
+			return "/connect";
 		case "docs":
 			return route.slug === "" ? "/docs" : `/docs/${route.slug}`;
 		case "notfound":
@@ -149,9 +170,16 @@ export function href(route: Route): string {
 	const query = new URLSearchParams();
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
+	if (route.name === "connect" && route.code) query.set("code", route.code);
+	if (route.name === "connect" && route.plan) query.set("plan", route.plan);
+	if (route.name === "connect" && route.kind) query.set("kind", route.kind);
 	if (mock !== null) query.set("mock", mock);
 	const fragment =
-		(route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section
+		(route.name === "repository" ||
+			route.name === "docs" ||
+			route.name === "settings" ||
+			route.name === "connections") &&
+		route.section
 			? `#${route.section}`
 			: "";
 	const search = query.toString();
@@ -162,7 +190,7 @@ const LAST_APP_PAGE = "wlp.lastAppPage";
 
 export function rememberAppPage(): void {
 	const page = parseRoute(location.pathname).name;
-	if (page === "docs" || page === "notfound" || page === "mock-authorize") return;
+	if (page === "docs" || page === "notfound") return;
 	try {
 		// Login and integration callbacks can carry one-time credentials.
 		const search = page === "signin" ? new URL(href({ name: "signin" }), location.origin).search : location.search;
@@ -181,6 +209,31 @@ export function lastAppHref(): string {
 		// A fresh tab or unavailable storage falls back to the app's home.
 	}
 	return href({ name: "home" });
+}
+
+const AFTER_SIGNIN = "wlp.afterSignIn";
+
+/** The connect page sends a signed-out visitor to sign in; this keeps the page (and its code) to come back to. */
+export function returnAfterSignIn(): void {
+	try {
+		sessionStorage.setItem(AFTER_SIGNIN, location.pathname + location.search);
+	} catch {
+		// Storage may be disabled: the visitor lands on the home page and runs the command again.
+	}
+}
+
+/** The page kept by `returnAfterSignIn`, once; null when there is none. Only the connect page is taken back to. */
+export function takeReturnAfterSignIn(): Route | null {
+	try {
+		const saved = sessionStorage.getItem(AFTER_SIGNIN);
+		sessionStorage.removeItem(AFTER_SIGNIN);
+		if (!saved?.startsWith("/")) return null;
+		const url = new URL(saved, location.origin);
+		const route = parseRoute(url.pathname, url.search);
+		return url.origin === location.origin && route.name === "connect" ? route : null;
+	} catch {
+		return null;
+	}
 }
 
 const listeners = new Set<() => void>();

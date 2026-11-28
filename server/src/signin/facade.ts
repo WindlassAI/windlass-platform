@@ -85,13 +85,13 @@ export class SignInLogins implements ChatgptLogins {
 		};
 	}
 
-	async adopt(attemptId: string, attempt: string, uid: string, pendingId?: string): Promise<void> {
+	async adopt(attemptId: string, attempt: string, uid: string): Promise<void> {
 		assertName(attemptId, "sign-in attempt id");
 		assertName(uid, "user id");
 		const material = signInOnly(cleanMaterial(this.open(attemptId, attempt).files));
 		if (!hasSignIn(material)) throw new SandboxUserError("This sign-in is not finished yet.");
 		await this.options.ensureUserData?.(uid);
-		await this.options.directory.adopt(uid, this.options.sealer.seal("user", uid, JSON.stringify(material)), pendingId);
+		await this.options.directory.adopt(uid, this.options.sealer.seal("user", uid, JSON.stringify(material)));
 	}
 
 	async status(uid: string): Promise<ChatgptAccount | null> {

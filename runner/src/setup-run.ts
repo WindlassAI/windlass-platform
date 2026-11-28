@@ -17,6 +17,7 @@ import { requestLoginReport } from "./pair-command.js";
 import { harnessImage, prepareImages, type MachineHarness } from "./policy.js";
 import { laterLogin, setupImageAndMounts, shellCommand } from "./setup.js";
 import { HARNESSES, fromFlags, validChoices, type SetupChoices } from "./setup-choices.js";
+import { EventPrompter } from "./setup-events.js";
 import { LinePrompter } from "./setup-lines.js";
 import { TuiPrompter } from "./setup-tui.js";
 import { SECTIONS, runWizard, type Mode, type PairEvent, type Section, type WizardEffects } from "./setup-wizard.js";
@@ -104,11 +105,14 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 	if (sections.length > 1 || (sections[0] !== undefined && !(SECTIONS as readonly string[]).includes(sections[0])))
 		throw new RunnerError(`Use setup, setup --quick, or setup with one of: ${SECTIONS.join(", ")}.`);
 	if (sections.length && values.quick) throw new RunnerError("Use --quick with setup alone.");
+	if ((sections.length || values.quick) && values.connect) throw new RunnerError("Use --connect with setup alone.");
 	const mode: Mode = sections.length
 		? { kind: "section", section: sections[0] as Section }
 		: values.quick
 			? { kind: "quick" }
-			: { kind: "full" };
+			: values.connect
+				? { kind: "connect" }
+				: { kind: "full" };
 	const launch = await setupImageAndMounts();
 	const platform = typeof values.platform === "string" ? origin(values.platform) : undefined;
 	const loaded = savedChoices();
@@ -301,7 +305,7 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 	};
 
 	const tui = !!process.stdin.isTTY && !!process.stdout.isTTY && !values["no-tui"];
-	const prompter = tui ? new TuiPrompter() : new LinePrompter();
+	const prompter = mode.kind === "connect" ? new EventPrompter() : tui ? new TuiPrompter() : new LinePrompter();
 	const result = await runWizard(prompter, fx, mode, { platform });
 	if (result.outcome !== "done") process.exitCode = 1;
 	if (result.message && result.outcome === "done") prompter.log("info", result.message);

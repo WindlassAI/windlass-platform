@@ -188,7 +188,7 @@ export async function pair(
 			return { paired };
 		}
 	}
-	return { idle: `The pairing code expired, so ${again}` };
+	return { idle: `The pairing code expired or was denied, so ${again}` };
 }
 
 async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
@@ -242,6 +242,7 @@ function applyCapabilities(owner: Executor, named: readonly string[] | undefined
 	owner.modelRelays = has("model-relay");
 	owner.windlassKeyRelays = owner.modelRelays && has("windlass-key-relay");
 	owner.harnessKeyRelays = owner.modelRelays && has("harness-key-relay");
+	owner.planRelays = has("plan-relay");
 	owner.blockedNetwork = has("blocked-network");
 	owner.memoryEvents = has("memory-events");
 	owner.warmSpares = signed && has("warm-spares");

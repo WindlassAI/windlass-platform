@@ -18,9 +18,13 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEven
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { MissingPageLinks } from "../components/MissingPageLinks";
+import { PlanWaitActions } from "../components/PlanWait";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeaturePlan";
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
+import { ItemCost } from "../components/ItemCost";
 import { ItemSpend } from "../components/ItemSpend";
+import { heldFigures, pctWords, tokenDetail, usdWords } from "../lib/budget";
+import { costWords, summaryCost } from "../lib/cost";
 import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Menu, type MenuItem } from "../components/ui/Menu";
 import { Dialog } from "../components/Dialog";
@@ -37,7 +41,7 @@ import { ItemChecks } from "./ItemChecks";
 import { absoluteTime, clockTime, compact, ordinal, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useNow, useSessions } from "../state/hooks";
+import { useCostRates, useNow, useSessions } from "../state/hooks";
 import { ItemGlyph, ItemRow, ItemStages, PartStages } from "../components/ItemRow";
 import { STATE_WORD } from "../lib/items";
 import { useSessionMachine } from "./Session";
@@ -450,9 +454,17 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 				</p>
 				<p className="item-now-text">{text}</p>
 				{when ? <p className="agent-meta item-now-when">{when}</p> : null}
+				{view.state === "waiting" && view.wait?.plan ? <ItemPlanWait id={view.id} plan={view.wait.plan} /> : null}
 			</div>
 		</div>
 	);
+}
+
+/** An item waiting for its plan: its next turn on the key now, or the rule changed (components/PlanWait.tsx). */
+function ItemPlanWait({ id, plan }: { id: string; plan: NonNullable<NonNullable<ItemView["wait"]>["plan"]> }) {
+	const { client } = useApp();
+	const auth = useAuth();
+	return <PlanWaitActions plan={plan} onUseKey={() => client.user(auth).useKeyNow(id)} />;
 }
 
 export function ValidatedEnvironment({
@@ -546,6 +558,22 @@ const BUDGET_FIELDS: Array<{
 	spelled(value: number): string;
 }> = [
 	{
+		key: "usd",
+		label: "Dollars",
+		unit: "USD",
+		toInput: value => String(Number(value.toFixed(2))),
+		fromInput: text => Math.round(Number(text) * 100) / 100,
+		spelled: usdWords,
+	},
+	{
+		key: "planPct",
+		label: "Plan's 5-hour window",
+		unit: "%",
+		toInput: value => String(Number(value.toFixed(1))),
+		fromInput: text => Math.round(Number(text) * 10) / 10,
+		spelled: pctWords,
+	},
+	{
 		key: "tokens",
 		label: "Tokens",
 		unit: "millions",
@@ -563,8 +591,13 @@ const BUDGET_FIELDS: Array<{
 	},
 ];
 
-const budgetFields = (view: Pick<ItemView, "place">) =>
-	BUDGET_FIELDS.filter(field => field.key !== "hostedSeconds" || view.place.kind === "hosted");
+/** The figures that hold the item now (lib/budget.ts `heldFigures`), and hosted time where it runs hosted. */
+const budgetFields = (view: Pick<ItemView, "place" | "budget" | "spent">) => {
+	const held: string[] = heldFigures(view.budget, view.spent);
+	return BUDGET_FIELDS.filter(field =>
+		field.key === "hostedSeconds" ? view.place.kind === "hosted" : held.includes(field.key),
+	);
+};
 
 function RaiseBudget({
 	view,
@@ -580,7 +613,7 @@ function RaiseBudget({
 	const fields = budgetFields(view);
 	const [values, setValues] = useState(
 		() =>
-			Object.fromEntries(fields.map(field => [field.key, field.toInput(view.budget[field.key])])) as Record<
+			Object.fromEntries(fields.map(field => [field.key, field.toInput(view.budget[field.key] ?? 0)])) as Record<
 				keyof ItemBudget,
 				string
 			>,
@@ -588,9 +621,9 @@ function RaiseBudget({
 	const base = useId();
 	const parsed = fields.map(field => ({ field, value: field.fromInput(values[field.key]) }));
 	const bad = parsed.some(({ value }) => !Number.isFinite(value) || value <= 0);
-	const short = parsed.filter(
-		({ field, value }) => view.spent[field.key] >= view.budget[field.key] && value <= view.spent[field.key],
-	);
+	const used = (key: keyof ItemBudget) => view.spent[key] ?? 0;
+	const reachedAt = (key: keyof ItemBudget) => used(key) >= (view.budget[key] ?? 0);
+	const short = parsed.filter(({ field, value }) => reachedAt(field.key) && value <= used(field.key));
 	const changed = Object.fromEntries(
 		parsed.filter(({ field, value }) => value !== view.budget[field.key]).map(({ field, value }) => [field.key, value]),
 	) as Partial<ItemBudget>;
@@ -598,7 +631,7 @@ function RaiseBudget({
 		<div className="item-raise">
 			<div className="item-raise-fields">
 				{fields.map(field => {
-					const reached = view.spent[field.key] >= view.budget[field.key];
+					const reached = reachedAt(field.key);
 					return (
 						<div key={field.key}>
 							<label className="label" htmlFor={`${base}-${field.key}`}>
@@ -614,7 +647,7 @@ function RaiseBudget({
 								onChange={event => setValues(now => ({ ...now, [field.key]: event.target.value }))}
 							/>
 							<p className={`field-note${reached ? " tone-warn" : ""}`}>
-								{field.spelled(view.spent[field.key])} used{reached ? ", the limit" : ""}
+								{field.spelled(used(field.key))} used{reached ? ", the limit" : ""}
 							</p>
 						</div>
 					);
@@ -1036,8 +1069,10 @@ function spendFacts(view: ItemView): { label: string; value: string }[] {
 }
 
 function Cost({ view, now }: { view: ItemView; now: number }) {
+	const rates = useCostRates();
 	const step = view.run?.step;
-	const rows = budgetFields(view);
+	// A feature's figure is its cost (the Total above, the Subtasks box's too): its own allowance is no second meter.
+	const rows = budgetFields(view).filter(field => view.mode !== "orchestrate" || field.key === "hostedSeconds");
 	const hosted = view.place.kind === "hosted";
 	const children = view.children ?? [];
 	const partAgents = [...new Set(children.flatMap(child => (child.agent ? [agentLine(child.agent)] : [])))];
@@ -1073,6 +1108,7 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 				</p>
 			)}
 			<div className="usage-card item-cost-card">
+				<ItemCost view={view} rates={rates} />
 				<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 				{facts.length > 0 ? (
 					<dl className="item-cost-foot">
@@ -1088,8 +1124,9 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 			<details className="usage-note">
 				<summary>How this is counted</summary>
 				<p>
-					{compact(view.spent.rawTokens ?? view.spent.tokens)} raw tokens reported. For the budget, cached input tokens
-					count at a tenth.
+					The budget is in dollars where an API key pays, and a share of the plan's 5-hour window where a plan pays (how
+					far the plan's use rose while the item's turns ran). {tokenDetail(view.budget, view.spent)} Tokens hold only
+					where neither can be measured; cached input tokens count at a tenth.
 				</p>
 				<p>
 					Working time excludes waits for a turn, CI or your answer.
@@ -1301,6 +1338,7 @@ function useAllowHost(view: ItemView | null): AllowHostContext | null {
 
 export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
+	const rates = useCostRates();
 	const { sessions } = useSessions();
 	const { view } = page;
 	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
@@ -1644,6 +1682,7 @@ export function Item({ page }: { page: ItemPage }) {
 							jobs={view.subtasks}
 							wait={view.wait}
 							now={now}
+							cost={rates ? costWords(summaryCost(view, rates)) : null}
 						/>
 					</>
 				) : (

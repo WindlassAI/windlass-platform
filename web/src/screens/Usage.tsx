@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Dialog } from "../components/Dialog";
 import { FoldRows } from "../components/Fold";
 import { FactoryUsage } from "../components/FactoryUsage";
+import { CostSummary } from "../components/CostSummary";
 import { MachineUsage } from "../components/MachineUsage";
 import { WarnIcon } from "../components/Icons";
 import { moveBetweenTabs } from "../components/Tabs";
@@ -279,7 +280,12 @@ export function Usage() {
 	const keptCount = limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`;
 	const tabs = [
 		{ id: "usage-agents", label: "Today by agent" },
-		...(platform.info?.items ? [{ id: "usage-items", label: "Work items" }] : []),
+		...(platform.info?.items
+			? [
+					{ id: "usage-items", label: "Work items" },
+					{ id: "usage-summary", label: "Summary" },
+				]
+			: []),
 		{ id: "usage-kept", label: "Kept sandboxes", count: keptCount },
 		...(platform.info?.machines ? [{ id: "usage-machines", label: "My machines" }] : []),
 		{ id: "usage-history", label: `Last ${USAGE_HISTORY_DAYS} days` },
@@ -542,6 +548,8 @@ export function Usage() {
 		);
 	} else if (shown === "usage-items") {
 		panel = <FactoryUsage value={view.factoryLimits} />;
+	} else if (shown === "usage-summary") {
+		panel = <CostSummary />;
 	} else {
 		panel = <MachineUsage />;
 	}

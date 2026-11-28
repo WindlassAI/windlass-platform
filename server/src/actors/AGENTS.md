@@ -49,7 +49,8 @@ Helpers inside the `user` actor:
 - `./user-linear.ts` stores the Linear connection and team mappings and decides each verified delivery.
 - `./issue-intake.ts` is what GitHub and Linear intake share: owner queue, daily cap and filing (`fileLinearIssue`). `./github-intake.ts` is GitHub's side.
 - `./github-item.ts` applies issue edits and closes to filed items.
-- `./provider-accounts.ts` tracks model-provider usage and refusals per account location.
+- `./provider-accounts.ts` tracks model-provider usage and refusals per account location; a plan's go to its own row, keyed as the plan. Windlass's own account (its ChatGPT models, where no key pays) is the ChatGPT plan's (`accountLocation`).
+- `./user-payer.ts` applies Pay with at a hosted turn's start, for the turn queue and `internalTurnPayer`: plan or key, an item's wait for its plan, the plan's parallel-turn cap and "Use my key now" (`pay_once`). Hosted Windlass's ChatGPT models follow it too, with no choice of their own; the key it switches to runs the OpenAI key's version of the same model (`keyModel`).
 - `./continue-session.ts` holds `continueSession`'s settings for the new session and the copy of the agent's session in the backup store.
 
 Helpers inside `agentSession` (`./agent-session/`):
@@ -61,6 +62,7 @@ Helpers inside `agentSession` (`./agent-session/`):
 - `./agent-session/questions.ts` asks and recalls turn questions and server approvals.
 - `./agent-session/publish.ts` handles the panel's publish, pull request state and the agent's push and fetch requests.
 - `./agent-session/meter.ts` meters sandbox time, holds, idle suspension and removal.
+- `./agent-session/budget-watch.ts` measures an item's turn's spend while it runs, in its budget's figure, so that the turn stops at the budget the delivery carries.
 - `./agent-session/pause.ts` pauses a resumable turn, runs its heartbeat and checks resumption.
 - `./agent-session/sandbox.ts` opens the sandbox, reads its workspace and tracks its state.
 - `./agent-session/setup.ts` clones the repository, runs setup and builds the environment.

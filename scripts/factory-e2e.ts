@@ -17,6 +17,7 @@
  */
 
 import { loginHttp } from "./login-http.js";
+import { connectChatgpt } from "./chatgpt-connect.js";
 import { commitsBehindBase, subtaskBranch } from "../server/src/github/feature.js";
 import { BaseMergeConflict, branchFor, updateBranchFromBase } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
@@ -123,6 +124,10 @@ class Server {
 			...process.env,
 			WLP_DEMO: "1",
 			WLP_SANDBOX: "fake",
+			// Hosted Windlass's ChatGPT models pay with the ChatGPT plan, which WLP_PLAN_USERS gates. Its catalog check at
+			// connect is refused locally: no check sends a fake token to OpenAI.
+			WLP_PLAN_USERS: process.env.WLP_PLAN_USERS ?? "*",
+			WLP_OPENAI_BASE_URL: process.env.WLP_OPENAI_BASE_URL ?? "http://127.0.0.1:9",
 			WLP_SECRET: this.secret,
 			RIVETKIT_STORAGE_PATH: this.storage,
 			RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT),
@@ -203,8 +208,8 @@ async function fixtureLogin(client: Client, standin: GithubStandin, code: string
 	const { url } = await login.start("github");
 	const auth = await login.finish(standin.authorize("ada", url));
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
-	const plan = await user.startChatgpt();
-	await user.finishChatgpt(plan.redirectPrefix + "?" + new URLSearchParams({ code }));
+	const { fakeSignInFiles } = await import("../server/src/sandbox-fake.js");
+	await connectChatgpt(API, user, { files: fakeSignInFiles(code) });
 	return auth;
 }
 
@@ -1141,8 +1146,14 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				body: "Verify the build",
 				start: true,
 			});
-			const queued = await untilItem(user, next.id, "the account cooldown", v => v.wait?.reason === "provider");
-			assert(queued.spent.turns === 0 && queued.wait?.retryAt === view.wait.retryAt, stateOf(queued));
+			// The limit is the ChatGPT plan's: the next item waits for the plan's reset, which the first retries a minute after.
+			const queued = await untilItem(user, next.id, "the plan's cooldown", v => v.wait?.reason === "provider");
+			assert(
+				queued.spent.turns === 0 &&
+					queued.wait?.retryAt === view.wait.retryAt! - 60_000 &&
+					queued.wait.plan?.provider === "openai",
+				stateOf(queued),
+			);
 			const renewed = await fixtureLogin(client, standin, "routing");
 			assert(renewed.profile.uid === auth.profile.uid, "the second login must replace the same account");
 			await untilItem(user, item.id, "the refused turn to retry on the new login", v => v.spent.turns >= 2, 15_000);
@@ -1157,7 +1168,8 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 		await check(
 			"orchestrator usage: unknown Windlass reset asks the owner and blocks a second item for fifteen minutes",
 			async () => {
-				const { user } = await world(unknownServer, standin);
+				// Windlass's limits are its ChatGPT plan's: a connected plan holds them (a demo account has none).
+				const { user } = await world(unknownServer, standin, { WLP_ALLOWED_EMAILS: "ada@example.invalid" }, "unknown");
 				const start = Date.now();
 				const first = await user.createItem({
 					repository: { id: harbor.id },
@@ -2935,7 +2947,7 @@ async function memoryChecks(): Promise<void> {
 	const { INBOX_TABLES, flushOutbox, inboxRow, queueMessage, receive, sendOutbox, withdrawWaiting } = await import(
 		"../server/src/actors/session-inbox.js"
 	);
-	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
 	const { ITEM_TABLES, itemActions, loadItems, queueChanged } = await import("../server/src/actors/user-items.js");
 	const { config } = await import("../server/src/config.js");
 	const { UsageBook } = await import("../server/src/usage.js");
@@ -3672,6 +3684,117 @@ async function memoryChecks(): Promise<void> {
 		},
 	);
 
+	await check("memory: a turn's budget comes with its delivery and is kept in the session's inbox", async () => {
+		const { raw, db } = memoryDb();
+		for (const table of INBOX_TABLES) await db.execute(table);
+		const delivery = {
+			itemId: "item",
+			title: "T",
+			text: "Work",
+			agent: null,
+			maxSteps: 1,
+			fetchBase: null,
+			startsRun: true,
+		};
+		await receive(db as never, { ...delivery, key: "with", budget: { figure: "usd", stopAt: 1.2 } }, T);
+		await receive(db as never, { ...delivery, key: "without" }, T);
+		await receive(db as never, { ...delivery, key: "bad", budget: { figure: "euros", stopAt: 1 } as never }, T);
+		const [withBudget, without, bad] = await Promise.all(
+			["with", "without", "bad"].map(key => inboxRow(db as never, key)),
+		);
+		raw.close();
+		assert(
+			JSON.stringify(withBudget?.budget) === JSON.stringify({ figure: "usd", stopAt: 1.2 }) &&
+				without?.budget === null &&
+				bad?.budget === null,
+			`rows: ${JSON.stringify([withBudget?.budget, without?.budget, bad?.budget])}`,
+		);
+		return "the budget round-trips; none, or one that cannot be read, is none";
+	});
+
+	await check(
+		"memory: usage arriving mid-turn past its budget stops it once; below it, or unknown, never",
+		async () => {
+			const { BudgetWatch } = await import("../server/src/actors/agent-session/budget-watch.js");
+			const prices = async () => ({ "openai/gpt-5": { input: 1.25, output: 10 } });
+			const step = (inputTokens: number, outputTokens: number) => ({
+				inputTokens,
+				cachedInputTokens: 0,
+				outputTokens,
+				reasoningTokens: 0,
+			});
+			const watch = (budget: { figure: "usd" | "planPct" | "tokens"; stopAt: number }, more: object = {}) => {
+				const over: number[] = [];
+				const watcher = new BudgetWatch({
+					budget,
+					harness: "windlass",
+					credential: { model: "openai/gpt-5", key: { provider: "openai", generation: "k1" } },
+					earlier: null,
+					planWindows: async () => null,
+					prices,
+					onOver: running => over.push(running),
+					...more,
+				});
+				return { watcher, over };
+			};
+			// A key turn: $1.25 per million in, $10 per million out; it may use $1.20.
+			const key = watch({ figure: "usd", stopAt: 1.2 });
+			await sleep(0);
+			key.watcher.used(step(400_000, 20_000));
+			const below = key.over.length;
+			key.watcher.used(step(400_000, 30_000));
+			key.watcher.used(step(10_000, 1_000));
+			key.watcher.close();
+			// The same turn priced at a model with no known price: unknown, never stopped.
+			const unknown = watch({ figure: "usd", stopAt: 0.01 }, { prices: async () => ({}) });
+			await sleep(0);
+			unknown.watcher.used(step(5_000_000, 500_000));
+			unknown.watcher.close();
+			// Windlass's weighted tokens, cached input at a tenth.
+			const tokens = watch({ figure: "tokens", stopAt: 1_000 });
+			tokens.watcher.used({ inputTokens: 5_000, cachedInputTokens: 5_000, outputTokens: 400, reasoningTokens: 0 });
+			const tokensBelow = tokens.over.length;
+			tokens.watcher.used(step(200, 0));
+			tokens.watcher.close();
+			// An ACP agent reports tokens only at the end: its tokens never stop it.
+			const acp = watch({ figure: "tokens", stopAt: 1 }, { harness: "claude" });
+			acp.watcher.used(step(5_000, 5_000));
+			acp.watcher.close();
+			// A plan turn: its rise in the 5-hour window, as the plan's windows are read again.
+			const w = (usedPct: number) => [
+				{ kind: "5h" as const, usedPct, resetsAt: T + 3600_000, observedAt: T, source: "header" as const },
+			];
+			let now = w(30);
+			const plan = watch(
+				{ figure: "planPct", stopAt: 2.25 },
+				{
+					credential: { model: "gpt-5", key: { provider: "openai", generation: "p1", plan: true } },
+					planAtStart: w(30),
+					planWindows: async () => now,
+				},
+			);
+			now = w(31.5);
+			await plan.watcher.readPlan();
+			const planBelow = plan.over.length;
+			now = w(32.5);
+			await plan.watcher.readPlan();
+			plan.watcher.close();
+			assert(
+				below === 0 &&
+					key.over.length === 1 &&
+					Math.abs(key.over[0]! - 1.5) < 1e-9 &&
+					unknown.over.length === 0 &&
+					tokensBelow === 0 &&
+					JSON.stringify(tokens.over) === "[1100]" &&
+					acp.over.length === 0 &&
+					planBelow === 0 &&
+					JSON.stringify(plan.over) === "[2.5]",
+				`stops: ${JSON.stringify({ below, key: key.over, unknown: unknown.over, tokensBelow, tokens: tokens.over, acp: acp.over, planBelow, plan: plan.over })}`,
+			);
+			return "stopped once past $1.20 at $1.50, past 1,000 tokens, past 2.25 points of the window; never below or unknown";
+		},
+	);
+
 	await check("memory: a claim winning the withdrawal update stays started", async () => {
 		const { raw, db } = memoryDb();
 		for (const table of INBOX_TABLES) await db.execute(table);
@@ -4201,7 +4324,10 @@ async function memoryChecks(): Promise<void> {
 		const { db } = memory;
 		const previous = { ...config.factory };
 		Object.assign(config.factory, limits);
-		for (const table of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) await db.execute(table);
+		// Pay with's tables: hosted Windlass's ChatGPT turns ask it in the queue (user-payer.ts).
+		const { PAY_ONCE_TABLE } = await import("../server/src/actors/user-payer.js");
+		const { PAY_WITH_TABLE } = await import("../server/src/pay-with.js");
+		for (const table of [...ITEM_TABLES, ...CREDENTIAL_TABLES, PAY_ONCE_TABLE, PAY_WITH_TABLE]) await db.execute(table);
 		const session = (id: string, item: boolean) => ({
 			id,
 			status: "idle",
