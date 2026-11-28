@@ -631,7 +631,7 @@ export function gitlabAccess(
 	c: HasClient,
 	uid: string,
 	projectId: string,
-): Promise<import("../gitlab/workspace.js").GitlabAccess> {
+): Promise<{ project: import("../contract.js").SessionRepository; viewer: string; token: string }> {
 	return c.client().userGitlab.get([uid], { params: serviceParams() }).internalGitlabAccess(projectId);
 }
 

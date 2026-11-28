@@ -1,6 +1,7 @@
 import { dependencyHash, SHA, type TreeEntry } from "../sandbox/snapshot-key.js";
 
 import type { GithubId } from "../contract.js";
+import type { GitAccess, GitCredential } from "../codehost/types.js";
 import { VERIFIED_NAME, type CheckRunUpdate } from "./checks.js";
 import { decimalId, githubId, githubJsonInteger, parseGithubJson } from "./ids.js";
 import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
@@ -486,6 +487,24 @@ export class GithubApp {
 			console.error(`[wlp] github.token.revoke_failed: ${error instanceof Error ? error.message : "unknown error"}`);
 			return false;
 		}
+	}
+
+	/**
+	 * A token for a sandbox's Git on one repository: `contents: read` to clone and fetch, `contents: write` to push.
+	 * Its `revoke` is `revoke` above (`withGitCredential` calls it when the operation has ended).
+	 */
+	async gitCredential(installationId: GithubId, repositoryId: GithubId, access: GitAccess): Promise<GitCredential> {
+		const issued = await this.installationToken(installationId, {
+			repositoryId,
+			permissions: { metadata: "read", contents: access },
+		});
+		return {
+			token: issued.token,
+			username: "x-access-token",
+			revoke: async () => {
+				await this.revoke(issued);
+			},
+		};
 	}
 
 	/**
