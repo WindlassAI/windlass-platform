@@ -1,6 +1,6 @@
 /**
  * Settings: the Linear integration. The owner connects a workspace through Linear's OAuth, then maps a team
- * to one repository of their GitHub connection. An issue of a mapped team that gains a Windlass filing label, or is
+ * to one repository they can push to. An issue of a mapped team that gains a Windlass filing label, or is
  * assigned to the Windlass app user, is filed as a work item.
  *
  * The signed-in user redeems the ticket returned by the OAuth callback.
@@ -240,7 +240,9 @@ export function LinearSettings() {
 						</MappingList>
 					)}
 					{repositoryProblem ? (
-						<p className="usage-note tone-warn">{repositoryProblem} Connect GitHub to map a team to a repository.</p>
+						<p className="usage-note tone-warn">
+							{repositoryProblem} A team can be mapped once your repositories load.
+						</p>
 					) : canMap ? (
 						<MappingForm
 							title="Map a team"
@@ -299,8 +301,8 @@ export function LinearSettings() {
 							}
 							note={
 								<p className="field-note">
-									A team files to one repository of your GitHub connection. Removing a mapping, or unlabelling or
-									unassigning an issue, does not change items already filed.
+									A team files to one repository you can push to. Removing a mapping, or unlabelling or unassigning an
+									issue, does not change items already filed.
 								</p>
 							}
 						/>

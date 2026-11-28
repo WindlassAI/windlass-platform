@@ -275,7 +275,7 @@ export function SlackSettings() {
 						</p>
 					)}
 					{(!platform.info?.github || repositories?.length === 0) && (
-						<p className="field-note">A GitHub repository you can push to is needed to map a channel.</p>
+						<p className="field-note">A repository you can push to is needed to map a channel.</p>
 					)}
 					<MappingForm
 						title="Map a channel"

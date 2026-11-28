@@ -28,7 +28,8 @@ import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
 import { CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { BranchName } from "../components/BranchName";
-import { ProviderIcon, providerOf, PROVIDER_NAMES } from "../components/ProviderIcon";
+import { ProviderIcon, providerOf } from "../components/ProviderIcon";
+import { hostWords, requestNumber, sentenceCase } from "../lib/host";
 import { ReviewBlocks } from "../components/ReviewBlocks";
 import { Screenshots, useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { ItemNetwork } from "../components/ItemNetwork";
@@ -287,6 +288,7 @@ function GitlabMerge({ view, onDone }: { view: ItemView; onDone(view: ItemView):
 
 function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Acting; onClose(): void }) {
 	const busy = acting.busy === "cancel";
+	const host = hostWords(view.repository.provider);
 	return (
 		<Dialog
 			title="Cancel this work item?"
@@ -313,8 +315,8 @@ function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Actin
 				Nothing more is done for <strong>{view.title}</strong>
 				{view.state === "working" ? ", and the turn that runs is stopped" : ""}.{" "}
 				{view.pullRequest
-					? `Pull request #${view.pullRequest.number} stays open on GitHub until you close it there.`
-					: "No pull request was opened for it."}{" "}
+					? `${sentenceCase(host.noun)} ${host.mark}${view.pullRequest.number} stays open on ${host.name} until you close it there.`
+					: `No ${host.noun} was opened for it.`}{" "}
 				Its agent and the log stay.
 			</p>
 			<Failure error={acting.error} />
@@ -440,6 +442,7 @@ const TAKES_NOTES = new Set<ItemSummary["state"]>(["queued", "working", "waiting
 
 function Now({ view, now }: { view: ItemView; now: number }) {
 	const last = view.events[view.events.length - 1] ?? null;
+	const host = hostWords(view.repository.provider);
 	const step = view.run?.step ?? null;
 	let text: string;
 	let when: ReactNode = null;
@@ -485,8 +488,7 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 						? "Handed to you before re-review finished after changes were requested."
 						: "Handed to you with changes requested by the code reviewer.";
 			else
-				text =
-					"Handed to you. The pull request waits for your review; the platform never merges it. When it is merged or closed on GitHub, the item says so.";
+				text = `Handed to you. The ${host.noun} waits for your review; the platform never merges it. When it is merged or closed on ${host.name}, the item says so.`;
 			break;
 		default:
 			text = last?.said ?? STATE_WORD[view.state];
@@ -727,7 +729,7 @@ function Question({
 	const replying = question.kind === "agent_ask";
 	// The host refused to mark the pull request ready: the person's own way is on the host, so that link leads.
 	const onHost = question.kind === "ready_refused" && view.pullRequest ? view.pullRequest : null;
-	const host = view.repository.provider;
+	const host = hostWords(view.repository.provider);
 	const answer = (choice: ChoiceId, budget?: Partial<ItemBudget>) =>
 		acting.act({
 			kind: "answer",
@@ -796,8 +798,9 @@ function Question({
 					<div className="item-choices">
 						{onHost ? (
 							<a className="button button-primary" href={onHost.url} target="_blank" rel="noreferrer">
-								<ProviderIcon id={host} size={14} />
-								Mark {host === "gitlab" ? `!${onHost.number}` : `#${onHost.number}`} ready on {PROVIDER_NAMES[host]}
+								<ProviderIcon id={view.repository.provider} size={14} />
+								Mark {host.mark}
+								{onHost.number} ready on {host.name}
 								<ExternalIcon size={12} />
 							</a>
 						) : null}
@@ -1507,8 +1510,8 @@ export function Item({ page }: { page: ItemPage }) {
 							rel="noreferrer"
 						>
 							<ProviderIcon id={repository.provider} size={13} />
-							{repository.provider === "gitlab" ? "MR !" : "PR #"}
-							{view.pullRequest.number} <ExternalIcon size={12} />
+							{hostWords(repository.provider).short} {requestNumber(repository.provider, view.pullRequest.number)}{" "}
+							<ExternalIcon size={12} />
 						</a>
 					) : null}
 					{!view.awaitingPlace ? (

@@ -303,7 +303,7 @@ function JiraProjects({
 								<input
 									type="search"
 									className="input"
-									aria-label="Search GitHub repositories"
+									aria-label="Search repositories"
 									placeholder="Search repositories"
 									value={query}
 									disabled={busy}
@@ -313,7 +313,7 @@ function JiraProjects({
 									}}
 								/>
 								<select
-									aria-label="GitHub repository"
+									aria-label="Repository"
 									className="select"
 									disabled={busy}
 									value={repositoryId}
@@ -359,13 +359,15 @@ function JiraProjects({
 							found.list?.more || found.list?.incomplete ? (
 								<>
 									{found.list?.more && <p className="field-note">Search by name to see more repositories.</p>}
-									{found.list?.incomplete && <p className="field-note">GitHub returned a partial list.</p>}
+									{found.list?.incomplete && (
+										<p className="field-note">The repository list is partial: search to narrow it.</p>
+									)}
 								</>
 							) : undefined
 						}
 					/>
 				) : (
-					<p className="field-note">Connect a GitHub repository you can write to before mapping a Jira project.</p>
+					<p className="field-note">Connect a repository you can push to before mapping a Jira project.</p>
 				))}
 		</>
 	);

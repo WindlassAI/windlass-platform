@@ -28,6 +28,7 @@ import {
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { BranchName } from "./BranchName";
 import { PROVIDER_NAMES, ProviderIcon } from "./ProviderIcon";
+import { hostWords, requestNumber } from "../lib/host";
 import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -362,7 +363,7 @@ function PublishDialog({
 						: opening
 							? `The platform commits ${what} with this message, pushes the branch, and opens the pull request under the same title and description.`
 							: `The platform commits ${what} with this message and pushes it to pull request #${state.pullRequest?.number}.`}{" "}
-					The agent's sandbox is never given your GitHub access.
+					The agent's sandbox is never given your {hostWords(repository.provider).name} access.
 				</p>
 				{error ? (
 					<p className="callout callout-bad" role="alert">
@@ -541,10 +542,7 @@ export function PullRequestSection({
 							label={PROVIDER_NAMES[repository.provider]}
 							className="gh-pull-host"
 						/>
-						<span className="gh-pull-number">
-							{repository.provider === "gitlab" ? "!" : "#"}
-							{pull.number}
-						</span>
+						<span className="gh-pull-number">{requestNumber(repository.provider, pull.number)}</span>
 						<span className="gh-pull-title">{pull.title}</span>
 						<ExternalIcon size={12} />
 					</a>

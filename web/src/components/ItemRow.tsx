@@ -9,6 +9,7 @@ import { absoluteTime, relativeTime } from "../lib/format";
 import { CI_WORD, inSecondReview, questionLine, verdictWord } from "../lib/items";
 import { originIssue } from "../lib/origin";
 import { ItemSourceTag } from "./ItemSource";
+import { requestNumber } from "../lib/host";
 import { linkProps } from "../lib/router";
 import { LongText } from "./Fold";
 import { AskIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon } from "./Icons";
@@ -451,8 +452,7 @@ export function ItemRow({
 					{item.pullRequest ? (
 						<span>
 							<a className="item-pull" href={item.pullRequest.url} target="_blank" rel="noreferrer">
-								{item.repository.provider === "gitlab" ? "MR !" : "#"}
-								{item.pullRequest.number}
+								{requestNumber(item.repository.provider, item.pullRequest.number)}
 								<ExternalIcon size={10} />
 							</a>
 						</span>
