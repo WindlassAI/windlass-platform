@@ -33,7 +33,13 @@ import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
 import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
-import { editablePartAgents, PlanError, unattendedKeys } from "../factory/feature-plan.js";
+import {
+	APPROVALS,
+	editablePartAgents,
+	openPlanQuestions,
+	PlanError,
+	unattendedKeys,
+} from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { contextAtPlace, partRun, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
@@ -4353,6 +4359,9 @@ function slackRefusal(item: FactoryItem, fact: Fact, question: string) {
 	const choice = fact.kind === "approve_plan" ? "approve" : fact.kind === "answer" ? fact.choice : null;
 	if (!choice || !slackMayAnswer(open, choice))
 		throw new UserError("Answer this question in Windlass.", { code: "item_conflict" });
+	// A button posted before the plan changed: Slack offers no approval while its questions are open.
+	if (APPROVALS.has(choice) && item.featurePlan && openPlanQuestions(item.featurePlan).length)
+		throw new UserError("Answer the plan’s open questions in Windlass before approving.", { code: "item_conflict" });
 }
 
 const CONFLICT: Record<ItemAction["kind"], string> = {
