@@ -483,7 +483,6 @@ export function StartComposer({
 	const itemLayers = {
 		account: account.settings?.defaults,
 		repository: saved.defaults,
-		machines: machinesReading ? null : mine,
 		sizes: info?.hostedSizes,
 	};
 	const itemPlace =

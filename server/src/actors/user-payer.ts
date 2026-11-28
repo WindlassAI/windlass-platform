@@ -235,7 +235,10 @@ export async function turnPayer(
 	onMachine = false,
 ): Promise<PayerAnswer | null> {
 	const session = c.vars.sessions.get(sessionId);
-	if (!session || !paysWithRule(session, onMachine, sessionModel(session, model))) return null;
+	if (!session) return null;
+	// Hosted, it decides for every agent: one no plan pays for pays with its key (`payWithFor`).
+	const hostedAgent = session.place.kind === "hosted" && !!machineHarness(session.harness);
+	if (!hostedAgent && !paysWithRule(session, onMachine, sessionModel(session, model))) return null;
 	const context = await payerContext(c, onMachine);
 	const answer = payerOf(c, context, session, sessionModel(session, model), keyOnce);
 	if (answer.ref?.plan && answer.plan && answer.capped) holdPlanTurn(c, answer.plan, sessionId);

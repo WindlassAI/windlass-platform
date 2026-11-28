@@ -161,10 +161,12 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 	assert.equal(seen.filter(tok => tok === tokens.good).length, 2, "one check per connect, none per use");
 });
 
-test("hosted turns pay with the plan first, and only Claude Code takes a Claude plan", async () => {
+test("hosted pickers take a plan first, then a key, and a plan only for its own agent", async () => {
 	const { hostedPayer, hostedCatalog, hostedAgentProblem } = await import("../server/src/sandbox/harnesses.js");
 	const key = { provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] };
 	const plan = { provider: "anthropic" as const, plan: true as const, checkedAt: 2 };
+	const openaiKey = { provider: "openai" as const, checkedAt: 1, models: ["gpt-5.5", "text-embedding-3-large"] };
+	const chatgpt = { provider: "openai" as const, plan: true as const, checkedAt: 2, models: ["gpt-5.5-codex"] };
 	assert.deepEqual(hostedPayer("claude", "opus", [key, plan]), { provider: "anthropic", plan: true });
 	assert.deepEqual(hostedPayer("claude", "opus", [plan]), { provider: "anthropic", plan: true });
 	assert.deepEqual(hostedPayer("claude", "haiku", [key]), { provider: "anthropic" });
@@ -172,7 +174,11 @@ test("hosted turns pay with the plan first, and only Claude Code takes a Claude 
 	// A Claude plan never pays for another agent, even one that runs on Anthropic keys.
 	assert.equal(hostedPayer("opencode", "anthropic/claude-haiku-5-5", [plan]), null);
 	assert.deepEqual(hostedPayer("opencode", "anthropic/claude-haiku-5-5", [key, plan]), { provider: "anthropic" });
-	assert.equal(hostedPayer("codex", "default", [plan]), null);
+	assert.equal(hostedPayer("codex", "default", [plan]), null, "a Claude plan never pays for Codex");
+	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [openaiKey, chatgpt]), { provider: "openai", plan: true });
+	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [openaiKey]), { provider: "openai" });
+	assert.equal(hostedPayer("claude", "default", [chatgpt]), null, "a ChatGPT plan never pays for Claude Code");
+	assert.equal(hostedPayer("opencode", "openai/gpt-5.5", [chatgpt]), null);
 	// Until its agent reported models, a plan offers only the agent's default; then what was reported.
 	assert.deepEqual(
 		hostedCatalog("claude", [plan])?.models.map(m => m.id),
@@ -182,8 +188,16 @@ test("hosted turns pay with the plan first, and only Claude Code takes a Claude 
 		hostedCatalog("claude", [{ ...plan, models: ["opus", "sonnet"] }])?.models.map(m => m.id),
 		["default", "opus", "sonnet"],
 	);
+	assert.deepEqual(
+		hostedCatalog("codex", [chatgpt])?.models.map(m => m.id),
+		["default", "gpt-5.5-codex"],
+	);
 	assert.equal(hostedCatalog("opencode", [plan]), undefined);
+	assert.equal(hostedCatalog("claude", [chatgpt]), undefined);
+	// Windlass runs on the ChatGPT plan its own way: the plan adds nothing to its Settings-key models.
+	assert.equal(hostedCatalog("windlass", [chatgpt]), undefined);
 	assert.equal(hostedAgentProblem("claude", [plan], true), null);
+	assert.equal(hostedAgentProblem("codex", [chatgpt], true), null);
 	assert.match(hostedAgentProblem("opencode", [plan], true) ?? "", /key on the Connections page/);
 });
 
@@ -355,31 +369,6 @@ test("a terminal connects a plan only after its user approves the code, once", a
 	const limited = await world.post(start, { provider: "anthropic" }, busy);
 	assert.equal(limited.status, 429);
 	assert.equal((await world.post(poll, { request: guessed.request }, busy)).status, 200);
-});
-
-test("hosted Codex pays with the ChatGPT plan first, an OpenAI key otherwise, and the plans never cross", async () => {
-	const { hostedPayer, hostedCatalog, hostedAgentProblem } = await import("../server/src/sandbox/harnesses.js");
-	const key = { provider: "openai" as const, checkedAt: 1, models: ["gpt-5.5", "text-embedding-3-large"] };
-	const chatgpt = { provider: "openai" as const, plan: true as const, checkedAt: 2, models: ["gpt-5.5-codex"] };
-	const claude = { provider: "anthropic" as const, plan: true as const, checkedAt: 2 };
-	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [key, chatgpt]), { provider: "openai", plan: true });
-	assert.deepEqual(hostedPayer("codex", "default", [chatgpt]), { provider: "openai", plan: true });
-	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [key]), { provider: "openai" });
-	assert.equal(hostedPayer("codex", "default", [claude]), null, "a Claude plan never pays for Codex");
-	assert.equal(hostedPayer("claude", "default", [chatgpt]), null, "a ChatGPT plan never pays for Claude Code");
-	assert.equal(hostedPayer("opencode", "openai/gpt-5.5", [chatgpt]), null);
-	assert.deepEqual(
-		hostedCatalog("codex", [chatgpt])?.models.map(m => m.id),
-		["default", "gpt-5.5-codex"],
-	);
-	assert.deepEqual(
-		hostedCatalog("codex", [{ ...chatgpt, models: undefined }])?.models.map(m => m.id),
-		["default"],
-	);
-	assert.equal(hostedCatalog("claude", [chatgpt]), undefined);
-	assert.equal(hostedAgentProblem("codex", [chatgpt], true), null);
-	// Windlass runs on the ChatGPT sign-in its own way: the plan adds nothing to its Settings-key models.
-	assert.equal(hostedCatalog("windlass", [chatgpt]), undefined);
 });
 
 test("a terminal connects the ChatGPT plan with the sign-in Windlass saved on its computer, for any signed-in user", async t => {
@@ -587,8 +576,6 @@ test("a ChatGPT plan is the sign-in: generation kept across refreshes, the curre
 	const next = hex();
 	const again = (await credentials.internalCredential(a.relay, ref, next, holder))!;
 	assert.equal(openCredentialTransit("plan-check-a", ref, next, again).secret, access, "the refreshed token next");
-	const hosted = await credentials.internalHostedCredentials(a.relay);
-	assert.ok(hosted.some(c => c.plan && c.provider === "openai" && c.generation === "g1"));
 
 	// Another connection is another generation: the old one's learned facts go.
 	await writeChatgptSignIn(a.context.db, { sealed: "sealed-3", generation: "g2", shortNoted: false });
@@ -609,7 +596,6 @@ test("a ChatGPT plan is the sign-in: generation kept across refreshes, the curre
 	await writeChatgptSignIn(off.context.db, { sealed: "sealed-off", generation: "g1", shortNoted: false });
 	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref), null);
 	assert.equal(await credentials.internalCredential(off.relay, ref, hex(), holder), null);
-	assert.ok(!(await credentials.internalHostedCredentials(off.relay)).some(c => c.plan));
 	// On the user's own machine the ChatGPT plan still pays: its requests leave from there (`planAllowed`).
 	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref, true), "g1");
 	const onMachine = (await credentials.internalCredential(off.relay, ref, hex(), holder, true))!;

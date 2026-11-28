@@ -236,7 +236,7 @@ export function limitedAccounts(accounts: Map<string, ProviderAccount[]>) {
 /**
  * Moves what the user actor kept of Windlass's ChatGPT sign-in's limits (`provider_usage` rows of `windlass`, place
  * `*`) onto the ChatGPT plan, where they are kept now: a limit still running at the plan's generation holds the plan
- * until its end, unless the plan is held longer already. The rows are removed.
+ * until its end, unless the plan is held longer already. The rows are removed. One-time: remove after the first deploy that runs it.
  */
 export async function moveWindlassLimits(db: RawAccess, now = Date.now()): Promise<void> {
 	const rows = await db.execute<{ generation: string; data: string }>(

@@ -236,7 +236,6 @@ export type QuestionKind =
 
 /** Stored response IDs. Retry starts a new run. Again retries the failed step. */
 export type ChoiceId =
-	| "use_machine_payer"
 	| "use_hosted"
 	| "use_windlass"
 	| "use_claude"

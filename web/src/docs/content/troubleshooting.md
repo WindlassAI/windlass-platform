@@ -13,7 +13,7 @@ Your sign-in on the platform ended, or you were taken off its list. Sign in agai
 
 **"You are not signed in with ChatGPT. Sign in with ChatGPT, then send the prompt again."**\
 **"Your ChatGPT sign-in is no longer accepted: it expired or was withdrawn. Sign in with ChatGPT again, then send the prompt once more."**\
-The platform could not get a ChatGPT token for the turn. Reconnect your ChatGPT plan in Settings → Model providers, then send the prompt again.
+The platform could not get a ChatGPT token for the turn. Reconnect your ChatGPT plan on **Connections**, then send the prompt again.
 
 ## GitHub
 
@@ -204,7 +204,7 @@ A work item's turn reached its budget while it ran. Its work so far is kept. The
 The provider refused the plan's token twice in a row: it was revoked, expired, or replaced elsewhere. Choose **Reconnect** in that cell and run the command again.
 
 **"ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more."**\
-Reconnect your ChatGPT plan in Settings → Model providers, then send the prompt again.
+Reconnect your ChatGPT plan on **Connections**, then send the prompt again.
 
 ## Work items
 

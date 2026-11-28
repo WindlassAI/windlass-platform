@@ -1,6 +1,6 @@
 ## Do I need a ChatGPT account?
 
-No. Sign in with GitHub or Google. You can connect a ChatGPT plan in Settings for Windlass models, supply a model provider key, or use a harness login on your paired machine.
+No. Sign in with GitHub or Google. Connect a Claude or ChatGPT plan, or add a model provider key, on **Connections**.
 
 ## Can I use Claude Code?
 

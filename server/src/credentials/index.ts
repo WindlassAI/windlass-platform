@@ -21,7 +21,7 @@ import type { DefaultsDb } from "../repository-defaults.js";
 import { serverSealer } from "../signin/seal.js";
 import { accountOf, cleanMaterial, NO_MATERIAL, type SignInMaterial, signInOnly } from "../signin/material.js";
 import { connectCodeDigest, connectTransitSubject } from "./connect-code.js";
-import { keyGeneration, MODEL_PROVIDER_TABLES, providerStatuses, savedKey, savedModelKeys } from "./keys.js";
+import { keyGeneration, MODEL_PROVIDER_TABLES, providerStatuses, savedKey } from "./keys.js";
 import type { HostedCredential } from "../sandbox/harnesses.js";
 import {
 	claudePlanCheck,
@@ -30,7 +30,6 @@ import {
 	PlanProblem,
 	planAllowed,
 	planGeneration,
-	planRefs,
 	planProviderOf,
 	plansAllowed,
 	planStatuses,
@@ -201,13 +200,6 @@ export const credentialActions = {
 			if (error instanceof PlanProblem) throw new UserError(error.message, { code: error.code });
 			throw error;
 		}
-	},
-	/** Everything a hosted turn can pay with, each pinned to its generation: checked keys, then usable plans. */
-	async internalHostedCredentials(c: Context): Promise<CredentialRef[]> {
-		const uid = c.key[0]!;
-		requireServiceFor(c, modelKeyCaller(uid));
-		const [keys, plans] = await Promise.all([savedModelKeys(c.db), planRefs(c.db, uid)]);
-		return [...keys, ...plans.map(p => ({ ...p, plan: true as const }))];
 	},
 	/** `onMachine`: for a turn on the user's own machine, where the ChatGPT plan pays whatever `WLP_PLAN_USERS` says (`planAllowed`). */
 	async internalCredentialGeneration(c: Context, raw: unknown, onMachine = false): Promise<string | null> {

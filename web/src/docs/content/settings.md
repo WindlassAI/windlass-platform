@@ -7,7 +7,7 @@ Choose **Settings** in the top bar (in the account menu on a phone). What you sa
 Three places choose what runs, each saving as soon as you change it:
 
 - **Machines → Where work runs**: the default place, Hosted or one of your machines. For a machine, its isolation and what happens when it is offline: **Wait for it**, or **Offer Hosted**, where the item asks you before it moves. Nothing moves to another place, payer or sandbox without asking. See [Where work runs](/docs/machines#where-work-runs).
-- **Connections**: what pays for each agent, hosted and on each of your machines: your plans, your API keys, and each machine's own sign-in. See [Connections](#connections).
+- **Connections**: what pays for each agent, hosted and on each of your machines: your plans and your API keys, or an agent's own login on a machine. See [Connections](#connections).
 - **Settings → Models** has two choices. **Builds with** sets the agent, model and effort. **Plans & reviews with** sets the Windlass model and effort for planning, review and summaries. **Same as building** uses the usual Windlass model.
 - **A repository's Overrides**: a different place, build agent, planning model or hosted sandbox for that repository only.
 
@@ -15,9 +15,9 @@ An item's own choice comes first, then the repository's, then yours, then the de
 
 ### Connections
 
-Choose **Connections** in the top bar (in the account menu on a phone). The grid has a row for each agent (Windlass, Claude Code, Codex, OpenCode) and a column for **Hosted** and for each paired machine. Each cell says what pays for that agent there now: a plan, one of your API keys, the machine's own sign-in, or **Not connected**. A cell that is not connected has one button that leads to the right connect: the plan's command, the key's entry, or the Machines page. Where a machine's agent is signed in there and one of your keys could also pay for it, its cell has the choice between the two; only the chosen one is used.
+Choose **Connections** in the top bar (in the account menu on a phone). The grid has a row for each agent (Windlass, Claude Code, Codex, OpenCode) and a column for **Hosted** and for each paired machine. Each cell says what pays for that agent there now: a plan, one of your API keys, the agent's own login on that machine, or **Not connected**. A cell that is not connected has one button that leads to the right connect: the plan's command, the key's entry, or the Machines page. On a machine, Claude Code and Codex pay as on Hosted, by **Who pays** below, unless Claude Code's own login is kept on that machine.
 
-Hosted uses a connected plan first, then a key. **Who pays** has, for Claude Code and Codex, two choices that every hosted turn follows from its start:
+Hosted uses a connected plan first, then a key. **Who pays** has, for Claude Code and Codex, two choices that every turn follows from its start, hosted and on your machines:
 
 - **Pay with**: **Plan first, then key** (the default), **Plan only**, or **Key only**.
 - **When limited**: what a turn does when the plan hits its limit: **Wait for the reset**, **Use my key**, or **Ask me**. By default work items wait and your own sessions ask. Without a saved key a limited plan always waits.
@@ -65,7 +65,7 @@ For a self-hosted platform, add `--platform https://your-platform` to the comman
 
 In **Connections → API keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes use these keys where no connected plan pays: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” in that agent's cell for the machine on **Connections**. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes use these keys where no connected plan pays: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, Claude Code and Codex use your plans and keys as on Hosted, and OpenCode uses its own logins there and your keys for the other providers. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
 
 ### MCP servers
 

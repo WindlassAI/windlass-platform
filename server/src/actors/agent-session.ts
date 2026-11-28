@@ -104,7 +104,6 @@ import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import {
 	windlassProvider,
 	hostedKeyMessage,
-	hostedPayer,
 	selectedKey,
 	machinePayerProblem,
 	withSettingsKeys,
@@ -384,9 +383,9 @@ export function machinePaysWith(harness: HarnessId, offered: Pick<OfferedHarness
 }
 
 /**
- * What pays for a turn. Hosted and on a machine alike, a plan pays as Pay with says (and Windlass's ChatGPT models
- * pay with the ChatGPT plan); on a machine a plan's token goes to the plan relay there. On a machine, Claude Code's own
- * login kept there wins, and OpenCode pays with its own logins there and a Settings key for any other provider.
+ * What pays for a turn. Hosted, Pay with decides for every agent (user-payer.ts), and Windlass's ChatGPT models pay
+ * with the ChatGPT plan. On a machine, a plan agent follows Pay with too (its plan's token goes to the plan relay there)
+ * unless its own login is kept there; OpenCode pays with its own logins there and a Settings key for other providers.
  */
 export async function turnCredential(
 	c: Ctx,
@@ -429,23 +428,11 @@ export async function turnCredential(
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
 	}
-	const keyActor = modelKeyActor(c, meta.uid);
-	if (hosted && PAY_WITH_HARNESSES.includes(harness)) {
+	if (hosted) {
 		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
 		const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
-		if (answer) return payerCredential(meta, answer, model);
-	}
-	if (hosted) {
-		const credentials = await keyActor.internalHostedCredentials();
-		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
-		const payer = hostedPayer(
-			harness,
-			model,
-			credentials.map(ref => ({ ...ref, checkedAt: null })),
-		);
-		const key = payer && credentials.find(ref => ref.provider === payer.provider && !!ref.plan === !!payer.plan);
-		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
-		return { model, key };
+		if (!answer) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+		return payerCredential(meta, answer, model);
 	}
 	const machineName = c.vars.runner?.known?.name || meta.machineName || "your machine";
 	if (machinePaysWith(harness, offered)) {
@@ -461,7 +448,7 @@ export async function turnCredential(
 		});
 	}
 	// Its own login on the machine pays; OpenCode's Settings keys pay for the providers it has no login for there.
-	const keys = offered?.keyRelay ? await keyActor.internalModelKeys() : [];
+	const keys = offered?.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
 	const listed =
 		offered &&
 		listedHarness(

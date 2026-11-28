@@ -422,8 +422,6 @@ handed a ChatGPT access token. Who pays:
   read that.
 - **OpenCode**: its own logins on the machine, and a Settings key for each provider it has no login for.
 
-There is no per-machine payer choice any more; the per-user Pay with rule decides on machines too.
-
 ### Windlass's model relay on this machine
 
 The runner runs Windlass's model relay ([model-relay.md](model-relay.md)) as `wlp-model-relay-<machine id>`, with

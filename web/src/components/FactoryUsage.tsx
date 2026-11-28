@@ -1,20 +1,12 @@
-import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
+import { byteSize, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { FoldRows } from "./Fold";
 import { useItems } from "../state/items";
 import { useCostRates } from "../state/hooks";
 import { costWords, summaryCost, usd } from "../lib/cost";
-import type { CostRates, FactoryLimits, ItemBudget, ItemSummary } from "@contract";
+import type { CostRates, FactoryLimits, ItemSummary } from "@contract";
+import { spendWords } from "../lib/budget";
 import { CostFigure } from "./CostFigure";
-
-/** A new item's allowance before it asks: dollars where an API key pays, a share of the 5-hour window where a plan does. */
-function itemAllowance(budget: ItemBudget): string {
-	const parts = [
-		...(budget.usd !== undefined ? [usd(budget.usd)] : []),
-		...(budget.planPct !== undefined ? [`${budget.planPct}% of your plan's 5-hour window`] : []),
-	];
-	return parts.length ? parts.join(" or ") : `${compact(budget.tokens)} tokens`;
-}
 
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
@@ -44,8 +36,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	return (
 		<>
 			<p className="usage-lede">
-				Each item may spend {itemAllowance(value.item)} and {sandboxTime(value.item.hostedSeconds)} of hosted time, then
-				it asks you for more.
+				Each item may spend {spendWords(value.item, null)} and {sandboxTime(value.item.hostedSeconds)} of hosted time,
+				then it asks you for more.
 			</p>
 			<details className="usage-note factory-limits-fold">
 				<summary>All limits</summary>

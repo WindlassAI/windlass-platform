@@ -263,12 +263,6 @@ export async function planGeneration(
 	return row?.generation ?? null;
 }
 
-/** The usable plans' generations, for a turn to pin one without opening its token. None while plans are off for the user. */
-export async function planRefs(db: DefaultsDb, uid: string): Promise<{ provider: PlanProvider; generation: string }[]> {
-	if (!plansAllowed(uid)) return [];
-	return db.execute("SELECT provider, generation FROM model_plan WHERE check_ok=1 ORDER BY provider");
-}
-
 /**
  * A token plan's token and generation, resealed under the current key when it was sealed with an older one. A
  * ChatGPT plan has no token to open here: its access token comes from the user's sign-in holder.
@@ -429,7 +423,7 @@ export async function writeChatgptSignIn(
 /**
  * The ChatGPT sign-in used to have a table of its own (`signin`); it is the ChatGPT plan now. A user actor copies
  * its row here once and drops the table. Its generation is kept, so usage recorded and models listed under it stay
- * the sign-in's.
+ * the sign-in's. One-time: remove after the first deploy that runs it.
  */
 export async function moveSignInToPlan(db: DefaultsDb): Promise<void> {
 	const [legacy] = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'signin'");

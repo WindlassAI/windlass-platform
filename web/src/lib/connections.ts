@@ -90,21 +90,17 @@ export type ConnectionPlace = "hosted" | string;
 /** The id of an agent's cell at a place: what a disabled agent in the composer links to (`/connections#claude-hosted`). */
 export const cellId = (harness: HarnessId, place: ConnectionPlace) => `${harness}-${place}`;
 
+/** The connected plans hosted turns can pay with, where the account may use plans. */
+export function planCredentials(plans: ModelPlans): HostedCredential[] {
+	if (!plans.allowed) return [];
+	return plans.plans
+		.filter(plan => plan.ok)
+		.map(plan => ({ provider: plan.provider, plan: true as const, checkedAt: plan.checkedAt, models: plan.models }));
+}
+
 /** What hosted turns can pay with, as the server's `hostedCredentials` counts them: checked keys, and plans where allowed. */
 export function hostedCredentialsFrom(inputs: ConnectionInputs): HostedCredential[] {
-	return [
-		...inputs.keys.filter(key => key.ok),
-		...(inputs.plans.allowed
-			? inputs.plans.plans
-					.filter(plan => plan.ok)
-					.map(plan => ({
-						provider: plan.provider,
-						plan: true as const,
-						checkedAt: plan.checkedAt,
-						models: plan.models,
-					}))
-			: []),
-	];
+	return [...inputs.keys.filter(key => key.ok), ...planCredentials(inputs.plans)];
 }
 
 const planProvidersOf = (harness: HarnessId): readonly PlanProvider[] => machineHarness(harness)?.planProviders ?? [];

@@ -427,18 +427,10 @@ function saveFakeSignIn(user: string, accessToken: string, expiresAt: number): v
 	layer.signIns!.put(user, fakeSignIn(fakeAccount(user), expiresAt, accessToken));
 }
 
-/** A finished sign-in attempt, simulated: the synthetic sign-in Windlass would have saved, sealed for the attempt as `finish` hands it back. */
-function finishedAttempt(
-	attemptId: string,
-	account: { sub: string; email: string },
-	expiresAt: number,
-	accessToken = TOKEN_A,
-): string {
-	return layer.signIns!.sealer.seal(
-		"attempt",
-		attemptId,
-		JSON.stringify({ files: fakeSignIn(account, expiresAt, accessToken).files }),
-	);
+/** A synthetic sign-in handed to the user's holder as the connect route hands it an uploaded one. */
+function adoptFake(user: string, account: { sub: string; email: string }, expiresAt: number, accessToken = TOKEN_A) {
+	const material = fakeSignIn(account, expiresAt, accessToken);
+	return layer.signIns!.adopt(user, layer.signIns!.sealer.seal("user", user, JSON.stringify(material)));
 }
 
 /** What a user's store holds, as it is stored: null when nothing was ever saved for the user. */
@@ -2543,75 +2535,7 @@ PYTHON`);
 
 	await section("sign-in", async () => {
 		const sealer = layer.signIns!.sealer;
-		const attempt = `chk${run}a`;
-		const resourcesBefore = await listOurs();
-		await throwsAny("start() refuses an invalid attempt id", () => layer.logins.start("../../x"));
 		await throwsAny("status() refuses an invalid uid", () => layer.logins.status("a b"));
-		const started1 = await layer.logins.start(attempt);
-		const url = new URL(started1.url);
-		expect(
-			"start() returns OpenAI's address and the loopback redirect",
-			url.origin === "https://auth.openai.com" &&
-				started1.redirectPrefix === "http://127.0.0.1:1455/auth/callback" &&
-				url.searchParams.get("redirect_uri") === started1.redirectPrefix,
-			`${url.origin}${url.pathname}, redirect ${started1.redirectPrefix}`,
-		);
-		const state = url.searchParams.get("state") ?? "";
-		const pending = Object.keys(
-			(JSON.parse(sealer.open("attempt", attempt, started1.attempt)) as { files: Record<string, string> }).files,
-		).sort();
-		const resourcesAfter = await listOurs();
-		expect(
-			"what it hands back is the pending sign-in Windlass saved, sealed for this attempt: the blob shows nothing of it, and the helper that ran Windlass left no volume and no container",
-			pending.join(" ") === "auth-pending.json host-id" &&
-				state !== "" &&
-				!started1.attempt.includes(state) &&
-				resourcesAfter.volumes.join(" ") === resourcesBefore.volumes.join(" ") &&
-				resourcesAfter.containers.join(" ") === resourcesBefore.containers.join(" "),
-			`${pending.join(", ")}; ${started1.attempt.length} characters`,
-		);
-		const callback = started1.redirectPrefix;
-		// Each of these is rejected by Windlass before any network request (packages/core/src/auth/chatgpt.ts finishLogin), and the helper has no network.
-		await throwsUserError(
-			"finish() rejects a malformed address (checked here)",
-			() => layer.logins.finish(attempt, started1.attempt, "not an address"),
-			/not the address/,
-		);
-		await throwsUserError(
-			"finish() rejects another site's address (checked here)",
-			() => layer.logins.finish(attempt, started1.attempt, `https://example.com/auth/callback?code=x&state=${state}`),
-			/not the address/,
-		);
-		await throwsUserError(
-			"finish() rejects a wrong state (Windlass: state_mismatch)",
-			() => layer.logins.finish(attempt, started1.attempt, `${callback}?code=fake-code&state=wrong-state`),
-			/different sign-in attempt/,
-		);
-		await throwsUserError(
-			"finish() reports a refusal in the browser (Windlass: access_denied)",
-			() => layer.logins.finish(attempt, started1.attempt, `${callback}?error=access_denied&state=${state}`),
-			/not approved/,
-		);
-		await throwsUserError(
-			"finish() rejects an address without an issued client (Windlass: registration_incomplete)",
-			() => layer.logins.finish(attempt, started1.attempt, `${callback}?code=fake-code&state=${state}`),
-			/registering/,
-		);
-		await throwsUserError(
-			"finish() under another attempt's id finds the attempt unknown: the blob is this attempt's only",
-			() => layer.logins.finish(`chk${run}none`, started1.attempt, `${callback}?code=fake-code&state=${state}`),
-			/unknown or has expired/,
-		);
-		await throwsUserError(
-			"finish() of something that is not a sealed attempt finds the attempt unknown",
-			() => layer.logins.finish(attempt, "not a blob", `${callback}?code=fake-code&state=${state}`),
-			/unknown or has expired/,
-		);
-		await throwsUserError(
-			"adopt() refuses an attempt that is not finished",
-			() => layer.logins.adopt(attempt, started1.attempt, uid2),
-			/not finished/,
-		);
 
 		expect(
 			"status() is null for a user who never signed in",
@@ -2624,13 +2548,9 @@ PYTHON`);
 			(await layer.logins.status(uid2)) === null && (await lsVolume(`wlp-user-${uid2}`)) === "",
 		);
 
-		// A finished attempt, simulated: the synthetic auth.json Windlass would have saved, sealed as `finish` hands it back.
+		// The synthetic auth.json Windlass would have saved, uploaded.
 		const expiresAt = Date.now() + 3_600_000;
-		await layer.logins.adopt(
-			attempt,
-			finishedAttempt(attempt, { sub: "fake-sub-123", email: "fake.user@example.invalid" }, expiresAt),
-			uid2,
-		);
+		await adoptFake(uid2, { sub: "fake-sub-123", email: "fake.user@example.invalid" }, expiresAt);
 		const account = await layer.logins.status(uid2);
 		const row = storedSignIn(uid2);
 		expect(
@@ -2666,12 +2586,7 @@ PYTHON`);
 		);
 
 		// A second sign-in replaces the first.
-		const attempt2 = `chk${run}b`;
-		await layer.logins.adopt(
-			attempt2,
-			finishedAttempt(attempt2, { sub: "fake-sub-456", email: "other@example.invalid" }, expiresAt + 1),
-			uid2,
-		);
+		await adoptFake(uid2, { sub: "fake-sub-456", email: "other@example.invalid" }, expiresAt + 1);
 		expect("adopt() replaces an earlier sign-in", (await layer.logins.status(uid2))?.sub === "fake-sub-456");
 
 		// A pre-upgrade token file left on the data volume: logout takes it too.
@@ -2700,15 +2615,6 @@ PYTHON`);
 		expect(
 			"logout() of a user without a sign-in is a no-op and makes no volume",
 			await volumeGone(`wlp-user-chk-${run}-nobody`),
-		);
-
-		const attempt3 = `chk${run}c`;
-		const once = await layer.logins.start(attempt3);
-		const twice = await layer.logins.start(attempt3);
-		expect(
-			"start() again issues a new pending sign-in",
-			new URL(once.url).searchParams.get("state") !== new URL(twice.url).searchParams.get("state") &&
-				once.attempt !== twice.attempt,
 		);
 	});
 
@@ -2776,8 +2682,7 @@ PYTHON`);
 		);
 
 		// A new sign-in: what was kept of the old one is not handed out again.
-		const attempt = `chk${run}t`;
-		await layer.logins.adopt(attempt, finishedAttempt(attempt, fakeAccount(uidT), expiresAt + 1, TOKEN_B), uidT);
+		await adoptFake(uidT, fakeAccount(uidT), expiresAt + 1, TOKEN_B);
 		const adopted = await tokens.current(uidT);
 		expect(
 			"after adopt() the new sign-in's token is returned, not the one that was kept",

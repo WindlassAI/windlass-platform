@@ -52,10 +52,6 @@ export function tokenDetail(budget: ItemBudget, spent: ItemSpend): string {
 	return `${spellTokens(spent.tokens)} cost-weighted tokens (${spellTokens(raw)} as reported)${held ? ` of a ${spellTokens(budget.tokens)}-token budget` : ""}.`;
 }
 
-/** "$1.25", "5%": a budget figure without its unit's words. */
-export const usdWords = spellUsd;
-export const pctWords = spellPct;
-
 const FIELD_LABELS: Record<MoneyFigure, string> = { usd: "Dollars", planPct: "Plan's 5-hour window", tokens: "Tokens" };
 
 /** The rows of `ItemSpend` for the figures that hold an item now. */

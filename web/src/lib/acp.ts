@@ -93,9 +93,6 @@ export function signInWords(harness: ReportedHarness): string {
 			: "couldn't check the sign-in";
 }
 
-/** What to do where an agent the account pays for (`paysWith`) has nothing to pay with. */
-export const PAY_WITH_HINT = "Connect a plan or add a key on Connections.";
-
 /**
  * The command that signs a harness in on its machine, run inside the runner's container: only OpenCode keeps logins of
  * its own there. Claude Code and Codex pay with the account's plans and keys (Connections → Pay with).

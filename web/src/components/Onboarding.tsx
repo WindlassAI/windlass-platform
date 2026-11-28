@@ -604,7 +604,7 @@ function AgentCard({
 				]
 			: []),
 		{ id: "key", label: `${SOURCE_NAMES[key]} API key`, hint: `Billed to your ${SOURCE_NAMES[key]} account` },
-		{ id: "machine", label: "Run on my computer", hint: "Your own machine, with its own sign-in" },
+		{ id: "machine", label: "Run on my computer", hint: "A computer you pair with Windlass" },
 	];
 	const name = HARNESS_NAMES[harness];
 	return (
@@ -659,13 +659,11 @@ function AgentCard({
 					onMachine ? (
 						<p className="onboard-done">
 							<CheckIcon size={15} />
-							Signed in on {machineLabel(onMachine)}
+							Ready on {machineLabel(onMachine)}
 						</p>
 					) : (
 						<>
-							<p className="field-note">
-								Pair the computer you want to use. One pairing serves every agent signed in on it.
-							</p>
+							<p className="field-note">Pair the computer you want to use. One pairing serves every agent on it.</p>
 							<a className="button button-outline" {...linkProps({ name: "machines", add: true })}>
 								Pair a computer
 							</a>

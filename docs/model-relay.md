@@ -11,8 +11,7 @@ One mechanism pays for every plan-paid hosted turn: the turn pins a `CredentialR
 generation, and a plan relay sends its requests with the plan's current token. Hosted Windlass on an unqualified
 (ChatGPT) model pins `{ provider: "openai", plan: true }`, the ChatGPT plan, exactly as hosted Codex does
 (`turnCredential` in `server/src/actors/agent-session.ts`). The plan is the user's ChatGPT sign-in, so its
-generation is the sign-in's: Windlass's ChatGPT model list and the daily ChatGPT allowance stay keyed and counted
-as before (`usesPlatformModel`). `WLP_PLAN_USERS` gates it like every plan: a user it leaves out gets "Your ChatGPT
+generation is the sign-in's, and the daily ChatGPT allowance counts these turns (`usesPlatformModel`). `WLP_PLAN_USERS` gates it like every plan: a user it leaves out gets "Your ChatGPT
 plan isn't enabled for hosted runs on this account" for a hosted Windlass turn on a ChatGPT model, while Settings-key
 models and machines still work. Where the plan's requests go:
 
@@ -63,7 +62,7 @@ usual credential header or as a Bearer token (Windlass on the ChatGPT plan: in i
 `writePlanPlaceholder`). Close the lease when the turn ends. Opening fails if the sandbox has no relay for it.
 
 The platform lease holds the harness, provider and generation saved by the user actor. For each admitted
-request the platform relay calls B1's `internalModelKey` as `model-key/<uid>` with a fresh nonce,
+request the platform relay calls `internalCredential` as `model-key/<uid>` with a fresh nonce,
 opens the 60-second transit blob, and checks the generation before sending the request.
 Removing or replacing the key blocks the next request on every lease of the old generation.
 
@@ -155,11 +154,9 @@ Docker sandboxes share the server's address and keep the route.
   environment. Stdin stays open as the control channel: a later `{token}` replaces the token (requests that start
   after it carry the new one, running ones keep theirs), and the relay asks the platform to count each request
   against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
-- **A ChatGPT plan's token expires.** It is opened with at least 20 minutes left (the sign-in holder's promise),
-  and when 10 are left the turn asks the user's actor for the current one, which the holder refreshes, and hands
-  it over stdin (`rotatePlanToken` in `server/src/sandbox/token-file.ts`). A failed try
-  is tried again every 20 s. A plan reconnected or removed meanwhile gives no token: the relay keeps the one it
-  has until it expires. The refresh token never leaves the user's actor.
+- **A ChatGPT plan's token expires.** The turn hands the relay a fresh one before it does
+  ([Refresh and rotation](#refresh-and-rotation)). A plan reconnected or removed meanwhile gives no token: the relay
+  keeps the one it has until it expires.
 - **What it accepts.** It listens on `127.0.0.1` on a port the kernel picks. It accepts only
   `Authorization: Bearer <placeholder>`, a fresh `wlp-plan.` placeholder for each turn, and only the turn's agent's
   routes on the plan's wire with that wire's headers (and betas). It sends them to the wire's host
@@ -256,7 +253,7 @@ Connections page know whether the plan is usable, at its limit, or no longer acc
   answer was for; a new connection starts healthy. A plan's limit is its own account (`plan/<provider>/<generation>`
   in `server/src/actors/provider-accounts.ts`), apart from the key of the same provider: a limited key does not
   hold plan-paid turns, nor the other way round. Windlass's ChatGPT models count against the ChatGPT plan wherever
-  they run (`accountLocation`); the limits its sign-in kept before move there once (`moveWindlassLimits`).
+  they run (`accountLocation`).
 - **What uses it.** Pay with at a turn's start (`server/src/pay-with.ts` `decidePayer`, `server/src/actors/user-payer.ts`):
   a limited plan waits, pays with the key, or asks, by the rule; an invalid one falls back to the key where the rule
   allows, or asks the user to reconnect. Hosted Windlass's ChatGPT models follow the defaults by origin (an item waits,
@@ -312,7 +309,8 @@ access token it keeps while it has more than 20 minutes left, else refreshes onc
   refreshed token is the next request's, on the same lease.
 - **E2B and Daytona (the relay in the sandbox).** The token opened at the turn's start has at least 20 minutes left;
   when it has 10 left the turn asks for the current one and hands it to the relay on its standard input
-  (`rotatePlanToken`). A failed try is tried again every 20 s. Requests that start after it carry the new token.
+  (`rotatePlanToken` in `server/src/sandbox/token-file.ts`). A failed try is tried again every 20 s. Requests that
+  start after it carry the new token. The refresh token never leaves the user's actor.
 - **Machines.** As E2B and Daytona: the plan relay on the machine is handed the current token over its standard
   input (`planRelayToken`). No machine refreshes a ChatGPT sign-in, and none holds a refresh token.
 
@@ -375,13 +373,9 @@ once per process, so its real ceilings are that many times higher. The per-user 
 requests a user has in flight, not what they spend: a user's turns can still use the plan's whole quota
 through the relay while they run.
 
-Windlass's ChatGPT plan leases (the `chatgpt-plan` wire) accept only
-`GET /v1/models` and `POST /v1/responses`, with `Host: 127.0.0.1:17893` on Docker. They send them to
-`https://api.openai.com/v1/...` with the real bearer, and pass on only `content-type`, `accept`, `session-id` and
-`user-agent`. A redirect is a 502. Every token the relay
-has used is removed from the response stream. An error reply keeps the provider's `error.code`,
-`error.type` and a scrubbed, shortened message, so Windlass still tells a usage limit, a rate limit and a
-context overflow apart. Nothing that names the account or the request is passed on.
+On the `chatgpt-plan` wire a redirect is a 502 and every token the relay has used is removed from the response
+stream. An error reply keeps the provider's `error.code`, `error.type` and a scrubbed, shortened message, so Windlass
+still tells a usage limit, a rate limit and a context overflow apart.
 
 The relay's own 401s (no live lease for the placeholder) carry `error.code: "relay_lease_ended"`.
 Windlass reports any 401 of a handed-in token as `handed_in_rejected`, with the provider's code in its

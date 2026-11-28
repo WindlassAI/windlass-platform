@@ -362,6 +362,12 @@ test("the user actor counts a plan's turns by session for its cap, and a key cho
 	assert.deepEqual({ ...once?.ref }, { provider: "anthropic", generation: "k1" });
 	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM pay_once").get()?.n, 0, "used up");
 	assert.equal(kind((await payer.turnPayer(c, "s4", "sonnet", false))!.decision), "wait");
+	// Hosted OpenCode, which no plan pays for: its provider's key pays, and without one the turn is refused.
+	sessions.set("s5", { ...session("s5"), harness: "opencode" } as never);
+	const keyed = await payer.turnPayer(c, "s5", "anthropic/claude-haiku-5-5", false);
+	assert.deepEqual({ ...keyed?.ref }, { provider: "anthropic", generation: "k1" });
+	const unpaid = (await payer.turnPayer(c, "s5", "google/gemini", false))!.decision;
+	assert.ok("refuse" in unpaid && /Add a Google key/.test(unpaid.refuse));
 });
 
 test("on a machine Pay with decides a plan agent's turn as hosted; only Claude Code's login kept on the machine wins", async () => {

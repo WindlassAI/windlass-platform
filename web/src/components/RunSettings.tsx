@@ -484,8 +484,8 @@ export function DefaultPlace({ account }: { account: AccountState }) {
 				Reading your defaults…
 			</p>
 		);
-	const run = runOf({ account: defaults, machines: inputs.list, sizes: inputs.sizes });
-	const hosted = runOf({ account: defaults, item: { place: "hosted" }, machines: inputs.list, sizes: inputs.sizes });
+	const run = runOf({ account: defaults, sizes: inputs.sizes });
+	const hosted = runOf({ account: defaults, item: { place: "hosted" }, sizes: inputs.sizes });
 	const change = (patch: AccountDefaultsPatch) =>
 		save(async () => {
 			const next = await client.user(auth).saveAccountDefaults(patch);
@@ -528,8 +528,8 @@ export function DefaultAgent({ account }: { account: AccountState }) {
 				Reading your defaults…
 			</p>
 		);
-	const run = runOf({ account: defaults, machines: inputs.list, sizes: inputs.sizes });
-	const planning = runOf({ account: defaults, machines: inputs.list, sizes: inputs.sizes }, "planner");
+	const run = runOf({ account: defaults, sizes: inputs.sizes });
+	const planning = runOf({ account: defaults, sizes: inputs.sizes }, "planner");
 	const change = (patch: AccountDefaultsPatch) =>
 		save(async () => {
 			const next = await client.user(auth).saveAccountDefaults(patch);

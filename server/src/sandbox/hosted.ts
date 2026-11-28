@@ -133,9 +133,6 @@ export function hostedLayer(
 		tokens,
 		backups: backups ?? null,
 		logins: {
-			start: (...args) => logins.start(...args),
-			finish: (...args) => logins.finish(...args),
-			adopt: (...args) => logins.adopt(...args),
 			status: uid => logins.status(uid),
 			ensureUserVolume: uid => logins.ensureUserVolume(uid),
 			async logout(uid) {

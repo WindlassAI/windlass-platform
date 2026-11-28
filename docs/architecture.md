@@ -221,7 +221,7 @@ the sandbox receives only a turn-scoped placeholder, in a file (`access-token-<s
 Docker's private `/dev/shm` tmpfs or the microVM's Windlass data directory) that Windlass is started with
 (`WINDLASS_ACCESS_TOKEN_FILE`). The file is removed when the turn ends. No sandbox is handed an access token. Demo
 turns are handed nothing. When the sign-in is gone, has expired or its token is rejected, the turn ends by
-asking the user to reconnect their ChatGPT plan in Settings; when the platform could not get or replace the token for
+asking the user to reconnect their ChatGPT plan on Connections; when the platform could not get or replace the token for
 another reason, it ends by saying so and that the sign-in is untouched.
 
 ### Keeping the token fresh
@@ -256,12 +256,12 @@ from that code what a failure means, never from the words of the message (`serve
 | Windlass's code | Reported by | The turn ends as | Which says |
 |---|---|---|---|
 | `handed_in_missing`, `handed_in_unreadable`, `handed_in_empty`, `handed_in_malformed` | the turn | `token_unavailable` | Windlass could not read the token it was handed; the sign-in is untouched, send the prompt again. (`auth_required` when the plan's token is refused) |
-| `handed_in_expired` | the turn | `auth_required` when the token source says the sign-in is gone or no longer accepted, otherwise `token_unavailable` | reconnect the ChatGPT plan in Settings; or: the token ran out and the platform did not replace it in time (with the reason, when there is one), the sign-in is untouched |
-| `handed_in_rejected` | the turn | `auth_required` | ChatGPT rejected the token: reconnect the ChatGPT plan in Settings. (When the token had run out as well by the platform's clock, as for `handed_in_expired`) |
+| `handed_in_expired` | the turn | `auth_required` when the token source says the sign-in is gone or no longer accepted, otherwise `token_unavailable` | reconnect the ChatGPT plan on Connections; or: the token ran out and the platform did not replace it in time (with the reason, when there is one), the sign-in is untouched |
+| `handed_in_rejected` | the turn | `auth_required` | ChatGPT rejected the token: reconnect the ChatGPT plan on Connections. (When the token had run out as well by the platform's clock, as for `handed_in_expired`) |
 | `network_error` | the turn | what Windlass reported (`execution_failed`) | Windlass's own sentence: a connection problem, not a sign-in problem |
 | `network_error` | the token source | `token_unavailable` | the sign-in service could not be reached; the sign-in is untouched, send the prompt again |
-| `signed_out` | the token source | `auth_required` | connect a ChatGPT plan in Settings |
-| `invalid_grant`, `invalid_client`, `unauthorized_client`, `access_denied`, `invalid_request`, `invalid_scope`, `http_400`, `http_401`, `http_403` | the token source | `auth_required` | the sign-in is no longer accepted: reconnect the ChatGPT plan in Settings. A turn that is running tries its token file again more and more slowly |
+| `signed_out` | the token source | `auth_required` | connect a ChatGPT plan on Connections |
+| `invalid_grant`, `invalid_client`, `unauthorized_client`, `access_denied`, `invalid_request`, `invalid_scope`, `http_400`, `http_401`, `http_403` | the token source | `auth_required` | the sign-in is no longer accepted: reconnect the ChatGPT plan on Connections. A turn that is running tries its token file again more and more slowly |
 | any other code of a refresh (`refresh_locked`, `bad_token_response`, `server_error`, ...) | the token source | `token_unavailable` | the sign-in could not be refreshed, with Windlass's sentence and the code; the sign-in is untouched |
 | a `handed_in_...` code the platform does not know | the turn | `token_unavailable` | Windlass could not use the token: send the prompt again, and sign in again if it ends the same way |
 | any other code | the turn | what Windlass reported | Windlass's own sentence |
@@ -356,7 +356,7 @@ hold on a Rivet Cloud cluster, where Rivet also runs the servers and keeps their
 (`rivet cluster secret set WLP_SECRET`): there the encryption protects a copy of the actor storage, such as a
 backup, and not against whoever runs the cluster. The key must be the same on every server and must not
 change: with another key a stored sign-in does not open, the server logs `[wlp] sign-in.unreadable`, and the
-user is asked to reconnect the ChatGPT plan in Settings.
+user is asked to reconnect the ChatGPT plan on Connections.
 
 **Running Windlass's commands.** For each command a runner makes a private directory (mode 0700), writes the
 sign-in's files into it (0600), runs `windlass login ...` with `XDG_DATA_HOME` pointing there (Windlass looks

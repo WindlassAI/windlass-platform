@@ -6,7 +6,6 @@
 import { modelRefusal, turnEffort } from "../../../server/src/account-models.js";
 import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
-import { machinePayers } from "../lib/run";
 import { PAY_WITH_HARNESSES, payWithPatchOf, PayWithProblem } from "../../../server/src/pay-with.js";
 import { withoutUnofferedModels } from "../../../server/src/factory/resolve-run.js";
 import type { AccountDefaultsPatch, RepositoryDefaultsPatch } from "@contract";
@@ -1303,7 +1302,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				deployment: { hostedSize: "standard" },
 				account: withoutUnofferedModels(accountDefaultsOf(worldOf(auth)), models),
 				repository: withoutUnofferedModels(defaultsOf(worldOf(auth), repositoryId), models),
-				machinePayers: machinePayers(machineState === "off" ? [] : machinesView(auth)),
 			};
 		},
 		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,

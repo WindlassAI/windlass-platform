@@ -3344,15 +3344,17 @@ async function main(server: Server | null): Promise<void> {
 			"the fake layer's token source: no token without a sign-in, one request per user at a time, a fresh answer reused, a new sign-in's token after adopt",
 			async () => {
 				// The layer itself, beside the server's, with the users' sign-ins kept in this process: what the actors' turns ask before they start.
-				const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
+				const { createFakeSandboxLayer, fakeSignInFiles } = await import("../server/src/sandbox-fake.js");
 				const { SandboxUserError } = await import("../server/src/sandbox/api.js");
 				const { SignInRefreshError } = await import("../server/src/sandbox/handoff.js");
 				const fake = createFakeSandboxLayer({ signIns: "memory" });
+				// As the connect route hands the user's actor an uploaded sign-in.
 				const signIn = async (uid: string, code: string) => {
-					const id = attempt();
-					const started = await fake.logins.start(id);
-					const finished = await fake.logins.finish(id, started.attempt, `${started.redirectPrefix}?code=${code}`);
-					await fake.logins.adopt(id, finished.attempt, uid);
+					const directory = fake.signIns!;
+					await directory.adopt(
+						uid,
+						directory.sealer.seal("user", uid, JSON.stringify({ files: fakeSignInFiles(code) })),
+					);
 				};
 				const refusal = async (uid: string) =>
 					fake.tokens.current(uid).then(

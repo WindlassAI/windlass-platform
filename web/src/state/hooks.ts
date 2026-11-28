@@ -1,4 +1,5 @@
 import { availableCatalog, type HostedCredential } from "../../../server/src/sandbox/harnesses.js";
+import { planCredentials } from "../lib/connections";
 import { monthState } from "../lib/hosted";
 import type {
 	AccountSettings,
@@ -8,6 +9,8 @@ import type {
 	FinishedItems,
 	MachineSummary,
 	ModelList,
+	ModelPlans,
+	ModelProviderStatus,
 	SessionSummary,
 	SummaryDays,
 	UsageNumbers,
@@ -39,6 +42,14 @@ export function watchModelChanges(read: (isCurrent: () => boolean) => void) {
 	};
 }
 
+/** The saved keys and the connected plans, read together; plans read as none where they cannot be read. */
+export function readKeysAndPlans(user: {
+	modelProviders(): Promise<ModelProviderStatus[]>;
+	modelPlans(): Promise<ModelPlans>;
+}): Promise<[ModelProviderStatus[], ModelPlans]> {
+	return Promise.all([user.modelProviders(), user.modelPlans().catch(() => ({ allowed: false, plans: [] }))]);
+}
+
 /** What hosted agents can pay with: the saved keys and the connected plans (`HostedCredential`). */
 export function useHostedCredentials(enabled = true) {
 	const { client } = useApp();
@@ -47,24 +58,9 @@ export function useHostedCredentials(enabled = true) {
 	useEffect(() => {
 		if (!enabled) return;
 		return watchModelChanges(isCurrent => {
-			const user = client.user(auth);
-			Promise.all([user.modelProviders(), user.modelPlans().catch(() => ({ allowed: false, plans: [] }))]).then(
-				([keys, plans]) => {
-					if (!isCurrent()) return;
-					const connected = plans.allowed ? plans.plans.filter(p => p.ok) : [];
-					setCredentials([
-						...keys,
-						...connected.map(p => ({
-							provider: p.provider,
-							plan: true as const,
-							checkedAt: p.checkedAt,
-							models: p.models,
-						})),
-					]);
-				},
-				() => {
-					if (isCurrent()) setCredentials([]);
-				},
+			readKeysAndPlans(client.user(auth)).then(
+				([keys, plans]) => isCurrent() && setCredentials([...keys, ...planCredentials(plans)]),
+				() => isCurrent() && setCredentials([]),
 			);
 		});
 	}, [client, auth, enabled]);

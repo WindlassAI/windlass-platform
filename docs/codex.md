@@ -3,8 +3,7 @@
 Codex has no login of its own on a machine. Its turns pay as hosted ones do, through Connections → Pay with: the
 ChatGPT plan (connected with `npx @windlassai/cli connect codex`) through a plan relay on the machine, or the OpenAI
 Settings key through the platform's relay ([machines.md](machines.md#plans-on-this-machine)). With neither, a turn
-is refused with "Nothing can pay for Codex on “nas” yet. Connect a plan or add a key on Connections." The runner
-refuses `windlass-runner login codex`. Neither the machine nor the session ever holds the plan's token or the key:
+is refused with "Nothing can pay for Codex on “nas” yet. Connect a plan or add a key on Connections." Neither the machine nor the session ever holds the plan's token or the key:
 the session gets a placeholder for its turn's relay. What each mode allows depends on the sandbox profile:
 
 - **Hardened Docker profile: Container access only.** Commands run as `agent` directly in the session's container, under the machine's egress setting, and Codex asks for nothing. The container is the boundary.

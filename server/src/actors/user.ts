@@ -1955,7 +1955,7 @@ export const user = actor({
 					launch_claim INTEGER
 				)
 			`);
-			// The in-page ChatGPT sign-in's pending attempt; ChatGPT is connected with the connect command now.
+			// The in-page ChatGPT sign-in's pending attempt. One-time: remove after the first deploy that runs it.
 			await db.execute("DROP TABLE IF EXISTS model_attempt");
 			// Only installation metadata is stored here. Each GitHub request uses its own scoped token.
 			await db.execute(`
@@ -2052,6 +2052,7 @@ export const user = actor({
 					);
 				}
 			}
+			// One-time: remove after the first deploy that runs it.
 			await moveSignInToPlan(db);
 			// Where a post-setup snapshot of a project was last saved (`internalSnapshotSaved`), for placement's snapshot bonus.
 			await db.execute(
@@ -2118,7 +2119,7 @@ export const user = actor({
 			}
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
-			// Windlass's ChatGPT limits are the ChatGPT plan's now (provider-accounts.ts `accountLocation`).
+			// Windlass's ChatGPT limits are the ChatGPT plan's now (provider-accounts.ts `accountLocation`). One-time: remove after the first deploy that runs it.
 			await moveWindlassLimits(db);
 			await billingTables(db);
 		},
@@ -3725,7 +3726,6 @@ export const user = actor({
 			await credentialsChanged(c);
 		},
 		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
-		internalHostedCredentials: c => credentialActions.internalHostedCredentials(c),
 		internalCredentialGeneration: (c, ref: unknown, onMachine?: boolean) =>
 			credentialActions.internalCredentialGeneration(c, ref, onMachine === true),
 		internalCredential: (c, ref: unknown, nonce: string, onMachine?: boolean) =>

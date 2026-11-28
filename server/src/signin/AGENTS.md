@@ -25,7 +25,7 @@ CI runs this check in the `actors` group of `scripts/ci-groups.json`.
 
 - `./material.ts` defines `SignInMaterial`: the text of the sign-in files listed in `MATERIAL_FILES` (shared with the CLI from `server/src/contract/connect.ts`), with size limits and account reading (the plan type among the ID token's claims included).
 - `./runner.ts` is the seam to Windlass: `LocalLoginRunner` writes the material into a private `XDG_DATA_HOME`, runs one command and reads the files back.
-- `./commands.ts` defines `WindlassSignIns`: the `token` and `models` steps over material, which store nothing, and `start` and `finish`, which only checks use now.
+- `./commands.ts` defines `WindlassSignIns`: the `token` and `models` steps over material, which store nothing.
 - `./holder.ts` defines `SignInHolder`: one user's stored sign-in and the only place that asks for their access token. Its generation is new at each adopt or logout, never at a refresh.
 - `./directory.ts` finds a user's holder: `ActorSignInDirectory` calls the `user` actor; `MemorySignInDirectory` is for checks only.
 - `./facade.ts` implements `ChatgptLogins` and `AccessTokens` from `server/src/sandbox/api.ts` over a directory (`actorSignIns`, `memorySignIns`). Turns take the plan's token through `chatgptPlanToken`; the holder still refreshes it.
@@ -33,11 +33,11 @@ CI runs this check in the `actors` group of `scripts/ci-groups.json`.
 - `./seal.ts` defines `Sealer` and `serverSealer`: AES-256-GCM blobs (`wlps1.`) bound to a `SealPurpose` and a subject.
 - `./secret-rows.ts` re-seals stored secret rows under the current key before a session gets them.
 
-Callers: [login actor](../actors/login.ts) keeps an attempt's sealed material, [user sign-in](../actors/user/signin.ts) owns the holder, and `server/src/sandbox/logins.ts` is the Docker form of the runner for development.
+Callers: [user sign-in](../actors/user/signin.ts) owns the holder, and `server/src/sandbox/logins.ts` is the Docker form of the runner for development. The platform [login actor](../actors/login.ts) seals its OAuth attempts with the `attempt` purpose.
 
 ## Key types
 
-- `SealPurpose` (`./seal.ts`) is `user`, `attempt`, `transit`, `secret` or `model-key`. Other modules seal repository secrets (`server/src/repo-secrets.ts`) and model keys with the same `Sealer`.
+- `SealPurpose` (`./seal.ts`) is `user`, `attempt`, `transit`, `secret`, `model-key` or `model-plan`. Other modules seal repository secrets (`server/src/repo-secrets.ts`) and model keys with the same `Sealer`.
 - `SignInMaterial` (`./material.ts`), `StoredSignIn` (`./holder.ts`) and `TokenAnswer` (`./commands.ts`) are the shapes passed between steps.
 - `TOKEN_VALID_FOR_MS`, `NOT_SIGNED_IN` and `SignInRefreshError` live in `server/src/sandbox/handoff.ts`.
 
@@ -47,7 +47,7 @@ Callers: [login actor](../actors/login.ts) keeps an attempt's sealed material, [
 - One refresh at a time per user holds only because the `user` actor hosts the holder. Never serve a deployment from `MemorySignInDirectory`.
 - A refresh replaces the refresh token. The holder saves the new sign-in before handing out the token, and hands out nothing if the save failed.
 - The refresh token never leaves the `user` actor: relays get access tokens only (`chatgptPlanToken` in `server/src/actors/user/signin.ts`), per request at the platform route, or at a turn's start and before expiry for a relay in a microVM.
-- Pass the pasted address to `finish` on standard input, never on a command line. Never forward `WINDLASS_ACCESS_TOKEN_FILE` to Windlass.
+- Never forward `WINDLASS_ACCESS_TOKEN_FILE` to Windlass.
 - With `WLP_SANDBOX=fake`, no Windlass runs unless `WLP_SIGNIN_RUNNER` is set (`server/src/sandbox-fake.ts` answers instead).
 - Catch `SealError` for a blob sealed by a different key or for another purpose. It means re-sign-in or skip the row, not a crash.
 

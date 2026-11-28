@@ -3237,7 +3237,6 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					at: Date.now(),
 					sentence: result.wait,
 					reviewer: result.reviewer,
-					offerPayer: result.offerPayer,
 				});
 			else {
 				const session = result.session;

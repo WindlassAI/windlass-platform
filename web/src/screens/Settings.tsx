@@ -10,7 +10,6 @@ import { LoginMethods } from "../components/LoginMethods";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
 import { runOf } from "../lib/run";
-import { useMachines } from "../state/machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount } from "../state/hooks";
@@ -25,11 +24,9 @@ export function Settings() {
 	const account = useAccount();
 	const { settings } = account;
 	const info = platform.info;
-	const machines = useMachines(!!info?.machines);
 	const hostedProfile = runOf({
 		account: settings?.defaults,
 		item: { place: "hosted" },
-		machines: machines.list,
 	}).profile;
 	const secretsProfile = info?.profiles.some(p => p.id === hostedProfile && p.available) ? hostedProfile : null;
 

@@ -621,8 +621,6 @@ export function modelKeyActor(
 	uid: string,
 ): {
 	internalModelKeys(): Promise<import("../contract.js").CredentialRef[]>;
-	/** What a hosted turn can pay with: checked keys and usable plans, each with its generation. */
-	internalHostedCredentials(): Promise<import("../contract.js").CredentialRef[]>;
 	/** The saved generation of a key, or with `plan` of the connected plan; null when none is usable. */
 	internalCredentialGeneration(
 		ref: Omit<import("../contract.js").CredentialRef, "generation">,

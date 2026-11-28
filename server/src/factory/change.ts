@@ -1,6 +1,5 @@
 // The Change one fact makes to an item, and the shared steps every flow takes: questions, turns, stops and feedback.
 import { SIZE_WEIGHT } from "../billing/meter.js";
-import type { MachinePayerOffer } from "./default-place.js";
 import type { OutOfMemory } from "../sandbox/api.js";
 import {
 	MAX_ITEM_BODY_CHARS,
@@ -259,12 +258,8 @@ export function hostedChoice(agent?: HarnessId, profile?: FeatureJob["hostedProf
 	return { id: "use_hosted" as const, label: "Run on Hosted" + isolation + payer };
 }
 
-export function payerChoice(offer: MachinePayerOffer | { payer: "machine" }) {
-	const payer = offer.payer === "key" ? "my Settings key" : "the machine’s own sign-in";
-	if (!("place" in offer)) return { id: "wait" as const, label: `Use ${payer}` };
-	const isolation = offer.profile ? ` (${isolationName(offer.profile)})` : "";
-	return { id: "use_machine_payer" as const, label: `Use ‘${offer.name}’${isolation} with ${payer}` };
-}
+/** A run filed before its payer was recorded: the owner confirms the machine's own sign-in. */
+export const confirmPayerChoice = { id: "wait" as const, label: "Use the machine’s own sign-in" };
 
 export const IMPLEMENT: TurnPlan = {
 	kind: "implement",
@@ -1043,7 +1038,6 @@ export function askPlacement(c: Change, job: FeatureJob) {
 					: []),
 				...(job.askMachine ? [choice("wait")] : []),
 				...(job.offerHosted ? [hostedChoice(job.task.resolved?.agent, job.hostedProfile)] : []),
-				...(job.offerPayer ? [payerChoice(job.offerPayer)] : []),
 				{ id: "revise" as const, label: "Revise the placement" },
 				{ id: "again", label: "Retry allowed places" },
 				{ id: "give_up", label: "Give up the subtask" },

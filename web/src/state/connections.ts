@@ -7,7 +7,7 @@ import type { PayWithChoice, PayWithPatch } from "@contract";
 import { useCallback, useEffect, useState } from "react";
 import type { ConnectionInputs } from "../lib/connections";
 import { useApp, useAuth } from "./app";
-import { useChatgpt, watchModelChanges } from "./hooks";
+import { readKeysAndPlans, useChatgpt, watchModelChanges } from "./hooks";
 
 export function useConnectionInputs(): { inputs: ConnectionInputs | null; error: string | null } {
 	const { client, explain } = useApp();
@@ -18,8 +18,7 @@ export function useConnectionInputs(): { inputs: ConnectionInputs | null; error:
 	useEffect(
 		() =>
 			watchModelChanges(isCurrent => {
-				const user = client.user(auth);
-				Promise.all([user.modelProviders(), user.modelPlans().catch(() => ({ allowed: false, plans: [] }))]).then(
+				readKeysAndPlans(client.user(auth)).then(
 					([keys, plans]) => {
 						if (!isCurrent()) return;
 						setRead({ keys, plans });

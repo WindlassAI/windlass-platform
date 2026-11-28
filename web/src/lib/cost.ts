@@ -4,6 +4,7 @@
  * platform could not price a part. Token counts are only details.
  */
 import type { CostRates, ItemSize, ItemSummary, ModelProvider, WorkType } from "@contract";
+import { PLAN_NAMES } from "@contract";
 import { type CostLine, type ItemCost, itemCost, mergeUsage } from "../../../server/src/factory/cost.js";
 import { SMALL_PLAN_LIMIT } from "../../../server/src/factory/feature-plan.js";
 
@@ -13,13 +14,11 @@ export function usd(amount: number): string {
 	return amount.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
-const PLAN_NAMES: Partial<Record<ModelProvider, string>> = { anthropic: "Claude", openai: "ChatGPT" };
-
 /** "on your Claude plan", "on your machine's plan". */
 export function planWords(plan: { payer: CostLine["payer"]; provider: ModelProvider | null }): string {
 	if (plan.payer === "machine-plan") return "on your machine's plan";
-	const name = plan.provider ? PLAN_NAMES[plan.provider] : undefined;
-	return name ? `on your ${name} plan` : "on your plan";
+	const name = plan.provider ? PLAN_NAMES[plan.provider as keyof typeof PLAN_NAMES] : undefined;
+	return `on your ${name ?? "plan"}`;
 }
 
 /** What an item's summary used, its parts' too for a feature, priced. */

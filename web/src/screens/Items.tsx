@@ -414,7 +414,6 @@ export function NewItemDialog({
 	const layers = {
 		account: account.settings?.defaults,
 		repository: saved.defaults,
-		machines: machines.list,
 		sizes: platform.info?.hostedSizes,
 	};
 	const placeLayer =

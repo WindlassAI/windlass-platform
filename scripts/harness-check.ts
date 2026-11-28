@@ -39,14 +39,9 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			calls.push("keys");
 			return keys;
 		},
-		// Pay with is decided by the user actor; with no stored choice it leaves the resolver to plan-first.
+		// Pay with is the user actor's (pay-with-check.ts): here it decides nothing.
 		internalTurnPayer: async () => null,
-		internalHostedCredentials: async () => {
-			calls.push("keys");
-			return [...keys, ...plans];
-		},
 	};
-	const plans: { provider: string; generation: string; plan: true }[] = [];
 	const ctx = {
 		client: () => ({ user: { get: () => keyActor } }),
 		vars: {
@@ -58,18 +53,13 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			},
 		},
 	};
-	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
+	const resolve = (place: typeof machine, model: string, keyRelay?: true, defaultModel?: string) =>
 		turnCredential(
 			ctx as never,
 			{ place, uid: "owner", harness: "opencode", harnessModels: { defaultModel } } as never,
 			{ id: "opencode", keyRelay } as never,
 			model,
 		);
-	assert.deepEqual(await resolve(hosted, "default", true), { model: "default", key: keys[0] });
-	assert.deepEqual(await resolve(hosted, "default", true, "google/gemini"), { model: "google/gemini", key: keys[1] });
-	assert.deepEqual(await resolve(hosted, "google/gemini"), { model: "google/gemini", key: keys[1] });
-	await assert.rejects(resolve(hosted, "anthropic/removed"), /Add an Anthropic key/);
-	assert.deepEqual(calls.splice(0), ["keys", "keys", "keys", "keys"]);
 	// OpenCode on a machine with no login there: a Settings key pays, through a runner that relays keys.
 	await assert.rejects(resolve(machine, "default"), /Sign in to OpenCode on the machine or add a Settings key/);
 	assert.deepEqual(await resolve(machine, "default", true), { model: "google/gemini", key: keys[1] });
@@ -88,15 +78,6 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 		claude("none"),
 		/Nothing can pay for Claude Code on “your machine” yet\. Connect a plan or add a key/,
 	);
-	keys.length = 0;
-	// Hosted Claude Code pays with the connected plan first, then the key; a machine turn never takes the plan.
-	const hostedClaude = () =>
-		turnCredential(ctx as never, { place: hosted, uid: "owner", harness: "claude" } as never, undefined, "opus");
-	keys.push({ provider: "anthropic", generation: "key" });
-	plans.push({ provider: "anthropic", generation: "plan", plan: true });
-	assert.deepEqual(await hostedClaude(), { model: "opus", key: plans[0] });
-	plans.length = 0;
-	assert.deepEqual(await hostedClaude(), { model: "opus", key: keys[0] });
 	keys.length = 0;
 	const { newAgent, noteAgentTurn, tokenWords } = await import("../server/src/factory/budget.js");
 	for (const order of [

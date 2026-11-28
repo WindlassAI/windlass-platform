@@ -23,7 +23,6 @@
 import {
 	deploymentSize,
 	filedAgentSettings,
-	machinePayers,
 	namesModel,
 	partRun,
 	resolveRun,
@@ -687,7 +686,7 @@ async function defaultBuilder(
 					profile: run.profile ?? undefined,
 					harness: run.agent,
 				}
-			: checkRunPlace(run, machines, models, job.context.machinePayers);
+			: checkRunPlace(run, machines, models);
 	// Explicit filing choices fail at the call site. A saved default or a retry can wait for availability.
 	const filedChoice =
 		phase === "file" && [run.sources.place, run.sources.agent, run.sources.model, run.sources.effort].includes("item");
@@ -883,7 +882,6 @@ async function makeItem(
 			accountLimits(c.vars.items.limits).plan,
 		);
 		context.deployment = { hostedSize: deploymentSize(offered.map(s => s.id)) };
-		context.machinePayers = machinePayers([...c.vars.machines.values()]);
 		context.item = {
 			place: input.place,
 			reviewModel: input.reviewModel,
@@ -991,10 +989,8 @@ async function makeItem(
 		item.runRole = role;
 		item.context = context;
 		item.resolved = run;
-		if (!session) {
-			item.awaitingPlace = destination.wait;
-			item.offerPayer = destination.offerPayer;
-		} else if (run.place === "any-machine") run.place = runPlace(session.place);
+		if (!session) item.awaitingPlace = destination.wait;
+		else if (run.place === "any-machine") run.place = runPlace(session.place);
 		if (review?.wait) {
 			item.awaitingPlace = review.wait;
 			item.awaitingReviewer = true;
@@ -1752,8 +1748,7 @@ async function partDefaults(c: ItemsCtx, repositories: Record<string, GithubId>)
 		),
 	]);
 	const saved = Object.fromEntries(entries);
-	const machines = [...c.vars.machines.values()];
-	return { account, repository: saved[""], repositories: saved, machinePayers: machinePayers(machines) };
+	return { account, repository: saved[""], repositories: saved };
 }
 
 export async function placementInventory(
@@ -1861,7 +1856,7 @@ export const itemActions = {
 		input: { id: string; job: DefaultBuilder },
 		makeSession: MakeSession,
 	): Promise<
-		| { wait: string; reviewer?: boolean; offerPayer?: DefaultDestination["offerPayer"] }
+		| { wait: string; reviewer?: boolean }
 		| {
 				session: SessionSummary;
 				reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>;
@@ -1877,7 +1872,7 @@ export const itemActions = {
 			if (!item.awaitingPlace || item.state !== "waiting") return null;
 			const run = resolveRun(input.job.context, input.job.role);
 			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, run, makeSession, "retry");
-			if (!session) return { wait: destination.wait!, offerPayer: destination.offerPayer };
+			if (!session) return { wait: destination.wait! };
 			const review = await bindReviewer(c, owner, session, input.id, false, input.job, makeSession);
 			return review.wait
 				? { wait: review.wait, reviewer: true }
@@ -1945,7 +1940,6 @@ export const itemActions = {
 							askMachine: fit.askMachine,
 							offerHosted: fit.offerHosted,
 							hostedProfile: fit.hostedProfile,
-							offerPayer: fit.offerPayer,
 							dailyCap: fit.dailyCap,
 							providerUntil: fit.providerUntil,
 							accountKey: fit.accountKey,

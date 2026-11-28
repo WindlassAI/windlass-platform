@@ -26,7 +26,6 @@ import {
 	choosePlacement,
 	freeMachineSlots,
 	machineSlots,
-	placeKey,
 	placementRetryAt,
 	type PlacementInventory,
 } from "./placement.js";
@@ -132,7 +131,7 @@ import {
 	outOfMemory,
 	ownSpent,
 	ownTokens,
-	payerChoice,
+	confirmPayerChoice,
 	pendingCheck,
 	plannerBudgetText,
 	popHeld,
@@ -346,18 +345,11 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	};
 }
 
-function runPayerOffer(item: FactoryItem) {
-	// A recovered run keeps its filed place, even if no machine is available yet.
-	return item.resolved?.payer === "unconfirmed" ? { payer: "machine" as const } : item.offerPayer;
-}
-
 function askRunPlace(c: Change, reason: string) {
 	const run = c.item.resolved;
 	const hosted = !c.item.awaitingReviewer && run?.place !== "hosted" && run?.fallback === "hosted" && !c.item.useHosted;
-	const offer = runPayerOffer(c.item);
-	const payer = offer && payerChoice(offer);
-	const choices: Question["choices"] = payer?.id === "wait" ? [] : [choice("wait")];
-	if (payer) choices.push(payer);
+	// A recovered run keeps its filed place, even if no machine is available yet.
+	const choices: Question["choices"] = [run?.payer === "unconfirmed" ? confirmPayerChoice : choice("wait")];
 	if (hosted) choices.push(hostedChoice(run?.agent));
 	choices.push(choice("give_up"));
 	ask(c, "run_place", reason, choices, null, null);
@@ -679,9 +671,7 @@ function apply(c: Change, fact: Fact): boolean {
 		case "default_place_wait":
 			if (!item.awaitingPlace || item.question || item.state !== "waiting") return false;
 			if (fact.reviewer) item.awaitingReviewer = true;
-			const changedOffer = !isDeepStrictEqual(item.offerPayer, fact.offerPayer);
-			item.offerPayer = fact.offerPayer;
-			if (changedOffer || fact.sentence !== item.awaitingPlace) {
+			if (fact.sentence !== item.awaitingPlace) {
 				item.awaitingPlace = fact.sentence;
 				askRunPlace(c, fact.sentence);
 				return true;
@@ -691,7 +681,6 @@ function apply(c: Change, fact: Fact): boolean {
 			if (!item.awaitingPlace || item.question || item.state !== "waiting") return false;
 			delete item.awaitingPlace;
 			delete item.awaitingReviewer;
-			delete item.offerPayer;
 			delete item.placeAttempts;
 			item.reviewer = fact.reviewer;
 			item.place = fact.place;
@@ -1854,12 +1843,11 @@ function placementRefused(
 	c: Change,
 	job: FeatureJob,
 	reason: string,
-	options: Pick<FeatureJob, "askMachine" | "offerHosted" | "hostedProfile" | "offerPayer">,
+	options: Pick<FeatureJob, "askMachine" | "offerHosted" | "hostedProfile">,
 ): true {
 	job.askMachine = options.askMachine;
 	job.offerHosted = options.offerHosted;
 	job.hostedProfile = options.hostedProfile;
-	job.offerPayer = options.offerPayer;
 	job.placementRefusal = reason;
 	// Other children keep their places and may finish integration before the feature asks.
 	if (!c.item.jobs!.some(j => j !== job && activeJob(j) && !j.placementRefusal))
@@ -1981,19 +1969,12 @@ function takeChoice(
 	auto = false,
 ): boolean {
 	const { item } = c;
-	if (
-		question.kind === "run_place" &&
-		(fact.choice === "wait" || fact.choice === "use_machine_payer" || fact.choice === "use_hosted")
-	) {
-		const offer = runPayerOffer(item);
-		if (offer && fact.choice === payerChoice(offer).id) {
+	if (question.kind === "run_place" && (fact.choice === "wait" || fact.choice === "use_hosted")) {
+		if (fact.choice === "wait" && item.resolved?.payer === "unconfirmed") {
 			if (!item.context) return false;
-			const destination = "place" in offer ? { place: runPlace(offer.place), machineProfile: offer.profile } : {};
-			item.context.item = { ...item.context.item, ...destination, payer: offer.payer };
+			item.context.item = { ...item.context.item, payer: "machine" };
 			item.resolved = resolveRun(item.context, item.runRole ?? "builder");
-			delete item.offerPayer;
 		} else if (fact.choice === "use_hosted") item.useHosted = true;
-		else if (fact.choice !== "wait") return false;
 		return waitForDefaultPlace(c, item.awaitingPlace!, fact.choice === "wait" ? undefined : c.at);
 	}
 	if ((question.kind === "plan_approval" || question.kind === "replan_approval") && fact.choice === "larger_sandbox") {
@@ -2046,30 +2027,9 @@ function takeChoice(
 		dispatchJob(c, refused);
 		return true;
 	}
-	if (
-		refused?.askMachine &&
-		(fact.choice === "wait" || fact.choice === "use_hosted" || fact.choice === "use_machine_payer")
-	) {
+	if (refused?.askMachine && (fact.choice === "wait" || fact.choice === "use_hosted")) {
 		if (!refused.route || (fact.choice === "use_hosted" && !refused.offerHosted)) return false;
-		if (fact.choice === "use_machine_payer") {
-			const offer = refused.offerPayer,
-				run = refused.task.resolved;
-			if (!run || !offer) return false;
-			refused.route = { preferred: offer.place, alternatives: [], names: { [offer.place.machineId]: offer.name } };
-			const reviewed = refused.task.review?.places.find(p => placeKey(p.place) === offer.place.machineId);
-			refused.task = {
-				...refused.task,
-				place: { prefer: offer.name, reason: "The owner chose this machine and payer." },
-				...(reviewed && { review: { ...refused.task.review!, places: [{ ...reviewed, payer: offer.payer }] } }),
-				resolved: {
-					...run,
-					place: runPlace(offer.place),
-					payer: offer.payer,
-					profile: offer.profile ?? null,
-					sources: { ...run.sources, place: "item", payer: "item" },
-				},
-			};
-		} else if (fact.choice === "wait") refused.route.waitForMachine = true;
+		if (fact.choice === "wait") refused.route.waitForMachine = true;
 		else {
 			refused.route = { preferred: { kind: "hosted" }, alternatives: [] };
 			refused.task = { ...refused.task, place: { prefer: "hosted", reason: "The owner chose Hosted for this part." } };
@@ -2079,7 +2039,6 @@ function takeChoice(
 		delete refused.askMachine;
 		delete refused.offerHosted;
 		delete refused.hostedProfile;
-		delete refused.offerPayer;
 		delete refused.placement;
 		delete refused.placementRefusal;
 		c.state("waiting", { reason: "children", sentence: "Checking the selected place.", retryAt: null });

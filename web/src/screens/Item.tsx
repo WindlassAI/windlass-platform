@@ -23,7 +23,7 @@ import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeatureP
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
 import { CostByModel, ItemCost } from "../components/ItemCost";
 import { ItemSpend } from "../components/ItemSpend";
-import { heldFigures, pctWords, tokenDetail, usdWords } from "../lib/budget";
+import { figureWords, heldFigures, tokenDetail } from "../lib/budget";
 import { costWords, summaryCost } from "../lib/cost";
 import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Menu, type MenuItem } from "../components/ui/Menu";
@@ -563,7 +563,7 @@ const BUDGET_FIELDS: Array<{
 		unit: "USD",
 		toInput: value => String(Number(value.toFixed(2))),
 		fromInput: text => Math.round(Number(text) * 100) / 100,
-		spelled: usdWords,
+		spelled: value => figureWords("usd", value, false),
 	},
 	{
 		key: "planPct",
@@ -571,7 +571,7 @@ const BUDGET_FIELDS: Array<{
 		unit: "%",
 		toInput: value => String(Number(value.toFixed(1))),
 		fromInput: text => Math.round(Number(text) * 10) / 10,
-		spelled: pctWords,
+		spelled: value => figureWords("planPct", value, false),
 	},
 	{
 		key: "tokens",

@@ -315,7 +315,7 @@ export function Connections() {
 				<SettingsGroup
 					id="connections-agents"
 					title="Agents"
-					lede="Hosted uses a plan first, then a key. A machine uses its own sign-in unless you pick your key there; only the one picked is used, and an item stops and asks if it can't be."
+					lede="Your plans and keys pay for each agent, hosted and on your machines, as Who pays below says. An agent signed in on a machine uses that sign-in there."
 				>
 					{inputs === null ? (
 						error ? (

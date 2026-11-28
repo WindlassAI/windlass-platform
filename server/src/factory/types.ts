@@ -1,5 +1,4 @@
 import type { ProviderRefusal } from "../provider-refusal.js";
-import type { MachinePayerOffer } from "./default-place.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type {
 	CheckConclusion,
@@ -218,7 +217,6 @@ export interface FeatureJob {
 	askMachine?: boolean;
 	offerHosted?: boolean;
 	hostedProfile?: ChildPlacement["profile"];
-	offerPayer?: MachinePayerOffer;
 	reviewFix?: { reviewedHead?: string };
 	ciFix?: { head: string; fingerprint: string };
 	conflictFix?: { target: string; child?: string; retry?: true };
@@ -278,7 +276,6 @@ export interface FactoryItem {
 	requestedReview?: RequestedReview;
 	/** Waiting for the builder to bind to a machine before its first run. */
 	awaitingPlace?: string;
-	offerPayer?: MachinePayerOffer;
 	awaitingReviewer?: boolean;
 	useHosted?: boolean;
 	placeAttempts?: number;
@@ -535,7 +532,7 @@ export type Fact =
 			place: SandboxPlace;
 			agent: NonNullable<FactoryItem["agent"]>;
 	  }
-	| { kind: "default_place_wait"; offerPayer?: MachinePayerOffer; reviewer?: boolean; at: number; sentence: string }
+	| { kind: "default_place_wait"; reviewer?: boolean; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
@@ -656,7 +653,6 @@ export type StepFact =
 			askMachine?: boolean;
 			offerHosted?: boolean;
 			hostedProfile?: ChildPlacement["profile"];
-			offerPayer?: MachinePayerOffer;
 			refused?: boolean;
 			dailyCap?: boolean;
 			providerUntil?: number;

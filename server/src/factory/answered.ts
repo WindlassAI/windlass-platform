@@ -2,7 +2,6 @@ import type { ChoiceId } from "../contract.js";
 import { harnessName } from "../sandbox/harnesses.js";
 
 export const CHOICES: Record<ChoiceId, string> = {
-	use_machine_payer: "Use the offered machine and payer",
 	use_hosted: "Run on Hosted",
 	use_windlass: harnessName("windlass"),
 	use_claude: harnessName("claude"),

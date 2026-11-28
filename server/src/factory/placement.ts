@@ -16,7 +16,7 @@ import type {
 } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { SIZE_WEIGHT } from "../billing/meter.js";
-import { changesMachinePayer, partRun, runAgent, type RunContext } from "./resolve-run.js";
+import { partRun, runAgent, type RunContext } from "./resolve-run.js";
 import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
 import {
@@ -549,9 +549,7 @@ export function choosePlacement(
 		if (!task.resolved || !payer) return false;
 		const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
 		if (reviewed && reviewed.payer !== payer) return true;
-		return place.kind === "machine"
-			? changesMachinePayer(task.resolved, place.machineId, payer, inventory.defaults?.machinePayers)
-			: payer !== task.resolved.payer;
+		return payer !== task.resolved.payer;
 	};
 	if ("decision" in first && !changesPayer(first.decision)) return { decision: first.decision } as const;
 	const decided = candidates.flatMap(c =>
@@ -569,9 +567,6 @@ export function choosePlacement(
 	if (ready?.decision.place.kind === "hosted" && route.preferred.kind === "machine") {
 		if (!route.waitForMachine)
 			return { wait: reason, askMachine: true, offerHosted: true, hostedProfile: ready.decision.profile };
-	} else if (ready && changesPayer(ready.decision) && ready.decision.place.kind === "machine" && ready.decision.payer) {
-		const { place, payer, name, profile } = ready.decision;
-		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerPayer: { place, payer, name, profile } };
 	} else if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);
 	const deadline = (wait: (typeof waits)[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);

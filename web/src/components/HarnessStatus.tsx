@@ -1,4 +1,5 @@
-import { HARNESS_NAMES, loginCommand, PAY_WITH_HINT, signInWords, type ReportedHarness } from "../lib/acp";
+import { PAY_WITH_HINT } from "../../../server/src/sandbox/harnesses.js";
+import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
 import { Command } from "./Command";
 import { WarnIcon } from "./Icons";

@@ -105,7 +105,7 @@ export async function machineTables(db: RawAccess) {
 				(json_extract(h.value,'$.signIn')='token' AND COALESCE(json_extract(h.value,'$.loginGeneration'),'legacy')<>generation)));
 	END`);
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
-	// The per-machine "Paid by" choice is gone: Pay with decides on machines too.
+	// The per-machine "Paid by" choice is gone. One-time: remove after the first deploy that runs it.
 	await db.execute("DROP TRIGGER IF EXISTS forget_credential_sources");
 	await db.execute("DROP TABLE IF EXISTS credential_sources");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
