@@ -367,7 +367,8 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		budget: item.budget,
 		spent: item.spent,
 		...(item.jobs?.length && {
-			partsUsage: mergeUsage(item.jobs.map(job => job.spent.usage)),
+			// A part queued before its spend was recorded has none yet.
+			partsUsage: mergeUsage(item.jobs.map(job => job.spent?.usage)),
 			partsRetryUsage: partsRetryUsage(item.jobs),
 		}),
 		...(meta.workType && { workType: meta.workType }),

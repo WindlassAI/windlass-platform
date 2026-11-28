@@ -47,9 +47,9 @@ export function itemSize(mode: ItemSummary["mode"], parts: number): ItemSize {
  * the feature's failed CI (`ciFix`), and the retries within the others.
  */
 export function partsRetryUsage(
-	jobs: ReadonlyArray<{ retry?: true; ciFix?: unknown; spent: Pick<ItemSpend, "usage" | "retryUsage"> }>,
+	jobs: ReadonlyArray<{ retry?: true; ciFix?: unknown; spent?: Pick<ItemSpend, "usage" | "retryUsage"> }>,
 ): SpendUsage {
-	return mergeUsage(jobs.map(job => (job.retry || job.ciFix ? job.spent.usage : job.spent.retryUsage)));
+	return mergeUsage(jobs.map(job => (job.retry || job.ciFix ? job.spent?.usage : job.spent?.retryUsage)));
 }
 
 const ENDED = new Set<ItemSummary["state"]>(["done", "failed", "cancelled"]);
