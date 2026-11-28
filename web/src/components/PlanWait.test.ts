@@ -33,7 +33,7 @@ it("offers the key now where one can pay, and calls for it", async () => {
 	);
 	expect(buttons()).toEqual(["Use my key now"]);
 	const rule = host.querySelector<HTMLAnchorElement>("a");
-	expect(rule?.textContent).toBe("Change rule");
+	expect(rule?.textContent).toBe("Change who pays");
 	expect(rule?.getAttribute("href")).toBe("/connections#pay-claude");
 	await act(async () => host.querySelector("button")!.click());
 	expect(onUseKey).toHaveBeenCalledTimes(1);

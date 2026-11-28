@@ -29,17 +29,25 @@ export function PlanWaitActions({ plan, onUseKey }: { plan: NonNullable<Wait["pl
 	};
 	return (
 		<div className="plan-wait" aria-label={`Waiting for your ${PLAN_NAMES[plan.provider]}`}>
+			<p className="plan-wait-ask">
+				{plan.keyNow ? "Rather not wait? Your saved key can pay for this turn." : "Change who pays on Connections."}
+			</p>
 			<div className="plan-wait-actions">
 				{plan.keyNow ? (
-					<button type="button" className="button button-small" disabled={busy} onClick={() => void useKey()}>
+					<button
+						type="button"
+						className="button button-outline button-small"
+						disabled={busy}
+						onClick={() => void useKey()}
+					>
 						{busy ? "Switching…" : "Use my key now"}
 					</button>
 				) : null}
 				<a
-					className="button button-outline button-small"
+					className="button button-quiet button-small"
 					{...linkProps({ name: "connections", section: PAY_CARD[plan.provider] })}
 				>
-					Change rule
+					Change who pays
 				</a>
 			</div>
 			{error ? (

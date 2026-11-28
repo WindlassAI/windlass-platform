@@ -742,3 +742,17 @@
 	font-size: 12.5px;
 	color: var(--ink-dim);
 }
+.machine-dialog .machine-wait {
+	margin-top: 10px;
+}
+.machine-paired {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--text-13);
+	color: var(--ink);
+}
+.machine-paired svg {
+	flex: none;
+	color: var(--ok);
+}

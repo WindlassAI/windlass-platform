@@ -9,6 +9,7 @@ import type { FeedFilters } from "../lib/repositories";
 import { linkProps, useHistoryState } from "../lib/router";
 import { itemDoing, subtaskState } from "../lib/subtasks";
 import { EndedFoot, useEndedPages } from "./Items";
+import { CostFigure } from "../components/CostFigure";
 import { ItemStanding } from "../components/ItemRow";
 import { questionLine } from "../lib/items";
 import { useMachines } from "../state/machines";
@@ -109,7 +110,7 @@ function Card({
 				<span>{place ? `${agent} · ${place}` : agent}</span>
 			</p>
 			<div className="board-card-foot">
-				<span className="board-card-cost">{cost}</span>
+				<span className="board-card-cost">{cost ? <CostFigure words={cost} /> : null}</span>
 				{action ? (
 					<a
 						className="board-card-action"

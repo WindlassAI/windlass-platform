@@ -106,7 +106,8 @@ describe("the Usage summary", () => {
 	it("never gives a plan's items dollars: on your plan, left out of the percentiles", () => {
 		const host = render([item({ usage: used(2, true) }), item({ usage: used(1) })]);
 		const [small] = rows(host, "By size");
-		expect(small?.[1]).toBe("21 priced · 1 on your plan");
+		expect(small?.[0]).toBe("Smallone item1 priced · 1 on your plan");
+		expect(small?.[1]).toBe("2");
 		expect(small?.[2]).toBe("$3.00");
 		const onlyPlan = render([item({ usage: used(2, true) })]);
 		expect(rows(onlyPlan, "By size")[0]?.slice(2, 4)).toEqual(["On your plan", "On your plan"]);

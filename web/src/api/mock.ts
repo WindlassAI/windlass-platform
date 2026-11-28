@@ -1242,6 +1242,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		long: options.long,
 		reviewer: options.reviewer,
 		blocked: options.blocked,
+		plans: options.plans,
 		now: () => realNow(),
 		latency,
 		later,

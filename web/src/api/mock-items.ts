@@ -132,6 +132,8 @@ export interface MockItemsDeps {
 	reviewer?: boolean;
 	/** True gives the item that has a report the network requests its sessions' sandboxes refused (`?blocked=1`). */
 	blocked?: boolean;
+	/** "limited" holds one waiting item for the Claude plan's limit, a key able to pay now (`?plans=limited`). */
+	plans?: "ok" | "limited" | "invalid";
 	now(): number;
 	/** Waits as long as the mock's answers take. */
 	latency(ms?: number): Promise<void>;
@@ -181,7 +183,7 @@ const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 const choices = (...ids: ChoiceId[]) => ids.map(choice);
 /** A budget question's choices, as the server words them (blueprint.ts, `askBudget`): "Give it N more", hand over, give up. */
 const budgetChoices = (more: string, handOver = true) => [
-	{ id: "raise" as const, label: `Give it ${more} more tokens` },
+	{ id: "raise" as const, label: `Give it ${more}` },
 	...(handOver ? choices("hand_over") : []),
 	...choices("give_up"),
 ];
@@ -781,8 +783,8 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			pr: 12,
 			question: {
 				kind: "budget",
-				text: "Used its 2M-token budget. Give it more to continue.",
-				choices: budgetChoices("2M"),
+				text: "Used its 20% of your 5-hour window. Give it more to continue.",
+				choices: budgetChoices("20% more"),
 				asked: 130,
 			},
 			run: {
@@ -802,11 +804,12 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[220, "The checks passed.", [1, 6, "gate"]],
 				[219, `Pushed ${short(hex(23))} to pull request #12.`, [1, 7, "publish"]],
 				[180, "CI failed: docs.", [1, 8, "ci", 6]],
-				[130, "Asked: Used its 2M-token budget. Give it more to continue.", [1, 9, "ci_fix"]],
+				[130, "Asked: Used its 20% of your 5-hour window. Give it more to continue.", [1, 9, "ci_fix"]],
 			],
 			spent: {
 				tokens: 2_100_000,
 				rawTokens: 19_300_000,
+				planPct: 20,
 				turns: 3,
 				activeSeconds: 3 * 3600 + 10 * 60,
 				hostedSeconds: 1.5 * 3600,
@@ -1573,7 +1576,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				question: {
 					kind: "budget",
 					text: "Used its 1M-token budget. Give it more to continue.",
-					choices: budgetChoices("1M"),
+					choices: budgetChoices("1M more tokens"),
 					asked: 20,
 				},
 				run: {
@@ -4204,6 +4207,23 @@ const summaryOf = ({
 	};
 };
 
+/** The item waiting for CI on its feedback, held for the Claude plan's limit instead, as Pay with words it (pay-with.ts). */
+function withPlanWait(view: ItemView, at: number): ItemView {
+	if (view.title !== "Stream large artefacts instead of buffering them") return view;
+	const reset = at + HOUR;
+	const clock = `${new Date(reset).toISOString().slice(11, 16)} UTC`;
+	return {
+		...view,
+		wait: {
+			reason: "provider",
+			sentence: `Your Claude plan is limited until ${clock}. This item starts by itself then.`,
+			plan: { provider: "anthropic", limited: true, keyNow: true },
+			retryAt: reset,
+			since: at - 4 * MINUTE,
+		},
+	};
+}
+
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	const seeded: ApiToken[] = [
@@ -4257,6 +4277,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				.map(seed => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map(view => (deps.reviewer === false ? withoutReviewer(view) : view))
 				.map(view => (deps.blocked && view.report ? { ...view, blockedNetwork: seededBlocked(at) } : view))
+				.map(view => (deps.plans === "limited" ? withPlanWait(view, at) : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
 			withSeededUsage(items);

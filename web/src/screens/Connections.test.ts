@@ -129,7 +129,7 @@ it("connects from a cell: a key's entry opens over the page, and the cell turns 
 	expect(connect?.textContent).toBe("Connect Claude plan");
 	await act(async () => connect!.click());
 	await settle();
-	expect(document.querySelector("dialog .plan-command code")?.textContent).toBe("npx @windlassai/cli connect claude");
+	expect(document.querySelector("dialog .plan-connect pre")?.textContent).toBe("npx @windlassai/cli connect claude");
 });
 
 it("saves who pays per agent and reads it back", async () => {
@@ -142,7 +142,7 @@ it("saves who pays per agent and reads it back", async () => {
 		{ harness: "codex", payWith: "plan-then-key", whenLimited: null, updatedAt: null },
 	]);
 	const card = host.querySelector<HTMLElement>("#pay-claude")!;
-	expect(card.textContent).toContain("work items wait for the reset and your sessions ask you first");
+	expect(card.textContent).toContain("items wait for the reset and sessions ask you first");
 	const limited = card.querySelector<HTMLSelectElement>("#pay-claude-limited")!;
 	expect(limited.disabled).toBe(false);
 	await act(async () => {
@@ -150,7 +150,7 @@ it("saves who pays per agent and reads it back", async () => {
 		limited.dispatchEvent(new Event("change", { bubbles: true }));
 	});
 	await settle();
-	expect(card.textContent).toContain("work items and your sessions switch to your Anthropic key");
+	expect(card.textContent).toContain("items and sessions switch to your Anthropic key");
 	const payWith = card.querySelector<HTMLSelectElement>("#pay-claude-with")!;
 	await act(async () => {
 		payWith.value = "plan";
@@ -168,7 +168,7 @@ it("saves who pays per agent and reads it back", async () => {
 	await settle();
 	expect(host.querySelector<HTMLSelectElement>("#pay-claude-with")?.value).toBe("plan");
 	// Without a saved key a limited plan always waits, whatever was chosen.
-	expect(host.querySelector("#pay-codex")?.textContent).toContain("No OpenAI key is saved");
+	expect(host.querySelector("#pay-codex")?.textContent).toContain("No OpenAI key saved");
 	await expect(
 		client.user(ada).savePayWith({ harness: "opencode", payWith: "plan", whenLimited: null }),
 	).rejects.toMatchObject({ reason: "bad_input" });
@@ -192,7 +192,7 @@ it("badges a limited plan with its reset, and offers to reconnect one that stopp
 	await settle();
 	const limited = cell("codex-hosted")?.querySelector(".conn-badge");
 	expect(limited?.textContent).toMatch(/^Limited until \d\d:\d\d$/);
-	expect(limited?.className).toContain("conn-state-warn");
+	expect(limited?.className).toContain("ui-status-warn");
 	expect(cell("windlass-hosted")?.querySelector(".conn-badge")?.textContent).toMatch(/^Limited until/);
 	// The intro no longer says Pay with waits for a release.
 	expect(host.querySelector("#connections-pay")?.textContent).not.toContain("upcoming release");

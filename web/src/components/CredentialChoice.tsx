@@ -86,7 +86,6 @@ export function CredentialChoice({
 					</label>
 				))}
 			</div>
-			<p className="field-note">Only this one is used. If it can't be, the item stops and asks.</p>
 			{error && (
 				<p className="field-note tone-bad" role="alert">
 					{error}

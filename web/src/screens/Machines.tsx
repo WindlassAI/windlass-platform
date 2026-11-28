@@ -10,6 +10,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { Command } from "../components/Command";
+import { Waiting } from "../components/ui/StatusTag";
 import { Dialog } from "../components/Dialog";
 import {
 	CheckIcon,
@@ -960,16 +961,21 @@ function AddDialog({
 						<div>
 							<Command text={MACHINE_CONNECT_COMMAND} label="The connect command" />
 							<p className="field-note">
-								It needs Docker and Node. It opens a page here to approve the machine, then starts the runner in the
-								background. No agent sign-in is needed: the machine's agents use the plans and keys on{" "}
+								Run it on the machine; it needs Docker and Node. It opens a page here to approve the machine, then runs
+								in the background. Its agents use your plans and keys from{" "}
 								<a className="link" {...linkProps({ name: "connections" })}>
 									Connections
 								</a>
 								.
 							</p>
-							<p className="field-note machine-wait" role="status">
-								{paired ? `Paired: ${machineLabel(paired)}.` : "Waiting for your machine…"}
-							</p>
+							{paired ? (
+								<p className="machine-wait machine-paired" role="status">
+									<CheckIcon size={15} />
+									Paired: {machineLabel(paired)}.
+								</p>
+							) : (
+								<Waiting className="machine-wait">Waiting for your machine…</Waiting>
+							)}
 						</div>
 						<details className="panel-more machine-no-node">
 							<summary>

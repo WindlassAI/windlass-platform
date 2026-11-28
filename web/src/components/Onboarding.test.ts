@@ -74,7 +74,8 @@ async function render(auth = newbie) {
 }
 
 const setup = () => host.querySelector<HTMLElement>('[aria-label="Set up Windlass"]');
-const heading = () => setup()?.querySelector("h2")?.textContent;
+/** The open card's title. */
+const heading = () => setup()?.querySelector('[aria-current="step"] h3')?.textContent;
 const button = (name: string, scope: ParentNode = host) =>
 	[...scope.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.trim() === name);
 const click = async (name: string, scope?: ParentNode) => {
@@ -91,7 +92,9 @@ it("opens at GitHub for a new account, and never for the demo user", async () =>
 	await render();
 	expect(heading()).toBe("Connect GitHub");
 	expect(button("Install the GitHub App")).toBeDefined();
-	expect(button("Continue")?.disabled).toBe(true);
+	// The later cards say what they wait for.
+	expect(setup()?.textContent).toContain("After GitHub");
+	expect(button("Continue")).toBeUndefined();
 	expect(host.textContent).not.toContain("No agents yet");
 	act(() => root!.unmount());
 
@@ -117,7 +120,7 @@ it("moves from the repository to the agents to a first item, filed through the e
 	const claude = host.querySelector<HTMLElement>('[data-agent="claude"]')!;
 	// The mock's account may connect plans: "Use my plan" is chosen, with its command.
 	expect(claude.querySelector('[aria-checked="true"]')?.textContent).toContain("Use my Claude plan");
-	expect(claude.querySelector(".plan-command code")?.textContent).toBe("npx @windlassai/cli connect claude");
+	expect(claude.querySelector(".plan-connect pre")?.textContent).toBe("npx @windlassai/cli connect claude");
 	expect(button("Continue")?.disabled).toBe(true);
 	// A key connects Codex.
 	const codex = host.querySelector<HTMLElement>('[data-agent="codex"]')!;
@@ -136,7 +139,7 @@ it("moves from the repository to the agents to a first item, filed through the e
 	expect(button("Continue")?.disabled).toBe(false);
 	await click("Continue");
 
-	expect(heading()).toBe("Your first item");
+	expect(heading()).toBe("File your first item");
 	expect(setup()?.textContent).toContain("acme/harbor");
 	const tasks = [...host.querySelectorAll<HTMLElement>('[aria-label="Starter task"] [role="radio"]')].map(
 		one => one.firstChild?.textContent,
@@ -194,7 +197,7 @@ it("is dismissed, stays shut on the next visit, and resumes where it was left", 
 	await click("Resume setup");
 	expect(heading()).toBe("Connect your agents");
 	await click("Skip for now");
-	expect(heading()).toBe("Your first item");
+	expect(heading()).toBe("File your first item");
 	// No open bugs there: the generic tasks, and words of the user's own.
 	expect(setup()?.textContent).toContain("ada/tide-tables");
 	expect(setup()?.textContent).toContain("Fix typos and broken links in the README");

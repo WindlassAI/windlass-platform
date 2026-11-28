@@ -527,12 +527,17 @@ export function Composer({
 					<WarnIcon size={14} />
 					<span>{planAsk.message}</span>
 					<div className="composer-plan-ask-actions">
-						<button type="button" className="button button-small" disabled={sending} onClick={() => void useKeyOnce()}>
+						<button
+							type="button"
+							className="button button-outline button-small"
+							disabled={sending}
+							onClick={() => void useKeyOnce()}
+						>
 							Use my key this time
 						</button>
 						<button
 							type="button"
-							className="button button-outline button-small"
+							className="button button-quiet button-small"
 							onClick={() => {
 								setPlanWait(planAsk.message);
 								setPlanAsk(null);

@@ -5,7 +5,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
 import { addSandbox, addTurn, noUsage, turnMeter } from "../../../server/src/factory/cost.js";
-import { ItemCost } from "./ItemCost";
+import { CostByModel, ItemCost } from "./ItemCost";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,7 +41,16 @@ function view(more: Partial<ItemView>): ItemView {
 function render(of: ItemView, rates: CostRates | null = RATES): HTMLElement {
 	const host = document.createElement("div");
 	const root = createRoot(host);
-	act(() => root.render(createElement(ItemCost, { view: of, rates })));
+	act(() =>
+		root.render(
+			createElement(
+				"div",
+				null,
+				createElement(ItemCost, { view: of, rates }),
+				createElement(CostByModel, { view: of, rates }),
+			),
+		),
+	);
 	return host;
 }
 

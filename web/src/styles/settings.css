@@ -178,27 +178,14 @@
 
 .plan-connect {
 	display: grid;
-	gap: 6px;
-	margin-top: 8px;
-}
-
-.plan-command {
-	display: flex;
-	align-items: center;
 	gap: 8px;
-	padding: 6px 6px 6px 10px;
-	border: 1px solid var(--line-strong);
-	border-radius: var(--r-control);
-	background: var(--bg-sunk);
+	margin-top: 10px;
 }
-
-.plan-command code {
-	flex: 1;
-	min-width: 0;
-	overflow-x: auto;
-	white-space: nowrap;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
+.plan-connect .machine-command {
+	margin-top: 0;
+}
+.plan-connect .field-note {
+	margin: 0;
 }
 
 @media (max-width: 760px) {

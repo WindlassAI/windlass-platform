@@ -39,11 +39,12 @@ import { useApp, useAuth } from "../state/app";
 import { useConnectionInputs } from "../state/connections";
 import { useGithub } from "../state/github";
 import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
-import { CheckIcon } from "./Icons";
+import { BranchIcon, CheckIcon, Mark, PullRequestIcon, RepoIcon } from "./Icons";
 import { KeyDialog } from "./ModelProviders";
 import { PlanWait } from "./PlanConnect";
 import { Failure } from "./ui/Failure";
 import { AgentGlyph } from "./ui/Pill";
+import { StatusTag } from "./ui/StatusTag";
 
 /** What a plan is, under its option. */
 const PLAN_KINDS: Record<PlanProvider, string> = { anthropic: "Pro, Max or Team", openai: "Plus, Pro or Business" };
@@ -130,6 +131,43 @@ export function OnboardingGate({
 	);
 }
 
+/** Each step's card: what it is called, why it matters, and what it needs first. */
+const STEP_CARDS: Record<OnboardingStep, { title: string; why: string; after?: string }> = {
+	1: { title: "Connect GitHub", why: "Windlass opens pull requests in the repositories you choose." },
+	2: { title: "Pick a repository", why: "Start with one. You can add more any time.", after: "After GitHub" },
+	3: { title: "Connect your agents", why: "A plan, an API key, or your own computer.", after: "After GitHub" },
+	4: {
+		title: "File your first item",
+		why: "A starter task or your own words, ending in a pull request.",
+		after: "After a repository",
+	},
+};
+
+const STEP_ICONS: Record<OnboardingStep, ReactNode> = {
+	1: <PullRequestIcon size={16} />,
+	2: <RepoIcon size={16} />,
+	3: <Mark size={16} />,
+	4: <BranchIcon size={16} />,
+};
+
+/** What runs each plan agent now, in a few words: "Claude Code: Claude plan · Codex: OpenAI key". */
+function agentsSummary(inputs: ConnectionInputs, machines: readonly MachineSummary[]): string {
+	const lines = PAY_WITH_HARNESSES.flatMap(harness => {
+		const hosted = hostedCell(harness, inputs);
+		if (hosted.state === "plan" || hosted.state === "key") return [`${HARNESS_NAMES[harness]}: ${hosted.label}`];
+		const machine = machines.find(one =>
+			one.harnesses?.some(entry => entry.id === harness && entry.signIn === "token"),
+		);
+		return machine ? [`${HARNESS_NAMES[harness]}: ${machineLabel(machine)}`] : [];
+	});
+	return lines.length ? lines.join(" · ") : "An agent is connected";
+}
+
+/**
+ * The setup as four cards in a row (stacked on a phone): each says why it matters and has its one action; a finished
+ * one says what was chosen. The open card's choices (the repositories, the agents, the starter tasks) open under the
+ * row, or under the card on a phone.
+ */
 function Onboarding({
 	saved,
 	githubConnected,
@@ -145,6 +183,7 @@ function Onboarding({
 	onSave(saved: OnboardingSaved): void;
 	onDismiss(): void;
 }) {
+	const github = useGithub();
 	const [step, setStep] = useState<OnboardingStep>(() => startingStep(saved, githubConnected));
 	const repository = saved?.repository ?? null;
 	const go = (next: OnboardingStep, picked: PickedRepository | null = repository) => {
@@ -154,98 +193,114 @@ function Onboarding({
 	// A step is open once what it needs is there: GitHub for a repository, a repository for the first item.
 	const reachable = (target: OnboardingStep) =>
 		target === 1 || (githubConnected && (target < 4 || repository !== null));
-	const later = (
-		<button type="button" className="button button-quiet" onClick={onDismiss}>
-			Set up later
-		</button>
-	);
-	return (
-		<section className="onboard" aria-label="Set up Windlass">
-			<nav className="onboard-steps" aria-label="Setup steps">
-				{ONBOARDING_STEPS.map((name, index) => {
-					const number = (index + 1) as OnboardingStep;
-					return (
-						<button
-							key={name}
-							type="button"
-							className="onboard-step"
-							aria-current={number === step ? "step" : undefined}
-							data-done={number < step || undefined}
-							disabled={!reachable(number)}
-							onClick={() => go(number)}
-						>
-							<b>{number}</b>
-							{name}
-						</button>
-					);
-				})}
-			</nav>
-			{step === 1 ? (
-				<GithubStep connected={githubConnected} later={later} onNext={() => go(2)} />
-			) : step === 2 ? (
-				<RepositoryStep picked={repository} later={later} onBack={() => go(1)} onNext={picked => go(3, picked)} />
-			) : step === 3 ? (
-				<AgentsStep inputs={inputs} machines={machines} later={later} onBack={() => go(2)} onNext={() => go(4)} />
-			) : repository ? (
-				<FirstItemStep
-					repository={repository}
-					inputs={inputs}
-					onBack={() => go(3)}
-					onFiled={() => onSave({ step: 4, repository, dismissed: true })}
-				/>
-			) : null}
-		</section>
-	);
-}
-
-function GithubStep({ connected, later, onNext }: { connected: boolean; later: ReactNode; onNext(): void }) {
-	const github = useGithub();
-	const connection = github.status?.connection ?? null;
+	// GitHub is connected from its own card; once it is, the next card opens.
+	const open: OnboardingStep = step === 1 && githubConnected ? 2 : step;
+	const done: Record<OnboardingStep, string | null> = {
+		1: githubConnected ? `Connected as ${github.status?.connection?.login ?? "you"}` : null,
+		2: repository ? `${repository.owner}/${repository.name}` : null,
+		3: anyAgentConnected(inputs, machines) ? agentsSummary(inputs, machines) : null,
+		4: null,
+	};
+	const finished = Object.values(done).filter(Boolean).length;
 	const waiting = github.busy === "leaving" || github.busy === "popup" || github.busy === "finishing";
 	return (
-		<>
-			<h2>Connect GitHub</h2>
-			<p className="onboard-sub">Windlass opens pull requests in your repositories. You choose which ones.</p>
-			<div className="onboard-box">
-				{connection ? (
-					<p className="onboard-done">
-						<CheckIcon size={15} />
-						GitHub connected as {connection.login}
-					</p>
-				) : (
-					<button
-						type="button"
-						className="button button-primary"
-						disabled={waiting}
-						onClick={() => github.connect({ where: "launch", install: true })}
-					>
-						{waiting ? "Waiting for GitHub…" : "Install the GitHub App"}
-					</button>
-				)}
-				{github.notice?.tone === "bad" ? <Failure error={github.notice.text} /> : null}
-				<Failure error={github.error} />
-			</div>
-			<div className="onboard-foot">
-				{later}
-				<div className="onboard-foot-end">
-					<button type="button" className="button button-primary" disabled={!connected} onClick={onNext}>
-						Continue
+		<section className="onboard" aria-label="Set up Windlass">
+			<header className="onboard-head">
+				<div>
+					<p className="onboard-kicker">Get started</p>
+					<p className="onboard-lede">Four steps to your first pull request.</p>
+				</div>
+				<div className="onboard-head-end">
+					<span className="onboard-progress">
+						{finished} of {ONBOARDING_STEPS.length} done
+					</span>
+					<button type="button" className="button button-quiet button-small" onClick={onDismiss}>
+						Set up later
 					</button>
 				</div>
-			</div>
-		</>
+			</header>
+			<ol className="onboard-cards">
+				{([1, 2, 3, 4] as const).map(number => {
+					const card = STEP_CARDS[number];
+					const summary = done[number];
+					const current = number === open;
+					const can = reachable(number);
+					const state = current ? "current" : summary ? "done" : can ? "todo" : "blocked";
+					return (
+						<li
+							key={number}
+							className="onboard-card"
+							data-state={state}
+							data-done={summary ? true : undefined}
+							aria-current={current ? "step" : undefined}
+							style={{ order: number * 2 }}
+						>
+							<div className="onboard-card-top">
+								<span className="onboard-card-icon" aria-hidden="true">
+									{summary ? <CheckIcon size={14} /> : STEP_ICONS[number]}
+								</span>
+								<span className="onboard-card-step">{summary ? "Done" : `Step ${number}`}</span>
+							</div>
+							<h3>{card.title}</h3>
+							<p className="onboard-card-why">{summary ?? card.why}</p>
+							<div className="onboard-card-action">
+								{number === 1 ? (
+									summary ? null : (
+										<button
+											type="button"
+											className="button button-primary button-small"
+											disabled={waiting}
+											onClick={() => github.connect({ where: "launch", install: true })}
+										>
+											{waiting ? "Waiting for GitHub…" : "Install the GitHub App"}
+										</button>
+									)
+								) : current ? null : !can ? (
+									<span className="onboard-card-after">{card.after}</span>
+								) : summary ? (
+									<button type="button" className="button button-quiet button-small" onClick={() => go(number)}>
+										Change<span className="visually-hidden"> {card.title.toLowerCase()}</span>
+									</button>
+								) : (
+									<button type="button" className="button button-outline button-small" onClick={() => go(number)}>
+										{number === 2 ? "Pick one" : number === 3 ? "Connect" : "Choose a task"}
+									</button>
+								)}
+							</div>
+							{number === 1 ? (
+								<>
+									{github.notice?.tone === "bad" ? <Failure error={github.notice.text} /> : null}
+									<Failure error={github.error} />
+								</>
+							) : null}
+						</li>
+					);
+				})}
+				{open > 1 ? (
+					<li className="onboard-open" style={{ order: open * 2 + 1 }} aria-label={STEP_CARDS[open].title}>
+						{open === 2 ? (
+							<RepositoryStep picked={repository} onNext={picked => go(3, picked)} />
+						) : open === 3 ? (
+							<AgentsStep inputs={inputs} machines={machines} onNext={() => go(4)} />
+						) : repository ? (
+							<FirstItemStep
+								repository={repository}
+								inputs={inputs}
+								onFiled={() => onSave({ step: 4, repository, dismissed: true })}
+							/>
+						) : null}
+					</li>
+				) : null}
+			</ol>
+		</section>
 	);
 }
 
 function RepositoryStep({
 	picked,
-	later,
-	onBack,
 	onNext,
 }: {
 	picked: PickedRepository | null;
-	later: ReactNode;
-	onBack(): void;
 	onNext(picked: PickedRepository): void;
 }) {
 	const { client, explain } = useApp();
@@ -275,8 +330,6 @@ function RepositoryStep({
 		.slice(0, 8);
 	return (
 		<>
-			<h2>Pick a repository</h2>
-			<p className="onboard-sub">Start with one. You can add more any time.</p>
 			<div className="onboard-box">
 				{list && list.length > 8 ? (
 					<input
@@ -321,11 +374,7 @@ function RepositoryStep({
 				<Failure error={error} />
 			</div>
 			<div className="onboard-foot">
-				{later}
 				<div className="onboard-foot-end">
-					<button type="button" className="button button-quiet" onClick={onBack}>
-						Back
-					</button>
 					<button
 						type="button"
 						className="button button-primary"
@@ -382,9 +431,9 @@ function AgentCard({
 			<div className="onboard-agent-head">
 				<AgentGlyph harness={harness} size={14} />
 				<h3 className="conn-agent">{name}</h3>
-				<span className={`conn-state conn-state-${connected ? "good" : "warn"}`}>
+				<StatusTag tone={connected ? "good" : "off"} className="conn-state">
 					{connected ? (hosted.state === "none" ? "On your computer" : hosted.label) : "Not connected"}
-				</span>
+				</StatusTag>
 			</div>
 			<div role="radiogroup" aria-label={`How ${name} is paid for`} className="onboard-panel">
 				{options.map(one => (
@@ -456,23 +505,16 @@ function notify() {
 function AgentsStep({
 	inputs,
 	machines,
-	later,
-	onBack,
 	onNext,
 }: {
 	inputs: ConnectionInputs;
 	machines: readonly MachineSummary[];
-	later: ReactNode;
-	onBack(): void;
 	onNext(): void;
 }) {
 	const ready = anyAgentConnected(inputs, machines);
 	return (
 		<>
-			<h2>Connect your agents</h2>
-			<p className="onboard-sub">
-				Connect once. Every item uses it: here, on your computers, and from GitHub or Linear.
-			</p>
+			<p className="onboard-sub">Pick how each one runs. You can change it later on Connections.</p>
 			<div className="onboard-agents">
 				{PAY_WITH_HARNESSES.map(harness => (
 					<AgentCard key={harness} harness={harness} inputs={inputs} machines={machines} />
@@ -480,18 +522,14 @@ function AgentsStep({
 			</div>
 			<p className="onboard-note">
 				{inputs.chatgpt ? "Your ChatGPT plan also runs the Windlass agent. " : ""}
-				OpenCode, and API keys for Google and OpenRouter, are on the{" "}
+				OpenCode, and keys for Google and OpenRouter, are on the{" "}
 				<a className="link" {...linkProps({ name: "connections" })}>
 					Connections
 				</a>{" "}
-				page. Your plan pays only for your own items, never a teammate's.
+				page.
 			</p>
 			<div className="onboard-foot">
-				{later}
 				<div className="onboard-foot-end">
-					<button type="button" className="button button-quiet" onClick={onBack}>
-						Back
-					</button>
 					{ready ? null : (
 						<button type="button" className="button button-outline" onClick={onNext}>
 							Skip for now
@@ -524,12 +562,10 @@ const OWN = -1;
 function FirstItemStep({
 	repository,
 	inputs,
-	onBack,
 	onFiled,
 }: {
 	repository: PickedRepository;
 	inputs: ConnectionInputs;
-	onBack(): void;
 	onFiled(): void;
 }) {
 	const { client, explain } = useApp();
@@ -587,14 +623,12 @@ function FirstItemStep({
 	};
 	return (
 		<>
-			<h2>Your first item</h2>
 			<p className="onboard-sub">
-				Pick a starter task for{" "}
+				A starter task for{" "}
 				<span className="onboard-choice-mono">
 					{repository.owner}/{repository.name}
 				</span>
-				, or write your own. It ends in a pull request
-				{agent ? `, built by ${HARNESS_NAMES[agent]}` : ""}.
+				, or your own words{agent ? `. ${HARNESS_NAMES[agent]} builds it` : ""}.
 			</p>
 			<div className="onboard-box">
 				{issues === null ? (
@@ -630,9 +664,6 @@ function FirstItemStep({
 				<Failure error={error} />
 			</div>
 			<div className="onboard-foot">
-				<button type="button" className="button button-quiet" onClick={onBack}>
-					Back
-				</button>
 				<div className="onboard-foot-end">
 					<button type="button" className="button button-primary" disabled={!task || busy} onClick={() => void start()}>
 						{busy ? "Starting…" : "Start item"}

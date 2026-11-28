@@ -4,7 +4,17 @@ import { FoldRows } from "./Fold";
 import { useItems } from "../state/items";
 import { useCostRates } from "../state/hooks";
 import { costWords, summaryCost, usd } from "../lib/cost";
-import type { CostRates, FactoryLimits, ItemSummary } from "@contract";
+import type { CostRates, FactoryLimits, ItemBudget, ItemSummary } from "@contract";
+import { CostFigure } from "./CostFigure";
+
+/** A new item's allowance before it asks: dollars where an API key pays, a share of the 5-hour window where a plan does. */
+function itemAllowance(budget: ItemBudget): string {
+	const parts = [
+		...(budget.usd !== undefined ? [usd(budget.usd)] : []),
+		...(budget.planPct !== undefined ? [`${budget.planPct}% of your plan's 5-hour window`] : []),
+	];
+	return parts.length ? parts.join(" or ") : `${compact(budget.tokens)} tokens`;
+}
 
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
@@ -34,8 +44,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	return (
 		<>
 			<p className="usage-lede">
-				Each item may spend {compact(value.item.tokens)} tokens and {sandboxTime(value.item.hostedSeconds)} of hosted
-				time, then it asks you for more.
+				Each item may spend {itemAllowance(value.item)} and {sandboxTime(value.item.hostedSeconds)} of hosted time, then
+				it asks you for more.
 			</p>
 			<details className="usage-note factory-limits-fold">
 				<summary>All limits</summary>
@@ -100,9 +110,6 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 										<th scope="col" className="usage-number">
 											Cost
 										</th>
-										<th scope="col" className="usage-number">
-											Tokens
-										</th>
 										<th scope="col" className="usage-number usage-wide">
 											Working
 										</th>
@@ -119,9 +126,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 													{item.title}
 												</a>
 											</th>
-											<td className="usage-number">{rates ? (costWords(summaryCost(item, rates)) ?? "—") : "…"}</td>
-											<td className="usage-number">
-												<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
+											<td className="usage-number factory-cost-figure">
+												{rates ? <CostFigure words={costWords(summaryCost(item, rates)) ?? "—"} /> : "…"}
 											</td>
 											<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
 											<td className="usage-number">

@@ -1,6 +1,8 @@
 import { MACHINE_CONNECT_COMMAND, type MachineClaim, PLAN_NAMES, type PlanProvider } from "@contract";
 import { useEffect, useState } from "react";
-import { WarnIcon } from "../components/Icons";
+import { AnthropicLogo, OpenAILogo } from "../components/AgentLogos";
+import { CheckIcon, CrossIcon, MachineIcon, WarnIcon } from "../components/Icons";
+import { Waiting } from "../components/ui/StatusTag";
 import { CONNECT_COMMANDS } from "../components/PlanConnect";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { machineLabel } from "../lib/machines";
@@ -19,7 +21,17 @@ const NEXT: Record<PlanProvider, React.ReactNode> = {
 			it runs <code>claude setup-token</code> and finishes there.
 		</>
 	),
-	openai: <>it signs in with ChatGPT through Windlass in your browser and finishes there.</>,
+	openai: <>it signs in to ChatGPT in your browser and finishes there.</>,
+};
+
+/** What happens after approval, as a fact beside the code. */
+const THEN: Record<PlanProvider, React.ReactNode> = {
+	anthropic: (
+		<>
+			Your terminal runs <code>claude setup-token</code>
+		</>
+	),
+	openai: "You sign in to ChatGPT in your browser",
 };
 
 /**
@@ -68,7 +80,17 @@ export function Connect({
 
 	return (
 		<ConnectPage
-			title={plan ? `Connect your ${PLAN_NAMES[plan]} from a terminal?` : "Connect a plan from a terminal?"}
+			eyebrow={
+				plan ? (
+					<>
+						{plan === "anthropic" ? <AnthropicLogo /> : <OpenAILogo />}
+						{PLAN_NAMES[plan]}
+					</>
+				) : (
+					"Plan"
+				)
+			}
+			title={plan ? `Connect your ${PLAN_NAMES[plan]}?` : "Connect a plan?"}
 			theme={theme}
 			onToggleTheme={onToggleTheme}
 		>
@@ -78,46 +100,36 @@ export function Connect({
 					<code>{CONNECT_COMMANDS.openai}</code> in a terminal and follow the link it opens.
 				</p>
 			) : outcome === "approved" ? (
-				<p className="signin-text" role="status">
-					Approved. Go back to your terminal: {NEXT[plan]}
-				</p>
+				<Decided approved>
+					<p role="status">Approved. Go back to your terminal: {NEXT[plan]}</p>
+				</Decided>
 			) : outcome === "denied" ? (
-				<p className="signin-text" role="status">
-					Denied. Nothing was connected; the terminal stops.
-				</p>
+				<Decided>
+					<p role="status">Denied. Nothing was connected; the terminal stops.</p>
+				</Decided>
 			) : (
 				<>
-					<p className="signin-text">Make sure this code matches the one in your terminal:</p>
-					<p className="connect-code" aria-label="Connect code">
-						{shownCode(code)}
-					</p>
-					<p className="signin-text">
-						Approve only if you just ran the command yourself. Your plan connects to{" "}
-						{auth.profile.email ?? "this account"}.
-					</p>
-					<div className="connect-actions">
-						<button
-							type="button"
-							className="button button-primary"
-							disabled={busy !== null}
-							onClick={() => void decide("approved")}
-						>
-							{busy === "approved" ? "Approving…" : "Approve"}
-						</button>
-						<button
-							type="button"
-							className="button button-outline"
-							disabled={busy !== null}
-							onClick={() => void decide("denied")}
-						>
-							Deny
-						</button>
-					</div>
+					<ShownCode code={code} label="Connect code" />
+					<dl className="connect-facts">
+						<div>
+							<dt>Connects to</dt>
+							<dd>{auth.profile.email ?? "this account"}</dd>
+						</div>
+						<div>
+							<dt>Then</dt>
+							<dd>{THEN[plan]}</dd>
+						</div>
+					</dl>
+					<Decide busy={busy} onDecide={choice => void decide(choice)} />
+					<p className="connect-warn">Approve only if you just ran the command yourself and the codes match.</p>
 				</>
 			)}
 			<Failed error={error} />
 			{outcome || !wellFormed || !plan ? (
-				<a className="link" {...linkProps({ name: "connections", section: plan ? `plan-${plan}` : undefined })}>
+				<a
+					className="link connect-next"
+					{...linkProps({ name: "connections", section: plan ? `plan-${plan}` : undefined })}
+				>
 					Go to Connections
 				</a>
 			) : null}
@@ -125,13 +137,64 @@ export function Connect({
 	);
 }
 
+/** The terminal's code, large, to compare at a glance: its two halves apart. */
+function ShownCode({ code, label }: { code: string; label: string }) {
+	const [head, tail] = shownCode(code).split("-");
+	return (
+		<div className="connect-code-box">
+			<p className="connect-code-label">The code in your terminal</p>
+			<p className="connect-code" aria-label={label}>
+				<span>{head}</span>
+				<span className="connect-code-dash">-</span>
+				<span>{tail}</span>
+			</p>
+		</div>
+	);
+}
+
+/** Approve and Deny, side by side. */
+function Decide({ busy, onDecide }: { busy: Outcome | null; onDecide(choice: Outcome): void }) {
+	return (
+		<div className="connect-actions">
+			<button
+				type="button"
+				className="button button-primary"
+				disabled={busy !== null}
+				onClick={() => onDecide("approved")}
+			>
+				{busy === "approved" ? "Approving…" : "Approve"}
+			</button>
+			<button
+				type="button"
+				className="button button-outline"
+				disabled={busy !== null}
+				onClick={() => onDecide("denied")}
+			>
+				{busy === "denied" ? "Denying…" : "Deny"}
+			</button>
+		</div>
+	);
+}
+
+/** What was decided, with a check for an approval. */
+function Decided({ approved = false, children }: { approved?: boolean; children: React.ReactNode }) {
+	return (
+		<div className={`connect-outcome${approved ? " connect-outcome-ok" : ""}`}>
+			{approved ? <CheckIcon size={16} /> : <CrossIcon size={16} />}
+			{children}
+		</div>
+	);
+}
+
 /** The page around a connect card: the bar with the wordmark and theme toggle, and the card with its title. */
 function ConnectPage({
+	eyebrow,
 	title,
 	theme,
 	onToggleTheme,
 	children,
 }: {
+	eyebrow: React.ReactNode;
 	title: string;
 	theme: Theme;
 	onToggleTheme(): void;
@@ -147,6 +210,7 @@ function ConnectPage({
 			</div>
 			<main className="connect-main">
 				<section className="signin-card connect-card" aria-labelledby="connect-title">
+					<p className="connect-eyebrow">{eyebrow}</p>
 					<h1 id="connect-title" className="signin-title">
 						{title}
 					</h1>
@@ -223,7 +287,17 @@ function ConnectMachine({
 
 	const looking = code !== null && claim === null && error === null;
 	return (
-		<ConnectPage title="Connect this machine to your account?" theme={theme} onToggleTheme={onToggleTheme}>
+		<ConnectPage
+			eyebrow={
+				<>
+					<MachineIcon size={14} />
+					Machine
+				</>
+			}
+			title="Connect this machine to your account?"
+			theme={theme}
+			onToggleTheme={onToggleTheme}
+		>
 			{code === null ? (
 				<p className="signin-text">
 					This link has no pairing code. To connect a machine, run <code>{MACHINE_CONNECT_COMMAND}</code> in a terminal
@@ -231,65 +305,54 @@ function ConnectMachine({
 					<code>{CONNECT_COMMANDS.openai}</code>. Then follow the link the terminal opens.
 				</p>
 			) : outcome === "approved" ? (
-				<p className="signin-text" role="status">
-					Approved. Go back to your terminal: the runner starts there and the machine appears on Machines.
-				</p>
+				<Decided approved>
+					<p role="status">
+						Approved. Go back to your terminal: the runner starts there and the machine appears on Machines.
+					</p>
+				</Decided>
 			) : outcome === "denied" ? (
-				<p className="signin-text" role="status">
-					Denied. Nothing was connected; the terminal stops.
-				</p>
+				<Decided>
+					<p role="status">Denied. Nothing was connected; the terminal stops.</p>
+				</Decided>
 			) : looking ? (
-				<p className="signin-text" role="status">
-					Looking up the machine…
-				</p>
+				<Waiting>Looking up the machine…</Waiting>
 			) : claim ? (
 				<>
-					<p className="signin-text">Make sure this code and machine key match the ones in your terminal:</p>
-					<p className="connect-code" aria-label="Pairing code">
-						{shownCode(code)}
-					</p>
-					<dl className="machine-claim">
-						<dt>Machine key</dt>
-						<dd className="connect-machine-key">
-							{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}
-						</dd>
-						<dt>Name</dt>
-						<dd>{machineLabel(claim)}</dd>
-						<dt>System</dt>
-						<dd>
-							{claim.os} · {claim.arch}
-						</dd>
+					<ShownCode code={code} label="Pairing code" />
+					<dl className="connect-facts">
+						<div>
+							<dt>Machine key</dt>
+							<dd className="connect-machine-key">
+								{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}
+							</dd>
+						</div>
+						<div>
+							<dt>Name</dt>
+							<dd>{machineLabel(claim)}</dd>
+						</div>
+						<div>
+							<dt>System</dt>
+							<dd>
+								{claim.os} · {claim.arch}
+							</dd>
+						</div>
+						<div>
+							<dt>Connects to</dt>
+							<dd>{auth.profile.email ?? "this account"}</dd>
+						</div>
 					</dl>
-					<p className="signin-text">
+					<Decide busy={busy} onDecide={choice => void decide(choice)} />
+					<p className="connect-warn">
 						{claim.keyPrinted
-							? "Approve only if you just ran the command yourself. If the terminal shows another key, or someone gave you this link, deny it."
+							? "Approve only if you just ran the command yourself and the code and key match. If someone gave you this link, deny it."
 							: `Runner ${claim.runnerVersion} does not print its machine key, so it cannot be compared. Approve only if you started it yourself in the last few minutes.`}{" "}
-						The machine connects to {auth.profile.email ?? "this account"}, and its agents' work is sent to it: your
-						repositories' files and saved secrets.
+						Its agents get your repositories' files and saved secrets.
 					</p>
-					<div className="connect-actions">
-						<button
-							type="button"
-							className="button button-primary"
-							disabled={busy !== null}
-							onClick={() => void decide("approved")}
-						>
-							{busy === "approved" ? "Approving…" : "Approve"}
-						</button>
-						<button
-							type="button"
-							className="button button-outline"
-							disabled={busy !== null}
-							onClick={() => void decide("denied")}
-						>
-							{busy === "denied" ? "Denying…" : "Deny"}
-						</button>
-					</div>
 				</>
 			) : null}
 			<Failed error={error} />
 			{outcome || code === null || (error && claim === null) ? (
-				<a className="link" {...linkProps({ name: "machines" })}>
+				<a className="link connect-next" {...linkProps({ name: "machines" })}>
 					Go to Machines
 				</a>
 			) : null}

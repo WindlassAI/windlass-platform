@@ -9,6 +9,7 @@ import {
 } from "../../../server/src/factory/usage-summary.js";
 import { SIZE_WORDS, TYPE_WORDS, usd } from "../lib/cost";
 import { count, plural, sandboxTime } from "../lib/format";
+import { CostFigure } from "./CostFigure";
 import { useCostRates, useFinishedItems } from "../state/hooks";
 
 type Words = Record<string, { name: string; what: string }>;
@@ -42,60 +43,63 @@ function GroupTable({
 	groups: SummaryGroup<string>[];
 }) {
 	return (
-		<table className="usage-table cost-summary-table">
-			<caption className="cost-summary-caption">{caption}</caption>
-			<thead>
-				<tr>
-					<th scope="col">{heading}</th>
-					<th scope="col" className="usage-number">
-						Done
-					</th>
-					<th scope="col" className="usage-number">
-						Median cost
-					</th>
-					<th scope="col" className="usage-number">
-						p90 cost
-					</th>
-					<th scope="col" className="usage-number usage-wide">
-						Median time
-					</th>
-					<th scope="col" className="usage-number usage-wide">
-						p90 time
-					</th>
-					<th scope="col" className="usage-number">
-						Keys + sandbox
-					</th>
-				</tr>
-			</thead>
-			<tbody>
-				{groups.map(group => {
-					const note = pricedNote(group);
-					return (
-						<tr key={group.key}>
-							<th scope="row">
-								<span className="cost-summary-name">{words[group.key]!.name}</span>
-								<span className="cost-summary-what tone-dim">{words[group.key]!.what}</span>
-							</th>
-							<td className="usage-number">
-								{count(group.count)}
-								{note ? <span className="cost-summary-what tone-dim">{note}</span> : null}
-							</td>
-							<td className="usage-number">{costCell(group, "median")}</td>
-							<td className="usage-number">{costCell(group, "p90")}</td>
-							<td className="usage-number usage-wide tone-dim">
-								{group.seconds ? sandboxTime(group.seconds.median) : "–"}
-							</td>
-							<td className="usage-number usage-wide tone-dim">
-								{group.seconds ? sandboxTime(group.seconds.p90) : "–"}
-							</td>
-							<td className="usage-number">
-								{usd(group.modelsUsd)} + {usd(group.sandboxUsd)}
-							</td>
-						</tr>
-					);
-				})}
-			</tbody>
-		</table>
+		<>
+			<h3 className="cost-summary-caption" aria-hidden="true">
+				{caption}
+			</h3>
+			<table className="usage-table cost-summary-table">
+				<caption className="visually-hidden">{caption}</caption>
+				<thead>
+					<tr>
+						<th scope="col">{heading}</th>
+						<th scope="col" className="usage-number">
+							Done
+						</th>
+						<th scope="col" className="usage-number">
+							Median cost
+						</th>
+						<th scope="col" className="usage-number">
+							p90 cost
+						</th>
+						<th scope="col" className="usage-number usage-wide">
+							Median time
+						</th>
+						<th scope="col" className="usage-number usage-wide">
+							p90 time
+						</th>
+						<th scope="col" className="usage-number">
+							Keys + sandbox
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{groups.map(group => {
+						const note = pricedNote(group);
+						return (
+							<tr key={group.key}>
+								<th scope="row">
+									<span className="cost-summary-name">{words[group.key]!.name}</span>
+									<span className="cost-summary-what tone-dim">{words[group.key]!.what}</span>
+									{note ? <span className="cost-summary-what tone-faint">{note}</span> : null}
+								</th>
+								<td className="usage-number">{count(group.count)}</td>
+								<td className="usage-number">{costCell(group, "median")}</td>
+								<td className="usage-number">{costCell(group, "p90")}</td>
+								<td className="usage-number usage-wide tone-dim">
+									{group.seconds ? sandboxTime(group.seconds.median) : "–"}
+								</td>
+								<td className="usage-number usage-wide tone-dim">
+									{group.seconds ? sandboxTime(group.seconds.p90) : "–"}
+								</td>
+								<td className="usage-number">
+									{usd(group.modelsUsd)} + {usd(group.sandboxUsd)}
+								</td>
+							</tr>
+						);
+					})}
+				</tbody>
+			</table>
+		</>
 	);
 }
 
@@ -115,11 +119,11 @@ function PlanShare({ plan }: { plan: UsageSummary["plan"] }) {
 	return (
 		<div>
 			<dt>On your plan</dt>
-			<dd className="usage-number">{plural(plan.turns, "turn")}</dd>
+			<dd className="usage-number">
+				<CostFigure words={plural(plan.turns, "turn")} />
+			</dd>
 			<dd className="usage-gloss">
-				{plan.items
-					? `in ${plural(plan.items, "item")}; part of your Claude or ChatGPT plan, so no dollars`
-					: "no item ran on a Claude or ChatGPT plan"}
+				{plan.items ? `in ${plural(plan.items, "item")}, paid by your Claude or ChatGPT plan` : "No item ran on a plan"}
 			</dd>
 		</div>
 	);
@@ -136,25 +140,31 @@ export function SummaryBody({ read, rates }: { read: FinishedItems; rates: CostR
 			<dl className="usage-facts cost-summary-facts">
 				<div>
 					<dt>Ended</dt>
-					<dd className="usage-number">{count(summary.ended)}</dd>
-					<dd className="usage-gloss">{count(summary.done)} done; the tables below are those</dd>
+					<dd className="usage-number">
+						<CostFigure words={count(summary.ended)} />
+					</dd>
+					<dd className="usage-gloss">{count(summary.done)} done; the tables count those</dd>
 				</div>
 				<div>
 					<dt>Retries</dt>
-					<dd className="usage-number">{spentWords(retries)}</dd>
+					<dd className="usage-number">
+						<CostFigure words={spentWords(retries)} />
+					</dd>
 					<dd className="usage-gloss">
 						{retries.items
-							? `in ${plural(retries.items, "item")}: runs you started again and fixes after a failed CI`
-							: "nothing was retried"}
+							? `in ${plural(retries.items, "item")}: runs started again and fixes after a failed CI`
+							: "Nothing was retried"}
 					</dd>
 				</div>
 				<div>
 					<dt>Not finished</dt>
-					<dd className="usage-number">{spentWords(abandoned)}</dd>
+					<dd className="usage-number">
+						<CostFigure words={spentWords(abandoned)} />
+					</dd>
 					<dd className="usage-gloss">
 						{abandoned.items
 							? `on ${plural(abandoned.items, "item")}: ${count(abandoned.cancelled)} cancelled, ${count(abandoned.failed)} given up or failed`
-							: "every item that ended was done"}
+							: "Every item that ended was done"}
 					</dd>
 				</div>
 				<PlanShare plan={summary.plan} />
@@ -168,9 +178,9 @@ export function SummaryBody({ read, rates }: { read: FinishedItems; rates: CostR
 				<p className="usage-empty">None of them was done, so there is nothing to group yet.</p>
 			)}
 			<p className="usage-note">
-				Dollars are model tokens on your API keys and hosted sandbox time, at today's prices. Medians and p90s count the
-				items priced whole: an item with turns on a plan is left out of them, never given a made-up figure. Time runs
-				from an item's first start to its end.
+				Dollars are what your API keys paid for models plus hosted sandbox time, at today's prices. Medians and p90s
+				leave out items with turns on a plan rather than guess a figure. Time runs from an item's first start to its
+				end.
 			</p>
 		</>
 	);

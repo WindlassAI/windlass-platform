@@ -435,7 +435,7 @@ test("--connect asks nothing, offers every agent without a sign-in and starts th
 	const start = did.find(d => d.startsWith("start "));
 	assert.match(start ?? "", /^start replace --platform \S+ --harness claude --harness opencode --harness codex /);
 	assert.ok(did.indexOf("stop") < did.findIndex(d => d.startsWith("pair ")));
-	assert.ok(said.some(e => e.event === "log" && /none signs in here/.test(e.text)));
+	assert.ok(said.some(e => e.event === "log" && /plans and keys connected to your account/.test(e.text)));
 	assert.equal(said.at(-1)?.event, "done");
 });
 
@@ -469,7 +469,7 @@ test("--connect stops when the pairing is denied, keeps a pairing it has and lea
 	});
 	assert.deepEqual(running.did, ["prepare "]);
 	const last = quiet.read().at(-1);
-	assert.ok(last?.event === "done" && /nothing was changed/.test(last.text));
+	assert.ok(last?.event === "done" && /Nothing was changed/.test(last.text));
 });
 
 test("the start flags come from the choices", () => {

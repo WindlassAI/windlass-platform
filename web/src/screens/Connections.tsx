@@ -22,11 +22,12 @@ import { ChatgptPlan } from "../components/ChatgptPlan";
 import { ClaudePlan } from "../components/ClaudePlan";
 import { CredentialChoice } from "../components/CredentialChoice";
 import { Dialog } from "../components/Dialog";
-import { WarnIcon } from "../components/Icons";
+import { CloudIcon, MachineIcon, WarnIcon } from "../components/Icons";
 import { KeyDialog, ModelProviders } from "../components/ModelProviders";
 import { PlanWait } from "../components/PlanConnect";
 import { SettingsGroup, SettingsLayout } from "../components/SettingsGroups";
 import { AgentGlyph } from "../components/ui/Pill";
+import { StatusTag, type StatusTone } from "../components/ui/StatusTag";
 import { HARNESS_DISPLAY_ORDER, HARNESS_NAMES } from "../lib/acp";
 import {
 	type CellAction,
@@ -61,15 +62,15 @@ const DEFAULT_LIMITED = "default";
 function actionWords(action: CellAction, state: ConnectionCell["state"]): string {
 	if (action.kind === "plan") return action.reconnect ? "Reconnect" : `Connect ${PLAN_NAMES[action.provider]}`;
 	if (action.kind === "key") return `${state === "bad" ? "Replace" : "Add"} ${SOURCE_NAMES[action.provider]} key`;
-	return state === "absent" ? "Add on Machines" : "Open Machines";
+	return state === "absent" ? "Set up on Machines" : "Open Machines";
 }
 
-const TONES: Record<ConnectionCell["state"], string> = {
+const TONES: Record<ConnectionCell["state"], StatusTone> = {
 	plan: "good",
 	key: "good",
 	machine: "good",
 	bad: "bad",
-	none: "warn",
+	none: "off",
 	unknown: "warn",
 	absent: "quiet",
 };
@@ -96,13 +97,17 @@ function Cell({
 			data-state={cell.state}
 			aria-current={target || undefined}
 		>
-			<span className={`conn-state conn-state-${TONES[cell.state]}`}>{cell.label}</span>
+			<StatusTag tone={TONES[cell.state]} className="conn-state">
+				{cell.label}
+			</StatusTag>
 			{cell.badge ? (
-				<span className={`conn-state conn-badge conn-state-${cell.badge.tone}`}>{cell.badge.text}</span>
+				<StatusTag tone={cell.badge.tone} pill className="conn-badge">
+					{cell.badge.text}
+				</StatusTag>
 			) : null}
 			{cell.detail ? <span className="conn-detail">{cell.detail}</span> : null}
 			{action?.kind === "machines" ? (
-				<a className="button button-outline button-small conn-action" {...linkProps({ name: "machines" })}>
+				<a className="link conn-link" {...linkProps({ name: "machines" })}>
 					{actionWords(action, cell.state)}
 				</a>
 			) : action ? (
@@ -137,10 +142,18 @@ function Grid({
 				<thead>
 					<tr>
 						<th scope="col">Agent</th>
-						<th scope="col">Hosted</th>
+						<th scope="col">
+							<span className="conn-place">
+								<CloudIcon size={13} />
+								Hosted
+							</span>
+						</th>
 						{machines.map(machine => (
 							<th scope="col" key={machine.machineId}>
-								{machineLabel(machine)}
+								<span className="conn-place">
+									<MachineIcon size={13} />
+									{machineLabel(machine)}
+								</span>
 							</th>
 						))}
 					</tr>
@@ -152,7 +165,7 @@ function Grid({
 							<tr key={harness} data-agent={harness}>
 								<th scope="row">
 									<span className="conn-agent">
-										<AgentGlyph harness={harness} size={13} />
+										<AgentGlyph harness={harness} size={14} />
 										{HARNESS_NAMES[harness]}
 									</span>
 								</th>
@@ -192,21 +205,21 @@ function Grid({
 	);
 }
 
-/** What the choice means for each kind of turn, in a sentence (`payWithFor`, the rule the resolver will apply). */
+/** What the choice means for each kind of turn, in a short sentence (`payWithFor`, the rule the resolver will apply). */
 function payWithMeaning(choices: readonly PayWithChoice[], harness: HarnessId, keyName: string, hasKey: boolean) {
 	const item = payWithFor(choices, harness, "item", hasKey);
 	const session = payWithFor(choices, harness, "interactive", hasKey);
-	if (item.payWith === "key") return `Only your ${keyName} key pays; a connected plan is not used.`;
-	if (!hasKey) return `No ${keyName} key is saved, so a limited plan always waits for its reset.`;
-	if (item.payWith === "plan") return "Only the plan pays; when it is limited, turns wait for the reset.";
+	if (item.payWith === "key") return `Only your ${keyName} key pays. The plan is not used.`;
+	if (!hasKey) return `No ${keyName} key saved, so a limited plan waits for its reset.`;
+	if (item.payWith === "plan") return "Only the plan pays. At its limit, work waits for the reset.";
 	const words: Record<WhenLimited, string> = {
 		wait: "wait for the reset",
 		key: `switch to your ${keyName} key`,
 		ask: "ask you first",
 	};
 	if (item.whenLimited === session.whenLimited)
-		return `When the plan is limited, work items and your sessions ${words[item.whenLimited]}.`;
-	return `When the plan is limited, work items ${words[item.whenLimited]} and your sessions ${words[session.whenLimited]}.`;
+		return `At the plan's limit, items and sessions ${words[item.whenLimited]}.`;
+	return `At the plan's limit, items ${words[item.whenLimited]} and sessions ${words[session.whenLimited]}.`;
 }
 
 function PayWithCard({
@@ -232,11 +245,17 @@ function PayWithCard({
 	const ids = { pay: `pay-${harness}-with`, limited: `pay-${harness}-limited` };
 	return (
 		<div className="conn-pay" id={`pay-${harness}`}>
-			<h3 className="conn-agent">
-				<AgentGlyph harness={harness} size={13} />
-				{HARNESS_NAMES[harness]}
-			</h3>
-			<div className="conn-pay-fields">
+			<div className="conn-pay-who">
+				<h3 className="conn-agent">
+					<AgentGlyph harness={harness} size={14} />
+					{HARNESS_NAMES[harness]}
+				</h3>
+				<p className="conn-pay-what">
+					<span>{plan ? (plan.account ?? PLAN_NAMES[plan.provider]) : "No plan"}</span>
+					<span>{key ? `${keyName} key …${key.last4}` : `No ${keyName} key`}</span>
+				</p>
+			</div>
+			<div className="conn-pay-field conn-pay-with">
 				<label className="label" htmlFor={ids.pay}>
 					Pay with
 				</label>
@@ -253,8 +272,10 @@ function PayWithCard({
 						</option>
 					))}
 				</select>
+			</div>
+			<div className="conn-pay-field conn-pay-limited">
 				<label className="label" htmlFor={ids.limited}>
-					When limited
+					At the plan's limit
 				</label>
 				<select
 					id={ids.limited}
@@ -268,7 +289,7 @@ function PayWithCard({
 						})
 					}
 				>
-					<option value={DEFAULT_LIMITED}>Default: items wait, sessions ask</option>
+					<option value={DEFAULT_LIMITED}>Items wait, sessions ask</option>
 					{(Object.keys(WHEN_LIMITED_WORDS) as WhenLimited[]).map(id => (
 						<option key={id} value={id}>
 							{WHEN_LIMITED_WORDS[id]}
@@ -276,12 +297,8 @@ function PayWithCard({
 					))}
 				</select>
 			</div>
-			<p className="field-note" role="status">
+			<p className="conn-pay-meaning" role="status">
 				{payWithMeaning(choices, harness, keyName, key !== undefined)}
-			</p>
-			<p className="field-note conn-pay-what">
-				Plan: {plan ? (plan.account ?? PLAN_NAMES[plan.provider]) : "not connected"} · Key:{" "}
-				{key ? `${keyName} …${key.last4}` : "none saved"}
 			</p>
 		</div>
 	);
@@ -312,8 +329,7 @@ export function Connections() {
 				<div className="repo-head">
 					<h1 className="display display-small">Connections</h1>
 					<p className="home-account">
-						Each agent, everywhere it can run. Connect once here and every item and session uses it. Your plans pay only
-						for your own work, never a teammate's.
+						What each agent runs on, wherever it runs. Connect it once and every item and session you start uses it.
 					</p>
 				</div>
 			</header>
@@ -322,7 +338,7 @@ export function Connections() {
 				<SettingsGroup
 					id="connections-agents"
 					title="Agents"
-					lede="What pays for each agent at each place right now. Hosted uses a connected plan first, then a key; a machine uses its own sign-in unless you chose your key there."
+					lede="Hosted uses a plan first, then a key. A machine uses its own sign-in unless you pick your key there; only the one picked is used, and an item stops and asks if it can't be."
 				>
 					{inputs === null ? (
 						error ? (
@@ -344,7 +360,7 @@ export function Connections() {
 				<SettingsGroup
 					id="connections-pay"
 					title="Who pays"
-					lede="For agents a plan can pay for: whether hosted turns use the plan, the key or both, and what happens when the plan hits its limit."
+					lede="For agents with a plan: what pays, and what happens when the plan hits its limit."
 				>
 					{payWith.choices === null || inputs === null ? (
 						payWith.error ? (
@@ -381,7 +397,7 @@ export function Connections() {
 					<SettingsGroup
 						id="connections-plans"
 						title="Plans"
-						lede="Connect a plan with one command in a terminal on your computer. The token stays on Windlass and never reaches an agent."
+						lede="Connect with one command on your computer. The token stays on Windlass; agents never see it."
 					>
 						<ul className="settings-list" aria-label="Your plans">
 							<ChatgptPlan />
@@ -395,7 +411,7 @@ export function Connections() {
 					title="API keys"
 					lede={
 						<>
-							Keys serve every agent that can use their provider, hosted and on your machines. They stay on Windlass.{" "}
+							Each key serves every agent that can use it, hosted and on your machines.{" "}
 							<a className="link" href="/docs/settings#model-providers">
 								How keys are used →
 							</a>

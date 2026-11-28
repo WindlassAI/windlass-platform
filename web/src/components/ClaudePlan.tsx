@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED } from "../state/hooks";
-import { CONNECT_NOTES, PlanCommand, usePlanConnect } from "./PlanConnect";
+import { PlanRow, usePlanConnect } from "./PlanConnect";
 
 /**
  * The Claude plan row: the command that, on the user's own computer, asks them to approve its code here and then
@@ -37,49 +37,20 @@ export function ClaudePlan() {
 
 	const connected = plan?.ok === true;
 	return (
-		<li className="usage-kept-row provider-row claude-plan" id="plan-anthropic" data-provider="claude-plan">
-			<div className="usage-kept-main">
-				<span className="usage-kept-title">Claude plan</span>
-				<p className="agent-meta">
-					<span>
-						{connected ? `Connected as ${plan.account ?? "your Claude account"}` : "Use your Claude Pro or Max plan"}
-					</span>
-				</p>
-				{waiting ? <PlanCommand provider="anthropic">{CONNECT_NOTES.anthropic}</PlanCommand> : null}
-				{error && (
-					<p className="field-note tone-bad" role="alert">
-						{error}
-					</p>
-				)}
-			</div>
-			<span className={`machine-used${connected ? " tone-good" : ""}`}>
-				{connected ? "connected" : "not connected"}
-			</span>
-			<div className="provider-actions">
-				{waiting ? (
-					<button type="button" className="button button-quiet button-small" onClick={cancel}>
-						Cancel
-					</button>
-				) : connected ? (
-					<>
-						<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
-							Reconnect
-						</button>
-						<button
-							type="button"
-							className="button button-outline button-small"
-							disabled={busy}
-							onClick={() => void disconnect()}
-						>
-							Disconnect
-						</button>
-					</>
-				) : (
-					<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
-						Connect
-					</button>
-				)}
-			</div>
-		</li>
+		<PlanRow
+			provider="anthropic"
+			className="claude-plan"
+			dataProvider="claude-plan"
+			title="Claude plan"
+			line={connected ? `Connected as ${plan.account ?? "your Claude account"}` : "Use your Claude Pro or Max plan"}
+			connected={connected}
+			plan={plan}
+			waiting={waiting}
+			busy={busy}
+			error={error}
+			onConnect={connect}
+			onCancel={cancel}
+			onDisconnect={() => void disconnect()}
+		/>
 	);
 }

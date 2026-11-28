@@ -21,7 +21,7 @@ import { MissingPageLinks } from "../components/MissingPageLinks";
 import { PlanWaitActions } from "../components/PlanWait";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeaturePlan";
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
-import { ItemCost } from "../components/ItemCost";
+import { CostByModel, ItemCost } from "../components/ItemCost";
 import { ItemSpend } from "../components/ItemSpend";
 import { heldFigures, pctWords, tokenDetail, usdWords } from "../lib/budget";
 import { costWords, summaryCost } from "../lib/cost";
@@ -1121,16 +1121,20 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 					</dl>
 				) : null}
 			</div>
-			<details className="usage-note">
+			<details className="usage-note item-cost-how">
 				<summary>How this is counted</summary>
+				<CostByModel view={view} rates={rates} />
 				<p>
-					The budget is in dollars where an API key pays, and a share of the plan's 5-hour window where a plan pays (how
-					far the plan's use rose while the item's turns ran). {tokenDetail(view.budget, view.spent)} Tokens hold only
-					where neither can be measured; cached input tokens count at a tenth.
+					The budget is in dollars where an API key pays, and a share of the plan's 5-hour window where a plan pays: how
+					far the plan's use rose while the item's turns ran.
 				</p>
 				<p>
-					Working time excludes waits for a turn, CI or your answer.
-					{!hosted && " Waiting for your machine is also excluded. Your machine uses no hosted time."}
+					{tokenDetail(view.budget, view.spent)} Tokens count toward the budget only where neither can be measured;
+					cached input counts at a tenth.
+				</p>
+				<p>
+					Working time leaves out waits for a turn, CI or your answer.
+					{!hosted && " Waiting for your machine is left out too. Your machine uses no hosted time."}
 				</p>
 			</details>
 		</section>

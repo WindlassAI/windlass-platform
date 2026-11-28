@@ -107,6 +107,7 @@ describe("a machine's cell", () => {
 			id: "windlass-m_mac",
 			state: "plan",
 			detail: "Same as Hosted",
+			action: null,
 		});
 		expect(machineCell("claude", machine([]), hosted)).toMatchObject({
 			state: "absent",
@@ -148,6 +149,7 @@ describe("a machine's cell", () => {
 			state: claudeHosted.state,
 			label: claudeHosted.label,
 			detail: "Same as Hosted",
+			action: null,
 		});
 		// A Claude login kept on the machine wins there.
 		expect(machineCell("claude", relayed({ ...entry, signIn: "token" }), claudeHosted)).toMatchObject({

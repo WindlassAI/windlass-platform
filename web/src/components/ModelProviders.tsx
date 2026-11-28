@@ -13,6 +13,7 @@ import { Dialog } from "./Dialog";
 import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
 import { Failure } from "./ui/Failure";
+import { StatusTag } from "./ui/StatusTag";
 
 const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string; keysUrl: string; logo?: ReactNode }> = {
 	openai: {
@@ -309,9 +310,9 @@ export function ModelProviders() {
 										</p>
 									) : null}
 								</div>
-								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>
-									{saved ? (saved.ok ? "connected" : "check failed") : "no key"}
-								</span>
+								<StatusTag tone={saved ? (saved.ok ? "good" : "bad") : "off"} className="provider-state">
+									{saved ? (saved.ok ? "Connected" : "Check failed") : "No key"}
+								</StatusTag>
 								<div className="provider-actions">
 									{saved ? (
 										<>

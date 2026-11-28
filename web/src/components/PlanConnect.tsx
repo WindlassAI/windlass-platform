@@ -1,7 +1,11 @@
 import type { ModelPlanStatus, PlanProvider } from "@contract";
 import { type ReactNode, useEffect, useState } from "react";
 import { useApp, useAuth } from "../state/app";
-import { PROVIDERS_CHANGED } from "../state/hooks";
+import { planBadge } from "../lib/connections";
+import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
+import { AnthropicLogo, OpenAILogo } from "./AgentLogos";
+import { Command } from "./Command";
+import { StatusTag, Waiting } from "./ui/StatusTag";
 
 /** The command a terminal runs to connect each plan (the `cli/` package); the connect page names them too. */
 export const CONNECT_COMMANDS: Record<PlanProvider, string> = {
@@ -67,16 +71,15 @@ export function usePlanConnect(provider: PlanProvider, refresh?: unknown) {
 	};
 }
 
-/** What the command does, said beside it. */
+/** What the command does, said under it. */
 export const CONNECT_NOTES: Record<PlanProvider, ReactNode> = {
 	anthropic: (
 		<>
-			Run this in a terminal on your computer. It opens a page here to approve, then runs{" "}
-			<code>claude setup-token</code>.
+			Run it in a terminal on your computer. It opens a page here to approve, then runs <code>claude setup-token</code>.
 		</>
 	),
 	openai:
-		"Run this in a terminal on your computer. It opens a page here to approve, then signs in with ChatGPT in your browser through Windlass on your computer.",
+		"Run it in a terminal on your computer. It opens a page here to approve, then signs in to ChatGPT in your browser.",
 };
 
 /**
@@ -100,26 +103,109 @@ export function PlanWait({ provider, onConnected }: { provider: PlanProvider; on
 
 /** The command to run for a plan, with a copy button, while its row waits for the plan. `children` says what it does. */
 export function PlanCommand({ provider, children }: { provider: PlanProvider; children: ReactNode }) {
-	const [copied, setCopied] = useState(false);
-	const command = CONNECT_COMMANDS[provider];
 	return (
 		<div className="plan-connect">
+			<Command text={CONNECT_COMMANDS[provider]} label="The connect command" />
 			<p className="field-note">{children}</p>
-			<div className="plan-command">
-				<code>{command}</code>
-				<button
-					type="button"
-					className="button button-outline button-small"
-					onClick={() => {
-						void navigator.clipboard?.writeText(command).then(() => setCopied(true));
-					}}
-				>
-					{copied ? "Copied" : "Copy"}
-				</button>
-			</div>
-			<p className="field-note" role="status">
-				Waiting for your plan…
-			</p>
+			<Waiting>Waiting for your plan…</Waiting>
 		</div>
+	);
+}
+
+/** A plan's state in a tag: its health where the relays saw a problem, else connected or not. */
+export function PlanState({ connected, plan }: { connected: boolean; plan: ModelPlanStatus | null }) {
+	const now = useNow(60_000);
+	const badge = connected ? planBadge(plan ?? undefined, now) : null;
+	if (badge)
+		return (
+			<StatusTag tone={badge.tone} pill className="provider-state">
+				{badge.text}
+			</StatusTag>
+		);
+	return (
+		<StatusTag tone={connected ? "good" : "off"} className="provider-state">
+			{connected ? "Connected" : "Not connected"}
+		</StatusTag>
+	);
+}
+
+/**
+ * A plan's row on Connections (ClaudePlan, ChatgptPlan): its name and who it is connected as, its state, and its
+ * actions; while it waits for the plan, the command to run.
+ */
+export function PlanRow({
+	provider,
+	className,
+	dataProvider,
+	title,
+	line,
+	extra,
+	connected,
+	plan,
+	waiting,
+	busy,
+	error,
+	onConnect,
+	onCancel,
+	onDisconnect,
+}: {
+	provider: PlanProvider;
+	className: string;
+	/** What the row is found by (`data-provider`). */
+	dataProvider: string;
+	title: string;
+	line: string;
+	extra?: ReactNode;
+	connected: boolean;
+	plan: ModelPlanStatus | null;
+	waiting: boolean;
+	busy: boolean;
+	error: string | null;
+	onConnect(): void;
+	onCancel(): void;
+	onDisconnect(): void;
+}) {
+	return (
+		<li
+			className={`usage-kept-row provider-row plan-row ${className}`}
+			id={`plan-${provider}`}
+			data-provider={dataProvider}
+		>
+			<div className="usage-kept-main">
+				<span className="usage-kept-title provider-name">
+					{provider === "anthropic" ? <AnthropicLogo /> : <OpenAILogo />}
+					{title}
+				</span>
+				<p className="plan-row-line">{line}</p>
+				{extra}
+				{waiting ? <PlanCommand provider={provider}>{CONNECT_NOTES[provider]}</PlanCommand> : null}
+				{error ? (
+					<p className="field-note tone-bad" role="alert">
+						{error}
+					</p>
+				) : null}
+			</div>
+			<PlanState connected={connected} plan={plan} />
+			<div className="provider-actions">
+				{waiting ? (
+					<button type="button" className="button button-quiet button-small" onClick={onCancel}>
+						Cancel
+					</button>
+				) : connected ? (
+					<>
+						<button type="button" className="button button-outline button-small" disabled={busy} onClick={onConnect}>
+							Reconnect
+						</button>
+						<button type="button" className="button button-quiet button-small" disabled={busy} onClick={onDisconnect}>
+							Disconnect
+						</button>
+					</>
+				) : (
+					<button type="button" className="button button-outline button-small" disabled={busy} onClick={onConnect}>
+						Connect
+					</button>
+				)}
+			</div>
+		</li>
 	);
 }

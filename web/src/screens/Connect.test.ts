@@ -51,7 +51,7 @@ it("shows the terminal's code and approves it for the signed-in account", async 
 	try {
 		expect(page.host.querySelector(".connect-code")?.textContent).toBe("KQ2M-8XF4");
 		expect(page.host.textContent).toContain("ada@example.com");
-		expect(page.host.querySelector("h1")?.textContent).toBe("Connect your Claude plan from a terminal?");
+		expect(page.host.querySelector("h1")?.textContent).toBe("Connect your Claude plan?");
 		await page.press("Approve");
 		expect(page.host.querySelector("[role=status]")?.textContent).toMatch(/Approved\. Go back to your terminal/);
 		expect(page.host.textContent).toContain("claude setup-token");
@@ -64,9 +64,9 @@ it("shows the terminal's code and approves it for the signed-in account", async 
 it("names the ChatGPT plan and approves its code for it", async () => {
 	const page = await render("KQ2M-8XF4", "openai");
 	try {
-		expect(page.host.querySelector("h1")?.textContent).toBe("Connect your ChatGPT plan from a terminal?");
+		expect(page.host.querySelector("h1")?.textContent).toBe("Connect your ChatGPT plan?");
 		await page.press("Approve");
-		expect(page.host.querySelector("[role=status]")?.textContent).toContain("signs in with ChatGPT through Windlass");
+		expect(page.host.querySelector("[role=status]")?.textContent).toContain("signs in to ChatGPT in your browser");
 		await act(async () => void (await new Promise(r => setTimeout(r, 3_200))));
 		expect(await page.client.user(page.auth).chatgpt()).toMatchObject({ connected: true });
 	} finally {

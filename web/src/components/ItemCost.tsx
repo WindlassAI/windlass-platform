@@ -1,6 +1,7 @@
 import type { CostRates, ItemSummary, ItemView } from "@contract";
 import type { ItemCost as Cost } from "../../../server/src/factory/cost.js";
 import { HARNESS_NAMES } from "../lib/acp";
+import { CostFigure } from "./CostFigure";
 import { costWords, lineWords, payerWords, summaryCost, usd } from "../lib/cost";
 import { compact, plural, sandboxTime } from "../lib/format";
 import { modelWords } from "../lib/models";
@@ -30,8 +31,8 @@ function sandboxWords(cost: Cost, view: Pick<ItemView, "place">, rates: CostRate
 const modelName = (model: string) => (model === "default" ? "agent's default" : modelWords(model));
 
 /**
- * An item's cost in dollars: the total, the models' and the sandbox's shares, each part's for a feature, and by
- * model who paid. Plans' turns say so instead of a dollar figure (lib/cost.ts); tokens are details.
+ * An item's cost in dollars: the total, the models' and the sandbox's shares, and each part's for a feature. Plans'
+ * turns say so instead of a dollar figure (lib/cost.ts); the tokens behind it are in `CostByModel`.
  */
 export function ItemCost({ view, rates }: { view: ItemView; rates: CostRates | null }) {
 	if (!rates) return <p className="usage-note item-dollars-wait">Reading prices…</p>;
@@ -43,7 +44,9 @@ export function ItemCost({ view, rates }: { view: ItemView; rates: CostRates | n
 			<dl className="usage-facts item-facts item-cost">
 				<div>
 					<dt>Total</dt>
-					<dd className="usage-number">{costWords(total) ?? "Nothing yet"}</dd>
+					<dd className="usage-number item-total">
+						<CostFigure words={costWords(total) ?? "Nothing yet"} />
+					</dd>
 				</div>
 				<div>
 					<dt>Models</dt>
@@ -83,9 +86,18 @@ export function ItemCost({ view, rates }: { view: ItemView; rates: CostRates | n
 					</tbody>
 				</table>
 			) : null}
+		</div>
+	);
+}
+
+/** By model: who paid, the tokens behind each figure and where the prices come from, for "How this is counted". */
+export function CostByModel({ view, rates }: { view: ItemView; rates: CostRates | null }) {
+	if (!rates) return null;
+	const total = summaryCost(view, rates);
+	return (
+		<>
 			{total.lines.length > 0 ? (
-				<details className="usage-note item-dollars-models">
-					<summary>By model</summary>
+				<div className="item-dollars-models">
 					<table className="usage-table item-dollars-table">
 						<thead>
 							<tr>
@@ -123,8 +135,8 @@ export function ItemCost({ view, rates }: { view: ItemView; rates: CostRates | n
 					) : (
 						<p>Token prices could not be read, so only what an agent reported of its own cost is counted.</p>
 					)}
-				</details>
+				</div>
 			) : null}
-		</div>
+		</>
 	);
 }

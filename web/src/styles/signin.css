@@ -250,22 +250,119 @@
 	padding: 24px var(--gutter) 64px;
 }
 .connect-card {
-	width: min(480px, 100%);
+	width: min(440px, 100%);
+	gap: 16px;
+	animation: arrive 320ms var(--ease-out) both;
 }
-.connect-code {
-	padding: 14px 16px;
+.connect-card .signin-title {
+	margin-top: -8px;
+	font-size: var(--text-20);
+	line-height: 1.25;
+	letter-spacing: var(--tracking-tight);
+}
+.connect-eyebrow {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.connect-eyebrow svg {
+	flex: none;
+}
+.connect-code-box {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px 16px;
 	border: 1px solid var(--line-strong);
 	border-radius: var(--r-control);
 	background: var(--bg-sunk);
-	font-family: var(--font-mono);
-	font-size: var(--text-24);
-	letter-spacing: 0.12em;
 	text-align: center;
 }
-.connect-actions {
+.connect-code-label {
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.connect-code {
 	display: flex;
+	justify-content: center;
+	align-items: baseline;
 	gap: 10px;
-	margin-top: 4px;
+	font-family: var(--font-mono);
+	font-size: var(--text-32);
+	font-weight: var(--weight-medium);
+	letter-spacing: 0.14em;
+	line-height: 1.1;
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+}
+.connect-code-dash {
+	letter-spacing: 0;
+	color: var(--ink-faint);
+}
+.connect-facts {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 8px 16px;
+	font-size: var(--text-13);
+}
+.connect-facts > div {
+	display: contents;
+}
+.connect-facts dt {
+	color: var(--ink-faint);
+}
+.connect-facts dd {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--ink);
+}
+.connect-facts code {
+	white-space: nowrap;
+}
+.connect-machine-key {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+}
+.connect-actions {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px;
+}
+.connect-actions .button {
+	min-height: var(--h-lg);
+}
+.connect-warn {
+	font-size: var(--text-12);
+	line-height: 1.5;
+	color: var(--ink-faint);
+}
+.connect-outcome {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 12px 14px;
+	border-radius: var(--r-control);
+	background: var(--bg-hover);
+	font-size: var(--text-14);
+	line-height: 1.5;
+	color: var(--ink);
+}
+.connect-outcome svg {
+	flex: none;
+	margin-top: 3px;
+	color: var(--ink-faint);
+}
+.connect-outcome-ok {
+	background: var(--ok-wash);
+}
+.connect-outcome-ok svg {
+	color: var(--ok);
+}
+.connect-next {
+	align-self: flex-start;
+	font-size: var(--text-13);
 }
 
 @media (max-width: 860px) {

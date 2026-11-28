@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useChatgpt } from "../state/hooks";
-import { CONNECT_NOTES, PlanCommand, usePlanConnect } from "./PlanConnect";
+import { PlanRow, usePlanConnect } from "./PlanConnect";
 
 /**
  * The ChatGPT plan row, for any signed-in user: the command that, on the user's own computer, asks them to approve its
@@ -50,26 +50,22 @@ export function ChatgptPlan() {
 	}
 
 	const connected = Boolean(status?.connected);
+	const account = plan?.account ?? status?.email;
 	return (
-		<li className="usage-kept-row provider-row chatgpt-plan" id="plan-openai" data-provider="chatgpt">
-			<div className="usage-kept-main">
-				<span className="usage-kept-title">ChatGPT plan</span>
-				<p className="agent-meta">
-					<span>
-						{connected
-							? plan?.account
-								? `Connected as ${plan.account}`
-								: status?.email
-									? `Connected as ${status.email}`
-									: "Connected"
-							: "Use your ChatGPT subscription"}
-					</span>
-				</p>
-				{connected && allowed && (
-					<p className="agent-meta chatgpt-plan-codex">
+		<PlanRow
+			provider="openai"
+			className="chatgpt-plan"
+			dataProvider="chatgpt"
+			title="ChatGPT plan"
+			line={
+				connected ? (account ? `Connected as ${account}` : "Connected") : "Use your ChatGPT Plus, Pro or Business plan"
+			}
+			extra={
+				connected && allowed ? (
+					<p className="plan-row-line chatgpt-plan-codex">
 						<span>
 							Also pays for hosted Codex
-							{plan?.models?.length ? ` · ${plan.models.length} models` : " · Agent default until its models are read"}
+							{plan?.models?.length ? ` · ${plan.models.length} models` : " · agent default until its models are read"}
 						</span>
 						<button
 							type="button"
@@ -80,42 +76,16 @@ export function ChatgptPlan() {
 							{checking ? "Checking…" : "Check again"}
 						</button>
 					</p>
-				)}
-				{waiting ? <PlanCommand provider="openai">{CONNECT_NOTES.openai}</PlanCommand> : null}
-				{(error || statusError) && (
-					<p className="field-note tone-bad" role="alert">
-						{error || statusError}
-					</p>
-				)}
-			</div>
-			<span className={`machine-used${connected ? " tone-good" : ""}`}>
-				{connected ? "connected" : "not connected"}
-			</span>
-			<div className="provider-actions">
-				{waiting ? (
-					<button type="button" className="button button-quiet button-small" onClick={cancel}>
-						Cancel
-					</button>
-				) : connected ? (
-					<>
-						<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
-							Reconnect
-						</button>
-						<button
-							type="button"
-							className="button button-outline button-small"
-							disabled={busy}
-							onClick={() => void disconnect()}
-						>
-							Disconnect
-						</button>
-					</>
-				) : (
-					<button type="button" className="button button-outline button-small" disabled={busy} onClick={connect}>
-						Connect
-					</button>
-				)}
-			</div>
-		</li>
+				) : null
+			}
+			connected={connected}
+			plan={plan}
+			waiting={waiting}
+			busy={busy}
+			error={error || statusError || null}
+			onConnect={connect}
+			onCancel={cancel}
+			onDisconnect={() => void disconnect()}
+		/>
 	);
 }

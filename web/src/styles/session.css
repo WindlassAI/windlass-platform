@@ -1860,17 +1860,28 @@ button.output-more:hover {
 }
 /* The plan is limited and a key could pay: wait, or use the key this time. */
 .composer-plan-ask {
-	color: var(--ink);
+	align-items: center;
 	flex-wrap: wrap;
+	gap: 8px 10px;
+	padding: 8px 8px 8px 12px;
+	border: 1px solid var(--needs-edge);
+	border-radius: var(--r-control);
+	background: var(--needs-wash);
+	color: var(--ink);
+	animation: arrive 160ms var(--ease);
 }
 .composer-plan-ask svg {
-	color: var(--warn);
+	margin-top: 0;
+	color: var(--needs);
+}
+.composer-plan-ask > span {
+	flex: 1 1 28ch;
 }
 .composer-plan-ask-actions {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 8px;
-	width: 100%;
+	gap: 6px;
+	margin-left: auto;
 }
 .composer-notice {
 	color: var(--warn);
