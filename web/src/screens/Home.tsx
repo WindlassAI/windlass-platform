@@ -241,9 +241,22 @@ export interface HomeProps {
 	filters: Filters;
 	onFilters(filters: Filters): void;
 	machines: readonly MachineSummary[];
+	/** The first-run setup is on the page: the header's counts, ChatGPT line and meter are left out, having nothing in them yet. */
+	firstRun?: boolean;
+	onFirstRun?(showing: boolean): void;
 }
 
-export function Home({ state, items, usage, scope = "all", filters, onFilters, machines }: HomeProps) {
+export function Home({
+	state,
+	items,
+	usage,
+	scope = "all",
+	filters,
+	onFilters,
+	machines,
+	firstRun = false,
+	onFirstRun,
+}: HomeProps) {
 	const { sessions, connection, error } = state;
 	const { platform } = useApp();
 	const now = useNow(15_000);
@@ -266,21 +279,23 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 
 	return (
 		<main className="home home-agents ws-pane">
-			<header className="home-head">
-				<div className="home-title">
-					<h1 className="display">{scope === "none" ? "No repository" : "Agents"}</h1>
-					<Facts
-						agents={agents === null ? null : agents.length}
-						counts={counts}
-						ceiling={ceiling}
-						waiting={waiting + asked}
-					/>
-					<AccountLine />
-				</div>
-				<div className="ws-head-usage">
-					<UsageMeter numbers={usage} />
-				</div>
-			</header>
+			{firstRun ? null : (
+				<header className="home-head">
+					<div className="home-title">
+						<h1 className="display">{scope === "none" ? "No repository" : "Agents"}</h1>
+						<Facts
+							agents={agents === null ? null : agents.length}
+							counts={counts}
+							ceiling={ceiling}
+							waiting={waiting + asked}
+						/>
+						<AccountLine />
+					</div>
+					<div className="ws-head-usage">
+						<UsageMeter numbers={usage} />
+					</div>
+				</header>
+			)}
 			<HostedNotice numbers={usage} pro={platform.info?.billing?.plans.find(plan => plan.id === "pro") ?? null} />
 
 			{empty ? null : (
@@ -323,6 +338,7 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 					sessions={scope === "none" ? 1 : (agents?.length ?? null)}
 					items={items === null ? null : items.length}
 					machines={machines}
+					onShowing={onFirstRun}
 				>
 					<div className="state state-empty home-empty">
 						<Mark size={56} />

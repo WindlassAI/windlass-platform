@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { App } from "../App";
 import { saveAuth } from "../lib/authStore";
-import { loadOnboarding } from "../lib/onboarding";
+import { loadOnboarding, saveOnboarding } from "../lib/onboarding";
 import { AppProvider } from "../state/app";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -76,6 +76,9 @@ async function render(auth = newbie) {
 const setup = () => host.querySelector<HTMLElement>('[aria-label="Set up Windlass"]');
 /** The open card's title. */
 const heading = () => setup()?.querySelector('[aria-current="step"] h3')?.textContent;
+/** The open step's panel under the cards, and its heading. */
+const panel = () => setup()?.querySelector<HTMLElement>(".onboard-open") ?? null;
+const panelTitle = () => panel()?.querySelector("h2")?.textContent;
 const button = (name: string, scope: ParentNode = host) =>
 	[...scope.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.trim() === name);
 const click = async (name: string, scope?: ParentNode) => {
@@ -201,4 +204,84 @@ it("is dismissed, stays shut on the next visit, and resumes where it was left", 
 	// No open bugs there: the generic tasks, and words of the user's own.
 	expect(setup()?.textContent).toContain("ada/tide-tables");
 	expect(setup()?.textContent).toContain("Fix typos and broken links in the README");
+});
+
+it("opens the current step as the large panel under the cards, and a done card's Change opens its panel", async () => {
+	client = fresh();
+	// Each part as a user of its own: the GitHub state is kept per user for the visit (state/github.ts).
+	const as = (uid: string): AuthResult => ({
+		token: `mock:user:${uid}:${uid}@example.com`,
+		profile: { uid, email: `${uid}@example.com`, demo: false },
+	});
+	await render(as("u_panel1"));
+	// GitHub: what the App may do, that the repositories are the user's choice, and the one action.
+	expect(panelTitle()).toBe("Connect GitHub");
+	expect(panel()?.textContent).toContain("What the App can do");
+	expect(panel()?.textContent).toContain("You choose the repositories");
+	expect(button("Install the GitHub App", panel()!)).toBeDefined();
+	// The current card leaves its action to the panel.
+	expect(button("Install the GitHub App", setup()!.querySelector('[aria-current="step"]')!)).toBeUndefined();
+	act(() => root!.unmount());
+
+	localStorage.setItem("wlp.mock.github.u_panel2", "1");
+	await render(as("u_panel2"));
+	expect(panelTitle()).toBe("Pick a repository");
+	expect(panel()?.querySelector('[aria-label="Repository"] [role="radio"]')).not.toBeNull();
+	// GitHub's card is done; its Change opens its panel again, with the way on.
+	await click("Change connect github");
+	expect(heading()).toBe("Connect GitHub");
+	expect(panel()?.textContent).toContain("Connected as");
+	await click("Continue", panel()!);
+	expect(panelTitle()).toBe("Pick a repository");
+	act(() => root!.unmount());
+
+	const repository = { id: 7101, owner: "acme", name: "harbor" };
+	localStorage.setItem("wlp.mock.github.u_panel3", "1");
+	saveOnboarding("u_panel3", { step: 3, repository, dismissed: false });
+	await render(as("u_panel3"));
+	expect(panelTitle()).toBe("Connect your agents");
+	expect(panel()?.querySelectorAll("[data-agent]").length).toBeGreaterThanOrEqual(2);
+	expect(panel()?.querySelector('[data-agent="claude"] [role="radiogroup"]')).not.toBeNull();
+	act(() => root!.unmount());
+
+	localStorage.setItem("wlp.mock.github.u_panel4", "1");
+	saveOnboarding("u_panel4", { step: 4, repository, dismissed: false });
+	await render(as("u_panel4"));
+	expect(panelTitle()).toBe("File your first item");
+	expect(panel()?.querySelector('[aria-label="Starter task"]')).not.toBeNull();
+	expect(panel()?.querySelector("textarea")).not.toBeNull();
+	expect(button("Start item", panel()!)).toBeDefined();
+});
+
+it("shows an example of a finished item under the setup, which leads nowhere", async () => {
+	client = fresh();
+	await render();
+	const outcome = host.querySelector<HTMLElement>(`[aria-label="What you'll get"]`)!;
+	expect(outcome).not.toBeNull();
+	expect(outcome.textContent).toContain("You review and merge");
+	expect(outcome.textContent).toContain("Example");
+	const row = outcome.querySelector<HTMLElement>(".item-row")!;
+	expect(row.textContent).toContain("Show the upload's checksum in the log");
+	expect(row.textContent).toContain("Ready for review");
+	expect(row.closest("[inert]")).not.toBeNull();
+});
+
+it("leaves out what an empty account has nothing in while the setup shows, and brings it back once dismissed", async () => {
+	client = fresh();
+	await render();
+	const rail = () => host.querySelector('nav[aria-label="Repositories"]');
+	expect(setup()).not.toBeNull();
+	expect(host.querySelector(".home-facts")).toBeNull();
+	expect(host.textContent).not.toContain("ChatGPT not connected");
+	expect(rail()).toBeNull();
+	expect(host.textContent).not.toContain("Hosted time");
+	// The page's heading is the setup's.
+	expect(host.querySelector("h1")?.textContent).toBe("Get started");
+
+	await click("Set up later");
+	expect(setup()).toBeNull();
+	expect(host.querySelector(".home-facts")).not.toBeNull();
+	expect(host.textContent).toContain("ChatGPT not connected");
+	expect(rail()).not.toBeNull();
+	expect(host.textContent).toContain("Hosted time");
 });

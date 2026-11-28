@@ -255,11 +255,11 @@ h3.conn-agent {
 	padding-inline: 6px;
 }
 
-/* ---- the first-run setup: four cards in a row, the open one's choices under them ------------------- */
+/* ---- the first-run setup: four cards in a row, the open step as the panel under them, the outcome below ---- */
 
 .onboard {
 	width: 100%;
-	margin: 24px 0 0;
+	margin: 6px 0 0;
 	text-align: left;
 	animation: arrive 320ms var(--ease-out) both;
 }
@@ -268,29 +268,48 @@ h3.conn-agent {
 	flex-wrap: wrap;
 	align-items: flex-end;
 	justify-content: space-between;
-	gap: 8px 16px;
-	margin-bottom: 14px;
+	gap: 12px 24px;
+	margin-bottom: 22px;
 }
-.onboard-kicker {
-	font-size: var(--text-20);
+.onboard-title {
+	font-size: clamp(var(--text-24), 2.2vw + 0.5rem, var(--text-32));
 	font-weight: var(--weight-strong);
-	letter-spacing: var(--tracking-tight);
+	line-height: 1.1;
+	letter-spacing: var(--tracking-display);
 	color: var(--ink);
 }
 .onboard-lede {
-	margin-top: 2px;
-	font-size: var(--text-14);
+	max-width: 58ch;
+	margin-top: 8px;
+	font-size: var(--text-15);
+	line-height: 1.5;
 	color: var(--ink-dim);
 }
 .onboard-head-end {
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 14px;
 }
 .onboard-progress {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
 	font-size: var(--text-12);
 	font-variant-numeric: tabular-nums;
 	color: var(--ink-faint);
+}
+.onboard-progress-bar {
+	display: inline-flex;
+	gap: 3px;
+}
+.onboard-progress-bar i {
+	width: 16px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+}
+.onboard-progress-bar i[data-on] {
+	background: var(--ok);
 }
 .onboard-head-end .button-quiet {
 	margin-right: -10px;
@@ -299,7 +318,7 @@ h3.conn-agent {
 .onboard-cards {
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 10px;
+	gap: 12px;
 	margin: 0;
 	padding: 0;
 	list-style: none;
@@ -309,7 +328,7 @@ h3.conn-agent {
 	flex-direction: column;
 	gap: 6px;
 	min-width: 0;
-	padding: 14px 14px 12px;
+	padding: 16px 16px 14px;
 	border: 1px solid var(--line);
 	border-radius: var(--r-box);
 	background: var(--bg-raised);
@@ -319,6 +338,7 @@ h3.conn-agent {
 }
 .onboard-card[data-state="current"] {
 	border-color: var(--accent-edge);
+	background: linear-gradient(180deg, var(--accent-wash), transparent 75%), var(--bg-raised);
 	box-shadow:
 		0 0 0 3px var(--accent-wash),
 		var(--shadow-box);
@@ -331,13 +351,13 @@ h3.conn-agent {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	margin-bottom: 4px;
+	margin-bottom: 6px;
 }
 .onboard-card-icon {
 	display: grid;
 	place-items: center;
-	width: 28px;
-	height: 28px;
+	width: 32px;
+	height: 32px;
 	border-radius: var(--r-control);
 	background: var(--bg-active);
 	color: var(--ink-dim);
@@ -360,7 +380,7 @@ h3.conn-agent {
 	color: var(--ok);
 }
 .onboard-card h3 {
-	font-size: var(--text-14);
+	font-size: var(--text-15);
 	font-weight: var(--weight-strong);
 	letter-spacing: -0.01em;
 	color: var(--ink);
@@ -370,7 +390,7 @@ h3.conn-agent {
 }
 .onboard-card-why {
 	flex: 1;
-	font-size: var(--text-12);
+	font-size: var(--text-13);
 	line-height: 1.45;
 	color: var(--ink-dim);
 	overflow-wrap: anywhere;
@@ -382,7 +402,7 @@ h3.conn-agent {
 	display: flex;
 	align-items: center;
 	min-height: var(--h-sm);
-	margin-top: 4px;
+	margin-top: 6px;
 }
 .onboard-card-action .button-quiet {
 	margin-left: -10px;
@@ -391,36 +411,124 @@ h3.conn-agent {
 	font-size: var(--text-12);
 	color: var(--ink-faint);
 }
-.onboard-card .callout,
-.onboard-card .failure {
-	margin: 4px 0 0;
+.onboard-card-now {
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--accent-text);
 }
 
-/* The open card's choices: under the row on a wide screen, under its card on a phone (the cards' order). */
+/* The open step: under the row on a wide screen, under its card on a phone (the cards' order). */
 .onboard-open {
 	grid-column: 1 / -1;
 	min-width: 0;
-	margin-top: 4px;
-	padding: 20px;
-	border: 1px solid var(--line);
+	margin-top: 6px;
+	padding: 24px 32px 22px;
+	border: 1px solid var(--line-strong);
 	border-radius: var(--r-box);
-	background: var(--bg-raised);
+	background:
+		radial-gradient(120% 80% at 0% 0%, var(--accent-wash), transparent 55%),
+		var(--bg-raised);
 	box-shadow: var(--shadow-box);
+	animation: arrive 260ms var(--ease-out) both;
+}
+.onboard-panel-head {
+	margin-bottom: 20px;
+}
+.onboard-panel-step {
+	font-size: var(--text-11);
+	font-weight: var(--weight-strong);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--accent-text);
+}
+.onboard-panel-head h2 {
+	margin-top: 6px;
+	font-size: var(--text-20);
+	font-weight: var(--weight-strong);
+	letter-spacing: var(--tracking-tight);
+	color: var(--ink);
 }
 .onboard-sub {
-	max-width: 62ch;
+	max-width: 80ch;
+	margin-top: 6px;
 	font-size: var(--text-14);
+	line-height: 1.55;
+	color: var(--ink-dim);
+}
+.onboard-label {
+	margin-bottom: 12px;
+	font-size: var(--text-13);
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+}
+
+/* GitHub: what the App can do beside the choice of repositories. */
+.onboard-github {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+	gap: 20px 32px;
+	align-items: start;
+}
+.onboard-grants {
+	display: grid;
+	gap: 10px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.onboard-grants li {
+	display: grid;
+	grid-template-columns: 22px minmax(0, 1fr);
+	align-items: start;
+	gap: 10px;
+}
+.onboard-grants svg {
+	width: 22px;
+	height: 22px;
+	padding: 4px;
+	border-radius: 50%;
+	background: var(--ok-wash);
+	color: var(--ok);
+}
+.onboard-grants span {
+	font-size: var(--text-13);
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
+.onboard-grants strong {
+	margin-right: 8px;
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.onboard-aside {
+	padding: 18px 20px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-pop);
+	background: var(--bg-sunk);
+}
+.onboard-aside p {
+	font-size: var(--text-13);
+	line-height: 1.55;
+	color: var(--ink-dim);
+}
+.onboard-aside .onboard-aside-note {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr);
+	gap: 10px;
+	margin-top: 14px;
+	padding-top: 14px;
+	border-top: 1px solid var(--line);
+	color: var(--ink-faint);
+}
+.onboard-aside-note svg {
+	margin-top: 3px;
+}
+
 .onboard-box {
 	display: grid;
 	justify-items: start;
 	gap: 8px;
-}
-.onboard-sub + .onboard-box,
-.onboard-sub + .onboard-agents {
-	margin-top: 14px;
 }
 .onboard-done {
 	display: flex;
@@ -445,11 +553,11 @@ h3.conn-agent {
 	grid-template-columns: 16px minmax(0, 1fr);
 	align-items: center;
 	column-gap: 10px;
-	row-gap: 1px;
-	padding: 9px 12px;
+	row-gap: 2px;
+	padding: 11px 14px;
 	border: 1px solid var(--line);
 	border-radius: var(--r-control);
-	background: transparent;
+	background: var(--bg-raised);
 	text-align: left;
 	font-size: var(--text-14);
 	color: var(--ink);
@@ -488,21 +596,25 @@ h3.conn-agent {
 	font-family: var(--font-mono);
 	font-size: var(--text-13);
 }
+.onboard-repos {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .onboard-agents {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-	gap: 12px;
+	gap: 14px;
 }
 .onboard-agents .onboard-box {
 	align-content: start;
-	padding: 16px;
+	padding: 18px;
 	border: 1px solid var(--line);
 	border-radius: var(--r-pop);
 	background: var(--bg-sunk);
 }
 .onboard-agents .onboard-choice {
-	padding-block: 7px;
+	padding-block: 8px;
 	font-size: var(--text-13);
+	background: transparent;
 }
 .onboard-agent-head {
 	display: flex;
@@ -515,7 +627,7 @@ h3.conn-agent {
 }
 .onboard-panel {
 	display: grid;
-	gap: 6px;
+	gap: 8px;
 }
 .onboard-panel:empty {
 	display: none;
@@ -524,24 +636,44 @@ h3.conn-agent {
 	margin: 0;
 }
 .onboard-note {
-	margin-top: 14px;
+	margin-top: 16px;
 	font-size: var(--text-13);
 	color: var(--ink-faint);
 }
+/* The first item: the starter tasks beside the user's own words. */
+.onboard-open[data-step="4"] .onboard-box {
+	grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+	align-items: stretch;
+	gap: 12px 20px;
+}
+.onboard-open[data-step="4"] .onboard-box > :not(.onboard-panel, textarea) {
+	grid-column: 1 / -1;
+}
 .onboard textarea {
-	min-height: 72px;
+	min-height: 96px;
 	resize: vertical;
 }
 .onboard-foot {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
-	margin-top: 16px;
+	gap: 10px 14px;
+	margin-top: 20px;
+	padding-top: 18px;
+	border-top: 1px solid var(--line);
 }
 .onboard-foot-end {
 	display: flex;
 	gap: 8px;
 	margin-left: auto;
+}
+.onboard-foot-note {
+	font-size: var(--text-13);
+	color: var(--ink-faint);
+}
+.onboard-open .failure,
+.onboard-open .callout {
+	margin-top: 14px;
 }
 .onboard-resume {
 	display: flex;
@@ -552,30 +684,139 @@ h3.conn-agent {
 	font-size: var(--text-13);
 	color: var(--ink-dim);
 }
+
+/* What you'll get: the way a task goes, and an example item at its end. */
+.onboard-outcome {
+	margin-top: 48px;
+	animation: arrive 320ms var(--ease-out) 80ms both;
+}
+.onboard-outcome-title {
+	font-size: var(--text-16);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.01em;
+	color: var(--ink);
+}
+.onboard-flow {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 16px;
+	margin: 18px 0 0;
+	padding: 0;
+	list-style: none;
+}
+.onboard-flow li {
+	position: relative;
+	display: grid;
+	align-content: start;
+	gap: 4px;
+	min-width: 0;
+}
+/* A dashed thread from each step's icon to the next. */
+.onboard-flow li:not(:last-child)::after {
+	content: "";
+	position: absolute;
+	top: 16px;
+	left: 44px;
+	right: -8px;
+	border-top: 1px dashed var(--line-strong);
+}
+.onboard-flow-icon {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	height: 32px;
+	margin-bottom: 8px;
+	border: 1px solid var(--line-strong);
+	border-radius: 50%;
+	background: var(--bg-raised);
+	color: var(--ink-dim);
+}
+.onboard-flow li:last-child .onboard-flow-icon {
+	border-color: var(--accent-edge);
+	color: var(--accent-text);
+}
+.onboard-flow strong {
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.onboard-flow span:last-child {
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.onboard-example {
+	margin: 24px 0 0;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-sunk);
+	overflow: hidden;
+}
+.onboard-example figcaption {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--line);
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.onboard-example-tag {
+	padding: 1px 8px;
+	border: 1px dashed var(--accent-edge);
+	border-radius: var(--radius-pill);
+	font-size: var(--text-11);
+	font-weight: var(--weight-strong);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--accent-text);
+}
+.onboard-example .agents {
+	padding: 4px 8px;
+	background: var(--bg-raised);
+	list-style: none;
+}
+
 @media (min-width: 561px) {
-	/* The order inline puts the choices under their card on a phone; here they go under the whole row. */
+	/* The order inline puts the open step under its card on a phone; here it goes under the whole row. */
 	.onboard-open {
 		order: 99 !important;
 	}
 }
 @media (max-width: 900px) {
-	.onboard-cards {
+	.onboard-cards,
+	.onboard-flow {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.onboard-flow {
+		row-gap: 24px;
+	}
+	.onboard-flow li:nth-child(2)::after {
+		display: none;
+	}
+	.onboard-github {
+		grid-template-columns: minmax(0, 1fr);
 	}
 }
 @media (max-width: 560px) {
+	.onboard-head {
+		margin-bottom: 16px;
+	}
 	.onboard-cards {
 		grid-template-columns: minmax(0, 1fr);
+		gap: 10px;
 	}
 	.onboard-open {
-		margin-top: -4px;
-		padding: 16px;
+		margin-top: -2px;
+		padding: 20px 16px 16px;
 	}
 	.onboard-card {
 		display: grid;
-		grid-template-columns: 28px minmax(0, 1fr);
+		grid-template-columns: 32px minmax(0, 1fr);
 		column-gap: 12px;
 		row-gap: 2px;
+		padding: 14px;
 	}
 	.onboard-card-top {
 		grid-row: span 3;
@@ -590,15 +831,64 @@ h3.conn-agent {
 	}
 	.onboard-card-action {
 		min-height: 0;
+		margin-top: 2px;
 	}
-	.onboard-card-action:empty {
+	.onboard-card-action:empty,
+	.onboard-card-now {
 		display: none;
+	}
+	.onboard-repos,
+	.onboard-open[data-step="4"] .onboard-box {
+		grid-template-columns: minmax(0, 1fr);
 	}
 	.onboard-agents {
 		grid-template-columns: minmax(0, 1fr);
 	}
 	.onboard-agents .onboard-box {
-		padding: 12px;
+		padding: 14px;
+	}
+	.onboard-foot > .button-primary {
+		width: 100%;
+	}
+	.onboard-foot-end {
+		width: 100%;
+		margin-left: 0;
+	}
+	.onboard-foot-end .button {
+		flex: 1;
+	}
+	.onboard-outcome {
+		margin-top: 36px;
+	}
+	/* The example's row is crowded on a phone: its words say where it stands, without the track and the time. */
+	.onboard-example .agent-time,
+	.onboard-example .item-track {
+		display: none;
+	}
+	.onboard-flow {
+		grid-template-columns: minmax(0, 1fr);
+		row-gap: 0;
+	}
+	/* A phone reads the flow downwards: the icon on the left, the thread under it. */
+	.onboard-flow li {
+		grid-template-columns: 32px minmax(0, 1fr);
+		column-gap: 12px;
+		row-gap: 2px;
+		padding-bottom: 18px;
+	}
+	.onboard-flow-icon {
+		grid-row: span 2;
+		margin: 0;
+	}
+	.onboard-flow li:not(:last-child)::after,
+	.onboard-flow li:nth-child(2)::after {
+		display: block;
+		top: 38px;
+		bottom: 4px;
+		left: 16px;
+		right: auto;
+		border-top: 0;
+		border-left: 1px dashed var(--line-strong);
 	}
 }
 

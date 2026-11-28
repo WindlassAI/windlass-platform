@@ -11,7 +11,7 @@
  * Dismissing and resuming: what the setup has reached (its step and the repository picked) is kept per user in this
  * browser (`localStorage`, `wlp.onboarding.<uid>`); a dismissed setup can be resumed from Home's empty page.
  */
-import { type GithubId, MAX_TITLE_CHARS } from "@contract";
+import { type GithubId, type ItemSummary, MAX_TITLE_CHARS } from "@contract";
 
 export const ONBOARDING_STEPS = ["GitHub", "Repository", "Agents", "First item"] as const;
 export type OnboardingStep = 1 | 2 | 3 | 4;
@@ -128,4 +128,50 @@ export function starterTasks(issues: readonly { number: number; title: string; u
 		hint: `Open issue labelled “bug” · #${issue.number}`,
 	}));
 	return [...bugs, ...GENERIC_TASKS].slice(0, 3);
+}
+
+const MINUTE = 60_000;
+
+/**
+ * What a finished first item looks like, shown under the setup as an example: one of the mock's items (acme/harbor's
+ * checksum log), handed over with its pull request open, CI passed and the second review approving.
+ */
+export function sampleItem(now: number): ItemSummary {
+	return {
+		id: "example",
+		title: "Show the upload's checksum in the log",
+		repository: {
+			provider: "github",
+			id: 7101,
+			owner: "acme",
+			name: "harbor",
+			branch: "main",
+			private: true,
+			url: "https://github.com/acme/harbor",
+		},
+		place: { kind: "hosted" },
+		source: "web",
+		origin: null,
+		state: "review",
+		wait: null,
+		question: null,
+		pullRequest: { number: 61, url: "https://github.com/acme/harbor/pull/61" },
+		verdict: { result: "pass", flags: [], ci: "passed" },
+		review: { state: "filed", recommendation: "approve" },
+		agent: {
+			harness: "claude",
+			model: "default",
+			tokens: "counted",
+			reportedTokens: 1_744_000,
+			cost: null,
+			fiveHour: null,
+		},
+		budget: { tokens: 2_000_000, hostedSeconds: 3600 },
+		spent: { tokens: 1_744_000, turns: 1, activeSeconds: 45 * 60, hostedSeconds: 45 * 60 },
+		sessionId: "example",
+		createdAt: now - 71 * MINUTE,
+		startedAt: now - 70 * MINUTE,
+		updatedAt: now - 20 * MINUTE,
+		revision: 1,
+	};
 }
