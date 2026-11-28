@@ -331,6 +331,16 @@ export function windlassProvider(model?: string) {
 	return typeof model === "string" ? selectedKey("windlass", model, MODEL_PROVIDERS) : undefined;
 }
 
+/**
+ * The OpenAI key's version of one of Windlass's ChatGPT plan models (`openai/<model>`), where a checked OpenAI key
+ * offers it: what "use my key" runs for one turn while the plan is limited. Null where no key offers it.
+ */
+export function windlassKeyModel(model: string, keys: readonly CheckedProvider[]): string | null {
+	if (windlassProvider(model)) return null;
+	const keyModel = `openai/${model}`;
+	return hostedCatalog("windlass", keys)?.models.some(m => m.id === keyModel) ? keyModel : null;
+}
+
 export function windlassModels(account: ModelList, keys: readonly CheckedProvider[]): ModelList {
 	const checked = hostedCatalog("windlass", keys)?.models.filter(m => m.id !== "default") ?? [];
 	return { ...account, models: [...account.models, ...checked] };

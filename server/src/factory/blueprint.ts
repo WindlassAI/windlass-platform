@@ -144,6 +144,7 @@ import {
 	shortSha,
 	spendTurn,
 	stepLimitReached,
+	budgetStopped,
 	takeFeedback,
 	takeHeld,
 	taskText,
@@ -1431,6 +1432,8 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		);
 	}
 	if (fact.stepLimit !== undefined) return stepLimitReached(c, { ...IMPLEMENT, kind }, fact.stepLimit, fact.verified);
+	// Stopped at its budget while it ran: the budget question (`nextTurn`), and "give more" goes on from there.
+	if (fact.budgetStopped) return budgetStopped(c, { ...IMPLEMENT, kind });
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
 		// The cut-off that reaches the limit is not tried again: the person is asked next (`nextTurn`, "interruptions").

@@ -1,7 +1,8 @@
 /**
  * Pay with at a turn's start (hosted, or on a machine with a plan relay), in the user's actor (pay-with.ts
  * `decidePayer` is the rule): which of the connected plan and the saved key pays for a turn of an agent a plan can
- * pay for, or why the turn waits.
+ * pay for, or why the turn waits. Hosted Windlass's ChatGPT models too: the plan pays, and the OpenAI key, where it
+ * offers the same model, runs its `openai/` version for one turn while the plan is limited.
  *
  * The turn queue (user-items.ts `runQueue`) asks first for an item's turn, so an item waits for its plan's reset or for
  * room under the plan's parallel-turn cap before it is given a slot; the session asks again at the turn's start
@@ -17,15 +18,28 @@ import {
 	type HarnessId,
 	type ItemFiler,
 	type PlanProvider,
-	type PayWith,
 	type SessionSummary,
 	type TurnOrigin,
-	type WhenLimited,
 } from "../contract.js";
-import { savedModelKeys } from "../credentials/keys.js";
+import { providerStatuses, savedModelKeys } from "../credentials/keys.js";
 import { usablePlan } from "../credentials/plans.js";
-import { decidePayer, PAY_WITH_HARNESSES, type PayerDecision, payWithFor, readPayWith } from "../pay-with.js";
-import { hostedKeyMessage, hostedPayer, planProviders } from "../sandbox/harnesses.js";
+import {
+	decidePayer,
+	PAY_WITH_HARNESSES,
+	type PayerDecision,
+	type PayRule,
+	payWithFor,
+	planPays,
+	readPayWith,
+} from "../pay-with.js";
+import {
+	type CheckedProvider,
+	hostedKeyMessage,
+	hostedPayer,
+	machineHarness,
+	planProviders,
+	windlassKeyModel,
+} from "../sandbox/harnesses.js";
 import type { ItemsCtx } from "./user-items.js";
 
 /** How long a session's place stays held after it was taken, while its summary has not yet said it started. */
@@ -67,6 +81,8 @@ export interface PayerContext {
 	choices: Awaited<ReturnType<typeof readPayWith>>;
 	plans: Map<PlanProvider, Awaited<ReturnType<typeof usablePlan>>>;
 	keys: CredentialRef[];
+	/** The checked keys' models: whether a key offers Windlass's model in its `openai/` version. */
+	offers: CheckedProvider[];
 	/** Sessions whose next turn the person chose to pay with the key (`useKeyNow`). */
 	keyOnce: Set<string>;
 	at: number;
@@ -75,9 +91,10 @@ export interface PayerContext {
 /** `onMachine`: for a turn on the user's machine, where the ChatGPT plan pays whatever `WLP_PLAN_USERS` says (`planAllowed`). */
 export async function payerContext(c: ItemsCtx, onMachine = false): Promise<PayerContext> {
 	const uid = c.key[0]!;
-	const [choices, keys, once, anthropic, openai] = await Promise.all([
+	const [choices, keys, offers, once, anthropic, openai] = await Promise.all([
 		readPayWith(c.db),
 		savedModelKeys(c.db),
+		providerStatuses(c.db).then(statuses => statuses.filter(status => status.ok)),
 		c.db.execute<{ session: string }>("SELECT session FROM pay_once"),
 		usablePlan(c.db, uid, "anthropic", onMachine),
 		usablePlan(c.db, uid, "openai", onMachine),
@@ -85,6 +102,7 @@ export async function payerContext(c: ItemsCtx, onMachine = false): Promise<Paye
 	return {
 		choices,
 		keys,
+		offers,
 		keyOnce: new Set(once.map(row => row.session)),
 		plans: new Map([
 			["anthropic", anthropic],
@@ -101,7 +119,14 @@ export interface PayerAnswer {
 	/** The plan this agent's turns could pay with, also when it does not pay. */
 	plan: PlanProvider | null;
 	/** The rule as applied. */
-	rule: { payWith: PayWith; whenLimited: WhenLimited };
+	rule: PayRule;
+	/** When the key pays in place of Windlass's ChatGPT plan: the model it runs, the key's version of the same model. */
+	keyModel?: string;
+	/**
+	 * Whether the turn holds a place under the plan's parallel-turn cap: a plan agent's does. Windlass's ChatGPT turns
+	 * never did, and neither count nor wait for it.
+	 */
+	capped: boolean;
 }
 
 /** The item filer of a session's item, when the item came from another surface (`ItemFiler`). */
@@ -111,12 +136,38 @@ function filerOf(c: ItemsCtx, session: SessionSummary): ItemFiler | undefined {
 }
 
 /**
- * Whether Pay with decides this session's turns: of an agent a plan can pay for, hosted, or on a machine whose runner
- * hands a plan's token to a relay there (`onMachine`, which the session knows from its runner's report).
+ * Whether Pay with decides this session's turns of `model`: hosted, of an agent a plan can pay for or of Windlass's
+ * ChatGPT models (`planPays`); or on a machine whose runner hands a plan's token to a relay there (`onMachine`, which
+ * the session knows from its runner's report), of a plan agent. Windlass on a machine keeps its own plan rule.
  */
-export function paysWithRule(session: Pick<SessionSummary, "place" | "harness">, onMachine = false): boolean {
-	const placed = session.place.kind === "hosted" || (onMachine && session.place.kind === "machine");
-	return placed && !!session.harness && PAY_WITH_HARNESSES.includes(session.harness);
+export function paysWithRule(
+	session: Pick<SessionSummary, "place" | "harness">,
+	onMachine = false,
+	model?: string,
+): boolean {
+	if (session.place.kind === "hosted") return planPays(session.harness, model);
+	return onMachine && !!machineHarness(session.harness) && PAY_WITH_HARNESSES.includes(session.harness!);
+}
+
+/** The key that could pay for a turn of `model` instead of the plan, and the model it would run then. */
+function keyFor(
+	harness: HarnessId,
+	model: string,
+	context: PayerContext,
+): { key: CredentialRef; model?: string } | null {
+	if (!machineHarness(harness)) {
+		// Windlass: the OpenAI key runs the same model in its `openai/` version, where the key offers it.
+		const keyModel = windlassKeyModel(model, context.offers);
+		const key = keyModel ? context.keys.find(ref => ref.provider === "openai") : undefined;
+		return key && keyModel ? { key, model: keyModel } : null;
+	}
+	const keyPayer = hostedPayer(
+		harness as Exclude<HarnessId, "windlass">,
+		model,
+		context.keys.map(ref => ({ provider: ref.provider, checkedAt: null })),
+	);
+	const key = keyPayer ? context.keys.find(ref => ref.provider === keyPayer.provider) : undefined;
+	return key ? { key } : null;
 }
 
 /** Pay with for one turn of `session`, synchronously from `context`. */
@@ -127,14 +178,11 @@ export function payerOf(
 	model: string,
 	keyOnce = false,
 ): PayerAnswer {
-	const harness = session.harness as HarnessId;
+	const harness = session.harness ?? "windlass";
 	const origin: TurnOrigin = session.item ? "item" : "interactive";
-	const keyPayer = hostedPayer(
-		harness as Exclude<HarnessId, "windlass">,
-		model,
-		context.keys.map(ref => ({ provider: ref.provider, checkedAt: null })),
-	);
-	const key = keyPayer ? (context.keys.find(ref => ref.provider === keyPayer.provider) ?? null) : null;
+	const keyed = keyFor(harness, model, context);
+	const key = keyed?.key ?? null;
+	const capped = !!machineHarness(harness);
 	const provider = planProviders(harness)[0] ?? null;
 	const plan = provider ? (context.plans.get(provider) ?? null) : null;
 	const rule = payWithFor(context.choices, harness, origin, key !== null);
@@ -146,10 +194,10 @@ export function payerOf(
 			health: plan.health,
 			limitedUntil: plan.limitedUntil,
 			resetKnown: plan.resetKnown,
-			running: planRunning(c, plan.provider, session.id, context.at),
+			running: capped ? planRunning(c, plan.provider, session.id, context.at) : 0,
 		},
 		hasKey: key !== null,
-		cap: config.planParallelTurns,
+		cap: capped ? config.planParallelTurns : Number.POSITIVE_INFINITY,
 		filer: filerOf(c, session),
 		keyOnce: keyOnce || context.keyOnce.has(session.id),
 		keyMessage: hostedKeyMessage(harness, model),
@@ -159,7 +207,14 @@ export function payerOf(
 	if ("pay" in decision && decision.pay === "plan" && plan)
 		ref = { provider: plan.provider, generation: plan.generation, plan: true };
 	if ("pay" in decision && decision.pay === "key") ref = key;
-	return { decision, ref, plan: provider, rule };
+	return {
+		decision,
+		ref,
+		plan: provider,
+		rule,
+		...(ref && !ref.plan && keyed?.model && { keyModel: keyed.model }),
+		capped,
+	};
 }
 
 /** The session's model as its turns run it: "default" is its agent's default. */
@@ -180,10 +235,10 @@ export async function turnPayer(
 	onMachine = false,
 ): Promise<PayerAnswer | null> {
 	const session = c.vars.sessions.get(sessionId);
-	if (!session || !paysWithRule(session, onMachine)) return null;
+	if (!session || !paysWithRule(session, onMachine, sessionModel(session, model))) return null;
 	const context = await payerContext(c, onMachine);
 	const answer = payerOf(c, context, session, sessionModel(session, model), keyOnce);
-	if (answer.ref?.plan && answer.plan) holdPlanTurn(c, answer.plan, sessionId);
+	if (answer.ref?.plan && answer.plan && answer.capped) holdPlanTurn(c, answer.plan, sessionId);
 	if (answer.ref && !answer.ref.plan && context.keyOnce.has(sessionId))
 		await c.db.execute("DELETE FROM pay_once WHERE session = ?", sessionId);
 	const { decision } = answer;
@@ -197,7 +252,7 @@ export async function turnPayer(
 /** The person chose the key for the next turn of the item's session (`useKeyNow`): refused when no key can pay. */
 export async function useKeyOnce(c: ItemsCtx, sessionId: string): Promise<boolean> {
 	const session = c.vars.sessions.get(sessionId);
-	if (!session || !paysWithRule(session)) return false;
+	if (!session || !paysWithRule(session, false, sessionModel(session))) return false;
 	const context = await payerContext(c);
 	const answer = payerOf(c, context, session, sessionModel(session), true);
 	if (!answer.ref || answer.ref.plan) return false;

@@ -736,6 +736,8 @@ export type StepFact =
 			sandboxFailed?: string;
 			/** Measured hosted memory and limit in MiB, plus the sandbox size. */
 			outOfMemory?: OutOfMemory;
+			/** Its session stopped the turn at the delivery's `budget` (#100a): the item asks its budget question. */
+			budgetStopped?: true;
 			spend: TurnSpend;
 	  }
 	| {
@@ -754,6 +756,8 @@ export type StepFact =
 			providerRefusal?: ItemProviderRefusal /** As `turn_ended`'s. */;
 			sandboxFailed?: string;
 			outOfMemory?: OutOfMemory;
+			/** Its session stopped the review at the delivery's `budget` (#100a). */
+			budgetStopped?: true;
 			spend: TurnSpend;
 	  }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
@@ -868,6 +872,8 @@ export type Effect =
 			untrusted?: string[] /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */;
 			unsandboxed?: true /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */;
 			fresh?: { text: string; untrusted: string[]; unsandboxed?: true };
+			/** Where the turn is stopped while it runs (budget.ts `turnBudget`); absent where nothing measurable holds the item. */
+			budget?: import("./budget.js").TurnBudget;
 	  }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }

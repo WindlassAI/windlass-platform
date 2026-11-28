@@ -130,7 +130,38 @@ test("payWithFor: what pays, and what a limited plan does", () => {
 			{ payWith: "plan-then-key", whenLimited: "wait" },
 		],
 		["an agent no plan pays for", [], "opencode", "interactive", true, { payWith: "key", whenLimited: "wait" }],
-		["Windlass", [], "windlass", "item", true, { payWith: "key", whenLimited: "wait" }],
+		[
+			"Windlass: the plan pays; an item waits, and its banner may offer the key",
+			[],
+			"windlass",
+			"item",
+			true,
+			{ payWith: "plan", whenLimited: "wait", keyWhenLimited: true },
+		],
+		[
+			"Windlass: a session is asked",
+			[],
+			"windlass",
+			"interactive",
+			true,
+			{ payWith: "plan", whenLimited: "ask", keyWhenLimited: true },
+		],
+		[
+			"Windlass without a key offering the model: always waits",
+			[],
+			"windlass",
+			"interactive",
+			false,
+			{ payWith: "plan", whenLimited: "wait" },
+		],
+		[
+			"Windlass follows no plan agent's choice",
+			[choice("codex", "key", "key")],
+			"windlass",
+			"item",
+			true,
+			{ payWith: "plan", whenLimited: "wait", keyWhenLimited: true },
+		],
 	];
 	for (const [name, choices, harness, origin, hasKey, expected] of cases)
 		assert.deepEqual(payWithFor(choices, harness, origin, hasKey), expected, name);
@@ -374,5 +405,135 @@ test("on a machine the ChatGPT plan can pay with plans off for the account; a Cl
 		assert.equal(await usablePlan(db, "u_off", "anthropic", true), null);
 	} finally {
 		(config as { plans: unknown }).plans = before;
+	}
+});
+
+test("Windlass on a limited ChatGPT plan: an item waits (the key offered), a session asks, and without a key both wait", () => {
+	const chatgpt = { ...planNow("limited"), provider: "openai" as const };
+	type Case = ["item" | "interactive", boolean, "ok" | "limited", string, boolean?];
+	const cases: Case[] = [
+		["item", true, "ok", "plan"],
+		["interactive", true, "ok", "plan"],
+		["item", true, "limited", "wait", true],
+		["item", false, "limited", "wait", false],
+		["interactive", true, "limited", "ask"],
+		["interactive", false, "limited", "wait", false],
+	];
+	for (const [origin, hasKey, health, expected, keyNow] of cases) {
+		const rule = payWithFor([], "windlass", origin, hasKey);
+		const decision = decidePayer(
+			input({ rule, origin, hasKey, plan: health === "ok" ? { ...chatgpt, ...planNow("ok") } : chatgpt }),
+		);
+		const name = `${origin} key=${hasKey} ${health}`;
+		assert.equal(kind(decision), expected, name);
+		if (keyNow !== undefined) assert.ok("wait" in decision && decision.wait.keyNow === keyNow, name);
+	}
+	const ask = decidePayer(
+		input({ rule: payWithFor([], "windlass", "interactive", true), origin: "interactive", plan: chatgpt }),
+	);
+	assert.ok("ask" in ask);
+	assert.equal(ask.ask.sentence, "Your ChatGPT plan is limited until 14:00 UTC. Wait, or use your key for this turn?");
+	// "Use my key": this turn only; never without a key that offers the model.
+	const rule = payWithFor([], "windlass", "interactive", true);
+	assert.equal(kind(decidePayer(input({ rule, origin: "interactive", plan: chatgpt, keyOnce: true }))), "key");
+	// The plan alone pays otherwise: a missing or broken plan never falls back to the key the picker did not choose.
+	assert.equal(kind(decidePayer(input({ rule, plan: { ...chatgpt, health: "invalid" } }))), "refuse");
+	assert.equal(kind(decidePayer(input({ rule, plan: null }))), "refuse");
+});
+
+test("hosted Windlass in the user actor: its ChatGPT models follow Pay with, and the key runs the openai/ model for one turn", async () => {
+	process.env.WLP_PLAN_USERS = "*";
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
+	const payer = await import("../server/src/actors/user-payer.js");
+	const { config } = await import("../server/src/config.js");
+	const plans = config.plans;
+	(config as { plans: unknown }).plans = "all";
+	const { sql, db } = account();
+	for (const table of [...CREDENTIAL_TABLES, payer.PAY_ONCE_TABLE]) sql.exec(table);
+	const until = Date.now() + 3600_000;
+	sql
+		.prepare(
+			"INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok, health) VALUES ('openai', 'x', 'p1', NULL, 1, 1, 1, ?)",
+		)
+		.run(
+			JSON.stringify({
+				health: "limited",
+				limitedUntil: until,
+				resetKnown: true,
+				healthAt: Date.now(),
+				backoff: 0,
+				authFailures: 0,
+				windows: [],
+			}),
+		);
+	const session = (id: string, model: string, item?: string) => ({
+		id,
+		harness: "windlass" as const,
+		model,
+		place: { kind: "hosted" as const },
+		status: "idle",
+		...(item && { item: { id: item } }),
+	});
+	const sessions = new Map([
+		["person", session("person", "gpt-5")],
+		["item", session("item", "gpt-5", "i1")],
+		["keyed", session("keyed", "openai/gpt-5")],
+	]);
+	const c = {
+		key: ["u_windlass"],
+		db,
+		vars: { sessions, items: { items: new Map([["i1", { origin: null, sessionId: "item" }]]) } },
+	} as unknown as Parameters<typeof payer.payerOf>[0];
+	try {
+		assert.equal(payer.paysWithRule(sessions.get("person")!, false, "gpt-5"), true);
+		assert.equal(payer.paysWithRule(sessions.get("keyed")!, false, "openai/gpt-5"), false, "the picker chose the key");
+		assert.equal(
+			payer.paysWithRule({ harness: "windlass", place: { kind: "machine", machineId: "desk" } }, true, "gpt-5"),
+			false,
+			"Windlass on a machine keeps its own plan rule",
+		);
+		// No OpenAI key: both wait.
+		let context = await payer.payerContext(c);
+		assert.equal(kind(payer.payerOf(c, context, sessions.get("person") as never, "gpt-5").decision), "wait");
+		const waiting = payer.payerOf(c, context, sessions.get("item") as never, "gpt-5");
+		assert.ok("wait" in waiting.decision && !waiting.decision.wait.keyNow && waiting.plan === "openai");
+		// An OpenAI key that does not offer the model is no key here.
+		sql.exec(
+			`INSERT INTO model_provider (provider, sealed, generation, last4, added_at, checked_at, check_ok, models) VALUES ('openai', 'x', 'k1', 'abcd', 1, 1, 1, '["gpt-4.1"]')`,
+		);
+		context = await payer.payerContext(c);
+		assert.equal(kind(payer.payerOf(c, context, sessions.get("person") as never, "gpt-5").decision), "wait");
+		sql.exec(`UPDATE model_provider SET models = '["gpt-4.1","gpt-5"]'`);
+		context = await payer.payerContext(c);
+		assert.equal(kind(payer.payerOf(c, context, sessions.get("person") as never, "gpt-5").decision), "ask");
+		const item = payer.payerOf(c, context, sessions.get("item") as never, "gpt-5");
+		assert.ok("wait" in item.decision && item.decision.wait.keyNow, "the item's banner offers the key");
+		// "Use my key" for the person's turn: the key's version of the same model, this turn.
+		const once = await payer.turnPayer(c, "person", "gpt-5", true);
+		assert.deepEqual({ ...once?.ref }, { provider: "openai", generation: "k1" });
+		assert.equal(once?.keyModel, "openai/gpt-5");
+		assert.equal(
+			kind((await payer.turnPayer(c, "person", "gpt-5", false))!.decision),
+			"ask",
+			"the next turn asks again",
+		);
+		// "Use my key now" on the item's banner: its next turn, once.
+		assert.ok(await payer.useKeyOnce(c, "item"));
+		const itemOnce = await payer.turnPayer(c, "item", "gpt-5", false);
+		assert.equal(itemOnce?.keyModel, "openai/gpt-5");
+		assert.equal(kind((await payer.turnPayer(c, "item", "gpt-5", false))!.decision), "wait");
+		// The plan healthy again: it pays, pinned, with no key model. Windlass's turns never held a place under the
+		// plan's parallel-turn cap: Codex's three do not hold it back, and it takes none of theirs.
+		sql.exec("UPDATE model_plan SET health = NULL");
+		for (const codex of ["x1", "x2", "x3"]) {
+			sessions.set(codex, { ...session(codex, "gpt-5"), harness: "codex" as never, status: "working" });
+			payer.holdPlanTurn(c, "openai", codex);
+		}
+		const plan = await payer.turnPayer(c, "person", "gpt-5", false);
+		assert.deepEqual({ ...plan?.ref }, { provider: "openai", generation: "p1", plan: true });
+		assert.equal(plan?.keyModel, undefined);
+		assert.equal(payer.planRunning(c, "openai"), 3, "the Windlass turn took no place");
+	} finally {
+		(config as { plans: unknown }).plans = plans;
 	}
 });

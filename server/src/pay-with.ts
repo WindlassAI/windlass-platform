@@ -21,7 +21,7 @@ import {
 	type WhenLimited,
 } from "./contract.js";
 import type { DefaultsDb } from "./repository-defaults.js";
-import { machineHarness } from "./sandbox/harnesses.js";
+import { machineHarness, planProviders, windlassProvider } from "./sandbox/harnesses.js";
 
 export const PAY_WITH_TABLE =
 	"CREATE TABLE IF NOT EXISTS pay_with (harness TEXT PRIMARY KEY, pay_with TEXT NOT NULL, when_limited TEXT, updated_at INTEGER NOT NULL)";
@@ -80,15 +80,44 @@ export async function savePayWith(db: DefaultsDb, patch: PayWithPatch, now = Dat
 }
 
 /**
+ * Whether a plan pays for a hosted turn of `harness` on `model`: a plan agent's always (its Pay with decides between
+ * the plan and the key), Windlass's for its unqualified models, which run on the ChatGPT plan; its `openai/…` ones run
+ * on the key, which the model picker chose.
+ */
+export function planPays(harness: HarnessId | undefined, model?: string): boolean {
+	const id = harness ?? "windlass";
+	if (PAY_WITH_HARNESSES.includes(id)) return true;
+	return planProviders(id).length > 0 && !windlassProvider(model);
+}
+
+/**
+ * Pay with as `decidePayer` applies it. `keyWhenLimited`: the key may pay for one turn while the plan is limited,
+ * though the plan alone pays otherwise (Windlass: its model picker chose the plan, and the key runs the model's
+ * `openai/` version only when the person or the item's banner asks for it).
+ */
+export interface PayRule {
+	payWith: PayWith;
+	whenLimited: WhenLimited;
+	keyWhenLimited?: true;
+}
+
+/**
  * The rule a hosted turn of `harness` follows at its start (`decidePayer`): what pays, and what a limited plan does.
- * `hasKey`: whether the user has a saved key this agent can use.
+ * `hasKey`: whether the user has a saved key this agent can use (for Windlass, one that offers the model's
+ * `openai/` version).
  */
 export function payWithFor(
 	choices: readonly PayWithChoice[],
 	harness: HarnessId,
 	origin: TurnOrigin,
 	hasKey: boolean,
-): { payWith: PayWith; whenLimited: WhenLimited } {
+): PayRule {
+	// Windlass has no Pay with choice: the plan pays its ChatGPT models, and when it is limited an item waits (its banner
+	// offers the key) and a person is asked, as the defaults by origin are; without a key both only wait.
+	if (!PAY_WITH_HARNESSES.includes(harness) && planProviders(harness).length > 0)
+		return hasKey
+			? { payWith: "plan", whenLimited: WHEN_LIMITED_DEFAULTS[origin], keyWhenLimited: true }
+			: { payWith: "plan", whenLimited: "wait" };
 	// No plan can pay for it, so only a key does; a key is never "limited" in this sense.
 	if (!PAY_WITH_HARNESSES.includes(harness)) return { payWith: "key", whenLimited: "wait" };
 	const choice = choices.find(one => one.harness === harness) ?? defaultChoice(harness);
@@ -109,7 +138,7 @@ export interface PlanNow {
 }
 
 export interface PayerInput {
-	rule: { payWith: PayWith; whenLimited: WhenLimited };
+	rule: PayRule;
 	origin: TurnOrigin;
 	plan: PlanNow | null;
 	hasKey: boolean;
@@ -170,7 +199,7 @@ export function decidePayer(input: PayerInput): PayerDecision {
 			? `Your ${name} is limited until ${clock(plan.limitedUntil!)}.`
 			: `Your ${name} reached its limit; it is tried again at ${clock(plan.limitedUntil!)}.`
 		: `Your ${name} is already paying for ${plan.running} turns at once, the most it runs together.`;
-	const keyNow = hasKey && orKey;
+	const keyNow = hasKey && (orKey || rule.keyWhenLimited === true);
 	if (origin === "interactive") {
 		if (rule.whenLimited === "ask" && keyNow)
 			return { ask: { sentence: `${sentence} Wait, or use your key for this turn?`, retryAt } };

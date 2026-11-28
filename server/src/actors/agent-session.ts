@@ -327,24 +327,34 @@ const CHATGPT_PLAN_MISSING =
 /**
  * Hosted Windlass's unqualified models run on the ChatGPT plan, pinned like any plan and behind the same kill switch
  * (`WLP_PLAN_USERS`, which `internalCredentialGeneration` applies too). A demo calls no model, and an environment
- * build runs no agent: neither pins one.
+ * build runs no agent: neither pins one. When the plan is limited, Pay with's "When limited" holds as for a plan agent
+ * (user-payer.ts): an item waits for the reset, a person is asked, and "use my key" (`keyOnce`) runs this one turn on
+ * the OpenAI key's version of the model (`openai/<model>`), where a saved key offers it.
  */
-async function chatgptPlanCredential(c: Ctx, meta: SessionMeta, model: string): Promise<TurnCredential> {
+async function chatgptPlanCredential(
+	c: Ctx,
+	meta: SessionMeta,
+	model: string,
+	keyOnce?: boolean,
+): Promise<TurnCredential> {
 	if (meta.demo || meta.environmentBuild) return { model };
 	if (!plansAllowed(meta.uid)) throw new UserError(CHATGPT_PLAN_OFF, { code: "harness_signed_out" });
 	const ref = { provider: "openai", plan: true } as const;
 	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref);
 	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
+	const answer = await userActor(c, meta.uid).internalTurnPayer({ sessionId: meta.sessionId, model, keyOnce });
+	if (answer) return payerCredential(meta, answer, model);
 	return { model, key: { ...ref, generation } };
 }
 
 /**
  * Pay with's answer as the turn's credential (user-payer.ts): what pays, or the refusal a person's prompt or an item's
- * turn shows: `PLAN_ASK` (wait, or the key this time), `PLAN_LIMITED` (wait), or nothing can pay.
+ * turn shows: `PLAN_ASK` (wait, or the key this time), `PLAN_LIMITED` (wait), or nothing can pay. A key paying for
+ * Windlass's ChatGPT model runs the key's version of it (`keyModel`), for this turn only.
  */
 function payerCredential(meta: SessionMeta, answer: PayerAnswer, model: string): TurnCredential {
 	const { decision } = answer;
-	if ("pay" in decision && answer.ref) return { model, key: answer.ref };
+	if ("pay" in decision && answer.ref) return { model: answer.keyModel ?? model, key: answer.ref };
 	if ("ask" in decision) throw new UserError(decision.ask.sentence, { code: PLAN_ASK });
 	if ("wait" in decision) {
 		if (meta.origin?.kind !== "item") throw new UserError(decision.wait.sentence, { code: PLAN_LIMITED });
@@ -427,7 +437,7 @@ export async function turnCredential(
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
 		if (!provider) {
-			if (hosted) return chatgptPlanCredential(c, meta, model);
+			if (hosted) return chatgptPlanCredential(c, meta, model, keyOnce);
 			return planRelay ? machineChatgptPlan(c, meta, model) : { model };
 		}
 		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
@@ -1225,7 +1235,7 @@ async function startPrompt(
 		let credential: ActiveTurn["credential"];
 		// A Settings key, or hosted the ChatGPT plan: refused here, before anything is taken.
 		if (caps.events === "windlass" && (windlassProvider(requested) || meta.place.kind === "hosted"))
-			credential = await turnCredential(c, meta, undefined, requested);
+			credential = await turnCredential(c, meta, undefined, requested, undefined, undefined, input.payWith === "key");
 		// On a machine whose runner has a plan relay, Windlass's ChatGPT models pin the plan: refused here, as hosted.
 		else if (caps.events === "windlass" && meta.place.kind === "machine" && !meta.demo && !meta.environmentBuild) {
 			const known = await runnerLink(c, meta.place.machineId).facts();
@@ -1320,14 +1330,16 @@ async function startPrompt(
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
 		});
-		if (usesPlatformModel(meta.harness, model)) {
+		// A turn the key pays in place of the ChatGPT plan (`openai/<model>`) spends none of the daily ChatGPT allowance.
+		const runs = credential?.model ?? model;
+		if (usesPlatformModel(meta.harness, runs)) {
 			await settleTokenReceipts(c, meta.uid).catch(() => {
 				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", {
 					code: "usage_unavailable",
 				});
 			});
 		}
-		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId, model);
+		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId, runs);
 		if (!claim.known || c.vars.destroying)
 			throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
@@ -1892,6 +1904,8 @@ async function itemTurnEnded(
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
 	if (item.outOfMemory) fact.outOfMemory = item.outOfMemory;
+	// Stopped at its budget while it ran (budget-watch.ts), not by a person or a restart: the item asks for more.
+	if (item.budgetStopped && !item.providerRefusal) fact.budgetStopped = true;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () =>
@@ -2003,6 +2017,8 @@ export const agentSession = actor({
 				await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
 			// Rows from before it have no whole-task prompt: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "fresh")) await db.execute("ALTER TABLE inbox ADD COLUMN fresh TEXT");
+			if (!inboxColumns.some(col => col.name === "budget"))
+				await db.execute("ALTER TABLE inbox ADD COLUMN budget TEXT");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 			await migrateJournal(db);
 		},

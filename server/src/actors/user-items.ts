@@ -1240,7 +1240,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	// Pay with is read only when a hosted turn of a plan agent waits here.
 	const paying = [...c.vars.items.requests.values()].some(request => {
 		const session = c.vars.sessions.get(request.session);
-		return session !== undefined && paysWithRule(session);
+		return session !== undefined && paysWithRule(session, false, sessionModel(session));
 	});
 	const [accounts, hosted, payers] = await Promise.all([
 		providerAccounts(c.db, Date.now()),
@@ -1311,7 +1311,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		// Pay with (user-payer.ts): a hosted turn of a plan agent waits for its plan's reset or room under its cap, and
 		// counts against the limits of what pays for it, the plan's or the key's.
-		const payer = payers && paysWithRule(session) ? payerOf(c, payers, session, sessionModel(session)) : null;
+		const model = sessionModel(session);
+		const payer = payers && paysWithRule(session, false, model) ? payerOf(c, payers, session, model) : null;
 		const answer: Admission =
 			(payer && payers && planHold(payer, payers, request.attempt, now)) ||
 			admit({
@@ -1365,7 +1366,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			state.slots.set(slot.id, slot);
 			granted.push(slot);
 			// Its plan's place under the cap is taken with the slot: the next request in this pass counts it.
-			if (payer?.ref?.plan && payer.plan) holdPlanTurn(c, payer.plan, session.id, now);
+			if (payer?.ref?.plan && payer.plan && payer.capped) holdPlanTurn(c, payer.plan, session.id, now);
 			if (hostedLimitsApply(session.place)) hostedRunning.add(session.id);
 			continue;
 		}

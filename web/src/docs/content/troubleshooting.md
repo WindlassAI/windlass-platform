@@ -188,6 +188,12 @@ Your plan reached its limit, and your rule for a limited plan is **Ask me**. Cho
 **"Your Claude plan is limited until … UTC. Send this again then."**\
 Your plan reached its limit and your rule is to wait, or no saved key could pay instead. Your message stays in the composer.
 
+**"Your ChatGPT plan is limited until … UTC. Wait, or use your key for this turn?"** (Windlass)\
+Windlass's ChatGPT model is on your limited ChatGPT plan, and your OpenAI key offers the same model. **Use my key this time** runs this one turn on the key's version of the model (for `gpt-5`, `openai/gpt-5`); the next prompt is on the plan again. **Wait** keeps the message so you can send it after the reset. Without an OpenAI key that offers the model, the composer says until when and keeps your message.
+
+**"… was stopped: this turn used what was left of the item's budget."**\
+A work item's turn reached its budget while it ran. Its work so far is kept. The item asks for more; **Give it more** goes on from where it stopped.
+
 **A plan's cell says "Stopped working"**\
 The provider refused the plan's token twice in a row: it was revoked, expired, or replaced elsewhere. Choose **Reconnect** in that cell and run the command again.
 

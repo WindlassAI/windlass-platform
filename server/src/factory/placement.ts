@@ -1,5 +1,5 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
-import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
+import { MAX_PROVIDER_WAIT, providerWait } from "../provider-usage.js";
 import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, isolationName, sandboxSlots } from "../contract.js";
 import type {
@@ -93,8 +93,9 @@ export interface PlacementRoute {
 	/** Display names at approval, for a destination later removed from inventory. */
 	names?: Record<string, string>;
 }
+/** A limit at `place`, or Windlass's plan's (its ChatGPT models run on the ChatGPT plan at every place). */
 export function limitApplies(limit: NonNullable<PlacementInventory["limited"]>[number], place: string) {
-	return limit.machineId === place || (limit.machineId === WINDLASS_ACCOUNT && limit.harness === "windlass");
+	return limit.machineId === place || (limit.machineId.startsWith("plan/") && limit.harness === "windlass");
 }
 const GiB = 2 ** 30;
 export function placeKey(place: SandboxPlace) {

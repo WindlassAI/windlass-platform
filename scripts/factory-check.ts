@@ -3926,7 +3926,7 @@ expect(
 );
 
 {
-	const { budgetLeft, budgetUnits, overBudgetNow, turnUsd, windowShare } = await import(
+	const { budgetLeft, budgetUnits, overBudgetNow, runningSpend, turnBudget, turnUsd, windowShare } = await import(
 		"../server/src/factory/budget.js"
 	);
 	const spent = { tokens: 3_000_000, rawTokens: 9_000_000, turns: 2, activeSeconds: 60, hostedSeconds: 10 };
@@ -3989,14 +3989,31 @@ expect(
 			turnUsd(meter, null) === null,
 		String(turnUsd(meter, models)),
 	);
+	const atUsd = turnBudget(FACTORY_DEFAULTS.item, { ...spent, usd: 3.5 });
 	expect(
-		"during a turn: the threshold of what was left decides the stop (#100a seam)",
+		"during a turn: it stops past what was left, with a grace of 5% of the budget (#100a)",
 		JSON.stringify(budgetLeft(FACTORY_DEFAULTS.item, { ...spent, usd: 3.5 })) ===
 			JSON.stringify({ figure: "usd", left: 1.5 }) &&
-			overBudgetNow(1.5, 1.6) &&
-			!overBudgetNow(1.5, 1.2) &&
-			overBudgetNow(1.5, 1.2, 0.7) &&
-			!overBudgetNow(undefined, 99),
+			atUsd?.figure === "usd" &&
+			Math.abs(atUsd.stopAt - 1.75) < 1e-9 &&
+			overBudgetNow(atUsd, 1.75) &&
+			!overBudgetNow(atUsd, 1.6) &&
+			JSON.stringify(turnBudget(FACTORY_DEFAULTS.item, { ...spent, planPct: 18 })) ===
+				JSON.stringify({ figure: "planPct", stopAt: 3 }) &&
+			JSON.stringify(turnBudget({ tokens: 2_000_000, hostedSeconds: 1 }, spent)) ===
+				JSON.stringify({ figure: "tokens", stopAt: 100_000 }) &&
+			turnBudget({ tokens: 2_000_000, hostedSeconds: 1, usd: 5 }, { ...spent, usd: 5.5 })?.stopAt === 0.25,
+		JSON.stringify(atUsd),
+	);
+	expect(
+		"during a turn: unknown spend never stops it, nor does a turn without a budget",
+		!overBudgetNow(atUsd, null) &&
+			!overBudgetNow(atUsd, undefined) &&
+			!overBudgetNow(atUsd, Number.NaN) &&
+			!overBudgetNow(undefined, 99) &&
+			runningSpend("usd", { usd: null, tokens: 9e9 }) === null &&
+			runningSpend("planPct", { usd: 9, planShare: 2 }) === 2 &&
+			runningSpend("tokens", { tokens: 5 }) === 5,
 	);
 }
 drive("an item on a key asks in dollars when its budget is used", newItem({ budget: { usd: 4 } }), [
@@ -4050,6 +4067,97 @@ drive("an item on a plan asks in its share of the 5-hour window", newItem({ budg
 		also: o => holds(o.item.budget.planPct === 11, `5% more on what was used: ${o.item.budget.planPct}`),
 	},
 ]);
+
+const delivered = (o: Outcome) => o.effects.find(e => e.kind === "deliver") as Extract<Effect, { kind: "deliver" }>;
+drive(
+	"an item's turn stopped at its budget while it ran asks for more, and goes on where it stopped",
+	newItem({ budget: { usd: 4 } }),
+	[
+		{
+			fact: () => ({ kind: "start", by: "person:u1" }),
+			state: "queued",
+			effects: ["deliver", "check_turn"],
+			also: o =>
+				holds(
+					JSON.stringify(delivered(o).budget) === JSON.stringify({ figure: "tokens", stopAt: 2_100_000 }),
+					`before a priced turn the tokens hold: ${JSON.stringify(delivered(o).budget)}`,
+				),
+		},
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{
+			fact: ended("unresolved", FAILING, { spend: { usd: 3 } }),
+			state: "working",
+			effects: ["deliver", "check_turn"],
+			also: o =>
+				holds(
+					delivered(o).budget?.figure === "usd" && Math.abs(delivered(o).budget!.stopAt - 1.2) < 1e-9,
+					`the next turn may use what is left and the grace: ${JSON.stringify(delivered(o).budget)}`,
+				),
+		},
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{
+			fact: k =>
+				({ ...(ended("interrupted", null, { spend: { usd: 1.25 } })(k) as object), budgetStopped: true }) as Fact,
+			state: "waiting",
+			wait: "budget",
+			effects: ["ask"],
+			also: o =>
+				holds(
+					o.item.wait?.sentence === "Used $4.25 of its $4 budget. Give it more to continue." &&
+						o.item.question?.choices[0]?.label === "Give it $1 more" &&
+						o.item.run?.step.interruptions === 0,
+					`asked in dollars, not counted as a cut-off: ${o.item.wait?.sentence} ${o.item.question?.choices[0]?.label}`,
+				),
+		},
+		{
+			fact: answer("raise"),
+			state: "working",
+			effects: ["deliver", "check_turn"],
+			also: o =>
+				holds(
+					delivered(o).text.startsWith("You were stopped when you used your budget. Continue from where you were.") &&
+						delivered(o).budget?.figure === "usd",
+					`resumed where it stopped: ${delivered(o).text.slice(0, 80)} ${JSON.stringify(delivered(o).budget)}`,
+				),
+		},
+	],
+);
+drive(
+	"an item on a plan stopped at its share of the 5-hour window asks for 5% more",
+	newItem({ budget: { planPct: 5 } }),
+	[
+		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{
+			fact: ended("unresolved", FAILING, { tokens: 10, spend: { plan: { fiveHour: 3, week: 1 } } }),
+			state: "working",
+			effects: ["deliver", "check_turn"],
+			also: o =>
+				holds(
+					JSON.stringify(delivered(o).budget) === JSON.stringify({ figure: "planPct", stopAt: 2.25 }),
+					JSON.stringify(delivered(o).budget),
+				),
+		},
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{
+			fact: k =>
+				({
+					...(ended("stopped", null, { tokens: 10, spend: { plan: { fiveHour: 2.3, week: 1 } } })(k) as object),
+					budgetStopped: true,
+				}) as Fact,
+			state: "waiting",
+			wait: "budget",
+			effects: ["ask"],
+			also: o =>
+				holds(
+					o.item.wait?.sentence === "Used its 5% of your 5-hour window. Give it more to continue." &&
+						o.item.question?.choices[0]?.label === "Give it 5% more",
+					`${o.item.wait?.sentence} ${o.item.question?.choices[0]?.label}`,
+				),
+		},
+		{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
+	],
+);
 
 const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId: "m1" } };
 drive("a machine out of memory asks how to continue in its slot", machineItem, [

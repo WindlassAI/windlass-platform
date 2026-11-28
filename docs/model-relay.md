@@ -267,11 +267,13 @@ Connections page know whether the plan is usable, at its limit, or no longer acc
 - **Where it is kept.** On the plan's `model_plan` row (`health`, JSON), only while the plan is at the generation the
   answer was for; a new connection starts healthy. A plan's limit is its own account (`plan/<provider>/<generation>`
   in `server/src/actors/provider-accounts.ts`), apart from the key of the same provider: a limited key does not
-  hold plan-paid turns, nor the other way round.
+  hold plan-paid turns, nor the other way round. Windlass's ChatGPT models count against the ChatGPT plan wherever
+  they run (`accountLocation`); the limits its sign-in kept before move there once (`moveWindlassLimits`).
 - **What uses it.** Pay with at a turn's start (`server/src/pay-with.ts` `decidePayer`, `server/src/actors/user-payer.ts`):
   a limited plan waits, pays with the key, or asks, by the rule; an invalid one falls back to the key where the rule
-  allows, or asks the user to reconnect. At most `WLP_PLAN_PARALLEL_TURNS` (3) turns run on one plan at once; past it
-  a turn waits as at a limit. An item filed by an unlinked account from another surface (`ItemFiler.verified`) never
+  allows, or asks the user to reconnect. Hosted Windlass's ChatGPT models follow the defaults by origin (an item waits,
+  a person is asked), and "use my key" runs one turn on the OpenAI key's `openai/<model>` where the key offers it. At most `WLP_PLAN_PARALLEL_TURNS` (3) turns of a plan agent run on one plan at once
+  (Windlass's are not counted); past it a turn waits as at a limit. An item filed by an unlinked account from another surface (`ItemFiler.verified`) never
   pays with the owner's plan. A Claude Code refusal names no reset, so an item's wait takes the plan's reset as the
   relay read it.
 

@@ -33,6 +33,8 @@ A work item waiting for a limited plan says so on its page, for example "Your Cl
 
 In your own session, a prompt sent while the plan is limited asks first when your rule is **Ask me** (the default): **Use my key this time** sends it on your key, and **Wait** keeps it in the composer so you can send it after the reset. With **Wait for the reset** the composer says until when and keeps your message.
 
+Windlass has no **Who pays** choice: the model you pick decides. Its ChatGPT models run on your ChatGPT plan, and a model under a provider (such as `openai/gpt-5`) runs on that key. When the ChatGPT plan is limited, hosted Windlass does what the defaults say: a work item waits for the reset, and your own session asks. **Use my key this time** (or **Use my key now** on an item) runs that one turn on your OpenAI key's version of the same model, such as `openai/gpt-5` for `gpt-5`, where your OpenAI key offers it; the next turn is on the plan again. Without such a key, it always waits. Windlass's turns do not count toward the plan's few turns at once. Windlass's limits on the ChatGPT plan show in the plan's cell, as Codex's do.
+
 When a hosted agent in the composer is not connected, it says so and links to its cell.
 
 ### Model providers

@@ -310,10 +310,7 @@ export function windowShare(
 	return Math.max(0, renewed ? after.usedPct! : after.usedPct! - before.usedPct!);
 }
 
-/**
- * What an item has left of the figure that holds it, for a turn about to start: the seam for stopping a turn at its
- * budget while it runs (#100a, `overBudgetNow`). Undefined where nothing measurable holds it.
- */
+/** What an item has left of the figure that holds it, for a turn about to start. Undefined where nothing measurable holds it. */
 export function budgetLeft(
 	budget: ItemBudget,
 	spent: ItemSpend,
@@ -326,13 +323,48 @@ export function budgetLeft(
 	return undefined;
 }
 
+/** How far past its budget a running turn goes before it is stopped: a share of the item's whole budget in that figure. */
+export const TURN_BUDGET_GRACE = 0.05;
+
 /**
- * During a turn: whether what it used so far (`running`, in the figure's unit) takes the item past `threshold` of
- * what it had left when the turn started (`left`). The session that sees the running spend asks this and, on true,
- * stops the turn as a person's Stop would; the item then asks its budget question.
+ * Where an item's turn is stopped while it runs (#100a): the figure that holds the item (`budgetLeft`) and how much of
+ * it the turn may use, what was left plus a small grace (`TURN_BUDGET_GRACE`), so that a turn about to finish is not
+ * cut off for a few cents. Decided with the turn (change.ts `nextTurn`) and handed to its session with the delivery.
  */
-export function overBudgetNow(left: number | undefined, running: number, threshold = 1): boolean {
-	return left !== undefined && left >= 0 && running >= left * threshold;
+export interface TurnBudget {
+	figure: "usd" | "planPct" | "tokens";
+	/** What the turn may use, in the figure's unit: dollars, points of the plan's 5-hour window, or weighted tokens. */
+	stopAt: number;
+}
+
+export function turnBudget(budget: ItemBudget, spent: ItemSpend): TurnBudget | undefined {
+	const held = budgetLeft(budget, spent);
+	if (!held) return undefined;
+	const grace = (budget[held.figure] ?? 0) * TURN_BUDGET_GRACE;
+	const stopAt = held.figure === "tokens" ? Math.round(held.left + grace) : held.left + grace;
+	return { figure: held.figure, stopAt };
+}
+
+/**
+ * During a turn: whether what it used so far in its budget's figure (`running`) reached where it stops. Unknown use
+ * (null or undefined: a price not known, a window not seen, an agent that reports its tokens only at the end) never
+ * stops a turn. On true the session stops the turn as a person's Stop would, and the item asks its budget question.
+ */
+export function overBudgetNow(budget: TurnBudget | undefined, running: number | null | undefined): boolean {
+	return budget !== undefined && typeof running === "number" && Number.isFinite(running) && running >= budget.stopAt;
+}
+
+/**
+ * What a running turn used so far in `figure`, from what is known of it live: its dollars where a key pays (`usd`,
+ * priced as at its end, `turnUsd`), its rise in the plan's 5-hour window where a plan pays (`planShare`, `windowShare`),
+ * or its weighted tokens where its agent's tokens count and come as it works (`tokens`). Null where it is not known.
+ */
+export function runningSpend(
+	figure: TurnBudget["figure"],
+	seen: { usd?: number | null; planShare?: number | null; tokens?: number | null },
+): number | null {
+	const value = figure === "usd" ? seen.usd : figure === "planPct" ? seen.planShare : seen.tokens;
+	return typeof value === "number" ? value : null;
 }
 
 // ---------------------------------------------------------------------------------------------

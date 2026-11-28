@@ -20,7 +20,16 @@ import { subtaskMinimum, approvalText, planRecovery } from "./feature-plan.js";
 import { crossRepo, plannerText } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
-import { budgetStop, itemAgent, noteAgentTurn, spellPct, spellTokens, spellUsd } from "./budget.js";
+import {
+	budgetStop,
+	itemAgent,
+	noteAgentTurn,
+	spellPct,
+	spellTokens,
+	spellUsd,
+	turnBudget,
+	type TurnBudget,
+} from "./budget.js";
 import { addSandbox, addTurn, noUsage, PAID_BY_TOKEN, sandboxSeconds } from "./cost.js";
 import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 import { environmentFailure } from "./check-environment.js";
@@ -552,17 +561,22 @@ export const backstopTurns = (item: FactoryItem): number =>
 /** The failures this run already had a fix turn for (the stuck detector): a run stored before they were kept has its last one. */
 export const failuresOf = (run: Run): string[] => run.failures ?? (run.lastFailure === null ? [] : [run.lastFailure]);
 
-export function turnBudgetStop(c: Change) {
+/** The budget the item's next turn is held to, and what was spent of it. */
+function heldBudget(c: Change): { budget: ItemBudget; spent: ItemSpend } {
 	const { item } = c;
 	const working = item.workingSince === null ? 0 : Math.max(0, c.at - item.workingSince) / 1000;
 	const spent = { ...item.spent, activeSeconds: item.spent.activeSeconds + working };
 	// A feature's own turns (planning, summary, review) are held to its own allowance; its subtasks hold to theirs.
 	const feature = item.mode === "orchestrate";
-	return budgetStop(
-		feature ? { ...item.budget, tokens: ownTokens(item) } : item.budget,
-		feature ? ownSpent(item, spent) : spent,
-		item.place,
-	);
+	return {
+		budget: feature ? { ...item.budget, tokens: ownTokens(item) } : item.budget,
+		spent: feature ? ownSpent(item, spent) : spent,
+	};
+}
+
+export function turnBudgetStop(c: Change) {
+	const { budget, spent } = heldBudget(c);
+	return budgetStop(budget, spent, c.item.place);
 }
 
 export function nextTurn(c: Change, plan: TurnPlan): void {
@@ -630,12 +644,22 @@ export function nextTurn(c: Change, plan: TurnPlan): void {
 			text: [summary.text, plan.text].filter(Boolean).join("\n\n"),
 			...marked(summary.untrusted, plan.untrusted),
 		};
+	// Where the turn is stopped while it runs, should it use up what is left (#100a): its session watches its spend. A
+	// fix turn given the grace past its tokens may use the grace.
+	const held = heldBudget(c);
+	const budget: TurnBudget | undefined = grace
+		? {
+				figure: "tokens",
+				stopAt: Math.max(0, Math.round(item.budget.tokens * (1 + RULES.checkFixGrace) - item.spent.tokens)),
+			}
+		: turnBudget(held.budget, held.spent);
 	const delivery = {
 		kind: "deliver" as const,
 		key: c.key,
 		text: plan.kind === "refine" ? plan.text + plannerBudgetText(item) : plan.text,
 		fetchBase: plan.fetchBase,
 		...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }),
+		...(budget && { budget }),
 	};
 	const fresh =
 		plan.to !== "review" && !plan.newStep ? (summary ?? (ASKING.has(plan.kind) ? freshPlan(item) : null)) : null;
@@ -858,6 +882,20 @@ export function stepLimitReached(c: Change, plan: TurnPlan, limit: number, verif
 		text,
 		newStep: false,
 		...(failing && verified && { charge: "gate", fingerprint: gateFingerprint(verified) }),
+	});
+}
+
+/**
+ * The session stopped a turn at its budget while it ran (#100a, the delivery's `budget`): not an interruption of the
+ * step. The next turn goes on where it stopped, and `nextTurn` asks the budget question before it is given.
+ */
+export function budgetStopped(c: Change, plan: TurnPlan): void {
+	c.say("The turn was stopped when it used its budget.");
+	nextTurn(c, {
+		...plan,
+		text: "You were stopped when you used your budget. Continue from where you were.",
+		newStep: false,
+		charge: null,
 	});
 }
 

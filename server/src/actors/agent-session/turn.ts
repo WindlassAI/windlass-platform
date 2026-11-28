@@ -68,7 +68,7 @@ import { RULES } from "../../factory/blueprint.js";
 import { DATA_DIR } from "../../sandbox/provider.js";
 import { planReviewOf } from "../../factory/autonomy.js";
 import { reviewerTask } from "../../factory/reviewer-task.js";
-import { accountKey, type AccountLocation } from "../provider-accounts.js";
+import { accountKey, accountLocation, type AccountLocation } from "../provider-accounts.js";
 import { resetTime, type LimitEvent, type UsageObservation } from "../../provider-usage.js";
 import {
 	type ProviderRefusal,
@@ -118,6 +118,7 @@ import { publish } from "./summary.js";
 import { platformNotes, saveBackup, dropWorkspace } from "./workspace.js";
 import { shellQuote } from "../../util.js";
 import { tail, TurnProblem, githubConnection, ReviewRefused, itemPrompt, within, PlanWaitError } from "./common.js";
+import { BudgetWatch, budgetStopNote } from "./budget-watch.js";
 import { readSecrets } from "./secrets.js";
 import { usesScreenshotImage } from "./setup.js";
 import { metered, takeHold, removeSandbox, noteSandbox, closeMeter, useOf, meterAfterTurn, armIdle } from "./meter.js";
@@ -225,6 +226,8 @@ export interface TurnScope {
 	events: number;
 	/** False once the turn is closed: late callbacks from the agent are ignored. */
 	open: boolean;
+	/** An item's turn with a budget: its spend so far, measured to stop it there (budget-watch.ts). */
+	watch: BudgetWatch | null;
 	used: SandboxHandle | null;
 	/** While `openSandbox` runs: an error then is the sandbox's, not the agent's (`sandboxFailed`). */
 	opening: boolean;
@@ -365,6 +368,7 @@ export function newTurnScope(
 		acpTimeline,
 		events: 0,
 		open: true,
+		watch: null,
 		used: null,
 		opening: false,
 		turnEndsAt,
@@ -705,6 +709,18 @@ export async function startTurn(c: Ctx, t: TurnScope): Promise<void> {
 	}, limitMs);
 }
 
+/** The turn used its item's budget while it ran (budget-watch.ts): it stops as a person's Stop would, its work kept. */
+function stopAtBudget(c: Ctx, t: TurnScope, running: number): void {
+	const { meta, active } = t;
+	if (!t.open || active.closed || active.stopping || !active.item) return;
+	active.item.budgetStopped = true;
+	note(c, active.number, "warn", budgetStopNote(harnessName(meta.harness)));
+	console.log(
+		`[wlp] factory.budget_stop session=${meta.sessionId} turn=${active.number} figure=${active.item.row.budget?.figure} used=${running}`,
+	);
+	abortTurn(c, meta, active);
+}
+
 /** Picks the turn's model credential and refuses, before secrets or the sandbox, what the turn must not run. */
 export async function takeCredential(
 	c: Ctx,
@@ -733,6 +749,19 @@ export async function takeCredential(
 	// An item's budget on a plan is its share of the plan's windows: the snapshot it starts from (best effort).
 	if (active.item && key?.plan && active.item.planAtStart === undefined)
 		active.item.planAtStart = await planWindows(c, meta.uid, key.provider);
+	// The blueprint's budget for this turn: its spend is watched from here, to stop it there (#100a).
+	const budget = active.item?.row.budget;
+	if (budget && active.item && !t.watch)
+		t.watch = new BudgetWatch({
+			budget,
+			harness: meta.harness ?? "windlass",
+			credential,
+			itemSignIn: t.itemSignIn,
+			earlier: run?.usage ?? null,
+			planAtStart: active.item.planAtStart,
+			planWindows: () => (key?.plan ? planWindows(c, meta.uid, key.provider) : Promise.resolve(null)),
+			onOver: running => stopAtBudget(c, t, running),
+		});
 	if (run) {
 		run.credential = credential;
 		if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
@@ -802,8 +831,14 @@ export async function checkHarness(
 	const { meta, active, account, reviewer, critic, checkout, turn, effort } = t;
 	const { key } = credential;
 	// What the turn is handed goes by what the session's harness can do, asked of this sandbox's. Windlass's ChatGPT
-	// models are the platform's on the plan too: limited and counted as the ChatGPT sign-in, whose generation the plan's is.
-	account.provider = usesPlatformModel(meta.harness, credential.model) ? undefined : key?.provider;
+	// models count against the ChatGPT plan's limits wherever they run, also where no plan was pinned (provider-accounts.ts).
+	Object.assign(
+		account,
+		accountLocation({
+			...account,
+			provider: usesPlatformModel(meta.harness, credential.model) ? undefined : key?.provider,
+		}),
+	);
 	// A plan's limits are its own, apart from the key of the same provider (provider-accounts.ts).
 	if (account.provider && key?.plan) account.plan = true;
 	t.generation =
@@ -1008,6 +1043,7 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 			if (!t.open) return;
 			prompted(c, t);
 			if (update.sessionUpdate === "usage_update" && update.rateLimit) recordLimit(c, t, update.rateLimit);
+			if (update.sessionUpdate === "usage_update") t.watch?.reported(update.cost);
 			if (caps.events === "acp") t.acpTimeline.update(update);
 			const title = generatedSessionTitle(
 				update,
@@ -1729,6 +1765,8 @@ function windlassInputOf(
 		script: meta.demo ? layer.windlass.demoScript(t.text, turn) : undefined,
 		onEvent: event => {
 			if (!t.open) return;
+			const used = t.watch && reportedModelUsage(event);
+			if (used) t.watch?.used(used);
 			// Reads and model output can contain raw notes. Only accounting events belong in the timeline.
 			if (setup?.draft) {
 				const usage = reportedModelUsage(event, true);
@@ -1921,6 +1959,7 @@ export async function windDown(c: Ctx, t: TurnScope): Promise<void> {
 	if (c.vars.startClock === t.clock) c.vars.startClock = null;
 	t.acpTimeline.flush();
 	t.open = false;
+	t.watch?.close();
 	clearTimeout(t.limit);
 	// From here on the turn takes no message, no answer and no stop of a call, and has no question.
 	sealTurn(c, meta, active);
@@ -2030,7 +2069,7 @@ function turnOutcome(
 					.replace(/^[a-z]/, letter => letter.toUpperCase())
 			: "";
 		const reported = summary?.outcome as TurnOutcome | undefined;
-		if (failure?.reason === "auth_required" && account.provider) {
+		if (failure?.reason === "auth_required" && account.provider && !account.plan) {
 			outcome = "error";
 			message = `Check your ${account.provider} key in Settings. ${said}`.trim();
 		} else if (failure?.reason === "auth_required") {
@@ -2098,7 +2137,8 @@ async function noteProviderOutcome(
 	if (refusal) {
 		// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
 		if (!result?.acp && result?.failure?.reason === "auth_required" && message) {
-			if (account.provider || refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE")) refusal.message = message;
+			if ((account.provider && !account.plan) || refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE"))
+				refusal.message = message;
 			else if (!refusal.message.includes(SIGN_IN_REMEDY)) refusal.message += ` ${SIGN_IN_REMEDY}`;
 		}
 		const redactor = active.secrets?.redactor;

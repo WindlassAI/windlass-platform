@@ -24,7 +24,7 @@ import { sources, UNTRUSTED_SOURCE_MAX } from "../factory/untrusted.js";
 import type { TokenReceipt } from "../usage.js";
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
-import { turnSpend } from "../factory/budget.js";
+import { turnSpend, type TurnBudget } from "../factory/budget.js";
 import type { AgentTurn } from "../factory/types.js";
 import type { ItemReview } from "../contract.js";
 import type { ReviewerTaskReport } from "../factory/reviewer-task.js";
@@ -52,6 +52,7 @@ export const INBOX_TABLES = [
 		untrusted TEXT NOT NULL DEFAULT '[]',
 		unsandboxed INTEGER NOT NULL DEFAULT 0,
 		fresh TEXT,
+		budget TEXT,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -112,6 +113,11 @@ export interface Delivery {
 	 * for `text`). Absent (null in the row) for a step's first turn, which carries the task already, and for rows stored before it.
 	 */
 	fresh?: FreshPrompt | null;
+	/**
+	 * Where the turn is stopped while it runs, should it use up what its item has left (factory/budget.ts `turnBudget`,
+	 * decided by the blueprint). Absent (null in the row) where nothing measurable holds the item, and for an interactive turn.
+	 */
+	budget?: TurnBudget | null;
 }
 
 export interface FreshPrompt {
@@ -182,6 +188,7 @@ type Row = {
 	untrusted: string | null;
 	unsandboxed: number | null;
 	fresh: string | null;
+	budget: string | null;
 	starts_run: number;
 	state: InboxRow["state"];
 	turn: number | null;
@@ -203,6 +210,7 @@ function rowOf(row: Row): InboxRow {
 		untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []),
 		unsandboxed: row.unsandboxed === 1,
 		fresh: row.fresh ? freshOf(JSON.parse(row.fresh)) : null,
+		budget: row.budget ? budgetOf(JSON.parse(row.budget)) : null,
 		startsRun: row.starts_run === 1,
 		state: row.state,
 		turn: row.turn,
@@ -211,7 +219,7 @@ function rowOf(row: Row): InboxRow {
 }
 
 const SELECT =
-	"SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended FROM inbox";
+	"SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, budget, starts_run, state, turn, slot, ended FROM inbox";
 
 /** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
 export function untrustedOf(value: unknown): string[] {
@@ -278,7 +286,17 @@ export function deliveryOf(input: unknown): Delivery | null {
 		untrusted: untrustedOf(given.untrusted),
 		unsandboxed: given.unsandboxed === true,
 		fresh: freshOf(given.fresh),
+		budget: budgetOf(given.budget),
 	};
+}
+
+/** A turn's budget of a delivery or a row, checked; null for none or one that cannot be taken. */
+function budgetOf(value: unknown): TurnBudget | null {
+	if (typeof value !== "object" || value === null) return null;
+	const { figure, stopAt } = value as Record<string, unknown>;
+	if (figure !== "usd" && figure !== "planPct" && figure !== "tokens") return null;
+	if (typeof stopAt !== "number" || !Number.isFinite(stopAt) || stopAt < 0) return null;
+	return { figure, stopAt };
 }
 
 /** A whole-task prompt of a delivery or a row, checked; null for none or one that cannot be taken. */
@@ -311,7 +329,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, budget, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -324,6 +342,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		JSON.stringify(delivery.untrusted ?? []),
 		delivery.unsandboxed ? 1 : 0,
 		delivery.fresh ? JSON.stringify(delivery.fresh) : null,
+		delivery.budget ? JSON.stringify(delivery.budget) : null,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);

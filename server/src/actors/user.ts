@@ -28,7 +28,7 @@ import { mayUse } from "../access.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
-import { loginGeneration, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
+import { loginGeneration, moveWindlassLimits, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
 import {
 	changed as machinesChanged,
@@ -2124,6 +2124,8 @@ export const user = actor({
 			}
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
+			// Windlass's ChatGPT limits are the ChatGPT plan's now (provider-accounts.ts `accountLocation`).
+			await moveWindlassLimits(db);
 			await billingTables(db);
 		},
 	}),

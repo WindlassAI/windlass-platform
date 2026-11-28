@@ -3812,6 +3812,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					...(effect.unsandboxed && { unsandboxed: true }),
 					...(effect.fresh && { fresh: effect.fresh }),
 					...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }),
+					...(effect.budget && { budget: effect.budget }),
 				})
 				.catch(onGone);
 			return true;

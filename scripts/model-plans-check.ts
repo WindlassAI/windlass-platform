@@ -641,22 +641,29 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 				"INSERT INTO model_provider(provider, sealed, generation, last4, added_at, check_ok) VALUES ('openai', 'x', 'key-g', 'abcd', 1, 1)",
 			)
 			.run();
+	/** What Pay with answers (user-payer.ts, checked in pay-with-check.ts); null: the rule does not decide. */
+	let payer: object | null = null;
+	const asked: unknown[] = [];
 	/** The session's resolver over this account's real credential actions, as the user actor serves them. */
 	const resolver = (who: ReturnType<typeof account>, uid: string) => {
 		const actor = {
 			internalCredentialGeneration: (ref: unknown, onMachine?: boolean) =>
 				credentials.internalCredentialGeneration(who.relay, ref, onMachine),
+			internalTurnPayer: async (input: unknown) => {
+				asked.push(input);
+				return payer;
+			},
 		};
 		const ctx = { client: () => ({ user: { get: () => actor } }), vars: {} };
-		return (model: string, extra: object = {}, pinned?: object, planRelay = false) =>
+		return (model: string, extra: object = {}, pinned?: object, planRelay = false, keyOnce?: boolean) =>
 			turnCredential(
 				ctx as never,
-				{ place: { kind: "hosted" }, uid, harness: "windlass", ...extra } as never,
+				{ place: { kind: "hosted" }, uid, sessionId: "s1", harness: "windlass", ...extra } as never,
 				undefined,
 				model,
 				undefined,
 				pinned as never,
-				undefined,
+				keyOnce,
 				planRelay,
 			);
 	};
@@ -674,6 +681,47 @@ test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN
 		model: "openai/gpt-5.5",
 		key: { provider: "openai", generation: "key-g" },
 	});
+	// The ChatGPT plan limited: Pay with's "When limited" holds. A person is asked; "use my key" runs this turn on the
+	// OpenAI key's version of the model; an item waits for the reset.
+	const rule = { payWith: "plan", whenLimited: "ask", keyWhenLimited: true };
+	payer = {
+		decision: {
+			ask: {
+				sentence: "Your ChatGPT plan is limited until 14:00 UTC. Wait, or use your key for this turn?",
+				retryAt: 1,
+			},
+		},
+		ref: null,
+		plan: "openai",
+		rule,
+	};
+	await assert.rejects(turn("gpt-5.5"), (error: Error & { code?: string }) => error.code === "plan_ask");
+	payer = {
+		decision: { pay: "key" },
+		ref: { provider: "openai", generation: "key-g" },
+		plan: "openai",
+		rule,
+		keyModel: "openai/gpt-5.5",
+	};
+	assert.deepEqual(await turn("gpt-5.5", {}, undefined, false, true), {
+		model: "openai/gpt-5.5",
+		key: { provider: "openai", generation: "key-g" },
+	});
+	assert.deepEqual(asked.at(-1), { sessionId: "s1", model: "gpt-5.5", keyOnce: true });
+	payer = {
+		decision: {
+			wait: { sentence: "Your ChatGPT plan is limited until 14:00 UTC.", retryAt: 2, limited: true, keyNow: true },
+		},
+		ref: null,
+		plan: "openai",
+		rule: { ...rule, whenLimited: "wait" },
+	};
+	const { PlanWaitError } = await import("../server/src/actors/agent-session/common.js");
+	await assert.rejects(
+		turn("gpt-5.5", { origin: { kind: "item" } }),
+		(error: Error) => error instanceof PlanWaitError && error.retryAt === 2 && error.plan === "openai",
+	);
+	payer = null;
 	// A turn paused before this pinned nothing: it pins the plan when it resumes.
 	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5" }), { model: "gpt-5.5", key: plan });
 	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5", key: plan }), { model: "gpt-5.5", key: plan });
@@ -1003,4 +1051,65 @@ test("plan health is kept on the plan's row per generation, and a plan's limit i
 	// Connecting the plan again starts it healthy.
 	await plans.writeChatgptSignIn(context.db, { sealed: "s", generation: "o1", shortNoted: false });
 	assert.equal((await plans.planStatuses(context.db)).find(p => p.provider === "openai")?.health, "ok");
+});
+
+test("Windlass's ChatGPT limits land on the ChatGPT plan's account, wherever it runs, and old sign-in rows move there", async () => {
+	const { sql, context } = account("plan-check-windlass");
+	sql.exec(accounts.PROVIDER_TABLE);
+	connectedPlan(sql, "openai", "o1");
+	const at = Date.now();
+	const reset = at + 2 * 3600_000;
+	// A hosted turn's usage-limit refusal of Windlass's ChatGPT model (no key paid): the plan's, not a sign-in's row.
+	const hosted = { place: "hosted", harness: "windlass" as const };
+	assert.deepEqual(accounts.accountLocation(hosted), { ...hosted, provider: "openai", plan: true });
+	assert.equal(accounts.accountKey(hosted, "o1"), "plan/openai/o1", "an item's wait names the plan's account");
+	assert.equal(await accounts.loginGeneration(context.db, { place: "desk", harness: "windlass" }), "o1");
+	await accounts.recordProviderUsage(context.db as never, hosted, "o1", { kind: "refusal", at, resetsAt: reset });
+	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM provider_usage").get()?.n, 0);
+	const status = (await plans.planStatuses(context.db)).find(p => p.provider === "openai");
+	assert.deepEqual([status?.health, status?.limitedUntil], ["limited", reset]);
+	const listed = await accounts.providerAccounts(context.db, at);
+	assert.equal(listed.get("plan/openai")?.[0]?.state, "limited", "the Connections badge reads the plan's account");
+	// A machine's Windlass turn on the same ChatGPT sign-in waits on the same account; a key's model does not.
+	assert.equal(accounts.accountFor(listed, { place: "desk", harness: "windlass" })?.state, "limited");
+	assert.equal(accounts.accountFor(listed, { place: "desk", harness: "windlass", provider: "openai" }), undefined);
+	assert.deepEqual(
+		accounts.limitedAccounts(listed).map(limit => `${limit.machineId}:${limit.harness}`),
+		["plan/openai:codex", "plan/openai:windlass"],
+		"placement holds Windlass's parts on every machine, and Codex's",
+	);
+	const { limitApplies } = await import("../server/src/factory/placement.js");
+	assert.ok(limitApplies(accounts.limitedAccounts(listed)[1]!, "desk"));
+	assert.equal(accounts.accountsAt(listed, "desk")[0]?.harness, "windlass", "the machine shows it as Windlass's");
+	// A success after the reset lifts it.
+	await accounts.recordProviderUsage(context.db as never, hosted, "o1", {
+		kind: "success",
+		at: reset + 1000,
+		startedAt: reset + 500,
+	});
+	assert.equal((await plans.planStatuses(context.db)).find(p => p.provider === "openai")?.health, "ok");
+
+	// Rows the sign-in kept before: a running limit at the plan's generation moves onto the plan, then they go.
+	const row = (place: string, generation: string, limitedUntil: number) =>
+		sql
+			.prepare("INSERT INTO provider_usage VALUES (?, 'windlass', ?, ?)")
+			.run(
+				place,
+				generation,
+				JSON.stringify({ account: { key: "*", harness: "windlass", state: "limited", limitedUntil, windows: [] } }),
+			);
+	const now = reset + 2000;
+	row("*", "o1", now + 600_000);
+	row("desk", "o1", now + 900_000);
+	row("laptop", "o0", now + 5 * 3600_000);
+	await accounts.moveWindlassLimits(context.db as never, now);
+	assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM provider_usage").get()?.n, 0);
+	const moved = (await plans.planStatuses(context.db)).find(p => p.provider === "openai");
+	assert.deepEqual(
+		[moved?.health, moved?.limitedUntil],
+		["limited", now + 900_000],
+		"the longest at the plan's generation; an older sign-in's is not this plan's",
+	);
+	await accounts.moveWindlassLimits(context.db as never, now);
+	assert.equal((await plans.planStatuses(context.db)).find(p => p.provider === "openai")?.limitedUntil, now + 900_000);
 });

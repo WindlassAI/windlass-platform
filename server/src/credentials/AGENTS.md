@@ -18,6 +18,9 @@ Plans, one `model_plan` row each:
   the user actor's `SignInHolder` (`server/src/signin/holder.ts`), which alone opens it, refreshes it one at a time
   and keeps the refresh token. It is connected with the CLI's `connect codex` (`cli/`): Windlass signs in on the
   user's computer and the command uploads its files (`SignInUpload`), which the holder adopts under a new generation. A relay asks for its current access token (the `token` of a `ChatgptPlan`, `./index.ts`).
+  Hosted Windlass follows Pay with's "When limited" on it (`planPays` in `server/src/pay-with.ts`): an item waits, a person
+  is asked, and the key runs the OpenAI key's version of the model for one turn. Windlass's limits, wherever it runs, are the
+  plan's (`accountLocation` in `server/src/actors/provider-accounts.ts`).
 
 ## Quick commands
 
